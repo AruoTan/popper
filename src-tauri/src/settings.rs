@@ -17,8 +17,8 @@ use crate::local_secrets::LocalEncryptedStore;
 use crate::models::{
     ActionDefinition, ActionKind, AppSettings, CreateProviderInput, Locale, ProviderConfig,
     ProviderModel, PublicSettings, ResultDismissMode, SettingsUpdate, TranslationSettings,
-    UpdateProviderInput, WindowSize, DEFAULT_EXPLAIN_PROMPT, DEFAULT_PROVIDER_ID,
-    DEFAULT_REFINE_PROMPT, DEFAULT_SUMMARY_PROMPT, DEFAULT_TRANSLATE_PROMPT,
+    UpdateProviderInput, WindowSize, DEFAULT_ASK_PROMPT, DEFAULT_EXPLAIN_PROMPT,
+    DEFAULT_PROVIDER_ID, DEFAULT_REFINE_PROMPT, DEFAULT_SUMMARY_PROMPT, DEFAULT_TRANSLATE_PROMPT,
     LEGACY_V3_EXPLAIN_PROMPT, LEGACY_V3_REFINE_PROMPT, LEGACY_V3_SUMMARY_PROMPT,
     LEGACY_V3_TRANSLATE_PROMPT, LEGACY_V4_EXPLAIN_PROMPT, LEGACY_V4_REFINE_PROMPT,
     LEGACY_V4_SUMMARY_PROMPT, LEGACY_V4_TRANSLATE_PROMPT, LEGACY_V5_TRANSLATE_PROMPT,
@@ -656,7 +656,9 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
             || value.pointer("/activeSearchEngineId").is_some()
             || value.pointer("/searchEngine").is_some()
             || value.pointer("/searchTemplate").is_some();
+        let had_quote_action = value_has_quote_action(&value);
         migrate_v10_search_actions_value(&mut value);
+        migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         let persisted_settings = settings.clone();
         migrate_default_action_prompts(&mut settings);
@@ -667,6 +669,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         let must_persist = missing_result_defaults
             || missing_application_defaults
             || had_legacy_search_fields
+            || had_quote_action
             || normalized != persisted_settings;
         return Ok(LoadedSettings {
             settings: normalized,
@@ -674,8 +677,24 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
             must_persist,
         });
     }
+    if version == Some(10) {
+        migrate_v10_search_actions_value(&mut value);
+        migrate_quote_to_ask_value(&mut value);
+        let mut settings: AppSettings = serde_json::from_value(value)?;
+        migrate_default_action_prompts(&mut settings);
+        migrate_search_actions(&mut settings);
+        let settings = settings
+            .normalize_and_validate()
+            .map_err(SettingsError::Validation)?;
+        return Ok(LoadedSettings {
+            settings,
+            legacy_api_key: None,
+            must_persist: true,
+        });
+    }
     if version == Some(9) {
         migrate_v10_search_actions_value(&mut value);
+        migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
         migrate_search_actions(&mut settings);
@@ -691,6 +710,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
     if version == Some(8) {
         migrate_v8_search_engines_value(&mut value);
         migrate_v10_search_actions_value(&mut value);
+        migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
         migrate_search_actions(&mut settings);
@@ -706,6 +726,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
     if matches!(version, Some(3 | 4 | 5 | 6 | 7)) {
         migrate_v8_search_engines_value(&mut value);
         migrate_v10_search_actions_value(&mut value);
+        migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
         migrate_search_actions(&mut settings);
@@ -726,6 +747,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         // prompts.
         migrate_v8_search_engines_value(&mut value);
         migrate_v10_search_actions_value(&mut value);
+        migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         settings.result.dismiss_mode = ResultDismissMode::Blur;
         migrate_default_action_prompts(&mut settings);
@@ -937,7 +959,7 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
             })
             .collect()
     };
-    for new_kind in [ActionKind::Refine, ActionKind::Quote] {
+    for new_kind in [ActionKind::Refine, ActionKind::Ask] {
         if !actions.iter().any(|action| action.kind == new_kind) {
             if let Some(default) = default_actions.get(&new_kind) {
                 let mut added = default.clone();
@@ -1022,6 +1044,125 @@ fn migrate_v8_search_engines_value(value: &mut serde_json::Value) {
     object.remove("searchEngine");
     object.remove("searchTemplate");
     object.insert("version".to_owned(), serde_json::Value::Number(9.into()));
+}
+
+fn value_has_quote_action(value: &serde_json::Value) -> bool {
+    value
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|actions| {
+            actions.iter().any(|action| {
+                let kind = action
+                    .get("kind")
+                    .or_else(|| action.get("type"))
+                    .and_then(serde_json::Value::as_str);
+                let id = action.get("id").and_then(serde_json::Value::as_str);
+                kind == Some("quote") || id == Some("quote")
+            })
+        })
+}
+
+/// Rewrite local quote clipboard actions into the ask-ai AI action (SETTINGS_VERSION 11).
+fn migrate_quote_to_ask_value(value: &mut serde_json::Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let Some(actions) = object
+        .get_mut("actions")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+
+    let mut saw_ask = false;
+    let mut rewritten = Vec::with_capacity(actions.len());
+    for action in actions.drain(..) {
+        let Some(action_object) = action.as_object() else {
+            rewritten.push(action);
+            continue;
+        };
+        let kind = action_object
+            .get("kind")
+            .or_else(|| action_object.get("type"))
+            .and_then(serde_json::Value::as_str);
+        let id = action_object
+            .get("id")
+            .and_then(serde_json::Value::as_str);
+        let is_quote = kind == Some("quote") || id == Some("quote");
+        let is_ask = kind == Some("ask") || id == Some("ask-ai");
+        if is_quote || is_ask {
+            if saw_ask {
+                continue;
+            }
+            saw_ask = true;
+            let name = action_object
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != "引用")
+                .unwrap_or("问AI");
+            let icon = action_object
+                .get("icon")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != "quote")
+                .unwrap_or("message-circle-question");
+            let enabled = action_object
+                .get("enabled")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            let order = action_object
+                .get("order")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(6);
+            let prompt = action_object
+                .get("prompt")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| value.contains("{{text}}"))
+                .unwrap_or(DEFAULT_ASK_PROMPT);
+            let provider_id = action_object
+                .get("providerId")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(DEFAULT_PROVIDER_ID);
+            let model_id = action_object
+                .get("modelId")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("");
+            let thinking_mode = action_object
+                .get("thinkingMode")
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::String("off".to_owned()));
+            rewritten.push(serde_json::json!({
+                "id": "ask-ai",
+                "name": name,
+                "icon": icon,
+                "kind": "ask",
+                "enabled": enabled,
+                "order": order,
+                "prompt": prompt,
+                "providerId": provider_id,
+                "modelId": model_id,
+                "thinkingMode": thinking_mode,
+            }));
+            continue;
+        }
+        rewritten.push(action);
+    }
+    for (order, action) in rewritten.iter_mut().enumerate() {
+        if let Some(object) = action.as_object_mut() {
+            object.insert(
+                "order".to_owned(),
+                serde_json::Value::Number((order as u64).into()),
+            );
+        }
+    }
+    *actions = rewritten;
+    object.insert(
+        "version".to_owned(),
+        serde_json::Value::Number(SETTINGS_VERSION.into()),
+    );
 }
 
 fn migrate_v10_search_actions_value(value: &mut serde_json::Value) {
@@ -1880,6 +2021,83 @@ mod tests {
                 Some(expected)
             );
         }
+    }
+
+    #[test]
+    fn migrates_v10_quote_action_to_ask_ai() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut current = AppSettings::default();
+        // Force a v10-shaped file with the legacy quote clipboard action.
+        current.version = 10;
+        if let Some(ask) = current
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "ask-ai")
+        {
+            ask.id = "quote".to_owned();
+            ask.name = "引用".to_owned();
+            ask.icon = "quote".to_owned();
+            ask.kind = ActionKind::Ask; // will be rewritten via JSON kind
+            ask.enabled = false;
+            ask.prompt = None;
+            ask.provider_id = None;
+            ask.model_id = None;
+        }
+        let mut value = serde_json::to_value(&current).unwrap();
+        if let Some(actions) = value
+            .get_mut("actions")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for action in actions {
+                let Some(object) = action.as_object_mut() else {
+                    continue;
+                };
+                if object.get("id").and_then(serde_json::Value::as_str) == Some("quote") {
+                    object.insert(
+                        "kind".to_owned(),
+                        serde_json::Value::String("quote".to_owned()),
+                    );
+                    object.remove("prompt");
+                    object.remove("providerId");
+                    object.remove("modelId");
+                    object.remove("thinkingMode");
+                }
+            }
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "version".to_owned(),
+                serde_json::Value::Number(10.into()),
+            );
+        }
+        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let repository =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        let migrated = repository.get_settings();
+        assert_eq!(migrated.version, SETTINGS_VERSION);
+        let ask = migrated
+            .actions
+            .iter()
+            .find(|action| action.id == "ask-ai")
+            .expect("quote becomes ask-ai");
+        assert_eq!(ask.kind, ActionKind::Ask);
+        assert_eq!(ask.name, "问AI");
+        assert_eq!(ask.icon, "message-circle-question");
+        // Preserves the previous quote enabled flag (fixture uses false).
+        assert!(!ask.enabled);
+        assert_eq!(ask.prompt.as_deref(), Some(DEFAULT_ASK_PROMPT));
+        assert!(migrated.actions.iter().all(|action| action.id != "quote"));
+        assert_eq!(
+            migrated
+                .actions
+                .iter()
+                .filter(|action| action.kind == ActionKind::Ask)
+                .count(),
+            1
+        );
     }
 
     #[test]

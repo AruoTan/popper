@@ -356,6 +356,14 @@ struct ResultSessionMeta {
     pinned: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResultSessionStart {
+    /// Start network generation immediately (translate/explain/summary/…).
+    Execute,
+    /// Open a completed empty session and wait for the first question (Ask).
+    OpenAsk,
+}
+
 fn compose_result_ready_snapshot(
     meta: ResultSessionMeta,
     begin: ActionBeginReady,
@@ -971,6 +979,43 @@ impl RuntimeState {
         selection: CurrentSelection,
         cursor: WindowPoint,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
+        self.create_result_session_with(
+            app,
+            action_id,
+            action_name,
+            selection,
+            cursor,
+            ResultSessionStart::Execute,
+        )
+    }
+
+    fn create_ask_result_session(
+        &self,
+        app: &AppHandle,
+        action_id: &str,
+        action_name: &str,
+        selection: CurrentSelection,
+        cursor: WindowPoint,
+    ) -> Result<(String, String, ResultRevealReceiver), String> {
+        self.create_result_session_with(
+            app,
+            action_id,
+            action_name,
+            selection,
+            cursor,
+            ResultSessionStart::OpenAsk,
+        )
+    }
+
+    fn create_result_session_with(
+        &self,
+        app: &AppHandle,
+        action_id: &str,
+        action_name: &str,
+        selection: CurrentSelection,
+        cursor: WindowPoint,
+        start: ResultSessionStart,
+    ) -> Result<(String, String, ResultRevealReceiver), String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("TextLens 正在退出".to_owned());
         }
@@ -1010,14 +1055,18 @@ impl RuntimeState {
             ));
         }
 
-        // `execute` performs the complete validation/preparation exactly once
-        // and starts DNS/TLS/model work immediately. Stream events remain in
-        // the action service's pending queue until the result renderer is
-        // ready, allowing network startup and WKWebView creation to overlap.
-        let request_id = self
-            .actions
-            .execute(app, request)
-            .map_err(|error| error.to_string())?;
+        // `execute` starts DNS/TLS/model work immediately and overlaps with
+        // window creation. `open_ask` only seeds context without network.
+        let request_id = match start {
+            ResultSessionStart::Execute => self
+                .actions
+                .execute(app, request)
+                .map_err(|error| error.to_string())?,
+            ResultSessionStart::OpenAsk => self
+                .actions
+                .open_ask(app, request)
+                .map_err(|error| error.to_string())?,
+        };
 
         self.close_unpinned_results(app);
         if self.result_sessions.lock().len() >= MAX_RESULT_SESSIONS {
@@ -2128,23 +2177,6 @@ pub async fn run_action(
             }
             Err(message) => RunActionResult::rejected(message),
         },
-        ActionKind::Quote => {
-            let quoted = selection
-                .payload
-                .text
-                .lines()
-                .map(|line| format!("> {line}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            match clipboard::write_text(&quoted) {
-                Ok(()) => {
-                    state.arm_same_text_selection_suppress(&selection.payload.text);
-                    state.clear_and_hide_current_selection_if(&app, &selection_token);
-                    RunActionResult::accepted(None, None)
-                }
-                Err(message) => RunActionResult::rejected(message),
-            }
-        }
         ActionKind::Search => {
             let template = match crate::models::resolve_search_template(
                 action.search_engine_id.as_deref(),
@@ -2168,6 +2200,37 @@ pub async fn run_action(
                     }
                     Err(_) => RunActionResult::rejected("无法打开浏览器"),
                 },
+                Err(message) => RunActionResult::rejected(message),
+            }
+        }
+        _ if action.kind.opens_result_without_generation() => {
+            let cursor = action_result_cursor(&app, cursor, &selection.payload);
+            let selected_text = selection.payload.text.clone();
+            match state.create_ask_result_session(
+                &app,
+                &action.id,
+                &action.name,
+                selection,
+                cursor,
+            ) {
+                Ok((session_id, request_id, reveal_receiver)) => {
+                    match wait_for_result_reveal_with_timeout(
+                        reveal_receiver,
+                        RESULT_REVEAL_TIMEOUT,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            state.arm_same_text_selection_suppress(&selected_text);
+                            state.clear_and_hide_current_selection_if(&app, &selection_token);
+                            RunActionResult::accepted(Some(session_id), Some(request_id))
+                        }
+                        Err(message) => {
+                            state.abort_result_reveal(&app, &session_id);
+                            RunActionResult::rejected(message)
+                        }
+                    }
+                }
                 Err(message) => RunActionResult::rejected(message),
             }
         }

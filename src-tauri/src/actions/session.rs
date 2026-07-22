@@ -45,6 +45,8 @@ pub(super) struct SessionState {
     pub flusher_running: bool,
     pub delivery_epoch: DeliveryEpoch,
     pub snapshot_absorbed_through: EventSequence,
+    /// Ask sessions open as Completed with empty content; allow the first continue.
+    pub allow_continue_without_content: bool,
     active_flusher_epoch: Option<DeliveryEpoch>,
     active_flusher_token: Option<Arc<()>>,
     in_flight: Option<InFlightEmit>,
@@ -343,6 +345,7 @@ impl SessionTable {
             flusher_running: false,
             delivery_epoch: DeliveryEpoch::NONE,
             snapshot_absorbed_through: EventSequence::NONE,
+            allow_continue_without_content: false,
             active_flusher_epoch: None,
             active_flusher_token: None,
             in_flight: None,
@@ -362,6 +365,86 @@ impl SessionTable {
             cancellation,
             kind: ReservationKind::Initial,
         })
+    }
+
+    /// Open a session already Completed with empty content (Ask: wait for first question).
+    /// No network reservation, no Started event — renderer hydrates via begin_ready.
+    pub(super) fn open_completed_without_generation(
+        &mut self,
+        input: InitialReservationInput,
+    ) -> Result<RequestTicket, SessionError> {
+        if [
+            input.session_id.as_str(),
+            input.window_label.as_str(),
+            input.request_id.as_str(),
+            input.action_id.as_str(),
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+        {
+            return Err(SessionError::InvalidInput);
+        }
+
+        match self.entries.get(&input.session_id) {
+            Some(SessionEntry::Closed(_)) => return Err(SessionError::Ended),
+            Some(SessionEntry::Open(_)) => return Err(SessionError::Busy),
+            None => {}
+        }
+
+        let session_generation = self
+            .last_session_generation
+            .checked_next()
+            .ok_or(SessionError::CounterExhausted)?;
+        let request_generation = RequestGeneration(0)
+            .checked_next()
+            .ok_or(SessionError::CounterExhausted)?;
+        let ticket = RequestTicket {
+            session_id: input.session_id.clone(),
+            session_generation,
+            request_generation,
+            request_id: input.request_id,
+            action_id: input.action_id,
+        };
+        let state = SessionState {
+            session_generation,
+            last_request_generation: request_generation,
+            request_slot: RequestSlot::Vacant,
+            request_stream: None,
+            window_label: input.window_label,
+            snapshot: ActionSnapshot {
+                session_id: ticket.session_id.clone(),
+                session_generation,
+                request_id: ticket.request_id.clone(),
+                request_generation,
+                action_id: ticket.action_id.clone(),
+                status: ActionSnapshotStatus::Completed,
+                content: String::new(),
+                last_sequence: EventSequence::NONE,
+                last_content_sequence: EventSequence::NONE,
+                content_scalar_count: 0,
+                generation_notice: None,
+                error_code: None,
+                error_message: None,
+                retryable: false,
+            },
+            next_sequence: EventSequence::NONE,
+            pending_events: VecDeque::new(),
+            ready: false,
+            next_handshake_generation: HandshakeGeneration(0),
+            pending_handshake: None,
+            flusher_running: false,
+            delivery_epoch: DeliveryEpoch::NONE,
+            snapshot_absorbed_through: EventSequence::NONE,
+            allow_continue_without_content: true,
+            active_flusher_epoch: None,
+            active_flusher_token: None,
+            in_flight: None,
+        };
+
+        self.last_session_generation = session_generation;
+        self.entries
+            .insert(ticket.session_id.clone(), SessionEntry::Open(state));
+        Ok(ticket)
     }
 
     pub(super) fn reserve_retry(
@@ -406,7 +489,8 @@ impl SessionTable {
             ),
             ReservationKind::Continue => {
                 state.snapshot.status == ActionSnapshotStatus::Completed
-                    && !state.snapshot.content.is_empty()
+                    && (!state.snapshot.content.is_empty()
+                        || state.allow_continue_without_content)
             }
             ReservationKind::Initial => false,
         };
@@ -3110,6 +3194,28 @@ mod tests {
         );
         assert!(nonempty_completed
             .reserve_continue("nonempty-completed", "continue".to_owned())
+            .is_ok());
+    }
+
+    #[test]
+    fn ask_session_can_continue_with_empty_completed_content() {
+        let mut table = SessionTable::default();
+        let ticket = table
+            .open_completed_without_generation(InitialReservationInput {
+                session_id: "ask-session".to_owned(),
+                window_label: "result/ask-session".to_owned(),
+                request_id: "ask-open".to_owned(),
+                action_id: "ask-ai".to_owned(),
+            })
+            .unwrap();
+        let state = open_state(&table, "ask-session");
+        assert_eq!(state.snapshot.status, ActionSnapshotStatus::Completed);
+        assert!(state.snapshot.content.is_empty());
+        assert!(state.allow_continue_without_content);
+        assert!(matches!(state.request_slot, RequestSlot::Vacant));
+        assert_eq!(ticket.action_id, "ask-ai");
+        assert!(table
+            .reserve_continue("ask-session", "first-question".to_owned())
             .is_ok());
     }
 

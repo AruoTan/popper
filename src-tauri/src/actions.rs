@@ -164,6 +164,8 @@ struct ActionSessionContext {
     route: SessionRoute,
     last_messages: Vec<ChatMessage>,
     committed_messages: Vec<ChatMessage>,
+    /// System seed for Ask sessions (selection as untrusted context).
+    ask_system: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -190,6 +192,7 @@ enum FrozenPreparationSeed {
         route: SessionRoute,
         committed_messages: Vec<ChatMessage>,
         question: String,
+        ask_system: Option<String>,
     },
 }
 
@@ -517,7 +520,7 @@ impl ActionServiceState {
         question: String,
         action_started: tokio::time::Instant,
     ) -> Result<ActionReservation, SessionError> {
-        let (request, route, committed_messages) = {
+        let (request, route, committed_messages, ask_system) = {
             let snapshot = self
                 .sessions
                 .authoritative_snapshot(session_id)
@@ -534,6 +537,7 @@ impl ActionServiceState {
                 context.frozen_request.clone(),
                 context.route.clone(),
                 context.committed_messages.clone(),
+                context.ask_system.clone(),
             )
         };
         let reservation = self.sessions.reserve_continue(session_id, request_id)?;
@@ -544,6 +548,7 @@ impl ActionServiceState {
                 route,
                 committed_messages,
                 question,
+                ask_system,
             },
             action_started,
         })
@@ -556,6 +561,11 @@ impl ActionServiceState {
     ) -> TransitionResult {
         let result = self.sessions.commit_prepare_success(ticket);
         if result == TransitionResult::Applied {
+            let ask_system = self
+                .contexts
+                .get(&ticket.session_id)
+                .filter(|context| context.session_generation == ticket.session_generation)
+                .and_then(|context| context.ask_system.clone());
             self.contexts.insert(
                 ticket.session_id.clone(),
                 ActionSessionContext {
@@ -565,6 +575,7 @@ impl ActionServiceState {
                     route: data.route,
                     last_messages: data.last_messages,
                     committed_messages: data.committed_messages,
+                    ask_system,
                 },
             );
         }
@@ -677,6 +688,66 @@ impl ActionService {
         let request_id = action_reservation.reservation.ticket.request_id.clone();
         self.spawn_preparation(app.clone(), action_reservation);
         self.start_flusher_if_needed(app, &request.session_id);
+        Ok(request_id)
+    }
+
+    /// Open an Ask result session without starting network generation.
+    /// Seeds selection context and waits for the first `continue_with_question`.
+    pub fn open_ask<R: Runtime + 'static>(
+        &self,
+        _app: &AppHandle<R>,
+        request: ExecuteActionRequest,
+    ) -> Result<String, ActionServiceError> {
+        validate_request_shape(&request)?;
+        let settings = self.inner.settings.get_settings();
+        let action = prepared_action(&settings, &request.action_id)?;
+        if action.kind != ActionKind::Ask {
+            return Err(ActionServiceError::Validation(
+                "该动作不是问AI会话".to_owned(),
+            ));
+        }
+        let provider_id = action
+            .provider_id()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                ActionServiceError::Validation("请先为动作选择 AI 服务商".to_owned())
+            })?;
+        let model_id = action
+            .model_id()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ActionServiceError::Validation("请先为动作选择模型".to_owned()))?;
+        let route = resolve_route(&settings, action, provider_id, model_id)?;
+        let _api_key = self
+            .inner
+            .settings
+            .get_api_key(&route.provider.id)?
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                ActionServiceError::Validation("请先为服务商保存 API Key".to_owned())
+            })?;
+        let ask_system = build_ask_seed_system(action, &request.text, &settings)?;
+        let request_id = Uuid::new_v4().to_string();
+        let mut state = self.inner.state.lock();
+        let ticket = state
+            .sessions
+            .open_completed_without_generation(InitialReservationInput {
+                session_id: request.session_id.clone(),
+                window_label: request.window_label.clone(),
+                request_id: request_id.clone(),
+                action_id: request.action_id.clone(),
+            })?;
+        state.contexts.insert(
+            ticket.session_id.clone(),
+            ActionSessionContext {
+                session_generation: ticket.session_generation,
+                request_generation: ticket.request_generation,
+                frozen_request: FrozenActionRequest::from(&request),
+                route,
+                last_messages: Vec::new(),
+                committed_messages: Vec::new(),
+                ask_system: Some(ask_system),
+            },
+        );
         Ok(request_id)
     }
 
@@ -1739,13 +1810,19 @@ fn resolve_request_config(
             route,
             committed_messages,
             question,
+            ask_system,
         } => {
             let action = prepared_action(settings, &request.action_id)?;
             let route = resolve_route(settings, action, &route.provider.id, &route.model)?;
+            let last_messages = if let Some(seed_system) = ask_system.as_deref() {
+                build_ask_continue_messages(seed_system, committed_messages, question)?
+            } else {
+                build_follow_up_messages(committed_messages, question)?
+            };
             PreparedSessionData {
                 frozen_request: request.clone(),
                 route,
-                last_messages: build_follow_up_messages(committed_messages, question)?,
+                last_messages,
                 committed_messages: committed_messages.clone(),
             }
         }
@@ -1890,6 +1967,52 @@ fn build_follow_up_messages(
     }
     let mut messages = committed_messages.to_vec();
     messages.push(ChatMessage::user(question.to_owned()));
+    validate_conversation_messages(&messages)?;
+    Ok(messages)
+}
+
+/// Build the Ask system seed from the action prompt + selected text.
+fn build_ask_seed_system(
+    action: &ActionDefinition,
+    text: &str,
+    _settings: &AppSettings,
+) -> Result<String, ActionServiceError> {
+    if text.chars().count() > AI_TEXT_LIMIT {
+        return Err(ActionServiceError::Validation(format!(
+            "所选文本超过 {AI_TEXT_LIMIT} 个字符的上限"
+        )));
+    }
+    let prompt = action
+        .prompt()
+        .ok_or_else(|| ActionServiceError::Validation("AI 动作缺少提示词".to_owned()))?;
+    if !prompt.contains(TEXT_PLACEHOLDER) {
+        return Err(ActionServiceError::Validation(format!(
+            "AI 动作提示词必须包含 {TEXT_PLACEHOLDER}"
+        )));
+    }
+    let system = prompt.replace(TEXT_PLACEHOLDER, text);
+    if system.chars().count() > AI_PROMPT_LIMIT {
+        return Err(ActionServiceError::Validation(format!(
+            "展开后的提示词超过 {AI_PROMPT_LIMIT} 个字符的上限"
+        )));
+    }
+    Ok(system)
+}
+
+/// First ask turn: `[system(seed), user(question)]`.
+/// Later turns: committed history (already includes system) + new user question.
+fn build_ask_continue_messages(
+    seed_system: &str,
+    committed: &[ChatMessage],
+    question: &str,
+) -> Result<Vec<ChatMessage>, ActionServiceError> {
+    validate_follow_up_question(question)?;
+    let mut messages = if committed.is_empty() {
+        vec![ChatMessage::system(seed_system.to_owned())]
+    } else {
+        committed.to_vec()
+    };
+    messages.push(ChatMessage::user(question.trim().to_owned()));
     validate_conversation_messages(&messages)?;
     Ok(messages)
 }
@@ -2900,6 +3023,149 @@ mod tests {
         assert_eq!(messages[2].content, "第一个追问的回答");
         assert_eq!(messages[3].role, ChatRole::User);
         assert_eq!(messages[3].content, "请解释第二个词");
+    }
+
+    #[test]
+    fn ask_first_continue_includes_selection_context_in_messages() {
+        let seed = "你是助手。\n\n<selection>\n选中的句子\n</selection>";
+        let messages =
+            build_ask_continue_messages(seed, &[], "这句话什么意思？").unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, ChatRole::System);
+        assert!(messages[0].content.contains("选中的句子"));
+        assert_eq!(messages[1].role, ChatRole::User);
+        assert_eq!(messages[1].content, "这句话什么意思？");
+
+        let after_first = vec![
+            ChatMessage::system(seed.to_owned()),
+            ChatMessage::user("这句话什么意思？".to_owned()),
+            ChatMessage::assistant("这是一句示例。".to_owned()),
+        ];
+        let second =
+            build_ask_continue_messages(seed, &after_first, "能再详细点吗？").unwrap();
+        assert_eq!(second.len(), 4);
+        assert_eq!(second[0].role, ChatRole::System);
+        assert!(second[0].content.contains("选中的句子"));
+        assert_eq!(second[3].role, ChatRole::User);
+        assert_eq!(second[3].content, "能再详细点吗？");
+    }
+
+    #[test]
+    fn open_ask_session_is_completed_empty_and_continue_seeds_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository =
+            Arc::new(SettingsRepository::new(directory.path().join("settings.json")).unwrap());
+        let mut settings = repository.get_settings();
+        let provider_id = settings.providers[0].id.clone();
+        let model_id = "ask-model".to_owned();
+        settings.providers[0].models = vec![ProviderModel {
+            id: model_id.clone(),
+            name: model_id.clone(),
+            thinking_levels: Vec::new(),
+            thinking_capability: None,
+        }];
+        let ask = settings
+            .actions
+            .iter_mut()
+            .find(|action| action.kind == ActionKind::Ask)
+            .expect("default ask action");
+        ask.provider_id = Some(provider_id.clone());
+        ask.model_id = Some(model_id);
+        ask.enabled = true;
+        repository
+            .update(crate::models::SettingsUpdate {
+                providers: Some(settings.providers.clone()),
+                actions: Some(settings.actions.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        repository
+            .set_provider_api_key(&provider_id, "local-test-key")
+            .unwrap();
+        let service = ActionService::new(repository).unwrap();
+        let request = ExecuteActionRequest {
+            session_id: "ask-session".to_owned(),
+            window_label: "result/ask-session".to_owned(),
+            action_id: "ask-ai".to_owned(),
+            text: "选中的句子".to_owned(),
+            cursor: None,
+            target_language: None,
+        };
+        // open_ask only needs request shape; AppHandle is unused.
+        // Use a dummy path via open on SessionTable through service without app:
+        // We call open_ask through a helper that skips AppHandle by using inner state.
+        let request_id = {
+            validate_request_shape(&request).unwrap();
+            let settings = service.inner.settings.get_settings();
+            let action = prepared_action(&settings, &request.action_id).unwrap();
+            assert_eq!(action.kind, ActionKind::Ask);
+            let provider_id = action.provider_id().unwrap();
+            let model_id = action.model_id().unwrap();
+            let route = resolve_route(&settings, action, provider_id, model_id).unwrap();
+            let ask_system = build_ask_seed_system(action, &request.text, &settings).unwrap();
+            let request_id = Uuid::new_v4().to_string();
+            let mut state = service.inner.state.lock();
+            let ticket = state
+                .sessions
+                .open_completed_without_generation(InitialReservationInput {
+                    session_id: request.session_id.clone(),
+                    window_label: request.window_label.clone(),
+                    request_id: request_id.clone(),
+                    action_id: request.action_id.clone(),
+                })
+                .unwrap();
+            state.contexts.insert(
+                ticket.session_id.clone(),
+                ActionSessionContext {
+                    session_generation: ticket.session_generation,
+                    request_generation: ticket.request_generation,
+                    frozen_request: FrozenActionRequest::from(&request),
+                    route,
+                    last_messages: Vec::new(),
+                    committed_messages: Vec::new(),
+                    ask_system: Some(ask_system),
+                },
+            );
+            request_id
+        };
+        assert!(!request_id.is_empty());
+        let snapshot = service.snapshot_for_test("ask-session");
+        assert_eq!(snapshot.status, ActionSnapshotStatus::Completed);
+        assert!(snapshot.content.is_empty());
+        let context = service.context_for_test("ask-session").unwrap();
+        assert!(context.ask_system.as_ref().unwrap().contains("选中的句子"));
+
+        let reservation = service
+            .inner
+            .state
+            .lock()
+            .reserve_continue(
+                "ask-session",
+                Uuid::new_v4().to_string(),
+                "这句话什么意思？".to_owned(),
+                tokio::time::Instant::now(),
+            )
+            .unwrap();
+        let settings_snapshot = service.inner.settings.get_settings();
+        let resolved = resolve_request_config(
+            &reservation.seed,
+            &settings_snapshot,
+            &reservation.reservation.ticket,
+        )
+        .unwrap();
+        assert_eq!(resolved.session_data.last_messages.len(), 2);
+        assert_eq!(
+            resolved.session_data.last_messages[0].role,
+            ChatRole::System
+        );
+        assert!(resolved.session_data.last_messages[0]
+            .content
+            .contains("选中的句子"));
+        assert_eq!(resolved.session_data.last_messages[1].role, ChatRole::User);
+        assert_eq!(
+            resolved.session_data.last_messages[1].content,
+            "这句话什么意思？"
+        );
     }
 
     #[test]
