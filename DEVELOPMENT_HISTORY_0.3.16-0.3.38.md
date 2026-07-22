@@ -1,15 +1,15 @@
-# TextLens 从 macOS 0.3.16 到 0.3.51 的开发记录
+# TextLens 从 macOS 0.3.16 到 0.3.52 的开发记录
 
 整理日期：2026-07-22  
-版本范围：macOS 0.3.16 至 TextLens 0.3.51
+版本范围：macOS 0.3.16 至 TextLens 0.3.52
 
 ## 文档说明
 
-本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.51 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
+本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.52 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
 
 这段开发并不是一次简单的平台移植。macOS 版本依赖 Accessibility API、Event Tap、Core Graphics 和 AppKit；Windows 需要重新处理 UI Automation、Win32 输入 Hook、OLE 剪贴板、WebView2、混合 DPI、窗口激活规则和通知区域生命周期。项目始终保留同一套 React renderer、设置结构、动作服务、模型请求和流式输出，仅在必须依赖操作系统的部分使用平台实现。
 
-版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.51**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
+版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.52**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
 
 ## 开发阶段概览
 
@@ -652,3 +652,13 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **后端泵：** action flusher 按批（约 16 次 emit）再 yield，减少密集 IPC 与调度抖动。
 - **版本对齐：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.51。
 - 产品版本升至 0.3.51。
+
+## 0.3.52：设置页侧边栏 + 精简提示词 + Markdown 优化
+
+（整理日期：2026-07-22）
+
+- **设置 UI：** 设置页改为左侧分区导航 + 右侧内容区（常规 / 工具栏动作 / AI 服务商 / 结果窗口等），分区文案与信息层级更清晰。
+- **默认提示词：** 翻译、总结、解释默认提示词精简；TypeScript 与 Rust 双端默认值对齐；未改动的内置 v11 长文案在加载时迁移到新默认，自定义提示词保留。
+- **结果 Markdown：** 结果窗 Markdown 样式与明暗主题兼容性增强；仅在内容疑似含公式时启用 remark-math / rehype-katex。
+- **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.52；`pnpm export:dev-source` 导出可迁移源码包。
+- 产品版本升至 0.3.52。
