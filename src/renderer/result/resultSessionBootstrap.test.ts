@@ -29,6 +29,7 @@ function snapshot(handshakeGeneration = 4): ResultSessionSnapshot {
     },
     status: 'streaming',
     content: '',
+    thinkingContent: '',
     contentScalarCount: 0,
     lastContentSequence: 0,
     lastSequence: 11,

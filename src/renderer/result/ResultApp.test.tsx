@@ -43,6 +43,7 @@ function resultSnapshot(
     },
     status: 'completed',
     content,
+    thinkingContent: '',
     lastSequence: 3,
     lastContentSequence: 2,
     contentScalarCount: countUnicodeScalars(content),
@@ -839,6 +840,31 @@ describe('ResultApp window interactions', () => {
     // The deferred Markdown chunk may replace its initial plain-text node, so
     // assert against the live result container instead of the stale span.
     expect(container.querySelector('.result-content')).toHaveTextContent(completedSession.content)
+  })
+
+  it('shows thinking panel collapsed by default and expands on click', async () => {
+    await renderResult(
+      resultSnapshot({
+        status: 'streaming',
+        content: '',
+        contentScalarCount: 0,
+        thinkingContent: '先拆解题意，再给出解释。'
+      })
+    )
+
+    expect(screen.getByTestId('result-thinking')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+    expect(screen.queryByText('先拆解题意，再给出解释。')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /思考中/ }))
+    expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    expect(screen.getByText('先拆解题意，再给出解释。')).toBeInTheDocument()
   })
 
   it('uses stop while streaming and keeps error/loading states operable', async () => {

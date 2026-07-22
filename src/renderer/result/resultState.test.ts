@@ -95,9 +95,48 @@ describe('result action stream reducer', () => {
       requestGeneration: 3,
       status: 'streaming',
       content: '',
+      thinkingContent: '',
       contentScalarCount: 0,
       contentRevision: 0,
       generationNotice: ''
+    })
+  })
+
+  it('appends thinking deltas without touching answer content counters', () => {
+    let state = reduceActionEvent(INITIAL_RESULT_STATE, started(1, 1))
+    state = reduceActionEvent(state, {
+      type: 'thinkingDelta',
+      sessionId: 'session-1',
+      sessionGeneration: 3,
+      requestId: 'request-1',
+      requestGeneration: 1,
+      sequence: 2,
+      actionId: 'summary',
+      delta: 'reason'
+    })
+    expect(state).toMatchObject({
+      thinkingContent: 'reason',
+      content: '',
+      contentScalarCount: 0,
+      contentRevision: 0,
+      status: 'streaming'
+    })
+
+    state = reduceActionEvent(state, {
+      type: 'delta',
+      sessionId: 'session-1',
+      sessionGeneration: 3,
+      requestId: 'request-1',
+      requestGeneration: 1,
+      sequence: 3,
+      actionId: 'summary',
+      delta: 'ans'
+    })
+    expect(state).toMatchObject({
+      thinkingContent: 'reason',
+      content: 'ans',
+      contentScalarCount: 3,
+      contentRevision: 1
     })
   })
 

@@ -696,6 +696,9 @@ pub struct ActionSnapshot {
     pub action_id: String,
     pub status: ActionSnapshotStatus,
     pub content: String,
+    /// Live chain-of-thought for the current request (not persisted to chat history).
+    #[serde(default)]
+    pub thinking_content: String,
     pub last_sequence: EventSequence,
     pub last_content_sequence: EventSequence,
     pub content_scalar_count: u64,
@@ -730,6 +733,10 @@ pub struct ActionStreamEvent {
 pub enum ActionStreamPayload {
     Started,
     Delta {
+        delta: String,
+    },
+    /// Model reasoning / CoT delta — separate from answer `Delta`.
+    ThinkingDelta {
         delta: String,
     },
     Notice {

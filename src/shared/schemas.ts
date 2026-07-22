@@ -638,6 +638,11 @@ export const actionStreamEventSchema = z.discriminatedUnion('type', [
   }).strict(),
   z.object({
     ...actionEventBaseShape,
+    type: z.literal('thinkingDelta'),
+    delta: outputStringSchema
+  }).strict(),
+  z.object({
+    ...actionEventBaseShape,
     type: z.literal('completed'),
     lastContentSequence: wireCounterSchema,
     contentScalarCount: wireCounterSchema.max(AI_OUTPUT_LIMIT)
@@ -676,6 +681,8 @@ export const resultSessionSnapshotSchema = z
     selection: selectionPayloadSchema,
     status: resultStatusSchema,
     content: outputStringSchema,
+    /** Live CoT for the current request; not part of answer integrity counters. */
+    thinkingContent: outputStringSchema.default(''),
     lastSequence: wireCounterSchema,
     lastContentSequence: wireCounterSchema,
     contentScalarCount: wireCounterSchema.max(AI_OUTPUT_LIMIT),

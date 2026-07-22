@@ -647,6 +647,13 @@ describe('action stream event schemas', () => {
     expect(
       actionStreamEventSchema.safeParse({
         ...orderedBase,
+        type: 'thinkingDelta',
+        delta: 'reason'
+      }).success
+    ).toBe(true)
+    expect(
+      actionStreamEventSchema.safeParse({
+        ...orderedBase,
         type: 'completed',
         lastContentSequence: 10,
         contentScalarCount: 1

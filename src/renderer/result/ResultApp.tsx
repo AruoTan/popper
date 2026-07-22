@@ -29,6 +29,7 @@ import {
   DEFAULT_RESULT_FONT_SIZE,
   RESULT_FONT_SIZE_MAX,
   RESULT_FONT_SIZE_MIN,
+  countUnicodeScalars,
   detectTranslationLanguage,
   type ActionRetryOptions,
   type PublicSettings,
@@ -55,6 +56,7 @@ import { ResultOutput } from './ResultOutput'
 import { useResultContentOverflow } from './resultContentOverflow'
 import type { ResultSessionBootstrap } from './resultSessionBootstrap'
 import type { ResultState } from './resultState'
+import { useSmoothStreamText } from './useSmoothStreamText'
 
 const LANGUAGE_CODES = { 'zh-CN': 'CN', 'en-US': 'EN' } as const
 const RESULT_RESIZE_DIRECTIONS = [
@@ -159,6 +161,7 @@ function useResultField<T>(select: (state: ResultState) => T): T {
 /**
  * Stream body only: subscribes to content fields so translate/explain/summary
  * tokens re-render this subtree without rebuilding header/footer chrome.
+ * Display uses adaptive typewriter so network bursts feel smooth.
  */
 function ResultStreamBody({
   revealCommitted,
@@ -174,14 +177,22 @@ function ResultStreamBody({
   const sessionGeneration = useResultField((state) => state.sessionGeneration)
   const requestGeneration = useResultField((state) => state.requestGeneration)
   const requestId = useResultField((state) => state.requestId)
+  const requestKey = `${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`
+  const displayContent = useSmoothStreamText(
+    content,
+    status === 'streaming',
+    requestKey
+  )
 
   return (
     <article className="markdown-body">
       <ResultOutput
-        requestKey={`${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`}
+        requestKey={requestKey}
         status={status}
-        content={content}
-        contentScalarCount={contentScalarCount}
+        content={displayContent}
+        contentScalarCount={
+          status === 'streaming' ? countUnicodeScalars(displayContent) : contentScalarCount
+        }
         contentRevision={contentRevision}
         revealCommitted={revealCommitted}
         onOpenExternal={onOpenExternal}
@@ -191,8 +202,55 @@ function ResultStreamBody({
 }
 
 /**
+ * Thinking panel: collapsed by default so answer space stays clean; click to open.
+ * Header still appears as soon as reasoning streams so the user sees activity.
+ */
+function ThinkingPanel(): JSX.Element | null {
+  const thinkingContent = useResultField((state) => state.thinkingContent)
+  const status = useResultField((state) => state.status)
+  const hasAnswer = useResultField((state) => state.content.length > 0)
+  const [expanded, setExpanded] = useState(false)
+
+  // New request clears thinking → reset to collapsed.
+  useEffect(() => {
+    if (thinkingContent.length === 0) setExpanded(false)
+  }, [thinkingContent])
+
+  if (!thinkingContent) return null
+
+  const streaming = status === 'streaming' && !hasAnswer
+
+  return (
+    <section className="result-thinking" data-testid="result-thinking" aria-label="思考过程">
+      <button
+        type="button"
+        className="result-thinking__toggle"
+        aria-expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      >
+        <span className="result-thinking__title">
+          {streaming ? (
+            <>
+              <LoaderCircle className="result-spin" size={14} />
+              <span>思考中…</span>
+            </>
+          ) : (
+            <span>思考过程</span>
+          )}
+        </span>
+        <ChevronDown size={14} className={expanded ? 'is-expanded' : ''} />
+      </button>
+      {expanded && (
+        <div className="result-thinking__body stream-plain-text">{thinkingContent}</div>
+      )}
+    </section>
+  )
+}
+
+/**
  * Ask-only bridge: patches transcript turns from stream content without
  * forcing the non-ask chrome path to subscribe to the content string.
+ * Applies the same smooth typewriter as translate/explain/summary.
  */
 function AskStreamBridge({
   enabled,
@@ -203,11 +261,23 @@ function AskStreamBridge({
 }): null {
   const status = useResultField((state) => state.status)
   const content = useResultField((state) => state.content)
+  const sessionGeneration = useResultField((state) => state.sessionGeneration)
+  const requestGeneration = useResultField((state) => state.requestGeneration)
+  const requestId = useResultField((state) => state.requestId)
+  const requestKey = `${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`
+  const displayContent = useSmoothStreamText(
+    content,
+    status === 'streaming',
+    requestKey
+  )
+  // Terminal states use store content so a lagging typewriter frame cannot
+  // seal the assistant turn with a truncated string.
+  const streamPatch = status === 'streaming' ? displayContent : content
 
   useEffect(() => {
     if (!enabled) return
-    onStream(status, content)
-  }, [content, enabled, onStream, status])
+    onStream(status, streamPatch)
+  }, [enabled, onStream, status, streamPatch])
 
   return null
 }
@@ -252,6 +322,7 @@ function ResultSessionApp({
   const generationNotice = useResultField((state) => state.generationNotice)
   const retryable = useResultField((state) => state.retryable)
   const hasContent = useResultField((state) => state.content.length > 0)
+  const hasThinking = useResultField((state) => state.thinkingContent.length > 0)
   const [settings, setSettings] = useState<PublicSettings>(DEFAULT_PUBLIC_SETTINGS)
   const settingsRevisionRef = useRef(0)
   const [session, setSession] = useState<ResultSessionSnapshot | null>(null)
@@ -282,7 +353,8 @@ function ResultSessionApp({
   const askSawStreaming = useRef(false)
   const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null)
   const handleScroll = useAutoFollowOutput(contentRef, contentInnerRef, requestId)
-  const isWaitingForFirstContent = status === 'streaming' && !hasContent
+  // Thinking counts as visible activity — hide the empty waiting spinner early.
+  const isWaitingForFirstContent = status === 'streaming' && !hasContent && !hasThinking
   const contentOverflow = useResultContentOverflow(
     contentRef,
     contentInnerRef,
@@ -903,50 +975,70 @@ function ResultSessionApp({
                   <span>已载入选中文本。请在下方输入问题。</span>
                 </div>
               )}
-              {turns.map((turn) => (
-                <div
-                  key={turn.id}
-                  className={`result-turn result-turn--${turn.role}`}
-                  data-role={turn.role}
-                >
-                  <div className="result-turn__label">{turn.role === 'user' ? '你' : 'AI'}</div>
-                  {turn.role === 'user' ? (
-                    <div className="result-turn__content">{turn.content}</div>
-                  ) : turn.streaming || !turn.content ? (
-                    turn.content ? (
-                      <div className="result-turn__content stream-plain-text">{turn.content}</div>
+              {turns.map((turn, index) => {
+                const isLatestAssistant =
+                  turn.role === 'assistant' && index === turns.length - 1
+                return (
+                  <div
+                    key={turn.id}
+                    className={`result-turn result-turn--${turn.role}`}
+                    data-role={turn.role}
+                  >
+                    <div className="result-turn__label">{turn.role === 'user' ? '你' : 'AI'}</div>
+                    {turn.role === 'user' ? (
+                      <div className="result-turn__content">{turn.content}</div>
                     ) : (
-                      <div className="result-turn__waiting">
-                        <LoaderCircle className="result-spin" size={16} />
-                        <span>正在等待模型响应…</span>
-                      </div>
-                    )
-                  ) : (
-                    <article className="markdown-body result-turn__content">
-                      <ResultOutput
-                        requestKey={`${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${turn.id}`}
-                        status="completed"
-                        content={turn.content}
-                        contentScalarCount={turn.content.length}
-                        contentRevision={1}
-                        revealCommitted={revealCommitted}
-                        onOpenExternal={openExternal}
-                      />
-                    </article>
-                  )}
-                </div>
-              ))}
+                      <>
+                        {/* CoT attaches to the latest assistant bubble (Cherry-style). */}
+                        {isLatestAssistant && <ThinkingPanel />}
+                        {turn.streaming || !turn.content ? (
+                          turn.content ? (
+                            <div className="result-turn__content stream-plain-text">
+                              {turn.content}
+                              {turn.streaming ? (
+                                <span className="stream-caret" aria-hidden="true" />
+                              ) : null}
+                            </div>
+                          ) : !hasThinking ? (
+                            <div className="result-turn__waiting">
+                              <LoaderCircle className="result-spin" size={16} />
+                              <span>正在等待模型响应…</span>
+                            </div>
+                          ) : null
+                        ) : (
+                          <article className="markdown-body result-turn__content">
+                            <ResultOutput
+                              requestKey={`${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${turn.id}`}
+                              status="completed"
+                              content={turn.content}
+                              contentScalarCount={turn.content.length}
+                              contentRevision={1}
+                              revealCommitted={revealCommitted}
+                              onOpenExternal={openExternal}
+                            />
+                          </article>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              })}
             </>
-          ) : hasContent ? (
-            <ResultStreamBody
-              revealCommitted={revealCommitted}
-              onOpenExternal={openExternal}
-            />
-          ) : status === 'error' ? null : (
-            <div className="result-placeholder">
-              {status === 'streaming' ? <><LoaderCircle className="result-spin" size={24} /><span>正在等待模型响应…</span></>
-                : <span>正在准备结果…</span>}
-            </div>
+          ) : (
+            <>
+              <ThinkingPanel />
+              {hasContent ? (
+                <ResultStreamBody
+                  revealCommitted={revealCommitted}
+                  onOpenExternal={openExternal}
+                />
+              ) : status === 'error' ? null : hasThinking ? null : (
+                <div className="result-placeholder">
+                  {status === 'streaming' ? <><LoaderCircle className="result-spin" size={24} /><span>正在等待模型响应…</span></>
+                    : <span>正在准备结果…</span>}
+                </div>
+              )}
+            </>
           )}
 
           {status === 'error' && <div className="result-error" role="alert"><CircleAlert size={20} /><div>

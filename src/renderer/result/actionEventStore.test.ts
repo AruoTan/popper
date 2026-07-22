@@ -63,6 +63,7 @@ function snapshot(
     },
     status: 'streaming',
     content: '',
+    thinkingContent: '',
     contentScalarCount: 0,
     lastContentSequence: 0,
     lastSequence: 0,
@@ -78,6 +79,18 @@ function emit(event: ActionStreamEvent): void {
   if (!receiveEvent) throw new Error('action event bridge is not listening')
   receiveEvent(event)
 }
+
+const thinkingDelta = (
+  sequence: number,
+  value: string,
+  overrides: EventOverrides = {}
+): ActionStreamEvent => ({
+  ...eventBase,
+  ...overrides,
+  type: 'thinkingDelta',
+  sequence,
+  delta: value
+})
 
 function runNextFrame(now = 16): void {
   const [id, callback] = frameCallbacks.entries().next().value ?? []
@@ -155,6 +168,28 @@ describe('action event store publication pacing', () => {
     expect(listener).toHaveBeenCalledTimes(102)
     expect(store.getActionEventSnapshot().content).toBe(`A${'x'.repeat(100)}`)
     expect(frameCallbacks.size).toBe(0)
+    stop()
+  })
+
+  it('streams thinking deltas immediately without changing answer integrity counters', async () => {
+    const store = await import('./actionEventStore')
+    const stop = store.startActionEventStore()
+    const listener = vi.fn()
+    store.subscribeToActionEvents(listener)
+
+    emit(started())
+    emit(thinkingDelta(2, 'think'))
+    emit(thinkingDelta(3, '-more'))
+    emit(delta(4, 'ans'))
+
+    expect(store.getActionEventSnapshot()).toMatchObject({
+      thinkingContent: 'think-more',
+      content: 'ans',
+      contentScalarCount: 3,
+      status: 'streaming'
+    })
+    // started + 2 thinking + 1 answer
+    expect(listener).toHaveBeenCalledTimes(4)
     stop()
   })
 

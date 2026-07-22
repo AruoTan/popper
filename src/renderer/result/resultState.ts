@@ -9,6 +9,8 @@ export interface ResultState {
   actionId: string | null
   status: ResultStatus
   content: string
+  /** Live chain-of-thought for the current request (not answer history). */
+  thinkingContent: string
   contentScalarCount: number
   contentRevision: number
   generationNotice: string
@@ -24,6 +26,13 @@ export interface ResultDeltaBatch {
   contentScalarCount: number
 }
 
+export interface ResultThinkingBatch {
+  requestId: string
+  sessionGeneration: number
+  requestGeneration: number
+  delta: string
+}
+
 export const INITIAL_RESULT_STATE: ResultState = {
   sessionGeneration: null,
   requestGeneration: null,
@@ -31,6 +40,7 @@ export const INITIAL_RESULT_STATE: ResultState = {
   actionId: null,
   status: 'idle',
   content: '',
+  thinkingContent: '',
   contentScalarCount: 0,
   contentRevision: 0,
   generationNotice: '',
@@ -46,6 +56,7 @@ export function resultStateFromSnapshot(snapshot: ResultSessionSnapshot): Result
     actionId: snapshot.actionId,
     status: snapshot.status,
     content: snapshot.content,
+    thinkingContent: snapshot.thinkingContent ?? '',
     contentScalarCount: snapshot.contentScalarCount,
     contentRevision: snapshot.content ? 1 : 0,
     generationNotice: snapshot.generationNotice?.message ?? '',
@@ -62,6 +73,7 @@ function startedStateFrom(event: Extract<ActionStreamEvent, { type: 'started' }>
     actionId: event.actionId,
     status: 'streaming',
     content: '',
+    thinkingContent: '',
     contentScalarCount: 0,
     contentRevision: 0,
     generationNotice: '',
@@ -86,6 +98,24 @@ export function appendResultDeltaBatch(
     content: state.content + batch.delta,
     contentScalarCount: batch.contentScalarCount,
     contentRevision: state.contentRevision + 1
+  }
+}
+
+export function appendResultThinkingBatch(
+  state: ResultState,
+  batch: ResultThinkingBatch
+): ResultState {
+  if (
+    state.status !== 'streaming' ||
+    state.sessionGeneration !== batch.sessionGeneration ||
+    state.requestGeneration !== batch.requestGeneration ||
+    state.requestId !== batch.requestId ||
+    !batch.delta
+  ) return state
+
+  return {
+    ...state,
+    thinkingContent: state.thinkingContent + batch.delta
   }
 }
 
@@ -114,6 +144,14 @@ export function reduceActionEvent(state: ResultState, event: ActionStreamEvent):
       requestGeneration: event.requestGeneration,
       delta: event.delta,
       contentScalarCount: state.contentScalarCount + countUnicodeScalars(event.delta)
+    })
+  }
+  if (event.type === 'thinkingDelta') {
+    return appendResultThinkingBatch(state, {
+      requestId: event.requestId,
+      sessionGeneration: event.sessionGeneration,
+      requestGeneration: event.requestGeneration,
+      delta: event.delta
     })
   }
   if (event.type === 'completed') {

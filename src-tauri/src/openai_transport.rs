@@ -168,17 +168,19 @@ where
     }
 }
 
-pub(crate) async fn consume_sse_response<D, M>(
+pub(crate) async fn consume_sse_response<D, T, M>(
     response: Response,
     cancellation: &CancellationToken,
     budget: &GenerationBudget,
     headers_at: Instant,
     config: TransportConfig,
     on_delta: D,
+    on_thinking: T,
     on_marker: M,
 ) -> Result<TransportSuccess, TransportFailure>
 where
     D: FnMut(String) -> ControlFlow<()>,
+    T: FnMut(String) -> ControlFlow<()>,
     M: FnMut(TransportMarker, Instant),
 {
     consume_sse_chunks(
@@ -190,24 +192,28 @@ where
         headers_at,
         config,
         on_delta,
+        on_thinking,
         on_marker,
     )
     .await
 }
 
-pub(crate) async fn consume_json_response<D, M>(
+pub(crate) async fn consume_json_response<D, T, M>(
     response: Response,
     cancellation: &CancellationToken,
     budget: &GenerationBudget,
     headers_at: Instant,
     config: TransportConfig,
     on_delta: D,
+    on_thinking: T,
     on_marker: M,
 ) -> Result<TransportSuccess, TransportFailure>
 where
     D: FnMut(String) -> ControlFlow<()>,
+    T: FnMut(String) -> ControlFlow<()>,
     M: FnMut(TransportMarker, Instant),
 {
+    let _ = on_thinking;
     consume_json_chunks(
         response
             .bytes_stream()
@@ -239,24 +245,27 @@ pub(crate) async fn read_http_error(
     .await
 }
 
-async fn consume_sse_chunks<S, D, M>(
+async fn consume_sse_chunks<S, D, T, M>(
     chunks: S,
     cancellation: &CancellationToken,
     budget: &GenerationBudget,
     headers_at: Instant,
     config: TransportConfig,
     mut on_delta: D,
+    mut on_thinking: T,
     mut on_marker: M,
 ) -> Result<TransportSuccess, TransportFailure>
 where
     S: Stream<Item = Result<Bytes, TransportFailure>>,
     D: FnMut(String) -> ControlFlow<()>,
+    T: FnMut(String) -> ControlFlow<()>,
     M: FnMut(TransportMarker, Instant),
 {
     futures_util::pin_mut!(chunks);
     let mut decoder = SseDecoder::new(config.protocol);
     let mut content = String::new();
     let mut output_scalars = 0usize;
+    let mut thinking_scalars = 0usize;
     let mut content_seen = false;
     let mut first_body_seen = false;
     let mut first_event_deadline = Some(headers_at + config.first_event);
@@ -336,6 +345,27 @@ where
                         }
                         if content_seen {
                             idle_deadline = Some(now + config.stream_idle);
+                        }
+                        // Thinking/reasoning is stream activity: credit first-content
+                        // and idle timers so long CoT does not look hung, but never
+                        // merge into answer content or answer scalar limits.
+                        if let Some(thinking) =
+                            data.reasoning.filter(|delta| !delta.is_empty())
+                        {
+                            let scalar_count = thinking.chars().count();
+                            if thinking_scalars.saturating_add(scalar_count)
+                                <= config.output_scalars
+                            {
+                                thinking_scalars += scalar_count;
+                                if matches!(on_thinking(thinking), ControlFlow::Break(())) {
+                                    return Err(stale_ticket_failure(content_seen));
+                                }
+                            }
+                            let marked_at = Instant::now();
+                            if first_content_deadline.take().is_some() {
+                                on_marker(TransportMarker::FirstContent, marked_at);
+                            }
+                            idle_deadline = Some(marked_at + config.stream_idle);
                         }
                         if let Some(delta) = data.content.filter(|delta| !delta.is_empty()) {
                             let scalar_count = delta.chars().count();
@@ -721,6 +751,7 @@ mod tests {
                     captured.lock().unwrap().push(delta);
                     ControlFlow::Continue(())
                 },
+                |_| ControlFlow::Continue(()),
                 |_, _| {},
             )
             .await
@@ -755,6 +786,7 @@ mod tests {
                 tokio::time::Instant::now(),
                 TransportConfig::test(),
                 |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
                 |_, _| {},
             ),
         )
@@ -781,6 +813,7 @@ mod tests {
             &GenerationBudget::new(tokio::time::Instant::now(), Duration::from_secs(10)),
             tokio::time::Instant::now(),
             TransportConfig::test(),
+            |_| ControlFlow::Continue(()),
             |_| ControlFlow::Continue(()),
             |_, _| {},
         )
@@ -847,6 +880,7 @@ mod tests {
                     count.fetch_add(1, Ordering::Relaxed);
                     ControlFlow::Continue(())
                 },
+                |_| ControlFlow::Continue(()),
                 |_, _| {},
             )
             .await
@@ -910,6 +944,7 @@ mod tests {
                 seen.lock().unwrap().push(delta);
                 ControlFlow::Break(())
             },
+            |_| ControlFlow::Continue(()),
             |_, _| {},
         )
         .await;
@@ -951,9 +986,47 @@ mod tests {
             tokio::time::Instant::now(),
             config,
             |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
             |_, _| {},
         )
         .await
         .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn transport_reasoning_delta_invokes_thinking_callback_without_answer_content() {
+        let wire = Bytes::from_static(
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ans\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            )
+            .as_bytes(),
+        );
+        let thinking = Arc::new(Mutex::new(Vec::new()));
+        let answer = Arc::new(Mutex::new(Vec::new()));
+        let think_cap = thinking.clone();
+        let ans_cap = answer.clone();
+        let success = consume_sse_chunks(
+            futures_util::stream::iter(vec![Ok(wire)]),
+            &CancellationToken::new(),
+            &GenerationBudget::new(tokio::time::Instant::now(), Duration::from_secs(10)),
+            tokio::time::Instant::now(),
+            TransportConfig::test(),
+            move |delta| {
+                ans_cap.lock().unwrap().push(delta);
+                ControlFlow::Continue(())
+            },
+            move |delta| {
+                think_cap.lock().unwrap().push(delta);
+                ControlFlow::Continue(())
+            },
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(&*thinking.lock().unwrap(), &["think"]);
+        assert_eq!(&*answer.lock().unwrap(), &["ans"]);
+        assert_eq!(success.content, "ans");
     }
 }

@@ -419,6 +419,7 @@ impl SessionTable {
                 action_id: ticket.action_id.clone(),
                 status: ActionSnapshotStatus::Completed,
                 content: String::new(),
+                thinking_content: String::new(),
                 last_sequence: EventSequence::NONE,
                 last_content_sequence: EventSequence::NONE,
                 content_scalar_count: 0,
@@ -659,6 +660,49 @@ impl SessionTable {
             ticket,
             sequence,
             ActionStreamPayload::Delta { delta: full },
+        );
+        apply_pending_limit_plan(state, pending_limit);
+        Ok(DeltaTransition::Emitted {
+            event,
+            timer: TimerDirective::None,
+        })
+    }
+
+    /// Emit reasoning/CoT text immediately (same delivery path as answer deltas).
+    pub(super) fn accept_thinking_delta(
+        &mut self,
+        ticket: &RequestTicket,
+        delta: String,
+        now: tokio::time::Instant,
+    ) -> Result<DeltaTransition, SessionError> {
+        if delta.is_empty() {
+            return Ok(DeltaTransition::Ignored);
+        }
+        let Some(SessionEntry::Open(state)) = self.entries.get_mut(&ticket.session_id) else {
+            return Ok(DeltaTransition::Stale);
+        };
+        if !matches!(
+            &state.request_slot,
+            RequestSlot::Running { ticket: active, .. } if active == ticket
+        ) {
+            return Ok(DeltaTransition::Stale);
+        }
+        if state.request_stream.is_none() {
+            return Ok(DeltaTransition::Stale);
+        }
+
+        let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
+        let pending_limit = preflight_pending_limit(state, 1, sequence)?;
+        let stream = state
+            .request_stream
+            .as_mut()
+            .expect("matching Running request must own a stream");
+        stream.last_emit_at = Some(now);
+        let event = enqueue_payload_at(
+            state,
+            ticket,
+            sequence,
+            ActionStreamPayload::ThinkingDelta { delta },
         );
         apply_pending_limit_plan(state, pending_limit);
         Ok(DeltaTransition::Emitted {
@@ -1262,6 +1306,7 @@ fn apply_event_to_snapshot(snapshot: &mut ActionSnapshot, event: &ActionStreamEv
             snapshot.action_id.clone_from(&event.action_id);
             snapshot.status = ActionSnapshotStatus::Running;
             snapshot.content.clear();
+            snapshot.thinking_content.clear();
             snapshot.last_sequence = event.sequence;
             snapshot.last_content_sequence = EventSequence::NONE;
             snapshot.content_scalar_count = 0;
@@ -1275,6 +1320,10 @@ fn apply_event_to_snapshot(snapshot: &mut ActionSnapshot, event: &ActionStreamEv
             snapshot.last_sequence = event.sequence;
             snapshot.last_content_sequence = event.sequence;
             snapshot.content_scalar_count += delta.chars().count() as u64;
+        }
+        ActionStreamPayload::ThinkingDelta { delta } => {
+            snapshot.thinking_content.push_str(delta);
+            snapshot.last_sequence = event.sequence;
         }
         ActionStreamPayload::Notice { code, message } => {
             snapshot.last_sequence = event.sequence;
@@ -1404,6 +1453,7 @@ fn running_snapshot(ticket: &RequestTicket, sequence: EventSequence) -> ActionSn
         action_id: ticket.action_id.clone(),
         status: ActionSnapshotStatus::Running,
         content: String::new(),
+        thinking_content: String::new(),
         last_sequence: sequence,
         last_content_sequence: EventSequence::NONE,
         content_scalar_count: 0,

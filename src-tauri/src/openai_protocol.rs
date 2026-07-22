@@ -32,6 +32,9 @@ pub(crate) enum SseState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecodedSseData {
     pub content: Option<String>,
+    /// Model chain-of-thought / reasoning delta (DeepSeek R1 `reasoning_content`, etc.).
+    /// Never merged into answer `content`.
+    pub reasoning: Option<String>,
     pub finish_reason: Option<String>,
     pub metadata_only: bool,
 }
@@ -188,6 +191,16 @@ impl SseDecoder {
             .pointer("/choices/0/delta/content")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
+        // Prefer dedicated reasoning_content; some gateways use delta.reasoning.
+        let reasoning = value
+            .pointer("/choices/0/delta/reasoning_content")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                value
+                    .pointer("/choices/0/delta/reasoning")
+                    .and_then(Value::as_str)
+            })
+            .map(ToOwned::to_owned);
         let finish_reason = value
             .pointer("/choices/0/finish_reason")
             .and_then(Value::as_str)
@@ -207,8 +220,9 @@ impl SseDecoder {
         }
 
         Ok(DecodedSseEvent::Data(DecodedSseData {
-            metadata_only: content.is_none() && finish_reason.is_none(),
+            metadata_only: content.is_none() && reasoning.is_none() && finish_reason.is_none(),
             content,
+            reasoning,
             finish_reason,
         }))
     }
@@ -375,6 +389,7 @@ mod tests {
                     DecodedSseEvent::Ignored,
                     DecodedSseEvent::Data(DecodedSseData {
                         content: Some("你🙂".to_owned()),
+                        reasoning: None,
                         finish_reason: None,
                         metadata_only: false,
                     }),
@@ -383,6 +398,42 @@ mod tests {
             );
             assert_eq!(decoder.finish().unwrap(), SseTermination::Done);
         }
+    }
+
+    #[test]
+    fn protocol_parses_reasoning_content_without_merging_into_answer() {
+        let events = decode_all(
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"step1\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"reasoning\":\"step2\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"final\"}}]}\n\n",
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            events.events,
+            vec![
+                DecodedSseEvent::Data(DecodedSseData {
+                    content: None,
+                    reasoning: Some("step1".to_owned()),
+                    finish_reason: None,
+                    metadata_only: false,
+                }),
+                DecodedSseEvent::Data(DecodedSseData {
+                    content: None,
+                    reasoning: Some("step2".to_owned()),
+                    finish_reason: None,
+                    metadata_only: false,
+                }),
+                DecodedSseEvent::Data(DecodedSseData {
+                    content: Some("final".to_owned()),
+                    reasoning: None,
+                    finish_reason: None,
+                    metadata_only: false,
+                }),
+            ]
+        );
     }
 
     #[test]

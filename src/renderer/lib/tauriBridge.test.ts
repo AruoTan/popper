@@ -75,6 +75,7 @@ describe('Tauri renderer bridge', () => {
       },
       status: 'streaming',
       content: '😀',
+      thinkingContent: '',
       contentScalarCount: 1,
       lastContentSequence: 10,
       lastSequence: 11,

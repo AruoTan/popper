@@ -7,6 +7,7 @@ import {
 } from '../../shared'
 import {
   appendResultDeltaBatch,
+  appendResultThinkingBatch,
   INITIAL_RESULT_STATE,
   reduceActionEvent,
   resultStateFromSnapshot,
@@ -125,6 +126,28 @@ function acceptDelta(
   }
 }
 
+function acceptThinkingDelta(
+  event: Extract<ActionStreamEvent, { type: 'thinkingDelta' }>,
+  notify: boolean
+): void {
+  if (!cursor) return
+  cursor.lastSequence = event.sequence
+  logicalRevision += 1
+  if (!event.delta) return
+
+  // Thinking advances sequence only — not answer integrity counters.
+  const next = appendResultThinkingBatch(publishedSnapshot, {
+    requestId: event.requestId,
+    sessionGeneration: event.sessionGeneration,
+    requestGeneration: event.requestGeneration,
+    delta: event.delta
+  })
+  if (next !== publishedSnapshot) {
+    publishedSnapshot = next
+    if (notify) notifySubscribers()
+  }
+}
+
 function acceptTerminal(
   event: Extract<ActionStreamEvent, { type: 'completed' | 'cancelled' | 'error' }>,
   notify: boolean,
@@ -204,6 +227,10 @@ function processLiveEvent(
   }
   if (event.type === 'delta') {
     acceptDelta(event, options.notify, options.schedule)
+    return
+  }
+  if (event.type === 'thinkingDelta') {
+    acceptThinkingDelta(event, options.notify)
     return
   }
   if (event.type === 'notice') {

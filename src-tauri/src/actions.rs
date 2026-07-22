@@ -472,6 +472,15 @@ impl ActionServiceState {
         self.sessions.accept_delta(ticket, delta, now)
     }
 
+    fn submit_thinking_delta(
+        &mut self,
+        ticket: &RequestTicket,
+        delta: String,
+        now: tokio::time::Instant,
+    ) -> Result<DeltaTransition, SessionError> {
+        self.sessions.accept_thinking_delta(ticket, delta, now)
+    }
+
     fn reserve_retry(
         &mut self,
         session_id: &str,
@@ -1061,6 +1070,12 @@ impl ActionService {
     }
 
     async fn drive_flusher<R: Runtime>(&self, app: &AppHandle<R>, lease: FlusherLease) {
+        // Emit a short burst before yielding so the UI receives a steady token
+        // cadence (fewer IPC round-trips than yield-every-emit) while the SSE
+        // consumer still gets scheduled under a deep pre-ack queue.
+        // 16 balances TTFB smoothness vs. IPC overhead on dense providers.
+        const EMITS_PER_YIELD: u32 = 16;
+        let mut emits_since_yield = 0u32;
         loop {
             let next = {
                 let mut state = self.inner.state.lock();
@@ -1084,9 +1099,11 @@ impl ActionService {
             if !transition.continue_now {
                 return;
             }
-            // Cooperative yield: keep SSE consumer / decode from starving when
-            // many deltas are already queued (Cherry-style smooth token pump).
-            tokio::task::yield_now().await;
+            emits_since_yield = emits_since_yield.saturating_add(1);
+            if emits_since_yield >= EMITS_PER_YIELD {
+                emits_since_yield = 0;
+                tokio::task::yield_now().await;
+            }
         }
     }
 
@@ -1429,6 +1446,10 @@ impl ActionService {
                     }
                     control
                 },
+                |thinking| {
+                    let now = tokio::time::Instant::now();
+                    self.submit_thinking_control(app, &ticket, thinking, now)
+                },
                 |marker, at| marker_trace.lock().mark(marker, at),
             )
             .await
@@ -1442,6 +1463,14 @@ impl ActionService {
                 |delta| {
                     let now = tokio::time::Instant::now();
                     let control = self.submit_delta_control(app, &ticket, delta, now);
+                    if matches!(control, ControlFlow::Continue(())) {
+                        delta_trace.lock().mark_emit_or_queue(now);
+                    }
+                    control
+                },
+                |thinking| {
+                    let now = tokio::time::Instant::now();
+                    let control = self.submit_thinking_control(app, &ticket, thinking, now);
                     if matches!(control, ControlFlow::Continue(())) {
                         delta_trace.lock().mark_emit_or_queue(now);
                     }
@@ -1517,6 +1546,20 @@ impl ActionService {
         }
     }
 
+    fn submit_thinking_control<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        ticket: &RequestTicket,
+        delta: String,
+        now: tokio::time::Instant,
+    ) -> ControlFlow<()> {
+        if self.submit_thinking_delta(app, ticket, delta, now) {
+            ControlFlow::Continue(())
+        } else {
+            ControlFlow::Break(())
+        }
+    }
+
     fn submit_delta<R: Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -1525,6 +1568,33 @@ impl ActionService {
         now: tokio::time::Instant,
     ) -> bool {
         let transition = self.inner.state.lock().submit_delta(ticket, delta, now);
+        match transition {
+            Ok(DeltaTransition::Buffered { timer, .. }) => {
+                self.schedule_timer(app, ticket, timer);
+                true
+            }
+            Ok(DeltaTransition::Emitted { timer, .. }) => {
+                self.schedule_timer(app, ticket, timer);
+                self.start_flusher_if_needed(app, &ticket.session_id);
+                true
+            }
+            Ok(DeltaTransition::Ignored) => true,
+            Ok(DeltaTransition::Stale) | Err(_) => false,
+        }
+    }
+
+    fn submit_thinking_delta<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        ticket: &RequestTicket,
+        delta: String,
+        now: tokio::time::Instant,
+    ) -> bool {
+        let transition = self
+            .inner
+            .state
+            .lock()
+            .submit_thinking_delta(ticket, delta, now);
         match transition {
             Ok(DeltaTransition::Buffered { timer, .. }) => {
                 self.schedule_timer(app, ticket, timer);

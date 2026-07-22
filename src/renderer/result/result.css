@@ -468,6 +468,70 @@ body,
   text-align: center;
 }
 
+/* Cherry-style collapsible chain-of-thought above the answer body. */
+.result-thinking {
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--text, #0f172a) 3.5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border, #e2e8f0) 80%, transparent);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text, #0f172a) 3%, transparent);
+}
+
+.result-thinking__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary, #64748b);
+  font: inherit;
+  font-size: max(12px, calc(var(--result-font-size, 14px) * 0.86));
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 6px;
+}
+
+.result-thinking__toggle:hover {
+  color: var(--text, #0f172a);
+}
+
+.result-thinking__toggle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent, #2563eb) 55%, transparent);
+  outline-offset: 2px;
+}
+
+.result-thinking__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.result-thinking__toggle .is-expanded {
+  transform: rotate(180deg);
+}
+
+.result-thinking__toggle svg {
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.result-thinking__body {
+  margin-top: 8px;
+  max-height: min(40vh, 280px);
+  overflow: auto;
+  color: var(--text-secondary, #64748b);
+  font-size: max(12px, calc(var(--result-font-size, 14px) * 0.9));
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .result-turn {
   margin: 0 0 12px;
   padding: 10px 12px;
@@ -516,6 +580,7 @@ body,
 .stream-plain-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  letter-spacing: 0.01em;
 }
 
 .markdown-body > :first-child {
@@ -641,11 +706,13 @@ body,
 .stream-caret {
   display: inline-block;
   width: 2px;
-  height: 1em;
-  margin-left: 2px;
-  vertical-align: -0.12em;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: -0.15em;
   background: var(--accent);
-  animation: result-caret 950ms step-end infinite;
+  border-radius: 1px;
+  animation: result-caret 900ms step-end infinite;
+  box-shadow: 0 0 0 0.5px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .result-error {
