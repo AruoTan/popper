@@ -138,6 +138,35 @@ describe('SafeMarkdown', () => {
     expect(screen.getByText('const answer = 42').closest('pre')).toBeInTheDocument()
   })
 
+  it('preserves translation paragraphs separated by a single newline', () => {
+    const { container } = render(
+      <SafeMarkdown
+        content={'第一段完整内容。\n第二段完整内容。\n\n**强调** 后仍分段。'}
+        onOpenExternal={() => undefined}
+      />
+    )
+
+    const paragraphs = container.querySelectorAll('p')
+    expect(paragraphs.length).toBeGreaterThanOrEqual(2)
+    expect(paragraphs[0]?.textContent).toContain('第一段完整内容。')
+    expect(paragraphs[1]?.textContent).toContain('第二段完整内容。')
+  })
+
+  it('renders Chinese-style list markers as real lists', () => {
+    const { container } = render(
+      <SafeMarkdown
+        content={'概要：\n1、准备材料\n2、开始翻译\n• 补充说明'}
+        onOpenExternal={() => undefined}
+      />
+    )
+
+    expect(screen.getByText('准备材料').closest('ol')).toBeInTheDocument()
+    expect(screen.getByText('开始翻译').closest('ol')).toBeInTheDocument()
+    expect(screen.getByText('补充说明').closest('ul')).toBeInTheDocument()
+    // Prose before the list stays its own block, not glued into the first item.
+    expect(container.querySelector('p')?.textContent).toContain('概要')
+  })
+
   it('renders non-math GFM without KaTeX nodes', () => {
     const { container } = render(
       <SafeMarkdown

@@ -1,15 +1,15 @@
-# TextLens 从 macOS 0.3.16 到 0.3.53 的开发记录
+# TextLens 从 macOS 0.3.16 到 0.3.54 的开发记录
 
-整理日期：2026-07-22  
-版本范围：macOS 0.3.16 至 TextLens 0.3.53
+整理日期：2026-07-23  
+版本范围：macOS 0.3.16 至 TextLens 0.3.54
 
 ## 文档说明
 
-本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.53 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
+本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.54 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
 
 这段开发并不是一次简单的平台移植。macOS 版本依赖 Accessibility API、Event Tap、Core Graphics 和 AppKit；Windows 需要重新处理 UI Automation、Win32 输入 Hook、OLE 剪贴板、WebView2、混合 DPI、窗口激活规则和通知区域生命周期。项目始终保留同一套 React renderer、设置结构、动作服务、模型请求和流式输出，仅在必须依赖操作系统的部分使用平台实现。
 
-版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.53**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
+版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.54**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
 
 ## 开发阶段概览
 
@@ -673,3 +673,14 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **UI 打磨：** 设置页分区说明与脏保存强调更清晰；结果窗单行等待态、thinking 仅「思考」徽章 + 自动展开、停止/复制等微交互与减少动效路径；保留 TextLens 原生 token，不引入外来 AI 紫配色。
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.53；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.53。
+
+## 0.3.54：划词工具栏兼容加固 + 结果 Markdown 段落/列表
+
+（整理日期：2026-07-23）
+
+- **Windows 划词兼容：** allowlist 应用在 UIA `IsPassword` 未知时允许剪贴板 Ctrl+C 回退；将 WPS / 微信 / QQ 等进程族视为相关目标以改善多进程 UIA；UIA 始终解析不到目标时走前台 Ctrl+C 路径；上述路径仅短时重试一次后 break，避免额外延迟。
+- **macOS 划词兼容：** 剪贴板 allowlist 匹配改为大小写不敏感；拓宽金山 / WPS 的 bundle id 与应用名识别，覆盖渠道变体。
+- **结果 Markdown：** 渲染前规范化模型输出——句末单换行拆成段落、识别中文列表标记（`1、` / `•`）、在块边界补空行；表格行与同级列表项保持紧凑、代码围栏内容不改动；normalize / math 检测 / 组件 memo 化；段落与列表 CSS 节奏收紧。
+- **思考区字号：** 思考正文不再挂 `stream-plain-text`（该规则与答案同字号且写在后面，会盖掉缩小设置）；`.result-thinking__body` 使用 `max(11px, calc(var(--result-font-size) * 0.82))`，默认约 11.5px，明显小于答案正文。
+- **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.54；`pnpm export:dev-source` 导出可迁移源码包。
+- 产品版本升至 0.3.54。

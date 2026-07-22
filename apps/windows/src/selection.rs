@@ -2362,41 +2362,116 @@ impl CaptureEngine {
                     }
                 }
             }
-            if attempt >= 1
-                && clipboard_target.as_ref().is_some_and(|target| {
-                    target.clipboard_password_safe
-                        && compatible_clipboard_application(&target.source_app.bundle_id)
-                })
-            {
-                // Known custom-rendered applications get one short UIA retry
-                // before using Ctrl+C. Avoid paying the full provider retry
-                // window on every selection when UIA is consistently absent.
+            // After one short UIA retry, leave the remaining retry budget when
+            // clipboard is already a safe option. This covers both:
+            // - Found target + empty TextPattern (classic WPS/WeChat path)
+            // - Persistent Retryable (multi-process CEF host under WPS) where
+            //   we fall through to foreground clipboard for allowlisted apps
+            if should_break_uia_for_clipboard(
+                attempt,
+                clipboard_target.as_ref().map(|target| {
+                    (
+                        target.clipboard_password_safe,
+                        compatible_clipboard_application(&target.source_app.bundle_id),
+                    )
+                }),
+                clipboard_target.is_none().then(|| {
+                    resolve_cached_source_app(
+                        &mut source_app,
+                        control.source_process_id,
+                        control.source_window,
+                    )
+                    .map(|app| compatible_clipboard_application(&app.bundle_id))
+                    .unwrap_or(false)
+                }),
+            ) {
                 break;
             }
         }
 
-        let Some(target) = clipboard_target else {
+        // Prefer a UIA-validated target when we have one. When UIA never
+        // resolved (WPS multi-process CEF panes, transient providers), still
+        // attempt Ctrl+C against the unchanged foreground window for known
+        // custom-rendered applications.
+        if let Some(target) = clipboard_target {
+            if Instant::now() >= self.deadline.get()
+                || !capture_context_still_valid(control, target.source_window, target.process_id)
+                || !control.clipboard_allowed(target.process_id)
+                || !clipboard_fallback_allowed(
+                    &target.source_app.bundle_id,
+                    true,
+                    target.clipboard_password_safe,
+                    target.text_surface,
+                )
+                || !process_allows_input_injection(target.process_id)
+            {
+                return Ok(None);
+            }
+            return self.capture_clipboard(
+                request,
+                target.process_id,
+                target.source_window,
+                target.source_app,
+                &mut process_parents,
+                control,
+            );
+        }
+
+        self.capture_foreground_clipboard(request, control, &mut process_parents, &mut source_app)
+    }
+
+    /// Clipboard-only path when UIA never produced a related element.
+    ///
+    /// Zero extra cost on the successful UIA path (only reached after retries
+    /// leave `clipboard_target` empty). Restricted to allowlisted apps so
+    /// unknown hosts still fail closed without an accessibility target.
+    fn capture_foreground_clipboard(
+        &self,
+        request: CaptureRequest,
+        control: &CaptureControl,
+        process_parents: &mut Option<Option<HashMap<u32, u32>>>,
+        source_app: &mut Option<(u32, SourceApplication)>,
+    ) -> Result<Option<SelectionPayload>, SelectionError> {
+        if Instant::now() >= self.deadline.get() || control.is_cancelled() {
+            return Ok(None);
+        }
+        let foreground = unsafe { GetForegroundWindow() };
+        let process_id = window_process_id(foreground);
+        if foreground != control.source_window
+            || process_id != control.source_process_id
+            || foreground.0 == ptr::null_mut()
+            || process_id == 0
+            || process_id == self.own_process_id
+        {
+            return Ok(None);
+        }
+        let Some(application) =
+            resolve_cached_source_app(source_app, process_id, foreground)
+        else {
             return Ok(None);
         };
-        if Instant::now() >= self.deadline.get()
-            || !capture_context_still_valid(control, target.source_window, target.process_id)
-            || !control.clipboard_allowed(target.process_id)
-            || !clipboard_fallback_allowed(
-                &target.source_app.bundle_id,
-                true,
-                target.clipboard_password_safe,
-                target.text_surface,
-            )
-            || !process_allows_input_injection(target.process_id)
+        // Allowlisted custom-rendered apps only. Unknown apps still require a
+        // UIA text surface so we never Ctrl+C into arbitrary foreground hosts.
+        if !compatible_clipboard_application(&application.bundle_id)
+            || prohibited_clipboard_application(&application.bundle_id)
+            || !control.clipboard_allowed(process_id)
+            || !process_allows_input_injection(process_id)
+            || !capture_context_still_valid(control, foreground, process_id)
         {
+            return Ok(None);
+        }
+        // Best-effort password probe on the focused element when UIA can
+        // surface it; if focus is unavailable (common for WPS CEF panes), the
+        // allowlist gate above is the remaining safety boundary.
+        if focused_element_is_password(&self.automation) {
             return Ok(None);
         }
         self.capture_clipboard(
             request,
-            target.process_id,
-            target.source_window,
-            target.source_app,
-            &mut process_parents,
+            process_id,
+            foreground,
+            application,
+            process_parents,
             control,
         )
     }
@@ -2479,13 +2554,17 @@ impl CaptureEngine {
                 application
             }
         };
+        // Custom-rendered hosts (WPS, WeChat, etc.) often omit IsPassword.
+        // Treat unknown as safe only for allowlisted apps; others still need
+        // an explicit false before clipboard fallback.
+        let compatible_app = compatible_clipboard_application(&source_app.bundle_id);
         CaptureTargetLookup::Found(CaptureTarget {
             text_surface: uia_element_is_text_surface(&element),
             element,
             process_id,
             source_window: foreground,
             source_app,
-            clipboard_password_safe: password_state_allows_clipboard(password_state),
+            clipboard_password_safe: clipboard_password_gate(password_state, compatible_app),
         })
     }
 
@@ -2934,6 +3013,69 @@ fn password_state_allows_clipboard(is_password: Option<bool>) -> bool {
     matches!(is_password, Some(false))
 }
 
+/// Clipboard password gate used after a UIA element has been resolved.
+///
+/// - `Some(true)` always blocks
+/// - `Some(false)` always allows
+/// - `None` fails closed for unknown apps, but allowlisted custom-rendered
+///   applications (WPS, WeChat, Chromium shells, …) rarely expose IsPassword
+///   on document surfaces — treat unknown as safe so Ctrl+C fallback works
+fn clipboard_password_gate(is_password: Option<bool>, compatible_app: bool) -> bool {
+    match is_password {
+        Some(true) => false,
+        Some(false) => true,
+        None => compatible_app,
+    }
+}
+
+/// Decide whether remaining UIA retries can be skipped in favour of clipboard.
+///
+/// `found_target` is `(password_safe, compatible)` when UIA resolved a target.
+/// `foreground_compatible` is set when UIA never resolved but the foreground
+/// process is already on the clipboard allowlist (multi-process WPS/CEF).
+fn should_break_uia_for_clipboard(
+    attempt: usize,
+    found_target: Option<(bool, bool)>,
+    foreground_compatible: Option<bool>,
+) -> bool {
+    if attempt < 1 {
+        return false;
+    }
+    if found_target.is_some_and(|(password_safe, compatible)| password_safe && compatible) {
+        return true;
+    }
+    found_target.is_none() && foreground_compatible.unwrap_or(false)
+}
+
+fn resolve_cached_source_app(
+    cache: &mut Option<(u32, SourceApplication)>,
+    process_id: u32,
+    window: HWND,
+) -> Option<SourceApplication> {
+    if process_id == 0 {
+        return None;
+    }
+    match cache {
+        Some((cached_process_id, application)) if *cached_process_id == process_id => {
+            Some(application.clone())
+        }
+        slot => {
+            let application = source_application(process_id, window);
+            *slot = Some((process_id, application.clone()));
+            Some(application)
+        }
+    }
+}
+
+fn focused_element_is_password(automation: &IUIAutomation) -> bool {
+    match unsafe { automation.GetFocusedElement() } {
+        Ok(element) => unsafe { element.CurrentIsPassword() }
+            .ok()
+            .is_some_and(|value| value.as_bool()),
+        Err(_) => false,
+    }
+}
+
 fn uia_element_is_text_surface(element: &IUIAutomationElement) -> bool {
     unsafe { element.CurrentControlType() }
         .ok()
@@ -2996,10 +3138,49 @@ fn uia_processes_belong_to_target_with_parents(
 fn processes_share_executable(left_process_id: u32, right_process_id: u32) -> bool {
     process_image_path(left_process_id)
         .zip(process_image_path(right_process_id))
-        .is_some_and(|(left, right)| {
-            let left = executable_name(&left);
-            !left.is_empty() && left == executable_name(&right)
-        })
+        .is_some_and(|(left, right)| executables_share_application_family(&left, &right))
+}
+
+/// Same executable name, or members of the same multi-process application
+/// family (WPS CEF hosts, WeChat AppEx, QQ NT helpers, …).
+fn executables_share_application_family(left_image: &str, right_image: &str) -> bool {
+    let left = executable_name(left_image);
+    let right = executable_name(right_image);
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    left == right
+        || (wps_suite_process(&left) && wps_suite_process(&right))
+        || (wechat_suite_process(&left) && wechat_suite_process(&right))
+        || (qq_suite_process(&left) && qq_suite_process(&right))
+}
+
+/// WPS Office ships several cooperating processes; ElementFromPoint often
+/// lands on the CEF plugin host while the foreground window stays on wps.exe.
+fn wps_suite_process(executable: &str) -> bool {
+    matches!(
+        executable,
+        "wps.exe"
+            | "wpsoffice.exe"
+            | "et.exe"
+            | "wpp.exe"
+            | "wpspdf.exe"
+            | "promecefpluginhost.exe"
+            | "ksolaunch.exe"
+            | "wpscloudsvr.exe"
+            | "wpscenter.exe"
+    )
+}
+
+fn wechat_suite_process(executable: &str) -> bool {
+    matches!(
+        executable,
+        "wechat.exe" | "weixin.exe" | "wechatappex.exe" | "wxwork.exe" | "wxworkweb.exe"
+    )
+}
+
+fn qq_suite_process(executable: &str) -> bool {
+    matches!(executable, "qq.exe" | "qqnt.exe" | "tim.exe")
 }
 
 fn clipboard_fallback_allowed(
@@ -3032,7 +3213,8 @@ fn compatible_clipboard_application(image_path: &str) -> bool {
             | "sumatrapdf.exe"
             | "foxitpdfreader.exe"
             | "foxitreader.exe"
-            // Microsoft Office, LibreOffice and WPS Office.
+            // Microsoft Office, LibreOffice and WPS Office (including PDF /
+            // CEF hosts used by modern WPS document panes).
             | "winword.exe"
             | "excel.exe"
             | "powerpnt.exe"
@@ -3042,6 +3224,9 @@ fn compatible_clipboard_application(image_path: &str) -> bool {
             | "wpsoffice.exe"
             | "et.exe"
             | "wpp.exe"
+            | "wpspdf.exe"
+            | "promecefpluginhost.exe"
+            | "ksolaunch.exe"
             // Chinese communication applications.
             | "wechat.exe"
             | "weixin.exe"
@@ -4521,6 +4706,74 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_password_gate_allows_unknown_only_for_compatible_apps() {
+        // Explicit password fields always block.
+        assert!(!clipboard_password_gate(Some(true), true));
+        assert!(!clipboard_password_gate(Some(true), false));
+        // Explicit non-password always allows.
+        assert!(clipboard_password_gate(Some(false), true));
+        assert!(clipboard_password_gate(Some(false), false));
+        // Unknown IsPassword: allowlisted custom-rendered apps (WPS) must not
+        // lose clipboard fallback; unknown hosts still fail closed.
+        assert!(clipboard_password_gate(None, true));
+        assert!(!clipboard_password_gate(None, false));
+    }
+
+    #[test]
+    fn uia_break_for_clipboard_keeps_first_frame_free_and_exits_after_one_retry() {
+        // Never skip the first UIA attempt — zero cost on the happy path.
+        assert!(!should_break_uia_for_clipboard(0, Some((true, true)), None));
+        assert!(!should_break_uia_for_clipboard(0, None, Some(true)));
+        // Found allowlisted target after one retry → clipboard immediately.
+        assert!(should_break_uia_for_clipboard(1, Some((true, true)), None));
+        assert!(!should_break_uia_for_clipboard(1, Some((false, true)), None));
+        assert!(!should_break_uia_for_clipboard(1, Some((true, false)), None));
+        // Multi-process WPS: no UIA target, but foreground is allowlisted.
+        assert!(should_break_uia_for_clipboard(1, None, Some(true)));
+        assert!(!should_break_uia_for_clipboard(1, None, Some(false)));
+        assert!(!should_break_uia_for_clipboard(1, None, None));
+    }
+
+    #[test]
+    fn multi_process_suites_share_an_application_family() {
+        assert!(executables_share_application_family(
+            r"C:\Program Files\WPS Office\office6\wps.exe",
+            r"C:\Program Files\WPS Office\office6\wps.exe",
+        ));
+        assert!(executables_share_application_family(
+            r"C:\Program Files\WPS Office\office6\wps.exe",
+            r"C:\Program Files\WPS Office\office6\promecefpluginhost.exe",
+        ));
+        assert!(executables_share_application_family(
+            r"C:\WPS\et.exe",
+            r"C:\WPS\wpspdf.exe",
+        ));
+        assert!(executables_share_application_family(
+            r"C:\Program Files\Tencent\WeChat\WeChat.exe",
+            r"C:\Program Files\Tencent\WeChat\WeChatAppEx.exe",
+        ));
+        assert!(executables_share_application_family(
+            r"C:\Program Files\Tencent\QQNT\QQ.exe",
+            r"C:\Program Files\Tencent\QQNT\QQNT.exe",
+        ));
+        assert!(wps_suite_process("wps.exe"));
+        assert!(wps_suite_process("promecefpluginhost.exe"));
+        // Unrelated hosts must not collapse into a suite family.
+        assert!(!executables_share_application_family(
+            r"C:\Program Files\WPS Office\office6\wps.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        ));
+        assert!(!executables_share_application_family(
+            r"C:\Program Files\WPS Office\office6\wps.exe",
+            r"C:\Program Files\Tencent\WeChat\WeChat.exe",
+        ));
+        assert!(!executables_share_application_family(
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ));
+    }
+
+    #[test]
     fn clipboard_fallback_supports_known_apps_and_verified_text_surfaces() {
         for path in [
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
@@ -4528,6 +4781,8 @@ mod tests {
             r"C:\Program Files\Foxit Software\Foxit PDF Reader\FoxitPDFReader.exe",
             r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
             r"C:\Program Files\WPS Office\office6\wps.exe",
+            r"C:\Program Files\WPS Office\office6\wpspdf.exe",
+            r"C:\Program Files\WPS Office\office6\promecefpluginhost.exe",
             r"C:\Program Files\WXWork\WXWork.exe",
             r"C:\Users\User\AppData\Local\Feishu\Feishu.exe",
             r"C:\Users\User\AppData\Local\slack\slack.exe",

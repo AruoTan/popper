@@ -612,10 +612,16 @@ body,
   padding-top: 6px;
   border-top: 1px dashed color-mix(in srgb, var(--border) 85%, transparent);
   color: var(--text-secondary, #64748b);
-  font-size: max(12px, calc(var(--result-font-size, 14px) * 0.9));
+  /*
+   * Noticeably smaller than the answer body (default 14px → ~11.5px).
+   * Do not also apply .stream-plain-text on this node: that rule sets full
+   * body font-size later in the sheet and used to cancel this shrink.
+   */
+  font-size: max(11px, calc(var(--result-font-size, 14px) * 0.82));
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  letter-spacing: 0.01em;
   animation: result-fade-in 150ms ease-out;
 }
 
@@ -716,7 +722,14 @@ body,
 .markdown-body pre,
 .markdown-body table,
 .markdown-body hr {
+  margin: 0.75em 0;
+}
+
+/* Distinct paragraph rhythm for multi-paragraph translations. */
+.markdown-body p {
   margin: 0.7em 0;
+  line-height: 1.72;
+  overflow-wrap: anywhere;
 }
 
 .markdown-body hr {
@@ -729,16 +742,37 @@ body,
 
 .markdown-body ul,
 .markdown-body ol {
-  padding-left: 1.6em;
+  padding-left: 1.55em;
+  margin: 0.65em 0;
+}
+
+.markdown-body li {
+  margin: 0.28em 0;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
 }
 
 .markdown-body li + li {
-  margin-top: 0.2em;
+  margin-top: 0.32em;
 }
 
+/* Nested lists keep a compact but readable indent. */
 .markdown-body li > ul,
 .markdown-body li > ol {
-  margin: 0.3em 0 0.15em;
+  margin: 0.28em 0 0.12em;
+}
+
+/* List items often wrap a single <p>; avoid stacked paragraph margins. */
+.markdown-body li > p {
+  margin: 0.2em 0;
+}
+
+.markdown-body li > p:first-child {
+  margin-top: 0;
+}
+
+.markdown-body li > p:last-child {
+  margin-bottom: 0;
 }
 
 .markdown-body ul.contains-task-list {
@@ -765,12 +799,20 @@ body,
 }
 
 .markdown-body blockquote {
-  padding: 1px 0 1px 13px;
+  padding: 6px 0 6px 13px;
   margin-left: 0;
   color: var(--text-secondary);
   background: color-mix(in srgb, var(--surface-muted) 55%, transparent);
   border-left: 3px solid var(--border-strong);
   border-radius: 0 6px 6px 0;
+}
+
+.markdown-body blockquote > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body blockquote > :last-child {
+  margin-bottom: 0;
 }
 
 .markdown-body code {

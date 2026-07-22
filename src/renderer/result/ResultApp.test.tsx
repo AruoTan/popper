@@ -904,7 +904,11 @@ describe('ResultApp window interactions', () => {
       'aria-expanded',
       'true'
     )
-    expect(screen.getByText('先拆解题意，再给出解释。')).toBeInTheDocument()
+    const thinkingBody = screen.getByText('先拆解题意，再给出解释。')
+    expect(thinkingBody).toBeInTheDocument()
+    // Must not share .stream-plain-text (full body font-size) or the shrink CSS loses.
+    expect(thinkingBody).toHaveClass('result-thinking__body')
+    expect(thinkingBody).not.toHaveClass('stream-plain-text')
 
     fireEvent.click(screen.getByRole('button', { name: /思考中/ }))
     expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute(
