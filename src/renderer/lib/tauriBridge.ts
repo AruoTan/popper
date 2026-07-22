@@ -316,6 +316,11 @@ export function installTauriBridge(): void {
         await invoke(TAURI_COMMANDS.testProviderConnection, { providerId })
       )
     },
+    async listProviderModels(providerId: string) {
+      return parseConnectionResult(
+        await invoke(TAURI_COMMANDS.listProviderModels, { providerId })
+      )
+    },
     async syncProviderModels(providerId: string) {
       return parseSyncResult(await invoke(TAURI_COMMANDS.syncProviderModels, { providerId }))
     },

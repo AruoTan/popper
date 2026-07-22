@@ -125,6 +125,7 @@ pub fn run() {
             runtime::clear_provider_api_key,
             runtime::get_provider_api_key,
             runtime::test_provider_connection,
+            runtime::list_provider_models,
             runtime::sync_provider_models,
             runtime::get_accessibility_status,
             runtime::request_accessibility,

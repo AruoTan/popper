@@ -106,6 +106,23 @@ describe('Tauri renderer bridge', () => {
           requestId: 'request-3'
         })
       }
+      if (command === 'list_provider_models') {
+        return Promise.resolve({
+          ok: true,
+          models: [
+            {
+              id: 'model-a',
+              name: 'Model A',
+              thinkingLevels: ['low']
+            },
+            {
+              id: 'model-b',
+              name: 'Model B',
+              thinkingLevels: []
+            }
+          ]
+        })
+      }
       if (command === 'sync_provider_models') {
         return Promise.resolve({
           ok: true,
@@ -352,6 +369,23 @@ describe('Tauri renderer bridge', () => {
       question: '继续解释'
     })
 
+    await expect(window.textLens.listProviderModels?.('provider-1')).resolves.toEqual({
+      ok: true,
+      models: [
+        {
+          id: 'model-a',
+          name: 'Model A',
+          thinkingLevels: ['low']
+        },
+        {
+          id: 'model-b',
+          name: 'Model B',
+          thinkingLevels: []
+        }
+      ]
+    })
+    expect(invokeMock).toHaveBeenCalledWith('list_provider_models', { providerId: 'provider-1' })
+
     await expect(window.textLens.syncProviderModels?.('provider-1')).resolves.toEqual({
       ok: true,
       models: [
@@ -433,5 +467,28 @@ describe('Tauri renderer bridge', () => {
       available: true,
       diagnostics: {}
     })
+  })
+
+  it('parses listProviderModels error payload without writing settings', async () => {
+    listenMock.mockResolvedValue(() => undefined)
+    invokeMock.mockImplementation((command: string) => {
+      if (command === 'list_provider_models') {
+        return Promise.resolve({
+          ok: false,
+          message: '无法连接服务商',
+          status: 401
+        })
+      }
+      return Promise.resolve(undefined)
+    })
+
+    installTauriBridge()
+
+    await expect(window.textLens.listProviderModels?.('provider-1')).resolves.toEqual({
+      ok: false,
+      message: '无法连接服务商',
+      status: 401
+    })
+    expect(invokeMock).toHaveBeenCalledWith('list_provider_models', { providerId: 'provider-1' })
   })
 })

@@ -77,6 +77,8 @@ export interface WindowTextLensApi {
   /** Settings window only: load a saved provider key for masked display. */
   getProviderApiKey?(providerId: string): Promise<string | null>
   testProviderConnection?(providerId: string): Promise<ConnectionTestResult>
+  /** List remote models without writing settings (selective pick). */
+  listProviderModels?(providerId: string): Promise<ConnectionTestResult>
   syncProviderModels?(providerId: string): Promise<ProviderModelsSyncResult>
   /** @deprecated Use setProviderApiKey. */
   setApiKey?(apiKey: string): Promise<PublicSettings>

@@ -11,6 +11,7 @@ export const TAURI_COMMANDS = {
   clearProviderApiKey: 'clear_provider_api_key',
   getProviderApiKey: 'get_provider_api_key',
   testProviderConnection: 'test_provider_connection',
+  listProviderModels: 'list_provider_models',
   syncProviderModels: 'sync_provider_models',
   getAccessibilityStatus: 'get_accessibility_status',
   requestAccessibility: 'request_accessibility',

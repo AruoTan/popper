@@ -1989,6 +1989,16 @@ pub async fn test_provider_connection(
 }
 
 #[tauri::command]
+pub async fn list_provider_models(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+) -> Result<ConnectionTestResult, String> {
+    ensure_settings_caller(&window)?;
+    Ok(state.actions.list_provider_models(&provider_id).await)
+}
+
+#[tauri::command]
 pub async fn sync_provider_models(
     app: AppHandle,
     window: WebviewWindow,

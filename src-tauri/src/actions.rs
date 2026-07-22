@@ -1166,6 +1166,11 @@ impl ActionService {
         }
     }
 
+    /// Fetch remote models without writing settings (for selective multi-select pick).
+    pub async fn list_provider_models(&self, provider_id: &str) -> ConnectionTestResult {
+        self.test_provider_connection(provider_id).await
+    }
+
     pub async fn sync_provider_models(&self, provider_id: &str) -> SyncModelsResult {
         match self.fetch_models(provider_id).await {
             Ok(models) => {
