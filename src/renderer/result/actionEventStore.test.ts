@@ -120,7 +120,7 @@ afterEach(() => {
 })
 
 describe('action event store publication pacing', () => {
-  it('publishes first content synchronously and coalesces later deltas by frame', async () => {
+  it('applies every delta synchronously without waiting for rAF', async () => {
     const store = await import('./actionEventStore')
     const stop = store.startActionEventStore()
     const listener = vi.fn()
@@ -128,28 +128,37 @@ describe('action event store publication pacing', () => {
 
     emit(started())
     expect(listener).toHaveBeenCalledTimes(1)
-    emit(delta(2, 'A'))
+    emit(delta(2, '一'))
     expect(listener).toHaveBeenCalledTimes(2)
-
-    for (let index = 0; index < 10_000; index += 1) {
-      emit(delta(index + 3, 'x'))
-    }
-    expect(listener).toHaveBeenCalledTimes(2)
-    expect(frameCallbacks.size).toBe(1)
-
-    runNextFrame()
+    expect(store.getActionEventSnapshot().content).toBe('一')
+    emit(delta(3, '二'))
     expect(listener).toHaveBeenCalledTimes(3)
-    expect(store.getActionEventSnapshot().content).toBe(`A${'x'.repeat(9_999)}`)
-
-    runNextFrame(32)
-    expect(listener).toHaveBeenCalledTimes(4)
-    expect(store.getActionEventSnapshot().content).toBe(`A${'x'.repeat(10_000)}`)
+    expect(store.getActionEventSnapshot().content).toBe('一二')
+    // must not require flushPendingActionEvents('frame')
+    expect(frameCallbacks.size).toBe(0)
 
     unsubscribe()
     stop()
   })
 
-  it('force-flushes queued content and publishes a valid terminal once', async () => {
+  it('publishes many subsequent deltas immediately without frame batching', async () => {
+    const store = await import('./actionEventStore')
+    const stop = store.startActionEventStore()
+    const listener = vi.fn()
+    store.subscribeToActionEvents(listener)
+
+    emit(started())
+    emit(delta(2, 'A'))
+    for (let index = 0; index < 100; index += 1) {
+      emit(delta(index + 3, 'x'))
+    }
+    expect(listener).toHaveBeenCalledTimes(102)
+    expect(store.getActionEventSnapshot().content).toBe(`A${'x'.repeat(100)}`)
+    expect(frameCallbacks.size).toBe(0)
+    stop()
+  })
+
+  it('publishes a valid terminal once with full content already applied', async () => {
     const store = await import('./actionEventStore')
     const stop = store.startActionEventStore()
     const listener = vi.fn()
@@ -171,87 +180,25 @@ describe('action event store publication pacing', () => {
       content: 'AB',
       contentScalarCount: 2
     })
-    expect(listener).toHaveBeenCalledTimes(3)
-    expect(frameCallbacks.size).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
-    await vi.runAllTimersAsync()
-    expect(listener).toHaveBeenCalledTimes(3)
-    stop()
-  })
-
-  it('uses one shared latch when the timeout wins', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore()
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
-
-    emit(started())
-    emit(delta(2, 'A'))
-    emit(delta(3, 'B'))
-    expect(frameCallbacks.size).toBe(1)
-    expect(vi.getTimerCount()).toBe(1)
-
-    await vi.advanceTimersByTimeAsync(32)
-    expect(store.getActionEventSnapshot().content).toBe('AB')
-    expect(listener).toHaveBeenCalledTimes(3)
-    expect(frameCallbacks.size).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
-    await vi.runAllTimersAsync()
-    expect(listener).toHaveBeenCalledTimes(3)
-    stop()
-  })
-
-  it('cancels the timeout when a frame wins and reuses one latch for held carry', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore()
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
-
-    emit(started())
-    emit(delta(2, 'A'))
-    emit(delta(3, 'BC'))
-    runNextFrame()
-
-    expect(store.getActionEventSnapshot().content).toBe('AB')
-    expect(listener).toHaveBeenCalledTimes(3)
-    expect(frameCallbacks.size).toBe(1)
-    expect(vi.getTimerCount()).toBe(1)
-
-    runNextFrame(32)
-    expect(store.getActionEventSnapshot().content).toBe('ABC')
+    // started + 2 deltas + completed
     expect(listener).toHaveBeenCalledTimes(4)
     expect(frameCallbacks.size).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
     stop()
   })
 
-  it('flushes synchronously on pageshow, visible resume, and native reveal', async () => {
+  it('keeps flushPendingActionEvents as a safe no-op after sync publish', async () => {
     const store = await import('./actionEventStore')
     const stop = store.startActionEventStore()
 
     emit(started())
     emit(delta(2, 'A'))
     emit(delta(3, 'B'))
+    expect(store.getActionEventSnapshot().content).toBe('AB')
+
     window.dispatchEvent(new PageTransitionEvent('pageshow'))
+    store.flushPendingActionEvents('native-reveal')
     expect(store.getActionEventSnapshot().content).toBe('AB')
     expect(frameCallbacks.size).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
-
-    emit(delta(4, 'C'))
-    Object.defineProperty(document, 'visibilityState', {
-      configurable: true,
-      value: 'visible'
-    })
-    document.dispatchEvent(new Event('visibilitychange'))
-    expect(store.getActionEventSnapshot().content).toBe('ABC')
-    expect(frameCallbacks.size).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
-
-    emit(delta(5, 'D'))
-    store.flushPendingActionEvents('native-reveal')
-    expect(store.getActionEventSnapshot().content).toBe('ABCD')
-    expect(frameCallbacks.size).toBe(0)
-    expect(vi.getTimerCount()).toBe(0)
     stop()
   })
 })
@@ -480,10 +427,10 @@ describe('action event store ordered notices', () => {
     emit(started(20))
     emit(delta(21, 'A'))
     emit(delta(22, 'B'))
-    const pendingObject = store.getActionEventSnapshot()
+    const beforeNotice = store.getActionEventSnapshot()
     const logicalBeforeNotice = store.getActionEventLogicalRevision()
-    expect(frameCallbacks.size).toBe(1)
-    expect(vi.getTimerCount()).toBe(1)
+    expect(beforeNotice.content).toBe('AB')
+    expect(frameCallbacks.size).toBe(0)
 
     emit({
       ...eventBase,
@@ -494,16 +441,13 @@ describe('action event store ordered notices', () => {
     })
     const noticed = store.getActionEventSnapshot()
     expect(noticed).toMatchObject({
-      content: 'A',
-      contentScalarCount: 1,
-      contentRevision: 1,
+      content: 'AB',
+      contentScalarCount: 2,
       status: 'streaming',
       generationNotice: 'fallback applied'
     })
-    expect(noticed).not.toBe(pendingObject)
+    expect(noticed).not.toBe(beforeNotice)
     expect(store.getActionEventLogicalRevision()).toBe(logicalBeforeNotice + 1)
-    expect(frameCallbacks.size).toBe(1)
-    expect(vi.getTimerCount()).toBe(1)
 
     const callsAfterNotice = listener.mock.calls.length
     emit({
@@ -537,7 +481,6 @@ describe('action event store ordered notices', () => {
     expect(store.getActionEventSnapshot()).toMatchObject({
       content: 'AB',
       contentScalarCount: 2,
-      contentRevision: 1,
       status: 'streaming',
       generationNotice: 'gap notice'
     })

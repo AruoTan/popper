@@ -12,9 +12,6 @@ import {
   resultStateFromSnapshot,
   type ResultState
 } from './resultState'
-import { splitStableGraphemeTail } from './streamPlayback'
-
-const NOTIFY_FALLBACK_MS = 32
 
 type StorePhase = 'hydrating' | 'live' | 'recovering'
 export type ActionEventRecoveryReason = 'sequence-gap' | 'resync-required'
@@ -33,13 +30,6 @@ interface LogicalCursor {
   contentScalarCount: number
 }
 
-interface PendingContent {
-  chunks: string[]
-  graphemeCarry: string
-  carryInputRevision: number
-  carryHeldAtRevision: number
-}
-
 export interface ResultHydrationOutcome {
   ack: ResultReadyAck
   recoveryNeeded: boolean
@@ -48,7 +38,6 @@ export interface ResultHydrationOutcome {
 let publishedSnapshot = INITIAL_RESULT_STATE
 let phase: StorePhase = 'hydrating'
 let cursor: LogicalCursor | null = null
-let pending = emptyPendingContent()
 let bufferedEvents: ActionStreamEvent[] = []
 let logicalRevision = 0
 let hasPublishedNonEmptyContent = false
@@ -56,79 +45,18 @@ let hasPublishedNonEmptyContent = false
 let stopBridgeListener: Unsubscribe | null = null
 let activeSessionId: string | null = null
 let onRecoveryRequired: ((reason: ActionEventRecoveryReason) => void) | null = null
-let scheduledFrame: number | null = null
-let scheduledTimer: number | null = null
 const listeners = new Set<() => void>()
-
-function emptyPendingContent(): PendingContent {
-  return {
-    chunks: [],
-    graphemeCarry: '',
-    carryInputRevision: 0,
-    carryHeldAtRevision: -1
-  }
-}
 
 function notifySubscribers(): void {
   for (const listener of listeners) listener()
 }
 
-function cancelNotificationLatch(): void {
-  if (scheduledFrame !== null) window.cancelAnimationFrame(scheduledFrame)
-  if (scheduledTimer !== null) window.clearTimeout(scheduledTimer)
-  scheduledFrame = null
-  scheduledTimer = null
-}
-
-function scheduleNotification(): void {
-  if (scheduledFrame !== null || scheduledTimer !== null) return
-  scheduledFrame = window.requestAnimationFrame(() => {
-    flushPendingActionEvents('frame')
-  })
-  scheduledTimer = window.setTimeout(() => {
-    flushPendingActionEvents('timeout')
-  }, NOTIFY_FALLBACK_MS)
-}
-
-function materializePending(forceCarry: boolean): boolean {
-  if (!cursor || !publishedSnapshot.requestId) return false
-
-  const chunks = pending.chunks
-  pending.chunks = []
-
-  if (pending.graphemeCarry) {
-    if (forceCarry || pending.carryHeldAtRevision === pending.carryInputRevision) {
-      chunks.push(pending.graphemeCarry)
-      pending.graphemeCarry = ''
-      pending.carryHeldAtRevision = -1
-    } else {
-      pending.carryHeldAtRevision = pending.carryInputRevision
-    }
-  }
-
-  const delta = chunks.join('')
-  if (!delta) return false
-
-  const next = appendResultDeltaBatch(publishedSnapshot, {
-    requestId: publishedSnapshot.requestId,
-    sessionGeneration: cursor.sessionGeneration,
-    requestGeneration: cursor.requestGeneration,
-    delta,
-    contentScalarCount:
-      publishedSnapshot.contentScalarCount + countUnicodeScalars(delta)
-  })
-  if (next === publishedSnapshot) return false
-  publishedSnapshot = next
-  return true
-}
-
-export function flushPendingActionEvents(reason: ActionEventFlushReason): void {
-  cancelNotificationLatch()
-  if (phase !== 'live') return
-
-  const changed = materializePending(reason !== 'frame')
-  if (changed) notifySubscribers()
-  if (pending.graphemeCarry) scheduleNotification()
+/**
+ * Compatibility flush: deltas now publish synchronously, so this is a no-op
+ * for content. Kept so pageshow/visibility/native-reveal call sites stay valid.
+ */
+export function flushPendingActionEvents(_reason: ActionEventFlushReason): void {
+  // no-op: content deltas are applied immediately in acceptDelta
 }
 
 function publishReducedEvent(event: ActionStreamEvent, notify: boolean): boolean {
@@ -149,7 +77,6 @@ function beginRecovery(
     return
   }
   phase = 'recovering'
-  cancelNotificationLatch()
   bufferedEvents.push(event)
   if (reportRecovery) onRecoveryRequired?.(reason)
 }
@@ -158,8 +85,6 @@ function acceptInitialStarted(
   event: Extract<ActionStreamEvent, { type: 'started' }>,
   notify: boolean
 ): void {
-  cancelNotificationLatch()
-  pending = emptyPendingContent()
   cursor = {
     sessionGeneration: event.sessionGeneration,
     requestGeneration: event.requestGeneration,
@@ -175,7 +100,7 @@ function acceptInitialStarted(
 function acceptDelta(
   event: Extract<ActionStreamEvent, { type: 'delta' }>,
   notify: boolean,
-  schedule: boolean
+  _schedule: boolean
 ): void {
   if (!cursor) return
   cursor.lastSequence = event.sequence
@@ -185,27 +110,19 @@ function acceptDelta(
   cursor.lastContentSequence = event.sequence
   cursor.contentScalarCount += countUnicodeScalars(event.delta)
 
-  if (!hasPublishedNonEmptyContent) {
-    const next = appendResultDeltaBatch(publishedSnapshot, {
-      requestId: event.requestId,
-      sessionGeneration: event.sessionGeneration,
-      requestGeneration: event.requestGeneration,
-      delta: event.delta,
-      contentScalarCount: cursor.contentScalarCount
-    })
-    hasPublishedNonEmptyContent = true
-    if (next !== publishedSnapshot) {
-      publishedSnapshot = next
-      if (notify) notifySubscribers()
-    }
-    return
+  // Always sync-apply first and later tokens (no rAF / grapheme batching).
+  const next = appendResultDeltaBatch(publishedSnapshot, {
+    requestId: event.requestId,
+    sessionGeneration: event.sessionGeneration,
+    requestGeneration: event.requestGeneration,
+    delta: event.delta,
+    contentScalarCount: cursor.contentScalarCount
+  })
+  hasPublishedNonEmptyContent = true
+  if (next !== publishedSnapshot) {
+    publishedSnapshot = next
+    if (notify) notifySubscribers()
   }
-
-  const update = splitStableGraphemeTail(pending.graphemeCarry, event.delta)
-  if (update.released) pending.chunks.push(update.released)
-  pending.graphemeCarry = update.carry
-  pending.carryInputRevision = logicalRevision
-  if (schedule) scheduleNotification()
 }
 
 function acceptTerminal(
@@ -223,13 +140,11 @@ function acceptTerminal(
     return
   }
 
-  cancelNotificationLatch()
-  const contentChanged = materializePending(true)
   cursor.lastSequence = event.sequence
   logicalRevision += 1
   const stateBeforeTerminal = publishedSnapshot
   const terminalChanged = publishReducedEvent(event, false)
-  if (notify && (contentChanged || terminalChanged || publishedSnapshot !== stateBeforeTerminal)) {
+  if (notify && (terminalChanged || publishedSnapshot !== stateBeforeTerminal)) {
     notifySubscribers()
   }
 }
@@ -347,7 +262,6 @@ export function startActionEventStore(
   return () => {
     stopBridgeListener?.()
     stopBridgeListener = null
-    cancelNotificationLatch()
     activeSessionId = null
     onRecoveryRequired = null
   }
@@ -382,7 +296,6 @@ export function hydrateActionEventStore(
   }
   const eventsWaitingForSnapshot = bufferedEvents
 
-  cancelNotificationLatch()
   publishedSnapshot = resultStateFromSnapshot(sessionSnapshot)
   cursor = {
     sessionGeneration: sessionSnapshot.sessionGeneration,
@@ -391,7 +304,6 @@ export function hydrateActionEventStore(
     lastContentSequence: sessionSnapshot.lastContentSequence,
     contentScalarCount: sessionSnapshot.contentScalarCount
   }
-  pending = emptyPendingContent()
   bufferedEvents = []
   phase = 'live'
   hasPublishedNonEmptyContent = sessionSnapshot.contentScalarCount > 0
@@ -423,7 +335,6 @@ export function hydrateActionEventStore(
     }
   }
 
-  materializePending(true)
   if (publishedSnapshot !== stateBeforeReplay) notifySubscribers()
 
   return { ack, recoveryNeeded: isRecovering() }
