@@ -356,7 +356,7 @@ describe('ResultApp window interactions', () => {
     }
   })
 
-  it('prepares the hydrated renderer and commits only after two animation frames', async () => {
+  it('prepares the hydrated renderer and commits after one animation frame', async () => {
     const callbacks: FrameRequestCallback[] = []
     const scheduleFrame = vi.fn((callback: FrameRequestCallback) => {
       callbacks.push(callback)
@@ -368,13 +368,9 @@ describe('ResultApp window interactions', () => {
     const firstFrame = callbacks.shift()
     expect(firstFrame).toBeTypeOf('function')
     firstFrame!(performance.now())
-    await Promise.resolve()
-    expect(callbacks).toHaveLength(1)
-    const secondFrame = callbacks.shift()
-    expect(secondFrame).toBeTypeOf('function')
-    secondFrame!(performance.now())
     await frames
-    expect(scheduleFrame).toHaveBeenCalledTimes(2)
+    expect(scheduleFrame).toHaveBeenCalledTimes(1)
+    expect(callbacks).toHaveLength(0)
 
     const { prepareResultReveal, commitResultReveal } = await renderResult()
     await waitFor(() => expect(commitResultReveal).toHaveBeenCalledWith('session-1'))

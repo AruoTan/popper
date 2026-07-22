@@ -1042,14 +1042,25 @@ impl ActionService {
         })
     }
 
-    fn start_flusher_if_needed<R: Runtime>(&self, app: &AppHandle<R>, session_id: &str) {
+    fn start_flusher_if_needed<R: Runtime + 'static>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+    ) {
         let lease = self.inner.state.lock().sessions.acquire_flusher(session_id);
         if let Some(lease) = lease {
-            self.drive_flusher(app, lease);
+            // Run the flusher off the SSE consumer task so emit_to IPC cannot
+            // head-of-line-block further network chunk reads / token decode.
+            // Yield between emits so other tasks (SSE read) stay responsive.
+            let service = self.clone();
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                service.drive_flusher(&app, lease).await;
+            });
         }
     }
 
-    fn drive_flusher<R: Runtime>(&self, app: &AppHandle<R>, lease: FlusherLease) {
+    async fn drive_flusher<R: Runtime>(&self, app: &AppHandle<R>, lease: FlusherLease) {
         loop {
             let next = {
                 let mut state = self.inner.state.lock();
@@ -1073,6 +1084,9 @@ impl ActionService {
             if !transition.continue_now {
                 return;
             }
+            // Cooperative yield: keep SSE consumer / decode from starving when
+            // many deltas are already queued (Cherry-style smooth token pump).
+            tokio::task::yield_now().await;
         }
     }
 

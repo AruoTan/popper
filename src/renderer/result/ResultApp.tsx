@@ -54,6 +54,7 @@ import {
 import { ResultOutput } from './ResultOutput'
 import { useResultContentOverflow } from './resultContentOverflow'
 import type { ResultSessionBootstrap } from './resultSessionBootstrap'
+import type { ResultState } from './resultState'
 
 const LANGUAGE_CODES = { 'zh-CN': 'CN', 'en-US': 'EN' } as const
 const RESULT_RESIZE_DIRECTIONS = [
@@ -136,11 +137,79 @@ export function isWindowsResultRenderer(userAgent = window.navigator.userAgent):
   return /Windows/i.test(userAgent)
 }
 
+/**
+ * Wait one paint frame before committing the native reveal so layout is ready
+ * without paying a second frame of empty-window latency (Cherry-style TTFB).
+ */
 export async function waitForResultRevealFrames(
   scheduleFrame: (callback: FrameRequestCallback) => number = window.requestAnimationFrame
 ): Promise<void> {
   await new Promise<void>((resolve) => scheduleFrame(() => resolve()))
-  await new Promise<void>((resolve) => scheduleFrame(() => resolve()))
+}
+
+/** Subscribe to a single field so content deltas do not re-render chrome. */
+function useResultField<T>(select: (state: ResultState) => T): T {
+  return useSyncExternalStore(
+    subscribeToActionEvents,
+    () => select(getActionEventSnapshot()),
+    () => select(getActionEventSnapshot())
+  )
+}
+
+/**
+ * Stream body only: subscribes to content fields so translate/explain/summary
+ * tokens re-render this subtree without rebuilding header/footer chrome.
+ */
+function ResultStreamBody({
+  revealCommitted,
+  onOpenExternal
+}: {
+  revealCommitted: boolean
+  onOpenExternal: (url: string) => void
+}): JSX.Element {
+  const status = useResultField((state) => state.status)
+  const content = useResultField((state) => state.content)
+  const contentScalarCount = useResultField((state) => state.contentScalarCount)
+  const contentRevision = useResultField((state) => state.contentRevision)
+  const sessionGeneration = useResultField((state) => state.sessionGeneration)
+  const requestGeneration = useResultField((state) => state.requestGeneration)
+  const requestId = useResultField((state) => state.requestId)
+
+  return (
+    <article className="markdown-body">
+      <ResultOutput
+        requestKey={`${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`}
+        status={status}
+        content={content}
+        contentScalarCount={contentScalarCount}
+        contentRevision={contentRevision}
+        revealCommitted={revealCommitted}
+        onOpenExternal={onOpenExternal}
+      />
+    </article>
+  )
+}
+
+/**
+ * Ask-only bridge: patches transcript turns from stream content without
+ * forcing the non-ask chrome path to subscribe to the content string.
+ */
+function AskStreamBridge({
+  enabled,
+  onStream
+}: {
+  enabled: boolean
+  onStream: (status: ResultState['status'], content: string) => void
+}): null {
+  const status = useResultField((state) => state.status)
+  const content = useResultField((state) => state.content)
+
+  useEffect(() => {
+    if (!enabled) return
+    onStream(status, content)
+  }, [content, enabled, onStream, status])
+
+  return null
 }
 
 export interface ResultAppProps {
@@ -173,11 +242,16 @@ function ResultSessionApp({
   bootstrap: ResultSessionBootstrap
 }): JSX.Element {
   const windowsRenderer = useMemo(() => isWindowsResultRenderer(), [])
-  const state = useSyncExternalStore(
-    subscribeToActionEvents,
-    getActionEventSnapshot,
-    getActionEventSnapshot
-  )
+  // Field-level subscriptions: content growth must not re-render chrome/footer.
+  const status = useResultField((state) => state.status)
+  const requestId = useResultField((state) => state.requestId)
+  const actionId = useResultField((state) => state.actionId)
+  const sessionGeneration = useResultField((state) => state.sessionGeneration)
+  const requestGeneration = useResultField((state) => state.requestGeneration)
+  const errorMessage = useResultField((state) => state.errorMessage)
+  const generationNotice = useResultField((state) => state.generationNotice)
+  const retryable = useResultField((state) => state.retryable)
+  const hasContent = useResultField((state) => state.content.length > 0)
   const [settings, setSettings] = useState<PublicSettings>(DEFAULT_PUBLIC_SETTINGS)
   const settingsRevisionRef = useRef(0)
   const [session, setSession] = useState<ResultSessionSnapshot | null>(null)
@@ -207,10 +281,8 @@ function ResultSessionApp({
   const askOriginalDefaulted = useRef(false)
   const askSawStreaming = useRef(false)
   const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null)
-  const latestResultState = useRef(state)
-  latestResultState.current = state
-  const handleScroll = useAutoFollowOutput(contentRef, contentInnerRef, state.requestId)
-  const isWaitingForFirstContent = state.status === 'streaming' && !state.content
+  const handleScroll = useAutoFollowOutput(contentRef, contentInnerRef, requestId)
+  const isWaitingForFirstContent = status === 'streaming' && !hasContent
   const contentOverflow = useResultContentOverflow(
     contentRef,
     contentInnerRef,
@@ -218,15 +290,15 @@ function ResultSessionApp({
   )
 
   const action = useMemo(
-    () => settings?.actions.find((item) => item.id === (state.actionId ?? session?.actionId)),
-    [session?.actionId, settings, state.actionId]
+    () => settings?.actions.find((item) => item.id === (actionId ?? session?.actionId)),
+    [session?.actionId, settings, actionId]
   )
   const isAsk = isAskAction(action?.kind)
   const followUpDisabled =
     followUpSubmitting ||
-    state.status === 'streaming' ||
-    (!isAsk && state.status !== 'completed') ||
-    (isAsk && state.status !== 'completed' && state.status !== 'idle')
+    status === 'streaming' ||
+    (!isAsk && status !== 'completed') ||
+    (isAsk && status !== 'completed' && status !== 'idle')
 
   const defaultModelRoute = useMemo<ModelRoute | null>(() => {
     if (!action || !('providerId' in action) || !action.providerId || !action.modelId) return null
@@ -268,7 +340,7 @@ function ResultSessionApp({
 
   const reconcilePendingFollowUp = useCallback(
     (pending: { question: string; requestId: string | null }): void => {
-      const latest = latestResultState.current
+      const latest = getActionEventSnapshot()
       if (pending.requestId && latest.requestId !== pending.requestId) return
       if (latest.status === 'completed') {
         pendingFollowUp.current = null
@@ -279,6 +351,23 @@ function ResultSessionApp({
     },
     []
   )
+
+  const handleAskStream = useCallback((streamStatus: ResultState['status'], content: string): void => {
+    if (streamStatus === 'streaming') {
+      askSawStreaming.current = true
+      setTurns((current) => patchStreamingAssistant(current, content, true))
+      return
+    }
+    if (
+      askSawStreaming.current &&
+      (streamStatus === 'completed' ||
+        streamStatus === 'cancelled' ||
+        streamStatus === 'error')
+    ) {
+      setTurns((current) => patchStreamingAssistant(current, content, false))
+      askSawStreaming.current = false
+    }
+  }, [])
 
   const closeWindow = useCallback(async (): Promise<void> => {
     await window.textLens.closeResult(sessionId)
@@ -328,7 +417,7 @@ function ResultSessionApp({
   const switchModel = useCallback(async (value: string): Promise<void> => {
     const next = modelChoices.find((choice) => choice.value === value)
     if (
-      !next || routeSwitching || state.status === 'streaming' ||
+      !next || routeSwitching || status === 'streaming' ||
       (effectiveModelRoute?.providerId === next.providerId &&
         effectiveModelRoute.modelId === next.modelId)
     ) return
@@ -339,13 +428,14 @@ function ResultSessionApp({
     const accepted = await retry({ providerId: next.providerId, modelId: next.modelId })
     if (!accepted) setActiveModelRoute(previous)
     setRouteSwitching(false)
-  }, [activeModelRoute, effectiveModelRoute, modelChoices, retry, routeSwitching, state.status])
+  }, [activeModelRoute, effectiveModelRoute, modelChoices, retry, routeSwitching, status])
 
   const copy = useCallback(async (): Promise<void> => {
-    if (!state.content) return
+    const content = getActionEventSnapshot().content
+    if (!content) return
     setCommandMessage('')
     try {
-      await window.textLens.copyText(state.content)
+      await window.textLens.copyText(content)
       setCopyComplete(true)
       if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current)
       copyResetTimer.current = window.setTimeout(() => {
@@ -355,14 +445,14 @@ function ResultSessionApp({
     } catch (error) {
       setCommandMessage(getErrorMessage(error, '复制失败'))
     }
-  }, [state.content])
+  }, [])
 
   const submitFollowUp = useCallback(async (): Promise<void> => {
     const question = followUpQuestion.trim()
     const canSubmit =
       isAsk
-        ? state.status === 'completed' || state.status === 'idle'
-        : state.status === 'completed'
+        ? status === 'completed' || status === 'idle'
+        : status === 'completed'
     if (!question || followUpSubmitting || !canSubmit) return
     setCommandMessage('')
     setFollowUpSubmitting(true)
@@ -400,7 +490,7 @@ function ResultSessionApp({
     } finally {
       setFollowUpSubmitting(false)
     }
-  }, [followUpQuestion, followUpSubmitting, isAsk, reconcilePendingFollowUp, sessionId, state.status])
+  }, [followUpQuestion, followUpSubmitting, isAsk, reconcilePendingFollowUp, sessionId, status])
 
   useEffect(() => {
     let disposed = false
@@ -509,7 +599,7 @@ function ResultSessionApp({
   }, [isAsk, sessionId])
 
   useEffect(() => {
-    if (!state.requestId) return
+    if (!requestId) return
     setCommandMessage('')
     setCopyComplete(false)
     if (!isAsk) setShowOriginal(false)
@@ -517,30 +607,12 @@ function ResultSessionApp({
       window.clearTimeout(copyResetTimer.current)
       copyResetTimer.current = null
     }
-  }, [isAsk, state.requestId])
-
-  useEffect(() => {
-    if (!isAsk) return
-    if (state.status === 'streaming') {
-      askSawStreaming.current = true
-      setTurns((current) => patchStreamingAssistant(current, state.content, true))
-      return
-    }
-    if (
-      askSawStreaming.current &&
-      (state.status === 'completed' ||
-        state.status === 'cancelled' ||
-        state.status === 'error')
-    ) {
-      setTurns((current) => patchStreamingAssistant(current, state.content, false))
-      askSawStreaming.current = false
-    }
-  }, [isAsk, state.content, state.requestId, state.status])
+  }, [isAsk, requestId])
 
   useEffect(() => {
     const pending = pendingFollowUp.current
     if (pending) reconcilePendingFollowUp(pending)
-  }, [reconcilePendingFollowUp, state.requestId, state.status])
+  }, [reconcilePendingFollowUp, requestId, status])
 
   useEffect(() => {
     return () => {
@@ -549,8 +621,8 @@ function ResultSessionApp({
     }
   }, [])
 
-  const keyboardState = useRef({ state, cancel, closeWindow, retry, copy })
-  keyboardState.current = { state, cancel, closeWindow, retry, copy }
+  const keyboardState = useRef({ status, hasContent, cancel, closeWindow, retry, copy })
+  keyboardState.current = { status, hasContent, cancel, closeWindow, retry, copy }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (isEditableTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return
@@ -558,7 +630,7 @@ function ResultSessionApp({
       const key = event.key.toLowerCase()
       if (key === 'escape') {
         event.preventDefault()
-        if (current.state.status === 'streaming') void current.cancel()
+        if (current.status === 'streaming') void current.cancel()
         else runDetached(current.closeWindow(), {
           scope: 'result',
           operation: 'close',
@@ -566,12 +638,12 @@ function ResultSessionApp({
         })
         return
       }
-      if (key === 'r' && current.state.status !== 'streaming') {
+      if (key === 'r' && current.status !== 'streaming') {
         event.preventDefault()
         void current.retry()
         return
       }
-      if (key === 'c' && current.state.content && !window.getSelection()?.toString()) {
+      if (key === 'c' && current.hasContent && !window.getSelection()?.toString()) {
         event.preventDefault()
         void current.copy()
       }
@@ -664,7 +736,7 @@ function ResultSessionApp({
       : settings.translate.primaryLanguage
     return { detected, target: translationTarget ?? defaultTarget }
   }, [action?.kind, selection, settings, translationTarget])
-  const translationSwitching = state.status === 'streaming' || routeSwitching || retrying
+  const translationSwitching = status === 'streaming' || routeSwitching || retrying
   const changeTranslationTarget = (target: SupportedLocale): void => {
     const previous = translationTarget
     setRouteSwitching(true)
@@ -767,7 +839,7 @@ function ResultSessionApp({
                 <select
                   aria-label="切换模型"
                   value={modelRouteValue(effectiveModelRoute)}
-                  disabled={state.status === 'streaming' || routeSwitching || retrying}
+                  disabled={status === 'streaming' || routeSwitching || retrying}
                   onChange={(event) => void switchModel(event.target.value)}
                 >
                   {!selectedModel && <option value={modelRouteValue(effectiveModelRoute)}>未选择模型</option>}
@@ -825,7 +897,8 @@ function ResultSessionApp({
 
           {isAsk ? (
             <>
-              {turns.length === 0 && state.status !== 'streaming' && state.status !== 'error' && (
+              <AskStreamBridge enabled={isAsk} onStream={handleAskStream} />
+              {turns.length === 0 && status !== 'streaming' && status !== 'error' && (
                 <div className="result-placeholder">
                   <span>已载入选中文本。请在下方输入问题。</span>
                 </div>
@@ -851,7 +924,7 @@ function ResultSessionApp({
                   ) : (
                     <article className="markdown-body result-turn__content">
                       <ResultOutput
-                        requestKey={`${state.sessionGeneration ?? 'none'}:${state.requestGeneration ?? 'none'}:${turn.id}`}
+                        requestKey={`${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${turn.id}`}
                         status="completed"
                         content={turn.content}
                         contentScalarCount={turn.content.length}
@@ -864,31 +937,24 @@ function ResultSessionApp({
                 </div>
               ))}
             </>
-          ) : state.content ? (
-            <article className="markdown-body">
-              <ResultOutput
-                requestKey={`${state.sessionGeneration ?? 'none'}:${state.requestGeneration ?? 'none'}:${state.requestId ?? 'none'}`}
-                status={state.status}
-                content={state.content}
-                contentScalarCount={state.contentScalarCount}
-                contentRevision={state.contentRevision}
-                revealCommitted={revealCommitted}
-                onOpenExternal={openExternal}
-              />
-            </article>
-          ) : state.status === 'error' ? null : (
+          ) : hasContent ? (
+            <ResultStreamBody
+              revealCommitted={revealCommitted}
+              onOpenExternal={openExternal}
+            />
+          ) : status === 'error' ? null : (
             <div className="result-placeholder">
-              {state.status === 'streaming' ? <><LoaderCircle className="result-spin" size={24} /><span>正在等待模型响应…</span></>
+              {status === 'streaming' ? <><LoaderCircle className="result-spin" size={24} /><span>正在等待模型响应…</span></>
                 : <span>正在准备结果…</span>}
             </div>
           )}
 
-          {state.status === 'error' && <div className="result-error" role="alert"><CircleAlert size={20} /><div>
-            <strong>未能生成结果</strong><p>{state.errorMessage}</p></div></div>}
-          {state.generationNotice && (
-            <div className="result-inline-notice" role="status">{state.generationNotice}</div>
+          {status === 'error' && <div className="result-error" role="alert"><CircleAlert size={20} /><div>
+            <strong>未能生成结果</strong><p>{errorMessage}</p></div></div>}
+          {generationNotice && (
+            <div className="result-inline-notice" role="status">{generationNotice}</div>
           )}
-          {state.status === 'cancelled' && <div className="result-inline-notice" role="status">本次生成已取消。已生成的内容仍可复制。</div>}
+          {status === 'cancelled' && <div className="result-inline-notice" role="status">本次生成已取消。已生成的内容仍可复制。</div>}
         </div>
       </div>
 
@@ -948,13 +1014,13 @@ function ResultSessionApp({
               <X size={15} />关闭
             </button>
           )}
-          {state.status === 'streaming' ? (
+          {status === 'streaming' ? (
             <button className="result-footer-button" type="button" onClick={() => void cancel()}><Square size={13} fill="currentColor" />停止</button>
           ) : (
-            <button className="result-footer-button" type="button" disabled={retrying || !state.requestId || (state.status === 'error' && !state.retryable)}
+            <button className="result-footer-button" type="button" disabled={retrying || !requestId || (status === 'error' && !retryable)}
               onClick={() => void retry()}><RefreshCw size={14} />重试</button>
           )}
-          <button className="result-footer-button" type="button" disabled={!state.content} onClick={() => void copy()}>
+          <button className="result-footer-button" type="button" disabled={!hasContent} onClick={() => void copy()}>
             {copyComplete ? <Check size={14} /> : <Copy size={14} />}{copyComplete ? '已复制' : '复制'}
           </button>
         </div>
