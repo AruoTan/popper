@@ -202,46 +202,76 @@ function ResultStreamBody({
 }
 
 /**
- * Thinking panel: collapsed by default so answer space stays clean; click to open.
- * Header still appears as soon as reasoning streams so the user sees activity.
+ * Thinking panel: auto-expands while the model is still reasoning (no answer yet)
+ * so users see progress; collapses once an answer arrives unless the user toggled.
+ * Click always wins after the first manual interaction.
  */
 function ThinkingPanel(): JSX.Element | null {
   const thinkingContent = useResultField((state) => state.thinkingContent)
   const status = useResultField((state) => state.status)
   const hasAnswer = useResultField((state) => state.content.length > 0)
   const [expanded, setExpanded] = useState(false)
-
-  // New request clears thinking → reset to collapsed.
-  useEffect(() => {
-    if (thinkingContent.length === 0) setExpanded(false)
-  }, [thinkingContent])
-
-  if (!thinkingContent) return null
+  const userToggledRef = useRef(false)
 
   const streaming = status === 'streaming' && !hasAnswer
 
+  // New request clears thinking → reset collapse + user preference.
+  useEffect(() => {
+    if (thinkingContent.length === 0) {
+      setExpanded(false)
+      userToggledRef.current = false
+    }
+  }, [thinkingContent])
+
+  // Auto open while reasoning, auto close when the answer starts (unless user toggled).
+  useEffect(() => {
+    if (thinkingContent.length === 0 || userToggledRef.current) return
+    if (streaming) setExpanded(true)
+    else if (hasAnswer) setExpanded(false)
+  }, [thinkingContent.length, streaming, hasAnswer])
+
+  if (!thinkingContent) return null
+
   return (
-    <section className="result-thinking" data-testid="result-thinking" aria-label="思考过程">
+    <section
+      className={`result-thinking ${streaming ? 'result-thinking--live' : ''} ${expanded ? 'result-thinking--open' : ''}`}
+      data-testid="result-thinking"
+      aria-label="思考过程"
+    >
       <button
         type="button"
         className="result-thinking__toggle"
         aria-expanded={expanded}
-        onClick={() => setExpanded((current) => !current)}
+        onClick={() => {
+          userToggledRef.current = true
+          setExpanded((current) => !current)
+        }}
       >
         <span className="result-thinking__title">
           {streaming ? (
             <>
-              <LoaderCircle className="result-spin" size={14} />
+              <span className="result-thinking__pulse" aria-hidden="true" />
               <span>思考中…</span>
             </>
           ) : (
-            <span>思考过程</span>
+            <>
+              <span className="result-thinking__badge" aria-hidden="true">思考</span>
+              <span>思考过程</span>
+            </>
           )}
         </span>
-        <ChevronDown size={14} className={expanded ? 'is-expanded' : ''} />
+        <span className="result-thinking__meta">
+          <span className="result-thinking__hint">
+            {expanded ? '收起' : '展开'}
+          </span>
+          <ChevronDown size={14} className={expanded ? 'is-expanded' : ''} />
+        </span>
       </button>
       {expanded && (
-        <div className="result-thinking__body stream-plain-text">{thinkingContent}</div>
+        <div className="result-thinking__body stream-plain-text">
+          {thinkingContent}
+          {streaming && <span className="stream-caret" aria-hidden="true" />}
+        </div>
       )}
     </section>
   )
@@ -1033,9 +1063,26 @@ function ResultSessionApp({
                   onOpenExternal={openExternal}
                 />
               ) : status === 'error' ? null : hasThinking ? null : (
-                <div className="result-placeholder">
-                  {status === 'streaming' ? <><LoaderCircle className="result-spin" size={24} /><span>正在等待模型响应…</span></>
-                    : <span>正在准备结果…</span>}
+                <div
+                  className={`result-placeholder ${
+                    status === 'streaming' ? 'result-placeholder--waiting' : ''
+                  }`}
+                >
+                  {status === 'streaming' ? (
+                    <>
+                      <span className="result-waiting-dots" aria-hidden="true">
+                        <span />
+                        <span />
+                        <span />
+                      </span>
+                      <span>正在等待模型响应…</span>
+                      <span className="result-placeholder__hint">
+                        收到首字后会实时流式显示
+                      </span>
+                    </>
+                  ) : (
+                    <span>正在准备结果…</span>
+                  )}
                 </div>
               )}
             </>
@@ -1107,13 +1154,36 @@ function ResultSessionApp({
             </button>
           )}
           {status === 'streaming' ? (
-            <button className="result-footer-button" type="button" onClick={() => void cancel()}><Square size={13} fill="currentColor" />停止</button>
+            <button
+              className="result-footer-button result-footer-button--stop"
+              type="button"
+              onClick={() => void cancel()}
+              title="停止本次生成"
+            >
+              <Square size={13} fill="currentColor" />
+              停止
+            </button>
           ) : (
-            <button className="result-footer-button" type="button" disabled={retrying || !requestId || (status === 'error' && !retryable)}
-              onClick={() => void retry()}><RefreshCw size={14} />重试</button>
+            <button
+              className="result-footer-button"
+              type="button"
+              disabled={retrying || !requestId || (status === 'error' && !retryable)}
+              onClick={() => void retry()}
+              title="使用相同选区重新生成"
+            >
+              <RefreshCw size={14} />
+              重试
+            </button>
           )}
-          <button className="result-footer-button" type="button" disabled={!hasContent} onClick={() => void copy()}>
-            {copyComplete ? <Check size={14} /> : <Copy size={14} />}{copyComplete ? '已复制' : '复制'}
+          <button
+            className={`result-footer-button ${copyComplete ? 'result-footer-button--done' : ''}`}
+            type="button"
+            disabled={!hasContent}
+            onClick={() => void copy()}
+            title={hasContent ? '复制结果到剪贴板' : '生成完成后可复制'}
+          >
+            {copyComplete ? <Check size={14} /> : <Copy size={14} />}
+            {copyComplete ? '已复制' : '复制'}
           </button>
         </div>
       </footer>

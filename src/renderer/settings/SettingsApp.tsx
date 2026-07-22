@@ -104,12 +104,36 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
   label: string
   blurb: string
 }> = [
-  { id: 'general', label: '通用', blurb: '启用状态、触发方式与工具条样式。' },
-  { id: 'providers', label: '服务商', blurb: '配置服务商、密钥与模型。' },
-  { id: 'actions', label: '动作', blurb: '管理工具栏动作与排序。' },
-  { id: 'language', label: '语言', blurb: 'AI 回复语言与翻译语言对。' },
-  { id: 'result', label: '结果', blurb: '结果窗口位置、尺寸与关闭行为。' },
-  { id: 'filter', label: '过滤', blurb: '控制在哪些应用中启用。' }
+  {
+    id: 'general',
+    label: '通用',
+    blurb: '开关助手、选择划词或快捷键触发，并调整工具条外观。'
+  },
+  {
+    id: 'providers',
+    label: '服务商',
+    blurb: '按顺序：填写 API → 测试连接 → 获取模型 → 保存设置。'
+  },
+  {
+    id: 'actions',
+    label: '动作',
+    blurb: '决定工具栏显示哪些功能，可拖拽排序；启用的会出现在划词工具栏。'
+  },
+  {
+    id: 'language',
+    label: '语言',
+    blurb: '设置 AI 默认回复语言，以及翻译的源语言与目标语言。'
+  },
+  {
+    id: 'result',
+    label: '结果',
+    blurb: '结果窗口出现位置、默认大小，以及点击外部时如何关闭。'
+  },
+  {
+    id: 'filter',
+    label: '过滤',
+    blurb: '可限制只在部分应用中启用划词，或排除干扰较多的应用。'
+  }
 ]
 
 const LANGUAGE_NAMES: Readonly<Record<SupportedLocale, string>> = {
@@ -1001,25 +1025,32 @@ export function SettingsApp(): JSX.Element {
           </div>
         )}
 
-        <div className="settings-shell__content">
+        <div className="settings-shell__content" key={activeSection}>
           {activeSection === 'general' && (
             <>
-              <section className="settings-section" aria-labelledby="general-title">
+              <section className="settings-section settings-section--enter" aria-labelledby="general-title">
                 <div className="section-heading">
                   <div>
                     <h2 id="general-title">{activeMeta.label}</h2>
                     <p>{activeMeta.blurb}</p>
                   </div>
                 </div>
+                <div className="settings-tip" role="note">
+                  <span className="settings-tip__label">使用提示</span>
+                  <p>
+                    推荐先保持「划词后」触发；若与其他软件冲突，可改用快捷键。改完后点右下角
+                    <strong>保存设置</strong>才会生效。
+                  </p>
+                </div>
                 <div className="settings-card settings-card--rows">
                   <SettingSwitch
                     title="启用划词助手"
-                    description="关闭后不再监听新的文本选择。"
+                    description="关闭后不再监听新的文本选择，复制与搜索等动作也会暂停。"
                     checked={draft.enabled}
                     onChange={(enabled) => changeDraft((current) => ({ ...current, enabled }))}
                   />
                   <div className="setting-row setting-row--stackable">
-                    <div><strong>触发方式</strong><p>自动响应划词，或仅通过全局快捷键捕获当前选区。</p></div>
+                    <div><strong>触发方式</strong><p>「划词后」自动弹出工具栏；「快捷键」仅在按下组合键时捕获选区。</p></div>
                     <div className="segmented-control" role="radiogroup" aria-label="触发方式">
                       {(['selected', 'shortcut'] as const).map((mode) => (
                         <button type="button" role="radio" aria-checked={draft.trigger.mode === mode}
@@ -1146,10 +1177,19 @@ export function SettingsApp(): JSX.Element {
           )}
 
           {activeSection === 'providers' && (
-          <section className="settings-section" aria-labelledby="providers-title">
+          <section className="settings-section settings-section--enter" aria-labelledby="providers-title">
         <div className="section-heading section-heading--actions">
           <div><h2 id="providers-title">AI 服务商与模型</h2><p>{activeMeta.blurb}</p></div>
           <button className="button" type="button" onClick={addProvider}><Plus size={15} />添加服务商</button>
+        </div>
+        <div className="settings-tip" role="note">
+          <span className="settings-tip__label">配置顺序</span>
+          <ol className="settings-tip__steps">
+            <li>填写 API 地址与 Key</li>
+            <li>测试连接确认可用</li>
+            <li>获取模型并勾选常用项</li>
+            <li>保存设置，再到「动作」里绑定模型</li>
+          </ol>
         </div>
         <div className="provider-stack">
           {draft.providers.map((provider) => (
@@ -1166,7 +1206,9 @@ export function SettingsApp(): JSX.Element {
                   <input className="control" type="url" value={provider.baseUrl} spellCheck={false}
                     placeholder="https://api.example.com/v1 或 http://localhost:11434/v1"
                     onChange={(event) => changeProvider(provider.id, (current) => ({ ...current, baseUrl: event.target.value }))} />
-                  <span className="field__hint">支持 HTTP 和 HTTPS；地址应包含版本前缀，但不要包含 /chat/completions。</span>
+                  <span className="field__hint">
+                    填写到版本前缀即可，例如 <code>…/v1</code>；不要带 <code>/chat/completions</code>。本地 Ollama 可用 HTTP。
+                  </span>
                   {usesPlainHttp(provider.baseUrl) && <span className="provider-http-warning" role="alert">
                     <CircleAlert size={15} aria-hidden="true" />当前服务使用 HTTP，API Key 将通过网络明文传输。仅在你信任的网络和服务中使用。
                   </span>}
@@ -1244,7 +1286,9 @@ export function SettingsApp(): JSX.Element {
                           />
                         ))}
                         {provider.models.length === 0 && (
-                          <span className="model-empty">尚无模型，可获取或手动添加。</span>
+                          <span className="model-empty">
+                            尚无模型。可点「获取模型」多选添加，或在上方手动输入模型 ID。
+                          </span>
                         )}
                       </div>
                     </SortableContext>
@@ -1253,13 +1297,18 @@ export function SettingsApp(): JSX.Element {
               </div>
             </article>
           ))}
-          {draft.providers.length === 0 && <div className="settings-card empty-card">尚未配置服务商；本地复制、搜索仍可使用。</div>}
+          {draft.providers.length === 0 && (
+            <div className="settings-card empty-card empty-card--guided">
+              <strong>尚未配置服务商</strong>
+              <p>本地「复制」「搜索」仍可使用。需要翻译、总结等 AI 功能时，点右上角「添加服务商」开始。</p>
+            </div>
+          )}
         </div>
       </section>
           )}
 
           {activeSection === 'actions' && (
-      <section className="settings-section" aria-labelledby="actions-title">
+      <section className="settings-section settings-section--enter" aria-labelledby="actions-title">
         <div className="section-heading section-heading--actions">
           <div>
             <h2 id="actions-title">工具栏动作</h2>
@@ -1298,7 +1347,7 @@ export function SettingsApp(): JSX.Element {
           )}
 
           {activeSection === 'language' && (
-      <section className="settings-section" aria-labelledby="language-title">
+      <section className="settings-section settings-section--enter" aria-labelledby="language-title">
         <div className="section-heading">
           <div>
             <h2 id="language-title">{activeMeta.label}</h2>
@@ -1373,7 +1422,7 @@ export function SettingsApp(): JSX.Element {
           )}
 
           {activeSection === 'result' && (
-      <section className="settings-section" aria-labelledby="result-title">
+      <section className="settings-section settings-section--enter" aria-labelledby="result-title">
         <div className="section-heading"><div><h2 id="result-title">结果窗口</h2><p>{activeMeta.blurb}</p></div></div>
         <div className="settings-card settings-card--rows">
           <SettingSwitch title="跟随鼠标位置" description="在点击动作时的鼠标附近打开结果，空间不足时自动翻转。"
@@ -1404,7 +1453,7 @@ export function SettingsApp(): JSX.Element {
           )}
 
           {activeSection === 'filter' && (
-      <section className="settings-section" aria-labelledby="filter-title">
+      <section className="settings-section settings-section--enter" aria-labelledby="filter-title">
         <div className="section-heading"><div><h2 id="filter-title">应用过滤</h2><p>{activeMeta.blurb}</p></div></div>
         <div className="settings-card settings-card--rows">
           <div className="setting-row setting-row--stackable">
@@ -1432,10 +1481,34 @@ export function SettingsApp(): JSX.Element {
           )}
         </div>
 
-        <footer className="settings-footer">
-          <span>{dirty || keysDirty ? '有尚未保存的更改' : '所有更改均已保存'}</span>
-          <button className="button button--primary settings-save" type="button" disabled={busy} onClick={() => void save()}>
-            {operation === 'save' && <LoaderCircle className="settings-spin" size={15} />}保存设置</button>
+        <footer
+          className={`settings-footer ${dirty || keysDirty ? 'settings-footer--dirty' : ''}`}
+          aria-live="polite"
+        >
+          <span className="settings-footer__status">
+            {dirty || keysDirty ? (
+              <>
+                <span className="settings-footer__dot" aria-hidden="true" />
+                有尚未保存的更改
+              </>
+            ) : (
+              '所有更改均已保存'
+            )}
+          </span>
+          <button
+            className="button button--primary settings-save"
+            type="button"
+            disabled={busy}
+            onClick={() => void save()}
+            title={
+              dirty || keysDirty
+                ? '将当前更改写入并立即生效'
+                : '当前内容与已保存设置一致，仍可再次保存'
+            }
+          >
+            {operation === 'save' && <LoaderCircle className="settings-spin" size={15} />}
+            保存设置
+          </button>
         </footer>
       </div>
 

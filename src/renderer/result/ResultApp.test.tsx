@@ -842,7 +842,7 @@ describe('ResultApp window interactions', () => {
     expect(container.querySelector('.result-content')).toHaveTextContent(completedSession.content)
   })
 
-  it('shows thinking panel collapsed by default and expands on click', async () => {
+  it('auto-expands thinking while reasoning and collapses on manual toggle', async () => {
     await renderResult(
       resultSnapshot({
         status: 'streaming',
@@ -853,18 +853,19 @@ describe('ResultApp window interactions', () => {
     )
 
     expect(screen.getByTestId('result-thinking')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute(
-      'aria-expanded',
-      'false'
-    )
-    expect(screen.queryByText('先拆解题意，再给出解释。')).not.toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: /思考中/ }))
+    // While the model is still thinking (no answer yet), expand so users see progress.
     expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute(
       'aria-expanded',
       'true'
     )
     expect(screen.getByText('先拆解题意，再给出解释。')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /思考中/ }))
+    expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute(
+      'aria-expanded',
+      'false'
+    )
+    expect(screen.queryByText('先拆解题意，再给出解释。')).not.toBeInTheDocument()
   })
 
   it('uses stop while streaming and keeps error/loading states operable', async () => {
