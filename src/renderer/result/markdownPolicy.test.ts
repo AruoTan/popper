@@ -17,6 +17,9 @@ describe('rich Markdown policy', () => {
   it.each([
     '# heading',
     '- list item',
+    '• Chinese bullet',
+    '1、中文有序',
+    '（1）括号序号',
     '[link](https://example.com)',
     '```ts\nconst value = 1\n```',
     '$x^2$',

@@ -1,6 +1,9 @@
 export const RICH_MARKDOWN_SCALAR_LIMIT = 16_384
 
-const BLOCK_MARKDOWN = /(?:^|\n)[ \t]{0,3}(?:#{1,6}[ \t]+|>[ \t]+|[-+*][ \t]+|\d+[.)][ \t]+|```|~~~|\$\$|\|[^\n]*\|)/u
+// Includes Chinese-style list markers (1、 / （1） / •) so translation output
+// that only uses those markers still enters the rich Markdown path.
+const BLOCK_MARKDOWN =
+  /(?:^|\n)[ \t]{0,3}(?:#{1,6}[ \t]+|>[ \t]+|[-+*•·●○][ \t]+|\d+[.)、．][ \t]*|[（(]\d+[）)][ \t]*|```|~~~|\$\$|\|[^\n]*\|)/u
 const INLINE_MARKDOWN = /(?:\[[^\]\n]+\]\([^\n)]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|\$[^$\n]+\$)/u
 
 /**
