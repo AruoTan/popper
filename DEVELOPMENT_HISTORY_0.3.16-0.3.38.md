@@ -1,15 +1,15 @@
-# TextLens 从 macOS 0.3.16 到 0.3.46 的开发记录
+# TextLens 从 macOS 0.3.16 到 0.3.51 的开发记录
 
-整理日期：2026-07-18  
-版本范围：macOS 0.3.16 至 TextLens 0.3.46
+整理日期：2026-07-22  
+版本范围：macOS 0.3.16 至 TextLens 0.3.51
 
 ## 文档说明
 
-本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.46 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
+本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.51 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
 
 这段开发并不是一次简单的平台移植。macOS 版本依赖 Accessibility API、Event Tap、Core Graphics 和 AppKit；Windows 需要重新处理 UI Automation、Win32 输入 Hook、OLE 剪贴板、WebView2、混合 DPI、窗口激活规则和通知区域生命周期。项目始终保留同一套 React renderer、设置结构、动作服务、模型请求和流式输出，仅在必须依赖操作系统的部分使用平台实现。
 
-版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 0.3.46；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
+版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.51**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
 
 ## 开发阶段概览
 
@@ -624,3 +624,31 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **结果 store：** 取消 immediate 字符预算 + rAF 合并；每个 delta 同步进入快照，长翻译不再周期性冻结后跳跃。
 - **播放层：** streaming 时同步返回 target 文本（无 useLayoutEffect 一帧延迟），安全后缀跳过全文 Segmenter；仅 ZWJ/组合字符仍排队。
 - 产品版本升至 0.3.48。
+
+## 0.3.49：可迁移开发源码包
+
+（整理日期：2026-07-22）
+
+- **文档与导出：** 同步源码包版本与 README；`pnpm export:dev-source` 导出干净可迁移工作区（无 `node_modules` / `target` / 安装包）。
+- **包内说明：** 增加 `PORTABLE_DEV_SOURCE.md`，约定新机器上的 Node / pnpm / Rust 与平台工具链要求。
+- 产品版本升至 0.3.49。
+
+## 0.3.50：问AI 多轮对话 + 流式首字再优化
+
+（整理日期：2026-07-22）
+
+- **动作模型：** 默认「引用」升级为「问AI」（`ask`）；设置 schema 迁移；动作编辑与图标选择同步。
+- **问AI 会话：** 点击后打开结果窗，可不立即请求模型；底部输入框支持首轮 continue 与多轮 transcript；会话仅在当前结果窗内累计。
+- **流式性能：** SSE 每个 content delta 立即 emit；前端 store 同步直通，进一步压低 TTFB 与卡顿。
+- **文档：** README 功能与版本表同步到 0.3.50。
+- 产品版本升至 0.3.50。
+
+## 0.3.51：自适应流式显示与 thinking 透传
+
+（整理日期：2026-07-22）
+
+- **显示层：** 新增自适应打字机（`useSmoothStreamText` / `streamPlayback` 平滑控制器）：逻辑全文仍即时进入 store，UI 按 backlog 调节揭晓速度，突发 token 不再整段倾泻；首包小 burst 兼顾 TTFB。
+- **Thinking：** OpenAI-compatible SSE 解析 thinking/reasoning 增量；会话 flusher 与结果窗事件链路端到端透传。
+- **后端泵：** action flusher 按批（约 16 次 emit）再 yield，减少密集 IPC 与调度抖动。
+- **版本对齐：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.51。
+- 产品版本升至 0.3.51。

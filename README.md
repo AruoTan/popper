@@ -1,10 +1,10 @@
 # TextLens
 
-TextLens 是一个轻量的桌面划词助手。当前源码版本是 **0.3.50**，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
+TextLens 是一个轻量的桌面划词助手。当前源码版本是 **0.3.51**，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
 
 用户在其他应用中选中文字后，可以直接执行复制、搜索、翻译、总结、解释、润色、问AI 及自定义 AI 动作。macOS 版本常驻菜单栏，默认不在 Dock 显示；Windows 版本普通启动后在通知区域和后台运行，仅显示短暂的“TextLens 已启动”提示，设置窗口由用户从通知区域打开。TextLens 不保存划词历史，只有用户主动点击 AI 动作后才会把选中文字发送给所配置的模型服务。
 
-当前源码和文档已同步到 0.3.50。本版本将原「引用」动作升级为「问AI」多轮对话，并进一步降低流式首字延迟：SSE 每个 content delta 立即下发，前端同步直通显示。0.3.49 整理可迁移开发源码包与发布文档；0.3.48 起针对翻译等结果的流式卡顿做了结构性优化。Windows 测试安装包继续由 NSIS 构建。两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。
+当前源码和文档已同步到 0.3.51。本版本在 0.3.50「问AI」与流式首字优化之上，增加自适应打字机式流式显示、thinking 增量透传与 flusher 批处理。0.3.50 将原「引用」升级为「问AI」多轮对话，并做到 SSE content delta 即时下发；0.3.49 整理可迁移开发源码包；0.3.48 起针对翻译等结果的流式卡顿做了结构性优化。Windows 测试安装包继续由 NSIS 构建。两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。
 
 ## 与 Cherry Studio 的关系
 
@@ -20,7 +20,8 @@ TextLens 当前没有声明独立的开源许可证。Cherry Studio 改编材料
 
 - 划词后显示复制、搜索、翻译、总结、解释、润色、问AI 和自定义动作。
 - 工具栏「问AI」：以划词文本为上下文打开结果窗，在底部输入框多轮提问；会话仅在本结果窗内累计，新划词重新开始。
-- 翻译 / 解释 / 总结：流式首字与后续 token 同步直通显示，降低结果窗等待与卡顿。
+- 翻译 / 解释 / 总结：流式首字即时可见；逻辑文本即时入 store，界面以自适应速度平滑揭晓，减少突发 token 整段倾泻的卡顿感。
+- 支持模型 thinking / reasoning 增量流式展示（OpenAI-compatible 字段解析后推送到结果窗）。
 - 工具栏动作可以启停、改名、拖动排序、更换 Lucide 图标，并可设置为只显示图标。
 - 工具栏默认不高亮任何动作；鼠标无需按下，直接移入某个动作时才显示浅色悬停阴影，移开立即恢复。
 - 标准辅助功能接口无法取得文本时，可在微信、WPS、飞书、钉钉、Teams、Slack、Telegram、Notion、Codex、ChatGPT 和 CodeG 等内容区/自绘或 WebKit 文本区域尝试临时复制选区，并在读取后恢复包括文本、图片、文件和富文本在内的原剪贴板内容。
@@ -216,9 +217,9 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 例如当前版本会导出为：
 
-    portable-dev-sources/TextLens-0.3.49-dev-source
+    portable-dev-sources/TextLens-0.3.51-dev-source
 
-也可将上述目录复制到仓库外，作为独立的 `TextLens-0.3.49-dev-source` 文件夹或压缩包分发；包内只含源码与文档，便于整夹拷贝到其他机器继续开发。
+也可将上述目录复制到仓库外，作为独立的 `TextLens-0.3.51-dev-source` 文件夹或压缩包分发；包内只含源码与文档，便于整夹拷贝到其他机器继续开发。
 
 ### 导出内容
 
@@ -240,7 +241,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 ### 迁移到其他电脑后
 
-1. 把整个 `TextLens-0.3.49-dev-source` 文件夹复制到目标机器。
+1. 把整个 `TextLens-0.3.51-dev-source` 文件夹（或已重命名的 `TextLens` 工作区）复制到目标机器。
 2. 安装 Node.js 22+、pnpm 11+，以及对应平台的 Rust / 平台工具链。
 3. 在源码根目录执行：
 
@@ -272,7 +273,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 以下记录根据本项目连续开发需求与当前实现整理。部分小版本是内部迭代，重点记录功能变化，不等同于正式公开发行说明。
 
-macOS 0.3.16 到 0.3.48 的完整开发复盘见 [DEVELOPMENT_HISTORY_0.3.16-0.3.38.md](./DEVELOPMENT_HISTORY_0.3.16-0.3.38.md)。
+macOS 0.3.16 到 0.3.51 的完整开发复盘见 [DEVELOPMENT_HISTORY_0.3.16-0.3.38.md](./DEVELOPMENT_HISTORY_0.3.16-0.3.38.md)。
 
 | 版本 | 主要变化 |
 | --- | --- |
@@ -319,6 +320,8 @@ macOS 0.3.16 到 0.3.48 的完整开发复盘见 [DEVELOPMENT_HISTORY_0.3.16-0.3
 | 0.3.47 | 关闭结果时尽量取消宿主划词高亮；流式首字近零延迟（document 就绪前置、hydrate 后即时预算、streaming 直通）。 |
 | 0.3.48 | 消除翻译流式卡顿：SSE 逐段即时 emit、store 取消 rAF 合并、playback 同步直通（跳过全文 Segmenter）。 |
 | 0.3.49 | 同步源码包版本与 README，导出可迁移开发源码快照。 |
+| 0.3.50 | 将默认「引用」动作升级为「问AI」：打开结果窗多轮提问（首轮可只带上下文）；多轮 transcript UI；SSE content delta 立即下发、前端同步直通，降低首字延迟；设置 schema 迁移；版本与文档同步。 |
+| 0.3.51 | 结果窗自适应打字机式流式显示（store 仍即时收齐逻辑文本）；thinking/reasoning 增量端到端透传；action flusher 按批 yield 降低 IPC 抖动；版本与文档同步到 0.3.51。 |
 
 跨版本累计完成的其他能力包括：多服务商多模型、自定义动作、HTTP 服务地址、URL/IP 直达、结果窗拖动与尺寸记忆、置顶与多种自动关闭方式、结果正文再次划词、安全 Markdown、模型重试与临时切换。
 
