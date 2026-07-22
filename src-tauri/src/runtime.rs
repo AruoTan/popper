@@ -241,6 +241,11 @@ fn dismiss_hide_plan(cleared_id: Option<String>, _scoped_hide_succeeded: bool) -
 /// auto-presentation for a short window.
 const SAME_TEXT_SELECTION_SUPPRESS_MS: u64 = 2_000;
 
+/// Delay before collapsing the host highlight after a result closes. A synchronous
+/// AX/UIA clear on the same gesture that blurs the result races the next drag and
+/// can drop the capture (no toolbar). Cancel if a new selection is accepted first.
+const HOST_SELECTION_CLEAR_DELAY_MS: u64 = 200;
+
 #[derive(Debug, Clone)]
 struct SameTextSelectionSuppress {
     text: String,
@@ -263,6 +268,17 @@ fn same_text_selection_suppress(
         text: text.into(),
         until: now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS),
     }
+}
+
+/// Token match check for deferred host clear. A cancelled / superseded clear
+/// holds a stale scheduled token and must be a no-op.
+fn should_fire_pending_host_clear(scheduled_token: u64, current_token: u64) -> bool {
+    scheduled_token == current_token
+}
+
+/// Pure token bump used when cancelling or replacing a pending host clear.
+fn next_host_clear_token(current: u64) -> u64 {
+    current.wrapping_add(1)
 }
 
 /// Arguments for best-effort host OS deselect when a result session ends.
@@ -474,6 +490,9 @@ pub struct RuntimeState {
     /// Blocks re-presenting the same text shortly after copy/dismiss (see
     /// `should_suppress_same_text_selection`).
     same_text_selection_suppress: Mutex<Option<SameTextSelectionSuppress>>,
+    /// Generation token for deferred host selection clear after result close.
+    /// Bumped on cancel or when a newer clear is scheduled so in-flight tasks no-op.
+    pending_host_clear_token: AtomicU64,
     result_creation: Mutex<()>,
     result_sessions: Mutex<HashMap<String, ResultSessionMeta>>,
     result_reveals: Mutex<HashMap<String, ResultRevealHandshake>>,
@@ -503,6 +522,7 @@ impl RuntimeState {
             current_selection: Mutex::new(None),
             consuming_selection_ids: Mutex::new(HashSet::new()),
             same_text_selection_suppress: Mutex::new(None),
+            pending_host_clear_token: AtomicU64::new(0),
             result_creation: Mutex::new(()),
             result_sessions: Mutex::new(HashMap::new()),
             result_reveals: Mutex::new(HashMap::new()),
@@ -527,6 +547,33 @@ impl RuntimeState {
             text.to_owned(),
             Instant::now(),
         ));
+    }
+
+    /// Bump the deferred-clear generation so any in-flight host clear is a no-op.
+    fn cancel_pending_host_selection_clear(&self) {
+        // fetch_add(1) matches `next_host_clear_token` including wrap at u64::MAX.
+        self.pending_host_clear_token.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Schedule a best-effort host highlight collapse after
+    /// [`HOST_SELECTION_CLEAR_DELAY_MS`]. Replaces any previous pending clear.
+    /// Cancelled when a new selection is accepted for toolbar presentation.
+    fn schedule_host_selection_clear(&self, app: AppHandle, clear: HostSelectionClear) {
+        let previous = self
+            .pending_host_clear_token
+            .fetch_add(1, Ordering::AcqRel);
+        let token = next_host_clear_token(previous);
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(HOST_SELECTION_CLEAR_DELAY_MS)).await;
+            let state = app.state::<RuntimeState>();
+            if !should_fire_pending_host_clear(
+                token,
+                state.pending_host_clear_token.load(Ordering::Acquire),
+            ) {
+                return;
+            }
+            let _ = SelectionMonitor::clear_matching_text(clear.bundle_id.as_deref(), &clear.text);
+        });
     }
 
     pub fn process_selection_event(&self, app: &AppHandle, event: SelectionEvent) {
@@ -683,6 +730,10 @@ impl RuntimeState {
             *self.current_selection.lock() = None;
             return;
         }
+
+        // Selection accepted for toolbar presentation: do not collapse the host
+        // highlight that the user is actively dragging / has just captured.
+        self.cancel_pending_host_selection_clear();
 
         // A genuine new selection in another application starts a new
         // transient workflow. Sticky/pinned results remain available, while
@@ -1156,7 +1207,7 @@ impl RuntimeState {
             let label = result_label(&session_id);
             self.persist_result_size_now(app, &label);
             if self.windows.close_result(app, &label).is_ok() {
-                self.cleanup_result_session(&session_id);
+                self.cleanup_result_session(app, &session_id);
             }
         }
     }
@@ -1230,10 +1281,10 @@ impl RuntimeState {
         self.result_reveals.lock().remove(session_id);
         let _ = self.actions.cancel(app, session_id);
         let _ = self.windows.close_result(app, &result_label(session_id));
-        self.cleanup_result_session(session_id);
+        self.cleanup_result_session(app, session_id);
     }
 
-    pub fn cleanup_result_session(&self, session_id: &str) {
+    pub fn cleanup_result_session(&self, app: &AppHandle, session_id: &str) {
         self.fail_result_reveal_handshake(
             session_id,
             "结果窗口在完成显示前被关闭，请重试".to_owned(),
@@ -1243,10 +1294,9 @@ impl RuntimeState {
         // Closing a translate/explain/etc. window often coincides with an
         // outside click. Suppress re-presenting the original selection text so
         // the toolbar does not jump to the cursor after the result disappears.
-        // Then best-effort collapse the host highlight when it still matches.
-        // Order matters: suppress must arm before any AX/UIA write that could
-        // trigger a re-capture. Clipboard-only captures often cannot be written;
-        // suppress still holds for toolbar no-repop.
+        // Host highlight clear is deferred: a synchronous AX/UIA write on the
+        // same gesture races the next drag and can drop the capture. Arm
+        // suppress once here (destroy path must not re-arm for the same close).
         if let Some(meta) = self.result_sessions.lock().remove(session_id) {
             let text = meta.selection.payload.text.clone();
             self.arm_same_text_selection_suppress(&text);
@@ -1254,8 +1304,7 @@ impl RuntimeState {
                 &text,
                 Some(meta.selection.payload.source_app.bundle_id.as_str()),
             ) {
-                let _ =
-                    SelectionMonitor::clear_matching_text(args.bundle_id.as_deref(), &args.text);
+                self.schedule_host_selection_clear(app.clone(), args);
             }
         }
     }
@@ -1351,13 +1400,14 @@ impl RuntimeState {
                 // Snapshot original selection text before session cleanup so we
                 // can drop a same-text live selection that a concurrent
                 // mouse-up may have just re-captured.
+                // Same-text suppress is armed once in `cleanup_result_session`
+                // (not here) so Destroyed + cleanup do not extend the 2s window.
                 let result_text = self
                     .result_sessions
                     .lock()
                     .get(&session_id)
                     .map(|meta| meta.selection.payload.text.clone());
                 if let Some(ref text) = result_text {
-                    self.arm_same_text_selection_suppress(text);
                     let mut current = self.current_selection.lock();
                     if current
                         .as_ref()
@@ -1374,7 +1424,7 @@ impl RuntimeState {
                     self.windows.hide_toolbar(app);
                 }
                 self.windows.remove_result(label);
-                self.cleanup_result_session(&session_id);
+                self.cleanup_result_session(app, &session_id);
             }
             _ => {}
         }
@@ -2690,7 +2740,7 @@ pub fn hide_result(
         .windows
         .close_result(&app, window.label())
         .map_err(|error| error.to_string())?;
-    state.cleanup_result_session(&session_id);
+    state.cleanup_result_session(&app, &session_id);
     Ok(())
 }
 
@@ -2707,7 +2757,7 @@ pub fn close_result(
         .windows
         .close_result(&app, window.label())
         .map_err(|error| error.to_string())?;
-    state.cleanup_result_session(&session_id);
+    state.cleanup_result_session(&app, &session_id);
     Ok(())
 }
 
@@ -3530,6 +3580,65 @@ mod tests {
             now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS + 1)
         ));
         assert!(!should_suppress_same_text_selection(None, "hello", now));
+    }
+
+    #[test]
+    fn same_text_suppress_rearm_extends_deadline() {
+        // Document that re-arming replaces the until deadline. Cleanup must arm
+        // only once per close so Destroyed + cleanup do not extend the 2s window.
+        let now = Instant::now();
+        let first = same_text_selection_suppress("hello", now);
+        let rearmed =
+            same_text_selection_suppress("hello", now + Duration::from_millis(500));
+        let after_first_deadline =
+            now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS + 100);
+        assert!(!should_suppress_same_text_selection(
+            Some(&first),
+            "hello",
+            after_first_deadline
+        ));
+        // Rearm at +500ms still holds past the first arm's deadline.
+        assert!(should_suppress_same_text_selection(
+            Some(&rearmed),
+            "hello",
+            after_first_deadline
+        ));
+        assert!(!should_suppress_same_text_selection(
+            Some(&rearmed),
+            "hello",
+            now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS + 501)
+        ));
+    }
+
+    #[test]
+    fn pending_host_clear_fires_only_when_token_current() {
+        assert!(should_fire_pending_host_clear(3, 3));
+        assert!(!should_fire_pending_host_clear(3, 4));
+        assert!(!should_fire_pending_host_clear(3, 2));
+        assert!(should_fire_pending_host_clear(0, 0));
+    }
+
+    #[test]
+    fn cancel_pending_host_clear_bumps_token_so_scheduled_is_noop() {
+        let scheduled = 5u64;
+        let after_cancel = next_host_clear_token(scheduled);
+        assert_eq!(after_cancel, 6);
+        assert!(!should_fire_pending_host_clear(scheduled, after_cancel));
+        assert!(should_fire_pending_host_clear(after_cancel, after_cancel));
+        // Wrapping is supported so generation never panics at u64::MAX.
+        assert_eq!(next_host_clear_token(u64::MAX), 0);
+        assert!(!should_fire_pending_host_clear(u64::MAX, 0));
+    }
+
+    #[test]
+    fn host_selection_clear_delay_is_within_design_range() {
+        assert!(
+            (150..=300).contains(&HOST_SELECTION_CLEAR_DELAY_MS),
+            "deferred clear delay must stay in 150–300ms (got {})",
+            HOST_SELECTION_CLEAR_DELAY_MS
+        );
+        assert_eq!(HOST_SELECTION_CLEAR_DELAY_MS, 200);
+        assert_eq!(SAME_TEXT_SELECTION_SUPPRESS_MS, 2_000);
     }
 
     #[test]
