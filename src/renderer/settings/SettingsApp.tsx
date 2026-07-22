@@ -84,6 +84,26 @@ import {
 
 type Operation = string | null
 type Banner = { kind: 'success' | 'error'; text: string } | null
+type SettingsSectionId =
+  | 'general'
+  | 'providers'
+  | 'actions'
+  | 'language'
+  | 'result'
+  | 'filter'
+
+const SETTINGS_SECTIONS: ReadonlyArray<{
+  id: SettingsSectionId
+  label: string
+  blurb: string
+}> = [
+  { id: 'general', label: '通用', blurb: '启用状态、触发方式与工具条样式。' },
+  { id: 'providers', label: '服务商', blurb: '配置服务商、密钥与模型。' },
+  { id: 'actions', label: '动作', blurb: '管理工具栏动作与排序。' },
+  { id: 'language', label: '语言', blurb: 'AI 回复语言与翻译语言对。' },
+  { id: 'result', label: '结果', blurb: '结果窗口位置、尺寸与关闭行为。' },
+  { id: 'filter', label: '过滤', blurb: '控制在哪些应用中启用。' }
+]
 
 const LANGUAGE_NAMES: Readonly<Record<SupportedLocale, string>> = {
   'zh-CN': '简体中文',
@@ -202,6 +222,7 @@ export function SettingsApp(): JSX.Element {
   const [actionPendingDelete, setActionPendingDelete] = useState<ActionDefinition | null>(null)
   const [quitConfirmationOpen, setQuitConfirmationOpen] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('general')
   const dirtyRef = useRef(false)
   const unsavedChangesRef = useRef(false)
   const quittingRef = useRef(false)
@@ -239,14 +260,24 @@ export function SettingsApp(): JSX.Element {
     pendingGuidanceLeaseRef.current = null
     const guidance: SettingsGuidance = lease.value
     const focus = guidance.focus?.trim()
-    const targetId = focus === 'providers' ? 'providers-title' : 'actions-title'
-    const scroll = (): void => {
-      document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    let targetId: string | null = null
+    if (focus === 'providers') {
+      setActiveSection('providers')
+      targetId = 'providers-title'
+    } else if (focus === 'actions') {
+      setActiveSection('actions')
+      targetId = 'actions-title'
     }
-    // Wait a frame so the settings page has laid out after focus/show.
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(scroll)
-    })
+    if (targetId) {
+      const scrollTargetId = targetId
+      const scroll = (): void => {
+        document.getElementById(scrollTargetId)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      }
+      // Wait a frame so the focused section has mounted after the switch.
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(scroll)
+      })
+    }
     const notice = guidance.notice?.trim()
     if (notice) {
       setBanner({ kind: 'success', text: notice })
@@ -902,168 +933,195 @@ export function SettingsApp(): JSX.Element {
   const busy = operation !== null
   const permission = accessibilityPresentation(accessibility)
   const selectionAvailable = accessibility?.available ?? accessibility?.trusted ?? false
+  const activeMeta = SETTINGS_SECTIONS.find((section) => section.id === activeSection)
+    ?? SETTINGS_SECTIONS[0]!
 
   return (
-    <main className="settings-page settings-page--wide">
-      <header className="settings-hero">
-        <div className="settings-logo" aria-hidden="true"><Sparkles size={22} /></div>
-        <div>
-          <h1>{APP_NAME} 设置</h1>
-          <p>选中文字后，快速复制、打开网址、搜索或交给不同模型处理。</p>
-        </div>
-      </header>
+    <main className="settings-page settings-page--shell">
+      <aside className="settings-shell__nav">
+        <header className="settings-hero">
+          <div className="settings-logo" aria-hidden="true"><Sparkles size={22} /></div>
+          <div>
+            <h1>{APP_NAME} 设置</h1>
+            <p>划词后快速复制、搜索或交给 AI。</p>
+          </div>
+        </header>
+        <nav className="settings-nav" aria-label="设置分区">
+          {SETTINGS_SECTIONS.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={`settings-nav__item ${activeSection === section.id ? 'is-selected' : ''}`}
+              aria-current={activeSection === section.id ? 'page' : undefined}
+              onClick={() => setActiveSection(section.id)}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
 
-      {banner && (
-        <div
-          className={`notice notice--${banner.kind} settings-banner ${
-            bannerFading ? 'settings-banner--fading' : ''
-          }`}
-          role={banner.kind === 'error' ? 'alert' : 'status'}
-        >
-          {banner.kind === 'success' ? <Check size={16} aria-hidden="true" /> : <CircleAlert size={16} aria-hidden="true" />}
-          <span>{banner.text}</span>
-        </div>
-      )}
-
-      <section className="settings-section" aria-labelledby="general-title">
-        <div className="section-heading"><div><h2 id="general-title">通用</h2><p>控制启用状态、触发方式与工具条样式。</p></div></div>
-        <div className="settings-card settings-card--rows">
-          <SettingSwitch
-            title="启用划词助手"
-            description="关闭后不再监听新的文本选择。"
-            checked={draft.enabled}
-            onChange={(enabled) => changeDraft((current) => ({ ...current, enabled }))}
-          />
-          <div className="setting-row">
-            <div><strong>默认回答语言</strong><p>用于总结、解释、润色和自定义 AI 动作。</p></div>
-            <select className="control compact-control" value={draft.locale} onChange={(event) =>
-              changeDraft((current) => ({ ...current, locale: event.target.value as SupportedLocale }))}>
-              <option value="zh-CN">简体中文</option><option value="en-US">English</option>
-            </select>
-          </div>
-          <div className="setting-row setting-row--stackable">
-            <div><strong>触发方式</strong><p>自动响应划词，或仅通过全局快捷键捕获当前选区。</p></div>
-            <div className="segmented-control" role="radiogroup" aria-label="触发方式">
-              {(['selected', 'shortcut'] as const).map((mode) => (
-                <button type="button" role="radio" aria-checked={draft.trigger.mode === mode}
-                  className={draft.trigger.mode === mode ? 'is-selected' : ''} key={mode}
-                  onClick={() => changeDraft((current) => ({
-                    ...current,
-                    trigger: { mode },
-                    captureShortcut:
-                      mode === 'shortcut' && current.captureShortcut.trim() === ''
-                        ? SUGGESTED_CAPTURE_SHORTCUT
-                        : current.captureShortcut
-                  }))}>
-                  {mode === 'selected' ? '划词后' : '快捷键'}
-                </button>
-              ))}
-            </div>
-          </div>
-          {draft.trigger.mode === 'shortcut' && (
-            <div className="setting-row setting-row--stackable">
-              <div>
-                <strong>捕获当前选区快捷键</strong>
-                <p>点击输入框后按下组合键即可录制；Backspace 可清除。</p>
-              </div>
-              <div className="shortcut-capture">
-                <input
-                  className="control shortcut-control"
-                  value={draft.captureShortcut}
-                  maxLength={128}
-                  spellCheck={false}
-                  readOnly
-                  aria-label="捕获当前选区快捷键"
-                  placeholder="点击后按下组合键"
-                  onKeyDown={(event) => {
-                    if (event.key === 'Tab') return
-                    event.preventDefault()
-                    event.stopPropagation()
-                    if (event.key === 'Backspace' || event.key === 'Delete') {
-                      changeDraft((current) => ({ ...current, captureShortcut: '' }))
-                      return
-                    }
-                    if (event.key === 'Escape') {
-                      event.currentTarget.blur()
-                      return
-                    }
-                    const shortcut = formatKeyboardEventToTauriShortcut(event)
-                    if (!shortcut) return
-                    changeDraft((current) => ({ ...current, captureShortcut: shortcut }))
-                  }}
-                />
-                {draft.captureShortcut.trim() !== '' && (
-                  <button
-                    className="button button--ghost shortcut-clear"
-                    type="button"
-                    onClick={() => changeDraft((current) => ({ ...current, captureShortcut: '' }))}
-                  >
-                    清除
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-          <div className="setting-row">
-            <div><strong>工具条显示</strong><p>仅显示图标时仍保留悬浮提示和辅助功能名称。</p></div>
-            <select className="control compact-control" value={draft.toolbar.displayMode}
-              onChange={(event) => changeDraft((current) => ({
-                ...current,
-                toolbar: { displayMode: event.target.value as PublicSettings['toolbar']['displayMode'] }
-              }))}>
-              <option value="icon-label">图标和文字</option><option value="icon-only">仅图标</option>
-            </select>
-          </div>
-          {accessibility?.platform === 'windows' && (
-            <div className="setting-row">
-              <div>
-                <strong>关闭主窗口时</strong>
-                <p>隐藏后划词功能继续运行，也可选择直接退出 TextLens。</p>
-              </div>
-              <select
-                className="control compact-control"
-                aria-label="关闭主窗口时"
-                value={draft.application.closeBehavior}
-                onChange={(event) => changeDraft((current) => ({
-                  ...current,
-                  application: {
-                    closeBehavior: event.target.value as PublicSettings['application']['closeBehavior']
-                  }
-                }))}
-              >
-                <option value="hide-to-tray">隐藏到通知区域（默认）</option>
-                <option value="quit">退出 TextLens</option>
-              </select>
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="settings-section" aria-labelledby="permission-title">
-        <div className="section-heading"><div><h2 id="permission-title">{permission.heading}</h2><p>{permission.description}</p></div></div>
-        <div className="settings-card permission-card">
-          <div className={`permission-icon ${selectionAvailable ? 'permission-icon--ok' : ''}`}>
-            {selectionAvailable ? <ShieldCheck size={21} /> : <LockKeyhole size={21} />}
-          </div>
-          <div className="permission-copy"><strong>{permission.state}</strong>
-            <p>{permission.detail}</p></div>
-          <button className="button" type="button" disabled={busy || accessibility?.trusted || !accessibility?.canRequest}
-            onClick={() => void requestAccessibility()}>
-            {operation === 'accessibility' && <LoaderCircle className="settings-spin" size={15} />}
-            {permission.button}
-          </button>
-        </div>
-        {accessibility?.diagnostics?.shortcutError && (
-          <div className="notice notice--error runtime-diagnostic" role="status">
-            <CircleAlert size={16} aria-hidden="true" />
-            <div><strong>全局快捷键不可用</strong><p>{accessibility.diagnostics.shortcutError}</p></div>
+      <div className="settings-shell__main">
+        {banner && (
+          <div
+            className={`notice notice--${banner.kind} settings-banner ${
+              bannerFading ? 'settings-banner--fading' : ''
+            }`}
+            role={banner.kind === 'error' ? 'alert' : 'status'}
+          >
+            {banner.kind === 'success' ? <Check size={16} aria-hidden="true" /> : <CircleAlert size={16} aria-hidden="true" />}
+            <span>{banner.text}</span>
           </div>
         )}
-      </section>
 
-      <section className="settings-section" aria-labelledby="providers-title">
+        <div className="settings-shell__content">
+          {activeSection === 'general' && (
+            <>
+              <section className="settings-section" aria-labelledby="general-title">
+                <div className="section-heading">
+                  <div>
+                    <h2 id="general-title">{activeMeta.label}</h2>
+                    <p>{activeMeta.blurb}</p>
+                  </div>
+                </div>
+                <div className="settings-card settings-card--rows">
+                  <SettingSwitch
+                    title="启用划词助手"
+                    description="关闭后不再监听新的文本选择。"
+                    checked={draft.enabled}
+                    onChange={(enabled) => changeDraft((current) => ({ ...current, enabled }))}
+                  />
+                  <div className="setting-row setting-row--stackable">
+                    <div><strong>触发方式</strong><p>自动响应划词，或仅通过全局快捷键捕获当前选区。</p></div>
+                    <div className="segmented-control" role="radiogroup" aria-label="触发方式">
+                      {(['selected', 'shortcut'] as const).map((mode) => (
+                        <button type="button" role="radio" aria-checked={draft.trigger.mode === mode}
+                          className={draft.trigger.mode === mode ? 'is-selected' : ''} key={mode}
+                          onClick={() => changeDraft((current) => ({
+                            ...current,
+                            trigger: { mode },
+                            captureShortcut:
+                              mode === 'shortcut' && current.captureShortcut.trim() === ''
+                                ? SUGGESTED_CAPTURE_SHORTCUT
+                                : current.captureShortcut
+                          }))}>
+                          {mode === 'selected' ? '划词后' : '快捷键'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {draft.trigger.mode === 'shortcut' && (
+                    <div className="setting-row setting-row--stackable">
+                      <div>
+                        <strong>捕获当前选区快捷键</strong>
+                        <p>点击输入框后按下组合键即可录制；Backspace 可清除。</p>
+                      </div>
+                      <div className="shortcut-capture">
+                        <input
+                          className="control shortcut-control"
+                          value={draft.captureShortcut}
+                          maxLength={128}
+                          spellCheck={false}
+                          readOnly
+                          aria-label="捕获当前选区快捷键"
+                          placeholder="点击后按下组合键"
+                          onKeyDown={(event) => {
+                            if (event.key === 'Tab') return
+                            event.preventDefault()
+                            event.stopPropagation()
+                            if (event.key === 'Backspace' || event.key === 'Delete') {
+                              changeDraft((current) => ({ ...current, captureShortcut: '' }))
+                              return
+                            }
+                            if (event.key === 'Escape') {
+                              event.currentTarget.blur()
+                              return
+                            }
+                            const shortcut = formatKeyboardEventToTauriShortcut(event)
+                            if (!shortcut) return
+                            changeDraft((current) => ({ ...current, captureShortcut: shortcut }))
+                          }}
+                        />
+                        {draft.captureShortcut.trim() !== '' && (
+                          <button
+                            className="button button--ghost shortcut-clear"
+                            type="button"
+                            onClick={() => changeDraft((current) => ({ ...current, captureShortcut: '' }))}
+                          >
+                            清除
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className="setting-row">
+                    <div><strong>工具条显示</strong><p>仅显示图标时仍保留悬浮提示和辅助功能名称。</p></div>
+                    <select className="control compact-control" value={draft.toolbar.displayMode}
+                      onChange={(event) => changeDraft((current) => ({
+                        ...current,
+                        toolbar: { displayMode: event.target.value as PublicSettings['toolbar']['displayMode'] }
+                      }))}>
+                      <option value="icon-label">图标和文字</option><option value="icon-only">仅图标</option>
+                    </select>
+                  </div>
+                  {accessibility?.platform === 'windows' && (
+                    <div className="setting-row">
+                      <div>
+                        <strong>关闭主窗口时</strong>
+                        <p>隐藏后划词功能继续运行，也可选择直接退出 TextLens。</p>
+                      </div>
+                      <select
+                        className="control compact-control"
+                        aria-label="关闭主窗口时"
+                        value={draft.application.closeBehavior}
+                        onChange={(event) => changeDraft((current) => ({
+                          ...current,
+                          application: {
+                            closeBehavior: event.target.value as PublicSettings['application']['closeBehavior']
+                          }
+                        }))}
+                      >
+                        <option value="hide-to-tray">隐藏到通知区域（默认）</option>
+                        <option value="quit">退出 TextLens</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="settings-section" aria-labelledby="permission-title">
+                <div className="section-heading">
+                  <div>
+                    <h2 id="permission-title">{permission.heading}</h2>
+                    <p>{permission.description}</p>
+                  </div>
+                </div>
+                <div className="settings-card permission-card">
+                  <div className={`permission-icon ${selectionAvailable ? 'permission-icon--ok' : ''}`}>
+                    {selectionAvailable ? <ShieldCheck size={21} /> : <LockKeyhole size={21} />}
+                  </div>
+                  <div className="permission-copy"><strong>{permission.state}</strong>
+                    <p>{permission.detail}</p></div>
+                  <button className="button" type="button" disabled={busy || accessibility?.trusted || !accessibility?.canRequest}
+                    onClick={() => void requestAccessibility()}>
+                    {operation === 'accessibility' && <LoaderCircle className="settings-spin" size={15} />}
+                    {permission.button}
+                  </button>
+                </div>
+                {accessibility?.diagnostics?.shortcutError && (
+                  <div className="notice notice--error runtime-diagnostic" role="status">
+                    <CircleAlert size={16} aria-hidden="true" />
+                    <div><strong>全局快捷键不可用</strong><p>{accessibility.diagnostics.shortcutError}</p></div>
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+
+          {activeSection === 'providers' && (
+          <section className="settings-section" aria-labelledby="providers-title">
         <div className="section-heading section-heading--actions">
-          <div><h2 id="providers-title">AI 服务商与模型</h2><p>先配置服务商、密钥与模型，再在工具栏动作中选用。</p></div>
+          <div><h2 id="providers-title">AI 服务商与模型</h2><p>{activeMeta.blurb}</p></div>
           <button className="button" type="button" onClick={addProvider}><Plus size={15} />添加服务商</button>
         </div>
         <div className="provider-stack">
@@ -1171,12 +1229,14 @@ export function SettingsApp(): JSX.Element {
           {draft.providers.length === 0 && <div className="settings-card empty-card">尚未配置服务商；本地复制、搜索仍可使用。</div>}
         </div>
       </section>
+          )}
 
+          {activeSection === 'actions' && (
       <section className="settings-section" aria-labelledby="actions-title">
         <div className="section-heading section-heading--actions">
           <div>
             <h2 id="actions-title">工具栏动作</h2>
-            <p>可重复添加同类动作并分别配置，支持启用、停用和拖动排序。</p>
+            <p>{activeMeta.blurb}</p>
           </div>
           <button className="button" type="button" onClick={() => setEditor('new')}>
             <Plus size={15} />添加动作
@@ -1208,22 +1268,86 @@ export function SettingsApp(): JSX.Element {
           </div>
         </DndContext>
       </section>
+          )}
 
-      <section className="settings-section" aria-labelledby="translation-title">
-        <div className="section-heading"><div><h2 id="translation-title">翻译语言</h2><p>翻译动作会在两种语言之间自动选择目标语言。</p></div></div>
-        <div className="settings-card form-grid">
-          <label className="field"><span className="field__label">主要语言</span><select className="control" value={draft.translate.primaryLanguage}
-            onChange={(event) => { const primaryLanguage = event.target.value as SupportedLocale; changeDraft((current) => ({ ...current, translate: { primaryLanguage, alternateLanguage: primaryLanguage === 'zh-CN' ? 'en-US' : 'zh-CN' } })) }}>
-            <option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label>
-          <label className="field"><span className="field__label">另一语言</span><select className="control" value={draft.translate.alternateLanguage}
-            onChange={(event) => { const alternateLanguage = event.target.value as SupportedLocale; changeDraft((current) => ({ ...current, translate: { alternateLanguage, primaryLanguage: alternateLanguage === 'zh-CN' ? 'en-US' : 'zh-CN' } })) }}>
-            <option value="en-US">English</option><option value="zh-CN">简体中文</option></select></label>
-          <p className="translation-summary field--wide">检测到{LANGUAGE_NAMES[draft.translate.primaryLanguage]}时翻译为{LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然。</p>
+          {activeSection === 'language' && (
+      <section className="settings-section" aria-labelledby="language-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="language-title">{activeMeta.label}</h2>
+            <p>{activeMeta.blurb}</p>
+          </div>
+        </div>
+        <div className="settings-card settings-card--rows">
+          <div className="setting-row">
+            <div>
+              <strong>AI 默认回复语言</strong>
+              <p>仅影响使用 {'{{language}}'} 的动作（如总结、解释），不改变设置界面语言。</p>
+            </div>
+            <select
+              className="control compact-control"
+              aria-label="AI 默认回复语言"
+              value={draft.locale}
+              onChange={(event) =>
+                changeDraft((current) => ({ ...current, locale: event.target.value as SupportedLocale }))
+              }
+            >
+              <option value="zh-CN">简体中文</option>
+              <option value="en-US">English</option>
+            </select>
+          </div>
+        </div>
+        <div className="settings-card form-grid settings-card--follow">
+          <label className="field">
+            <span className="field__label">翻译主要语言</span>
+            <select
+              className="control"
+              value={draft.translate.primaryLanguage}
+              onChange={(event) => {
+                const primaryLanguage = event.target.value as SupportedLocale
+                changeDraft((current) => ({
+                  ...current,
+                  translate: {
+                    primaryLanguage,
+                    alternateLanguage: primaryLanguage === 'zh-CN' ? 'en-US' : 'zh-CN'
+                  }
+                }))
+              }}
+            >
+              <option value="zh-CN">简体中文</option>
+              <option value="en-US">English</option>
+            </select>
+          </label>
+          <label className="field">
+            <span className="field__label">翻译另一语言</span>
+            <select
+              className="control"
+              value={draft.translate.alternateLanguage}
+              onChange={(event) => {
+                const alternateLanguage = event.target.value as SupportedLocale
+                changeDraft((current) => ({
+                  ...current,
+                  translate: {
+                    alternateLanguage,
+                    primaryLanguage: alternateLanguage === 'zh-CN' ? 'en-US' : 'zh-CN'
+                  }
+                }))
+              }}
+            >
+              <option value="en-US">English</option>
+              <option value="zh-CN">简体中文</option>
+            </select>
+          </label>
+          <p className="translation-summary field--wide">
+            检测到 {LANGUAGE_NAMES[draft.translate.primaryLanguage]} 时译为 {LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然。
+          </p>
         </div>
       </section>
+          )}
 
+          {activeSection === 'result' && (
       <section className="settings-section" aria-labelledby="result-title">
-        <div className="section-heading"><div><h2 id="result-title">结果窗口</h2><p>控制位置、尺寸、文字、置顶和离开窗口后的关闭行为。</p></div></div>
+        <div className="section-heading"><div><h2 id="result-title">结果窗口</h2><p>{activeMeta.blurb}</p></div></div>
         <div className="settings-card settings-card--rows">
           <SettingSwitch title="跟随鼠标位置" description="在点击动作时的鼠标附近打开结果，空间不足时自动翻转。"
             checked={draft.result.followCursor} onChange={(followCursor) => changeDraft((current) => ({ ...current, result: { ...current.result, followCursor } }))} />
@@ -1250,9 +1374,11 @@ export function SettingsApp(): JSX.Element {
               onChange={(event) => changeDraft((current) => ({ ...current, result: { ...current.result, opacity: Number(event.target.value) / 100 } }))} /><span>{Math.round(draft.result.opacity * 100)}%</span></div></div>
         </div>
       </section>
+          )}
 
+          {activeSection === 'filter' && (
       <section className="settings-section" aria-labelledby="filter-title">
-        <div className="section-heading"><div><h2 id="filter-title">应用过滤</h2><p>按应用名称、Bundle ID 或可执行文件名控制在哪些应用中启用。</p></div></div>
+        <div className="section-heading"><div><h2 id="filter-title">应用过滤</h2><p>{activeMeta.blurb}</p></div></div>
         <div className="settings-card settings-card--rows">
           <div className="setting-row setting-row--stackable">
             <div><strong>过滤模式</strong><p>选择全部应用、仅列表应用或排除列表应用。</p></div>
@@ -1276,13 +1402,15 @@ export function SettingsApp(): JSX.Element {
           )}
         </div>
       </section>
+          )}
+        </div>
 
-
-      <footer className="settings-footer">
-        <span>{dirty || keysDirty ? '有尚未保存的更改' : '所有更改均已保存'}</span>
-        <button className="button button--primary settings-save" type="button" disabled={busy} onClick={() => void save()}>
-          {operation === 'save' && <LoaderCircle className="settings-spin" size={15} />}保存设置</button>
-      </footer>
+        <footer className="settings-footer">
+          <span>{dirty || keysDirty ? '有尚未保存的更改' : '所有更改均已保存'}</span>
+          <button className="button button--primary settings-save" type="button" disabled={busy} onClick={() => void save()}>
+            {operation === 'save' && <LoaderCircle className="settings-spin" size={15} />}保存设置</button>
+        </footer>
+      </div>
 
       {editor && <CustomActionDialog action={editor === 'new' ? null : editor} providers={draft.providers}
         onCancel={() => setEditor(null)} onSave={saveAction} />}

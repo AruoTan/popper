@@ -30,6 +30,11 @@ function stubScrollIntoView(): ReturnType<typeof vi.fn> {
   return scrollIntoView
 }
 
+async function goToSettingsSection(label: string): Promise<void> {
+  await screen.findByRole('navigation', { name: '设置分区' })
+  fireEvent.click(screen.getByRole('button', { name: label }))
+}
+
 function withoutDefaultProvider(): PublicSettings {
   return {
     ...DEFAULT_PUBLIC_SETTINGS,
@@ -40,6 +45,22 @@ function withoutDefaultProvider(): PublicSettings {
         : action
     )
   }
+}
+
+function installDefaultBridge(overrides: Partial<WindowTextLensApi> = {}): void {
+  window.textLens = {
+    getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+    updateSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+    getAccessibilityStatus: vi.fn(async () => ({
+      platform: 'windows',
+      trusted: true,
+      canRequest: false
+    })),
+    requestAccessibility: vi.fn(),
+    onSettingsChanged: vi.fn(() => () => undefined),
+    onSettingsCloseRequested: vi.fn(() => () => undefined),
+    ...overrides
+  } as unknown as WindowTextLensApi
 }
 
 describe('SettingsApp provider deletion', () => {
@@ -68,6 +89,8 @@ describe('SettingsApp provider deletion', () => {
 
     expect(await screen.findByText('请配置服务商')).toBeInTheDocument()
     expect(screen.getAllByText('请配置服务商')).toHaveLength(1)
+    expect(await screen.findByRole('heading', { name: 'AI 服务商与模型' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '服务商' })).toHaveAttribute('aria-current', 'page')
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 
@@ -103,33 +126,53 @@ describe('SettingsApp provider deletion', () => {
     act(() => settings.resolve(DEFAULT_PUBLIC_SETTINGS))
 
     expect(await screen.findByText('请先配置服务商')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'AI 服务商与模型' })).toBeInTheDocument()
     expect(scheduleFrame).toHaveBeenCalled()
     expect(acknowledge).toHaveBeenCalledOnce()
   })
 
-  it('places AI providers before toolbar actions and keeps search engines off the main page', async () => {
-    window.textLens = {
-      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      updateSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      getAccessibilityStatus: vi.fn(async () => ({
-        platform: 'windows',
-        trusted: true,
-        canRequest: false
-      })),
-      requestAccessibility: vi.fn(),
-      onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined)
-    } as unknown as WindowTextLensApi
-
+  it('defaults to the general section and switches sections from the sidebar nav', async () => {
+    installDefaultBridge()
     render(<SettingsApp />)
 
-    const providersTitle = await screen.findByRole('heading', { name: 'AI 服务商与模型' })
-    const actionsTitle = screen.getByRole('heading', { name: '工具栏动作' })
-    expect(
-      providersTitle.compareDocumentPosition(actionsTitle) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '通用' })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: '启用划词助手' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '通用' })).toHaveAttribute('aria-current', 'page')
+    expect(screen.queryByRole('heading', { name: 'AI 服务商与模型' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '工具栏动作' })).not.toBeInTheDocument()
     expect(screen.queryByRole('radio', { name: '使用百度' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /添加搜索引擎/ })).not.toBeInTheDocument()
+
+    await goToSettingsSection('服务商')
+    expect(await screen.findByRole('heading', { name: 'AI 服务商与模型' })).toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: '启用划词助手' })).not.toBeInTheDocument()
+
+    await goToSettingsSection('动作')
+    expect(await screen.findByRole('heading', { name: '工具栏动作' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'AI 服务商与模型' })).not.toBeInTheDocument()
+  })
+
+  it('shows AI default reply language under the language section', async () => {
+    installDefaultBridge()
+    render(<SettingsApp />)
+
+    await goToSettingsSection('语言')
+    expect(await screen.findByRole('combobox', { name: 'AI 默认回复语言' })).toBeInTheDocument()
+    expect(screen.getByText(/检测到 简体中文 时译为 English/)).toBeInTheDocument()
+    expect(screen.queryByText('默认回答语言')).not.toBeInTheDocument()
+  })
+
+  it('switches to the actions section when guidance focuses actions', async () => {
+    const scrollIntoView = stubScrollIntoView()
+    installDefaultBridge({
+      takeSettingsGuidance: vi.fn(async () => ({ focus: 'actions' as const, notice: '请配置动作' }))
+    })
+    render(<SettingsApp />)
+
+    expect(await screen.findByText('请配置动作')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '工具栏动作' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '动作' })).toHaveAttribute('aria-current', 'page')
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
   })
 
   it('shows and persists the Windows close behavior without a settings-page quit button', async () => {
@@ -218,9 +261,9 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
-    await screen.findByRole('button', { name: '保存设置' })
-    const locale = screen.getAllByRole('combobox')[0]!
-    fireEvent.change(locale, { target: { value: 'en-US' } })
+    fireEvent.change(await screen.findByRole('combobox', { name: '关闭主窗口时' }), {
+      target: { value: 'quit' }
+    })
     fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
 
     const banner = await screen.findByText('保存失败了')
@@ -532,6 +575,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('动作')
 
     const handle = await screen.findByRole('button', { name: '拖动复制' })
     handle.focus()
@@ -588,6 +632,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     const baseUrl = await screen.findByDisplayValue('https://api.openai.com/v1')
     expect(screen.queryByText(/API Key 将通过网络明文传输/)).not.toBeInTheDocument()
@@ -610,6 +655,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('结果')
 
     const textSize = await screen.findByRole('slider', { name: '结果文字大小' })
     expect(textSize).toHaveValue('14')
@@ -632,6 +678,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('动作')
 
     fireEvent.click(await screen.findByRole('button', { name: '编辑翻译' }))
     const prompt = document.querySelector<HTMLTextAreaElement>('#action-prompt')
@@ -663,6 +710,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     const removeButton = await screen.findByRole('button', { name: /删除OpenAI Compatible/ })
     fireEvent.click(removeButton)
@@ -719,6 +767,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     const baseUrl = await screen.findByDisplayValue('https://api.openai.com/v1')
     fireEvent.change(baseUrl, { target: { value: 'https://gateway.example/v1' } })
@@ -757,6 +806,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('动作')
 
     fireEvent.click(await screen.findByRole('button', { name: '移除润色' }))
     expect(screen.getByRole('dialog', { name: '移除动作“润色”？' })).toBeInTheDocument()
@@ -800,6 +850,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     await screen.findByDisplayValue('OpenAI Compatible')
     fireEvent.click(screen.getByRole('button', { name: '添加服务商' }))
@@ -842,6 +893,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     await waitFor(() => {
       expect(screen.getByText(/AI 服务商/)).toBeInTheDocument()
@@ -872,6 +924,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     const toggle = await screen.findByRole('button', { name: /显示 API Key/ })
     fireEvent.click(toggle)
@@ -906,6 +959,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     // Model names visible as chip labels (not full-width rows with id + thinking)
     expect(await screen.findByRole('button', { name: '拖动模型 gpt-4o-mini' })).toBeInTheDocument()
@@ -982,6 +1036,7 @@ describe('SettingsApp provider deletion', () => {
     } as unknown as WindowTextLensApi
 
     render(<SettingsApp />)
+    await goToSettingsSection('服务商')
 
     const handle = await screen.findByRole('button', { name: '拖动模型 gpt-4o-mini' })
     handle.focus()

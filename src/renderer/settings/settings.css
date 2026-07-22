@@ -1,5 +1,5 @@
 body {
-  min-width: 620px;
+  min-width: 520px;
 }
 
 .settings-page {
@@ -12,28 +12,68 @@ body {
   width: min(860px, calc(100% - 48px));
 }
 
+.settings-page--shell {
+  display: grid;
+  grid-template-columns: 188px minmax(0, 1fr);
+  gap: 0;
+  width: min(960px, calc(100% - 32px));
+  min-height: 100vh;
+  padding: 0;
+  margin: 0 auto;
+}
+
+.settings-shell__nav {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 100vh;
+  padding: 22px 14px 22px 4px;
+  border-right: 1px solid var(--border);
+}
+
+.settings-shell__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 100vh;
+}
+
+.settings-shell__content {
+  flex: 1 1 auto;
+  padding: 22px 22px 96px;
+}
+
 .settings-hero {
   display: flex;
-  gap: 13px;
+  gap: 11px;
   align-items: center;
-  margin-bottom: 28px;
+  margin-bottom: 0;
+  padding: 0 6px;
+}
+
+.settings-shell__nav .settings-hero {
+  margin-bottom: 2px;
 }
 
 .settings-logo {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 46px;
+  width: 40px;
+  height: 40px;
   color: var(--accent);
   background: var(--accent-soft);
   border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
-  border-radius: 14px;
+  border-radius: 12px;
+  flex: 0 0 auto;
 }
 
 .settings-hero h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 16px;
   font-weight: 710;
   letter-spacing: -0.02em;
 }
@@ -42,7 +82,44 @@ body {
 .section-heading p {
   margin: 3px 0 0;
   color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav__item {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 7px 12px;
+  color: var(--text-secondary);
   font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.settings-nav__item:hover {
+  color: var(--text);
+  background: var(--surface-muted);
+}
+
+.settings-nav__item.is-selected {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.settings-nav__item:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 1px;
 }
 
 .settings-banner {
@@ -101,7 +178,15 @@ body {
 }
 
 .settings-section {
-  margin-top: 29px;
+  margin-top: 0;
+}
+
+.settings-section + .settings-section {
+  margin-top: 24px;
+}
+
+.settings-card--follow {
+  margin-top: 12px;
 }
 
 .section-heading {
@@ -983,17 +1068,16 @@ body {
 }
 
 .settings-footer {
-  position: fixed;
-  right: 0;
+  position: sticky;
   bottom: 0;
-  left: 0;
   z-index: 12;
   display: flex;
   gap: 20px;
   align-items: center;
   justify-content: flex-end;
-  min-height: 70px;
-  padding: 12px max(24px, calc((100vw - 780px) / 2));
+  min-height: 64px;
+  margin-top: auto;
+  padding: 12px 22px;
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   border-top: 1px solid var(--border);
   box-shadow: 0 -8px 28px rgba(20, 25, 35, 0.05);
@@ -1136,6 +1220,52 @@ body {
 @keyframes settings-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 800px) {
+  .settings-page--shell {
+    grid-template-columns: 1fr;
+    width: calc(100% - 24px);
+  }
+
+  .settings-shell__nav {
+    position: sticky;
+    top: 0;
+    z-index: 14;
+    min-height: 0;
+    padding: 14px 0 10px;
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(14px);
+  }
+
+  .settings-shell__nav .settings-hero {
+    padding: 0 4px 4px;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    padding: 2px 2px 4px;
+    scrollbar-width: thin;
+  }
+
+  .settings-nav__item {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 6px 12px;
+    white-space: nowrap;
+  }
+
+  .settings-shell__content {
+    padding: 16px 8px 88px;
+  }
+
+  .settings-footer {
+    padding: 12px 8px;
   }
 }
 
