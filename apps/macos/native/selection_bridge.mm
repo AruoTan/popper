@@ -731,48 +731,76 @@ static bool IsCodeGSelectionApplication(
     return normalizedAppName == "codeg";
 }
 
+static bool IsWpsSelectionApplication(
+    const std::string &normalizedBundleId,
+    const std::string &normalizedAppName) {
+    // Regional / channel variants use several Kingsoft / WPS identifiers.
+    if (normalizedBundleId.rfind("com.kingsoft.", 0) == 0 ||
+        normalizedBundleId.rfind("cn.wps.", 0) == 0 ||
+        normalizedBundleId.rfind("com.wps.", 0) == 0 ||
+        normalizedBundleId.find("wpsoffice") != std::string::npos ||
+        normalizedBundleId.find("wps-office") != std::string::npos) {
+        return true;
+    }
+    // Fallback when bundle id is missing or atypical but the display name is
+    // clearly a WPS product (Writer / Spreadsheets / Presentation / PDF).
+    return normalizedAppName.find("wps") != std::string::npos ||
+        normalizedAppName.find("wpsoffice") != std::string::npos ||
+        normalizedAppName.find("kingsoft") != std::string::npos;
+}
+
 static bool ShouldUseClipboardFallback(
     const std::string &bundleId,
     const std::string &appName) {
+    // Always compare in lowercase: bundle identifiers are usually lowercase
+    // but channel builds and sideloaded packages occasionally differ in case.
+    // Prefix list stays ASCII-lowercase so we avoid allocating on every entry.
     static const char *const compatibleApplicationPrefixes[] = {
-        "com.apple.Preview",
-        "com.apple.Safari",
-        "com.google.Chrome",
+        "com.apple.preview",
+        "com.apple.safari",
+        "com.google.chrome",
         "com.microsoft.edgemac",
         "org.mozilla.firefox",
-        "com.adobe.Reader",
-        "com.adobe.Acrobat.Pro",
-        "com.microsoft.Word",
-        "com.microsoft.Excel",
-        "com.microsoft.Powerpoint",
-        "com.apple.iWork.Pages",
-        "com.apple.iWork.Numbers",
-        "com.apple.iWork.Keynote",
+        "com.adobe.reader",
+        "com.adobe.acrobat.pro",
+        "com.microsoft.word",
+        "com.microsoft.excel",
+        "com.microsoft.powerpoint",
+        "com.apple.iwork.pages",
+        "com.apple.iwork.numbers",
+        "com.apple.iwork.keynote",
         "org.libreoffice.script",
         // Custom-rendered Chinese office and communication applications.
-        "com.tencent.xinWeChat",
+        "com.tencent.xinwechat",
         "com.tencent.qq",
         "com.tencent.tencentmeeting",
         "com.kingsoft.wpsoffice",
+        "com.kingsoft.",
         "cn.wps.",
-        "com.alibaba.DingTalk",
-        "com.bytedance.Feishu",
+        "com.wps.",
+        "com.alibaba.dingtalk",
+        "com.bytedance.feishu",
         "com.larksuite.",
         // Other common custom-rendered communication and note applications.
         "com.microsoft.teams",
         "com.tinyspeck.slackmacgap",
-        "com.hnc.Discord",
-        "ru.keepcoder.Telegram",
+        "com.hnc.discord",
+        "ru.keepcoder.telegram",
         "notion.id",
         "md.obsidian",
         // Native shell + WebKit content (selection often missing from AX in
         // document panes; input fields still work via AX).
         "app.codeg",
     };
+    const std::string normalizedBundleId = LowercaseAscii(bundleId);
+    const std::string normalizedAppName = LowercaseAscii(appName);
     for (const char *prefix : compatibleApplicationPrefixes) {
-        if (bundleId.rfind(prefix, 0) == 0) {
+        if (normalizedBundleId.rfind(prefix, 0) == 0) {
             return true;
         }
+    }
+    if (IsWpsSelectionApplication(normalizedBundleId, normalizedAppName)) {
+        return true;
     }
     return IsOpenAISelectionApplication(bundleId, appName) ||
         IsCodeGSelectionApplication(bundleId, appName);
