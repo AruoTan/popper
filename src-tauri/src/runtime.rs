@@ -270,6 +270,21 @@ fn same_text_selection_suppress(
     }
 }
 
+/// After the deferred host clear runs, drop a matching same-text suppress so an
+/// intentional re-select of the same phrase can show the toolbar. Keep a non-
+/// matching suppress (e.g. a newer copy-arm for different text) intact.
+fn release_same_text_suppress_after_host_clear(
+    suppression: &mut Option<SameTextSelectionSuppress>,
+    cleared_text: &str,
+) {
+    if suppression
+        .as_ref()
+        .is_some_and(|guard| guard.text == cleared_text)
+    {
+        *suppression = None;
+    }
+}
+
 /// Token match check for deferred host clear. A cancelled / superseded clear
 /// holds a stale scheduled token and must be a no-op.
 fn should_fire_pending_host_clear(scheduled_token: u64, current_token: u64) -> bool {
@@ -549,6 +564,15 @@ impl RuntimeState {
         ));
     }
 
+    /// Release same-text suppress after deferred host clear so re-selecting the
+    /// original phrase is not blocked for the full 2s echo window.
+    fn release_same_text_selection_suppress_for(&self, text: &str) {
+        release_same_text_suppress_after_host_clear(
+            &mut self.same_text_selection_suppress.lock(),
+            text,
+        );
+    }
+
     /// Bump the deferred-clear generation so any in-flight host clear is a no-op.
     fn cancel_pending_host_selection_clear(&self) {
         // fetch_add(1) matches `next_host_clear_token` including wrap at u64::MAX.
@@ -558,6 +582,9 @@ impl RuntimeState {
     /// Schedule a best-effort host highlight collapse after
     /// [`HOST_SELECTION_CLEAR_DELAY_MS`]. Replaces any previous pending clear.
     /// Cancelled when a new selection is accepted for toolbar presentation.
+    /// When the clear fires, matching same-text suppress is released so an
+    /// intentional re-drag of the same phrase can show the toolbar (~200ms after
+    /// result close instead of waiting the full 2s echo window).
     fn schedule_host_selection_clear(&self, app: AppHandle, clear: HostSelectionClear) {
         let previous = self
             .pending_host_clear_token
@@ -573,6 +600,8 @@ impl RuntimeState {
                 return;
             }
             let _ = SelectionMonitor::clear_matching_text(clear.bundle_id.as_deref(), &clear.text);
+            // Dismiss mouse-up echo is past; allow intentional same-text reselect.
+            state.release_same_text_selection_suppress_for(&clear.text);
         });
     }
 
@@ -3624,6 +3653,28 @@ mod tests {
             Some(&rearmed),
             "hello",
             now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS + 501)
+        ));
+    }
+
+    #[test]
+    fn host_clear_releases_matching_same_text_suppress() {
+        let now = Instant::now();
+        let mut guard = Some(same_text_selection_suppress("hello", now));
+        release_same_text_suppress_after_host_clear(&mut guard, "hello");
+        assert!(guard.is_none());
+        assert!(!should_suppress_same_text_selection(guard.as_ref(), "hello", now));
+    }
+
+    #[test]
+    fn host_clear_keeps_suppress_for_different_text() {
+        let now = Instant::now();
+        let mut guard = Some(same_text_selection_suppress("copy-path", now));
+        release_same_text_suppress_after_host_clear(&mut guard, "result-text");
+        assert!(guard.is_some());
+        assert!(should_suppress_same_text_selection(
+            guard.as_ref(),
+            "copy-path",
+            now + Duration::from_millis(10)
         ));
     }
 
