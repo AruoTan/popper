@@ -22,6 +22,7 @@ use crate::models::{
     LEGACY_V3_EXPLAIN_PROMPT, LEGACY_V3_REFINE_PROMPT, LEGACY_V3_SUMMARY_PROMPT,
     LEGACY_V3_TRANSLATE_PROMPT, LEGACY_V4_EXPLAIN_PROMPT, LEGACY_V4_REFINE_PROMPT,
     LEGACY_V4_SUMMARY_PROMPT, LEGACY_V4_TRANSLATE_PROMPT, LEGACY_V5_TRANSLATE_PROMPT,
+    LEGACY_V11_EXPLAIN_PROMPT, LEGACY_V11_SUMMARY_PROMPT, LEGACY_V11_TRANSLATE_PROMPT,
     SETTINGS_VERSION,
 };
 
@@ -797,6 +798,7 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
                         LEGACY_V3_TRANSLATE_PROMPT
                             | LEGACY_V4_TRANSLATE_PROMPT
                             | LEGACY_V5_TRANSLATE_PROMPT
+                            | LEGACY_V11_TRANSLATE_PROMPT
                     )
                 ) =>
             {
@@ -805,7 +807,11 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
             ActionKind::Summary
                 if matches!(
                     action.prompt.as_deref(),
-                    Some(LEGACY_V3_SUMMARY_PROMPT | LEGACY_V4_SUMMARY_PROMPT)
+                    Some(
+                        LEGACY_V3_SUMMARY_PROMPT
+                            | LEGACY_V4_SUMMARY_PROMPT
+                            | LEGACY_V11_SUMMARY_PROMPT
+                    )
                 ) =>
             {
                 Some(DEFAULT_SUMMARY_PROMPT)
@@ -813,7 +819,11 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
             ActionKind::Explain
                 if matches!(
                     action.prompt.as_deref(),
-                    Some(LEGACY_V3_EXPLAIN_PROMPT | LEGACY_V4_EXPLAIN_PROMPT)
+                    Some(
+                        LEGACY_V3_EXPLAIN_PROMPT
+                            | LEGACY_V4_EXPLAIN_PROMPT
+                            | LEGACY_V11_EXPLAIN_PROMPT
+                    )
                 ) =>
             {
                 Some(DEFAULT_EXPLAIN_PROMPT)
@@ -2148,7 +2158,84 @@ mod tests {
         );
         assert!(fs::read_to_string(path)
             .unwrap()
-            .contains("professional translation and formatting engine"));
+            .contains("You are a professional translator."));
+    }
+
+    #[test]
+    fn upgrades_only_canonical_untouched_v11_default_prompts() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut current = AppSettings::default();
+        current.version = 11;
+        current
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "translate")
+            .unwrap()
+            .prompt = Some(LEGACY_V11_TRANSLATE_PROMPT.to_owned());
+        current
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "summary")
+            .unwrap()
+            .prompt = Some(LEGACY_V11_SUMMARY_PROMPT.to_owned());
+        current
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "explain")
+            .unwrap()
+            .prompt = Some(LEGACY_V11_EXPLAIN_PROMPT.to_owned());
+        let mut custom_explain = current
+            .actions
+            .iter()
+            .find(|action| action.id == "explain")
+            .unwrap()
+            .clone();
+        custom_explain.id = "explain-custom".to_owned();
+        custom_explain.name = "自定义解释".to_owned();
+        custom_explain.enabled = false;
+        custom_explain.order = current.actions.len() as u32;
+        custom_explain.prompt = Some(LEGACY_V11_EXPLAIN_PROMPT.to_owned());
+        current.actions.push(custom_explain);
+        fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+
+        let repository =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        let migrated = repository.get_settings();
+        assert_eq!(
+            migrated
+                .actions
+                .iter()
+                .find(|action| action.id == "translate")
+                .and_then(|action| action.prompt.as_deref()),
+            Some(DEFAULT_TRANSLATE_PROMPT)
+        );
+        assert_eq!(
+            migrated
+                .actions
+                .iter()
+                .find(|action| action.id == "summary")
+                .and_then(|action| action.prompt.as_deref()),
+            Some(DEFAULT_SUMMARY_PROMPT)
+        );
+        assert_eq!(
+            migrated
+                .actions
+                .iter()
+                .find(|action| action.id == "explain")
+                .and_then(|action| action.prompt.as_deref()),
+            Some(DEFAULT_EXPLAIN_PROMPT)
+        );
+        assert_eq!(
+            migrated
+                .actions
+                .iter()
+                .find(|action| action.id == "explain-custom")
+                .and_then(|action| action.prompt.as_deref()),
+            Some(LEGACY_V11_EXPLAIN_PROMPT)
+        );
+        assert!(DEFAULT_EXPLAIN_PROMPT.contains("专业、准确"));
     }
 
     #[test]
