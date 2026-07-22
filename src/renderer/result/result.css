@@ -612,11 +612,16 @@ body,
   padding-top: 6px;
   border-top: 1px dashed color-mix(in srgb, var(--border) 85%, transparent);
   color: var(--text-secondary, #64748b);
-  /* One step smaller than answer body (e.g. 15px setting → 14px thinking). */
-  font-size: calc(var(--result-font-size, 14px) - 1px);
+  /*
+   * Noticeably smaller than the answer body (default 14px → ~11.5px).
+   * Do not also apply .stream-plain-text on this node: that rule sets full
+   * body font-size later in the sheet and used to cancel this shrink.
+   */
+  font-size: max(11px, calc(var(--result-font-size, 14px) * 0.82));
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  letter-spacing: 0.01em;
   animation: result-fade-in 150ms ease-out;
 }
 

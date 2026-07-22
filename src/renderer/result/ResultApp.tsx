@@ -262,7 +262,7 @@ function ThinkingPanel(): JSX.Element | null {
         </span>
       </button>
       {expanded && (
-        <div className="result-thinking__body stream-plain-text">
+        <div className="result-thinking__body">
           {thinkingContent}
           {live && <span className="stream-caret" aria-hidden="true" />}
         </div>
