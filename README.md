@@ -1,10 +1,10 @@
 # TextLens
 
-TextLens 是一个轻量的桌面划词助手。当前源码版本是 **0.3.53**，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
+TextLens 是一个轻量的桌面划词助手。当前源码版本是 **0.3.54**，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
 
 用户在其他应用中选中文字后，可以直接执行复制、搜索、翻译、总结、解释、润色、问AI 及自定义 AI 动作。macOS 版本常驻菜单栏，默认不在 Dock 显示；Windows 版本普通启动后在通知区域和后台运行，仅显示短暂的“TextLens 已启动”提示，设置窗口由用户从通知区域打开。TextLens 不保存划词历史，只有用户主动点击 AI 动作后才会把选中文字发送给所配置的模型服务。
 
-当前源码和文档已同步到 0.3.53。本版本修复结果窗关闭后划词工具栏偶发不出现的问题（延迟清除宿主选区、宿主清除后释放 same-text 抑制），并修复结果正文再次划词后在结果框内点击其他区域工具栏不消失的问题（`hide_result_selection` + macOS 本进程 dismiss）；将服务商「同步模型」改为获取 → 多选合并 → 纵向排序；打磨设置页与结果窗交互（等待态、thinking 徽章等）。0.3.52 重做设置侧边栏与精简默认提示词；0.3.51 增加自适应流式显示与 thinking 透传。Windows 测试安装包继续由 NSIS 构建。两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。
+当前源码和文档已同步到 0.3.54。本版本加固 WPS 等复杂应用的划词工具栏捕获（Windows UIA 多进程关联与 allowlist 剪贴板回退、macOS 更宽的 WPS/金山 bundle 识别），并优化翻译结果 Markdown 的段落与列表换行（句末单换行、中文列表标记 `1、`/`•` 结构化，表格与代码块保持紧凑）。0.3.53 修复结果关闭后重划工具栏与结果内再划词 dismiss，并改进服务商模型获取与排序。Windows 测试安装包继续由 NSIS 构建。两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。
 
 ## 与 Cherry Studio 的关系
 
@@ -213,9 +213,9 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 例如当前版本会导出为：
 
-    portable-dev-sources/TextLens-0.3.53-dev-source
+    portable-dev-sources/TextLens-0.3.54-dev-source
 
-也可将上述目录复制到仓库外，作为独立的 `TextLens-0.3.53-dev-source` 文件夹或压缩包分发；包内只含源码与文档，便于整夹拷贝到其他机器继续开发。
+也可将上述目录复制到仓库外，作为独立的 `TextLens-0.3.54-dev-source` 文件夹或压缩包分发；包内只含源码与文档，便于整夹拷贝到其他机器继续开发。
 
 ### 导出内容
 
@@ -237,7 +237,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 ### 迁移到其他电脑后
 
-1. 把整个 `TextLens-0.3.53-dev-source` 文件夹（或已重命名的 `TextLens` 工作区）复制到目标机器。
+1. 把整个 `TextLens-0.3.54-dev-source` 文件夹（或已重命名的 `TextLens` 工作区）复制到目标机器。
 2. 安装 Node.js 22+、pnpm 11+，以及对应平台的 Rust / 平台工具链。
 3. 在源码根目录执行：
 
@@ -269,7 +269,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 以下记录根据本项目连续开发需求与当前实现整理。部分小版本是内部迭代，重点记录功能变化，不等同于正式公开发行说明。
 
-macOS 0.3.16 到 0.3.53 的完整开发复盘见 [DEVELOPMENT_HISTORY.md](./DEVELOPMENT_HISTORY.md)。
+macOS 0.3.16 到 0.3.54 的完整开发复盘见 [DEVELOPMENT_HISTORY.md](./DEVELOPMENT_HISTORY.md)。
 
 | 版本 | 主要变化 |
 | --- | --- |
@@ -320,6 +320,7 @@ macOS 0.3.16 到 0.3.53 的完整开发复盘见 [DEVELOPMENT_HISTORY.md](./DEVE
 | 0.3.51 | 结果窗自适应打字机式流式显示（store 仍即时收齐逻辑文本）；thinking/reasoning 增量端到端透传；action flusher 按批 yield 降低 IPC 抖动；版本与文档同步到 0.3.51。 |
 | 0.3.52 | 设置页改为左侧导航 + 右侧分区内容；精简翻译/总结/解释默认提示词并同步 Rust 默认值与未改动内置项迁移；结果窗 Markdown 视觉与明暗主题优化，无公式内容跳过 math 插件；版本与可迁移源码包同步到 0.3.52。 |
 | 0.3.53 | 结果关闭后延迟清除宿主选区，清除完成后释放 same-text 抑制，避免下次划词工具栏缺失；结果正文再次划词后，在结果框内点击工具栏外区域可正确隐藏工具栏（`hide_result_selection` IPC，macOS 对本进程 mouseDown/scroll 仍 enqueue dismiss）；服务商模型改为 `list_provider_models` 获取 → 多选合并 → 纵向拖拽排序；设置页与结果窗交互打磨（分区说明、脏保存强调、单行等待态、thinking 徽章与自动展开等）；版本与可迁移源码包同步到 0.3.53。 |
+| 0.3.54 | Windows 划词：allowlist 应用在 `IsPassword` 未知时允许剪贴板回退；WPS/微信/QQ 等进程族 UIA 关联；UIA 无目标时前台 Ctrl+C 路径；短时重试后及时 break 以保持响应。macOS：剪贴板 allowlist 大小写不敏感，拓宽金山/WPS bundle 与应用名识别。结果 Markdown：句末单换行段落、中文列表标记（`1、`/`•`）与块边界规范化，表格行与同级列表项保持紧凑，代码围栏不改动；normalize/math/components memo 与段落/列表 CSS 节奏优化。版本与可迁移源码包同步到 0.3.54。 |
 
 跨版本累计完成的其他能力包括：多服务商多模型、自定义动作、HTTP 服务地址、URL/IP 直达、结果窗拖动与尺寸记忆、置顶与多种自动关闭方式、结果正文再次划词、安全 Markdown、模型重试与临时切换。
 
