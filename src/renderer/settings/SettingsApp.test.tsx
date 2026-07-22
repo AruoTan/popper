@@ -1,0 +1,1012 @@
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
+
+import {
+  DEFAULT_ACTION_PROMPTS,
+  DEFAULT_PROVIDER_ID,
+  DEFAULT_PUBLIC_SETTINGS,
+  type PublicSettings,
+  type SettingsGuidance,
+  type SettingsUpdate,
+  type WindowTextLensApi
+} from '../../shared'
+import { SettingsApp } from './SettingsApp'
+import { settingsGuidanceInbox } from './settingsGuidanceInbox'
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+function stubScrollIntoView(): ReturnType<typeof vi.fn> {
+  const scrollIntoView = vi.fn()
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: scrollIntoView
+  })
+  return scrollIntoView
+}
+
+function withoutDefaultProvider(): PublicSettings {
+  return {
+    ...DEFAULT_PUBLIC_SETTINGS,
+    providers: [],
+    actions: DEFAULT_PUBLIC_SETTINGS.actions.map((action) =>
+      'providerId' in action
+        ? { ...action, providerId: '', modelId: '' }
+        : action
+    )
+  }
+}
+
+describe('SettingsApp provider deletion', () => {
+  it('retains guidance across StrictMode cleanup and applies it once after remount', async () => {
+    const pendingGuidance = deferred<SettingsGuidance | null>()
+    const takeSettingsGuidance = vi.fn(() => pendingGuidance.promise)
+    const scrollIntoView = stubScrollIntoView()
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      takeSettingsGuidance,
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<StrictMode><SettingsApp /></StrictMode>)
+    expect(takeSettingsGuidance).toHaveBeenCalledOnce()
+
+    act(() => pendingGuidance.resolve({ focus: 'providers', notice: '请配置服务商' }))
+
+    expect(await screen.findByText('请配置服务商')).toBeInTheDocument()
+    expect(screen.getAllByText('请配置服务商')).toHaveLength(1)
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled())
+  })
+
+  it('acknowledges guidance only after the settings draft is ready and focus is scheduled', async () => {
+    const settings = deferred<PublicSettings>()
+    const takeSettingsGuidance = vi.fn().mockResolvedValue({
+      focus: 'providers',
+      notice: '请先配置服务商'
+    })
+    const acknowledge = vi.spyOn(settingsGuidanceInbox, 'acknowledge')
+    const scheduleFrame = vi.spyOn(window, 'requestAnimationFrame')
+    stubScrollIntoView()
+    window.textLens = {
+      getSettings: vi.fn(() => settings.promise),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      takeSettingsGuidance,
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    await waitFor(() => expect(takeSettingsGuidance).toHaveBeenCalledOnce())
+    await act(async () => Promise.resolve())
+    expect(acknowledge).not.toHaveBeenCalled()
+    expect(screen.queryByText('请先配置服务商')).not.toBeInTheDocument()
+
+    act(() => settings.resolve(DEFAULT_PUBLIC_SETTINGS))
+
+    expect(await screen.findByText('请先配置服务商')).toBeInTheDocument()
+    expect(scheduleFrame).toHaveBeenCalled()
+    expect(acknowledge).toHaveBeenCalledOnce()
+  })
+
+  it('places AI providers before toolbar actions and keeps search engines off the main page', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const providersTitle = await screen.findByRole('heading', { name: 'AI 服务商与模型' })
+    const actionsTitle = screen.getByRole('heading', { name: '工具栏动作' })
+    expect(
+      providersTitle.compareDocumentPosition(actionsTitle) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    expect(screen.queryByRole('radio', { name: '使用百度' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /添加搜索引擎/ })).not.toBeInTheDocument()
+  })
+
+  it('shows and persists the Windows close behavior without a settings-page quit button', async () => {
+    const updateSettings = vi.fn(async (update: SettingsUpdate): Promise<PublicSettings> => ({
+      ...DEFAULT_PUBLIC_SETTINGS,
+      application: update.application ?? DEFAULT_PUBLIC_SETTINGS.application,
+      providers: (update.providers ?? DEFAULT_PUBLIC_SETTINGS.providers).map((provider) => ({
+        ...provider,
+        keyConfigured: false
+      })),
+      actions: update.actions ?? DEFAULT_PUBLIC_SETTINGS.actions
+    }))
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const closeBehavior = await screen.findByRole('combobox', { name: '关闭主窗口时' })
+    expect(closeBehavior).toHaveValue('hide-to-tray')
+    fireEvent.change(closeBehavior, { target: { value: 'quit' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1))
+    expect(updateSettings.mock.calls[0]?.[0].application).toEqual({ closeBehavior: 'quit' })
+
+    expect(screen.queryByRole('button', { name: '退出 TextLens' })).not.toBeInTheDocument()
+  })
+
+  it('fades a successful save after 1.4 seconds and removes it after 2 seconds', async () => {
+    const updateSettings = vi.fn(async (): Promise<PublicSettings> => DEFAULT_PUBLIC_SETTINGS)
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    fireEvent.click(await screen.findByRole('button', { name: '保存设置' }))
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledOnce())
+    const banner = await screen.findByText('设置已保存')
+    expect(banner.parentElement).not.toHaveClass('settings-banner--fading')
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 1_450))
+    })
+    expect(banner.parentElement).toHaveClass('settings-banner--fading')
+
+    await waitFor(() => {
+      expect(screen.queryByText('设置已保存')).not.toBeInTheDocument()
+    }, { timeout: 1_000 })
+  })
+
+  it('fades an error banner after 1.4 seconds and removes it after 2 seconds', async () => {
+    const updateSettings = vi.fn(async (): Promise<PublicSettings> => {
+      throw new Error('保存失败了')
+    })
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    await screen.findByRole('button', { name: '保存设置' })
+    const locale = screen.getAllByRole('combobox')[0]!
+    fireEvent.change(locale, { target: { value: 'en-US' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+
+    const banner = await screen.findByText('保存失败了')
+    expect(banner.parentElement).toHaveClass('notice--error')
+    expect(banner.parentElement).not.toHaveClass('settings-banner--fading')
+
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 1_450))
+    })
+    expect(banner.parentElement).toHaveClass('settings-banner--fading')
+
+    await waitFor(() => {
+      expect(screen.queryByText('保存失败了')).not.toBeInTheDocument()
+    }, { timeout: 1_000 })
+  })
+
+  it('keeps Windows lifecycle controls out of the macOS settings UI', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    await screen.findByRole('heading', { name: '辅助功能权限' })
+    expect(screen.queryByRole('combobox', { name: '关闭主窗口时' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '退出 TextLens' })).not.toBeInTheDocument()
+  })
+
+  it('keeps settings editable when the accessibility diagnostic IPC fails', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => {
+        throw new Error('diagnostic unavailable')
+      }),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    expect(await screen.findByRole('button', { name: '保存设置' })).toBeEnabled()
+    expect(screen.getByText('diagnostic unavailable')).toBeInTheDocument()
+  })
+
+  it('offers cancel and discard choices for a native close request with unsaved changes', async () => {
+    let requestClose: (() => void) | undefined
+    const quitApp = vi.fn(async () => undefined)
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      quitApp,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn((listener: () => void) => {
+        requestClose = listener
+        return () => undefined
+      })
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    fireEvent.change(await screen.findByRole('combobox', { name: '关闭主窗口时' }), {
+      target: { value: 'quit' }
+    })
+
+    act(() => requestClose?.())
+    expect(screen.getByRole('dialog', { name: '退出 TextLens？' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(screen.queryByRole('dialog', { name: '退出 TextLens？' })).not.toBeInTheDocument()
+    expect(quitApp).not.toHaveBeenCalled()
+
+    act(() => requestClose?.())
+    fireEvent.click(screen.getByRole('button', { name: '放弃更改并退出' }))
+    await waitFor(() => expect(quitApp).toHaveBeenCalledTimes(1))
+  })
+
+  it('saves before quitting when requested from the unsaved-changes dialog', async () => {
+    let requestClose: (() => void) | undefined
+    const quitApp = vi.fn(async () => undefined)
+    const updateSettings = vi.fn(async (update: SettingsUpdate): Promise<PublicSettings> => ({
+      ...DEFAULT_PUBLIC_SETTINGS,
+      application: update.application ?? DEFAULT_PUBLIC_SETTINGS.application,
+      providers: (update.providers ?? DEFAULT_PUBLIC_SETTINGS.providers).map((provider) => ({
+        ...provider,
+        keyConfigured: false
+      })),
+      actions: update.actions ?? DEFAULT_PUBLIC_SETTINGS.actions
+    }))
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings,
+      quitApp,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined),
+      onSettingsCloseRequested: vi.fn((listener: () => void) => {
+        requestClose = listener
+        return () => undefined
+      })
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    fireEvent.change(await screen.findByRole('combobox', { name: '关闭主窗口时' }), {
+      target: { value: 'quit' }
+    })
+    act(() => requestClose?.())
+    fireEvent.click(screen.getByRole('button', { name: '保存并退出' }))
+
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(quitApp).toHaveBeenCalledTimes(1))
+    expect(updateSettings.mock.invocationCallOrder[0]).toBeLessThan(
+      quitApp.mock.invocationCallOrder[0]!
+    )
+  })
+
+  it('shows Windows selection access without macOS permission instructions', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    expect(await screen.findByRole('heading', { name: 'Windows 选区访问' })).toBeInTheDocument()
+    expect(screen.getByText(/不需要单独授权/)).toBeInTheDocument()
+    expect(screen.queryByText(/隐私与安全性/)).not.toBeInTheDocument()
+  })
+
+  it('shows replayed Windows listener and global-shortcut failures', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'windows',
+        trusted: true,
+        canRequest: false,
+        available: false,
+        diagnostics: {
+          selectionMonitorError: '无法启动系统划词监听。请重新启动 TextLens。',
+          shortcutError: '全局快捷键注册失败，可能已被其他应用占用。'
+        }
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    expect(await screen.findByText('选区访问不可用')).toBeInTheDocument()
+    expect(screen.getByText('无法启动系统划词监听。请重新启动 TextLens。')).toBeInTheDocument()
+    expect(screen.getByText('全局快捷键不可用')).toBeInTheDocument()
+    expect(screen.getByText('全局快捷键注册失败，可能已被其他应用占用。')).toBeInTheDocument()
+    expect(screen.queryByText('选区访问可用')).not.toBeInTheDocument()
+  })
+
+  it('records a capture shortcut from keyboard input instead of free typing', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(async (update) => ({
+        ...DEFAULT_PUBLIC_SETTINGS,
+        ...update,
+        trigger: update.trigger ?? DEFAULT_PUBLIC_SETTINGS.trigger,
+        captureShortcut: update.captureShortcut ?? DEFAULT_PUBLIC_SETTINGS.captureShortcut
+      })),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin' as const,
+        trusted: true,
+        canRequest: true,
+        available: true,
+        diagnostics: {}
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    fireEvent.click(await screen.findByRole('radio', { name: '快捷键' }))
+
+    const input = screen.getByLabelText('捕获当前选区快捷键')
+    expect(input).toHaveValue('CommandOrControl+Shift+S')
+
+    fireEvent.keyDown(input, {
+      key: 'k',
+      code: 'KeyK',
+      metaKey: true,
+      altKey: true,
+      bubbles: true
+    })
+    expect(input).toHaveValue('CommandOrControl+Alt+K')
+
+    fireEvent.keyDown(input, { key: 'Backspace', code: 'Backspace', bubbles: true })
+    expect(input).toHaveValue('')
+  })
+
+  it('refreshes the replayable shortcut diagnostic immediately after save fails', async () => {
+    const updateSettings = vi.fn(async () => {
+      throw new Error('无法注册快捷键')
+    })
+    const getAccessibilityStatus = vi.fn(async () => updateSettings.mock.calls.length > 0
+      ? {
+          platform: 'windows' as const,
+          trusted: true,
+          canRequest: false,
+          available: true,
+          diagnostics: {
+            shortcutError: '全局快捷键注册失败，可能已被其他应用占用。'
+          }
+        }
+      : {
+          platform: 'windows' as const,
+          trusted: true,
+          canRequest: false,
+          available: true,
+          diagnostics: {}
+        })
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings,
+      getAccessibilityStatus,
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    fireEvent.click(await screen.findByRole('radio', { name: '快捷键' }))
+    // Switching to shortcut mode seeds a valid default capture chord.
+    expect(screen.getByLabelText('捕获当前选区快捷键')).toHaveValue('CommandOrControl+Shift+S')
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+
+    expect(await screen.findByText('全局快捷键不可用')).toBeInTheDocument()
+    expect(screen.getByText('全局快捷键注册失败，可能已被其他应用占用。')).toBeInTheDocument()
+    expect(getAccessibilityStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('reorders toolbar actions with the keyboard drag handle and persists order values', async () => {
+    const rowOrder = new Map(
+      DEFAULT_PUBLIC_SETTINGS.actions.map((action, index) => [action.id, index])
+    )
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const element = this
+      const row = element.closest<HTMLElement>('[data-action-id]')
+      const actionId = row?.dataset.actionId
+      const zone = element.closest<HTMLElement>('[data-action-zone]')
+      const index = actionId ? rowOrder.get(actionId) ?? 0 : 0
+      const left = zone?.dataset.actionZone === 'disabled' ? 420 : 20
+      const top = actionId ? 500 + index * 64 : 480
+      const width = actionId ? 360 : 380
+      const height = actionId ? 54 : 460
+      return {
+        x: left,
+        y: top,
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        toJSON: () => ({})
+      } as DOMRect
+    })
+
+    const updateSettings = vi.fn(async (update: SettingsUpdate): Promise<PublicSettings> => ({
+      ...DEFAULT_PUBLIC_SETTINGS,
+      ...update,
+      providers: (update.providers ?? DEFAULT_PUBLIC_SETTINGS.providers)
+        .map((provider) => ({ ...provider, keyConfigured: false })),
+      actions: update.actions ?? DEFAULT_PUBLIC_SETTINGS.actions
+    }))
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const handle = await screen.findByRole('button', { name: '拖动复制' })
+    handle.focus()
+    fireEvent.keyDown(handle, { key: ' ', code: 'Space' })
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('Draggable item copy was moved over droppable area copy')
+    })
+    fireEvent.keyDown(document, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => {
+      expect(document.body.textContent).toContain('Draggable item copy was moved over droppable area search')
+    })
+    fireEvent.keyDown(document, { key: ' ', code: 'Space' })
+
+    await waitFor(() => {
+      const enabledZone = document.querySelector<HTMLElement>('[data-action-zone="enabled"]')
+      expect(
+        [...(enabledZone?.querySelectorAll<HTMLElement>('[data-action-id]') ?? [])]
+          .map((row) => row.dataset.actionId)
+      ).toEqual([
+        'translate',
+        'explain',
+        'summary',
+        'copy',
+        'search'
+      ])
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1))
+    expect((updateSettings.mock.calls[0]?.[0].actions ?? []).map(({ id, order }) => ({ id, order })))
+      .toEqual([
+        { id: 'translate', order: 0 },
+        { id: 'explain', order: 1 },
+        { id: 'summary', order: 2 },
+        { id: 'copy', order: 3 },
+        { id: 'search', order: 4 },
+        { id: 'refine', order: 5 },
+        { id: 'quote', order: 6 }
+      ])
+  })
+
+  it('shows a non-blocking plaintext warning for HTTP provider addresses', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const baseUrl = await screen.findByDisplayValue('https://api.openai.com/v1')
+    expect(screen.queryByText(/API Key 将通过网络明文传输/)).not.toBeInTheDocument()
+    fireEvent.change(baseUrl, { target: { value: 'http://api.example.com/v1' } })
+    expect(screen.getByText(/API Key 将通过网络明文传输/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存设置' })).toBeEnabled()
+  })
+
+  it('edits the persisted result text size through the supported range control', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const textSize = await screen.findByRole('slider', { name: '结果文字大小' })
+    expect(textSize).toHaveValue('14')
+    fireEvent.change(textSize, { target: { value: '18' } })
+    expect(textSize).toHaveValue('18')
+    expect(screen.getByText('18 px')).toBeInTheDocument()
+  })
+
+  it('shows the Cherry default prompt and lets the user edit it', async () => {
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '编辑翻译' }))
+    const prompt = document.querySelector<HTMLTextAreaElement>('#action-prompt')
+    expect(prompt).toHaveValue(DEFAULT_ACTION_PROMPTS.translate)
+
+    fireEvent.change(prompt!, { target: { value: '我的翻译规则：{{text}}' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+
+    expect(screen.getByText('提示词：我的翻译规则：{{text}}')).toBeInTheDocument()
+  })
+
+  it('uses an in-app confirmation and removes providers in the ordinary settings commit', async () => {
+    const deletedSettings = withoutDefaultProvider()
+    const deleteProvider = vi.fn(async () => deletedSettings)
+    const updateSettings = vi.fn(async (_update: SettingsUpdate) => deletedSettings)
+    const browserConfirm = vi.spyOn(window, 'confirm')
+
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings,
+      deleteProvider,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const removeButton = await screen.findByRole('button', { name: /删除OpenAI Compatible/ })
+    fireEvent.click(removeButton)
+
+    expect(screen.getByRole('dialog', { name: /删除“OpenAI Compatible”/ })).toBeInTheDocument()
+    expect(browserConfirm).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '删除服务商' }))
+    expect(screen.queryByRole('button', { name: /删除OpenAI Compatible/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/保存设置后生效/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+
+    await waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledTimes(1)
+    })
+    expect(deleteProvider).not.toHaveBeenCalled()
+    expect(updateSettings.mock.calls[0]?.[0].providers).toEqual([])
+    expect(
+      updateSettings.mock.calls[0]?.[0].actions
+        ?.filter((action) => 'providerId' in action)
+        .every((action) => action.providerId === '' && action.modelId === '')
+    ).toBe(true)
+  })
+
+  it('preserves unsaved providers, keys and fields when another provider key is cleared', async () => {
+    const configured = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        keyConfigured: true
+      }))
+    }
+    const backendCleared = {
+      ...configured,
+      providers: configured.providers.map((provider) => ({
+        ...provider,
+        keyConfigured: false
+      }))
+    }
+    const clearProviderApiKey = vi.fn(async () => backendCleared)
+
+    window.textLens = {
+      getSettings: vi.fn(async () => configured),
+      updateSettings: vi.fn(),
+      clearProviderApiKey,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const baseUrl = await screen.findByDisplayValue('https://api.openai.com/v1')
+    fireEvent.change(baseUrl, { target: { value: 'https://gateway.example/v1' } })
+    fireEvent.click(screen.getByRole('button', { name: '添加服务商' }))
+    expect(screen.getByDisplayValue('服务商 2')).toBeInTheDocument()
+
+    const keyInputs = document.querySelectorAll<HTMLInputElement>('input[type="password"]')
+    expect(keyInputs).toHaveLength(2)
+    fireEvent.change(keyInputs[1]!, { target: { value: 'sk-new-provider' } })
+    const clearKey = screen
+      .getAllByRole('button', { name: '清除密钥' })
+      .find((button) => !(button as HTMLButtonElement).disabled)
+    expect(clearKey).toBeDefined()
+    fireEvent.click(clearKey!)
+
+    await waitFor(() => expect(clearProviderApiKey).toHaveBeenCalledWith(DEFAULT_PROVIDER_ID))
+    expect(screen.getByDisplayValue('https://gateway.example/v1')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('服务商 2')).toBeInTheDocument()
+    expect(document.querySelectorAll<HTMLInputElement>('input[type="password"]')[1]).toHaveValue(
+      'sk-new-provider'
+    )
+  })
+
+  it('uses an in-app confirmation when removing an action', async () => {
+    const browserConfirm = vi.spyOn(window, 'confirm')
+    window.textLens = {
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '移除润色' }))
+    expect(screen.getByRole('dialog', { name: '移除动作“润色”？' })).toBeInTheDocument()
+    expect(browserConfirm).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: '移除动作' }))
+    expect(screen.queryByRole('button', { name: '移除润色' })).not.toBeInTheDocument()
+    expect(screen.getByText(/已移除动作“润色”/)).toBeInTheDocument()
+  })
+
+  it('commits ordinary settings first and keeps recoverable key input after a key failure', async () => {
+    let persisted: PublicSettings | null = null
+    const getSettings = vi.fn(async () => persisted ?? DEFAULT_PUBLIC_SETTINGS)
+    const updateSettings = vi.fn(async (update: SettingsUpdate) => {
+      persisted = {
+        ...DEFAULT_PUBLIC_SETTINGS,
+        ...update,
+        providers: (update.providers ?? []).map((provider) => ({
+          ...provider,
+          keyConfigured: false
+        })),
+        actions: update.actions ?? DEFAULT_PUBLIC_SETTINGS.actions
+      }
+      return persisted
+    })
+    const setProviderApiKey = vi.fn(async () => {
+      throw new Error('Encrypted secret store unavailable')
+    })
+
+    window.textLens = {
+      getSettings,
+      updateSettings,
+      setProviderApiKey,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    await screen.findByDisplayValue('OpenAI Compatible')
+    fireEvent.click(screen.getByRole('button', { name: '添加服务商' }))
+    const keyInputs = document.querySelectorAll<HTMLInputElement>('input[type="password"]')
+    fireEvent.change(keyInputs[1]!, { target: { value: 'sk-retry-me' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+
+    expect(await screen.findByText(/普通设置已保存，但 API Key 保存失败/)).toBeInTheDocument()
+    expect(updateSettings).toHaveBeenCalledTimes(1)
+    expect(setProviderApiKey).toHaveBeenCalledTimes(1)
+    expect(updateSettings.mock.invocationCallOrder[0]).toBeLessThan(
+      setProviderApiKey.mock.invocationCallOrder[0]!
+    )
+    expect(screen.getByDisplayValue('服务商 2')).toBeInTheDocument()
+    expect(document.querySelectorAll<HTMLInputElement>('input[type="password"]')[1]).toHaveValue(
+      'sk-retry-me'
+    )
+  })
+
+  it('does not fetch saved API keys until the user clicks show', async () => {
+    const getProviderApiKey = vi.fn(async () => 'sk-secret-should-not-preload')
+    const configured: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        keyConfigured: true
+      }))
+    }
+    window.textLens = {
+      getSettings: vi.fn(async () => configured),
+      updateSettings: vi.fn(),
+      getProviderApiKey,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    await waitFor(() => {
+      expect(screen.getByText(/AI 服务商/)).toBeInTheDocument()
+    })
+    expect(getProviderApiKey).not.toHaveBeenCalled()
+  })
+
+  it('loads the saved API key when the user clicks show', async () => {
+    const getProviderApiKey = vi.fn(async () => 'sk-revealed-key')
+    const configured: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        keyConfigured: true
+      }))
+    }
+    window.textLens = {
+      getSettings: vi.fn(async () => configured),
+      updateSettings: vi.fn(),
+      getProviderApiKey,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const toggle = await screen.findByRole('button', { name: /显示 API Key/ })
+    fireEvent.click(toggle)
+    await waitFor(() => {
+      expect(getProviderApiKey).toHaveBeenCalled()
+    })
+    const input = screen.getByDisplayValue('sk-revealed-key')
+    expect(input).toHaveAttribute('type', 'text')
+  })
+
+  it('shows provider models as compact name chips without thinking badges', async () => {
+    const settingsWithModels: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        models: [
+          { id: 'gpt-4o-mini', name: 'gpt-4o-mini', thinkingLevels: [] },
+          { id: 'o3-mini', name: 'o3-mini', thinkingLevels: ['low', 'medium', 'high'] }
+        ]
+      }))
+    }
+    window.textLens = {
+      getSettings: vi.fn(async () => settingsWithModels),
+      updateSettings: vi.fn(),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    // Model names visible as chip labels (not full-width rows with id + thinking)
+    expect(await screen.findByRole('button', { name: '拖动模型 gpt-4o-mini' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '拖动模型 o3-mini' })).toBeInTheDocument()
+    expect(screen.getByText('gpt-4o-mini', { selector: '.model-chip__name' })).toBeInTheDocument()
+    expect(screen.getByText('o3-mini', { selector: '.model-chip__name' })).toBeInTheDocument()
+
+    // Provider model list must not show thinking badges
+    expect(screen.queryByText(/思考\s*:/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/思考:\s*低/)).not.toBeInTheDocument()
+
+    expect(screen.getAllByRole('button', { name: /拖动模型/ }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: /移除模型/ }).length).toBeGreaterThan(0)
+  })
+
+  it('reorders provider models with the keyboard drag handle', async () => {
+    const modelIds = ['gpt-4o-mini', 'o3-mini']
+    const modelOrder = new Map<string, number>(modelIds.map((id, index) => [id, index]))
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      const listitem = this.closest<HTMLElement>('[role="listitem"]')
+      const dragLabel = listitem
+        ?.querySelector<HTMLElement>('[aria-label^="拖动模型"]')
+        ?.getAttribute('aria-label')
+      const modelName = dragLabel?.replace(/^拖动模型\s+/, '') ?? ''
+      const index = modelOrder.get(modelName) ?? 0
+      const left = 20 + index * 180
+      const top = 300
+      const width = listitem ? 160 : 400
+      const height = listitem ? 28 : 120
+      return {
+        x: left,
+        y: top,
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        toJSON: () => ({})
+      } as DOMRect
+    })
+
+    const settingsWithModels: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        models: [
+          { id: 'gpt-4o-mini', name: 'gpt-4o-mini', thinkingLevels: [] },
+          { id: 'o3-mini', name: 'o3-mini', thinkingLevels: ['low', 'medium', 'high'] }
+        ]
+      }))
+    }
+    const updateSettings = vi.fn(async (update: SettingsUpdate): Promise<PublicSettings> => ({
+      ...settingsWithModels,
+      ...update,
+      providers: (update.providers ?? settingsWithModels.providers).map((provider) => ({
+        ...provider,
+        keyConfigured: false
+      })),
+      actions: update.actions ?? settingsWithModels.actions
+    }))
+    window.textLens = {
+      getSettings: vi.fn(async () => settingsWithModels),
+      updateSettings,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+
+    const handle = await screen.findByRole('button', { name: '拖动模型 gpt-4o-mini' })
+    handle.focus()
+    fireEvent.keyDown(handle, { key: ' ', code: 'Space' })
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        'Draggable item gpt-4o-mini was moved over droppable area gpt-4o-mini'
+      )
+    })
+    fireEvent.keyDown(document, { key: 'ArrowRight', code: 'ArrowRight' })
+    await waitFor(() => {
+      expect(document.body.textContent).toContain(
+        'Draggable item gpt-4o-mini was moved over droppable area o3-mini'
+      )
+    })
+    fireEvent.keyDown(document, { key: ' ', code: 'Space' })
+
+    await waitFor(() => {
+      const dragHandles = screen.getAllByRole('button', { name: /拖动模型/ })
+      expect(dragHandles.map((button) => button.getAttribute('aria-label'))).toEqual([
+        '拖动模型 o3-mini',
+        '拖动模型 gpt-4o-mini'
+      ])
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1))
+    expect(
+      (updateSettings.mock.calls[0]?.[0].providers?.[0]?.models ?? []).map((model) => model.id)
+    ).toEqual(['o3-mini', 'gpt-4o-mini'])
+  })
+})

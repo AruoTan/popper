@@ -1,0 +1,3533 @@
+use std::{
+    collections::{HashMap, HashSet},
+    net::IpAddr,
+    panic::{catch_unwind, AssertUnwindSafe},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Receiver, RecvTimeoutError},
+        Arc,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use tauri::{
+    menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
+};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
+use tokio::sync::oneshot;
+use url::{Host, Url};
+use uuid::Uuid;
+
+#[cfg(target_os = "windows")]
+use crate::models::ApplicationCloseBehavior;
+use crate::{
+    actions::{ActionBeginReady, ActionService, ActionServiceError},
+    clipboard,
+    models::{
+        ActionKind, ActionNotice, ActionSnapshotStatus, ConnectionTestResult, CreateProviderInput,
+        EventSequence, ExecuteActionRequest, HandshakeGeneration, Point as ActionPoint,
+        PublicSettings, RequestGeneration, ResultDismissMode, ResultReadyAck, SessionGeneration,
+        SettingsUpdate, SyncModelsResult, TriggerMode, UpdateProviderInput,
+        WindowSize as SettingsWindowSize,
+    },
+    selection::{
+        SelectionDirection, SelectionEvent, SelectionEventReceiver, SelectionMethod,
+        SelectionMonitor, SelectionMouse, SelectionPayload, SelectionPoint, SelectionTrigger,
+        SourceApplication,
+    },
+    settings::SettingsRepository,
+    windows::{
+        restore_source_app_activation, result_label, DismissMode, Point as WindowPoint,
+        ResultWindowOptions, WindowCoordinator, WindowSize,
+    },
+};
+
+pub const SELECTION_EVENT: &str = "textlens:selection";
+pub const SETTINGS_CHANGED_EVENT: &str = "textlens:settings-changed";
+pub const SHORTCUT_ERROR_EVENT: &str = "textlens:shortcut-error";
+pub const SETTINGS_CLOSE_REQUEST_EVENT: &str = "textlens:settings-close-requested";
+pub const SETTINGS_GUIDANCE_EVENT: &str = "textlens:settings-guidance";
+pub const TOOLBAR_DISMISSED_EVENT: &str = "textlens:toolbar-dismissed";
+
+const SELECTION_MONITOR_START_ERROR: &str =
+    "无法启动系统划词监听。请重新启动 TextLens；若仍然失败，请检查安全软件或系统策略。";
+const SELECTION_MONITOR_DISCONNECTED_ERROR: &str = "系统划词监听意外停止。请重新启动 TextLens。";
+const GLOBAL_SHORTCUT_ERROR: &str =
+    "全局快捷键注册失败，可能已被其他应用占用。请更换快捷键后重试。";
+
+const TOOLBAR_LABEL: &str = "selection-toolbar";
+const SETTINGS_LABEL: &str = "settings";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenSettingsOptions {
+    pub focus: Option<String>,
+    pub notice: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsGuidance {
+    pub focus: Option<String>,
+    pub notice: Option<String>,
+}
+const RESULT_LABEL_PREFIX: &str = "selection-result-";
+const TRAY_ID: &str = "textlens-tray";
+const TRAY_TOGGLE_ID: &str = "textlens-toggle";
+const TRAY_PERMISSION_ID: &str = "textlens-permission";
+const TRAY_SETTINGS_ID: &str = "textlens-settings";
+const TRAY_QUIT_ID: &str = "textlens-quit";
+const RESULT_DEFAULT_WIDTH: f64 = 520.0;
+const RESULT_DEFAULT_HEIGHT: f64 = 420.0;
+const RESIZE_PERSIST_DELAY_MS: u64 = 420;
+const MAX_RESULT_SESSIONS: usize = 12;
+const RESULT_REVEAL_TIMEOUT: Duration = Duration::from_secs(3);
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SettingsCloseAction {
+    HideToTray,
+    RequestQuitConfirmation,
+    QuitImmediately,
+}
+
+#[cfg(target_os = "windows")]
+fn settings_close_action(
+    behavior: ApplicationCloseBehavior,
+    renderer_ready: bool,
+) -> SettingsCloseAction {
+    match behavior {
+        ApplicationCloseBehavior::HideToTray => SettingsCloseAction::HideToTray,
+        ApplicationCloseBehavior::Quit if renderer_ready => {
+            SettingsCloseAction::RequestQuitConfirmation
+        }
+        ApplicationCloseBehavior::Quit => SettingsCloseAction::QuitImmediately,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccessibilityStatus {
+    platform: &'static str,
+    trusted: bool,
+    can_request: bool,
+    available: bool,
+    diagnostics: RuntimeDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDiagnostics {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_monitor_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shortcut_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CursorPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ToolbarSize {
+    pub width: f64,
+    pub height: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunActionResult {
+    accepted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+impl RunActionResult {
+    fn accepted(session_id: Option<String>, request_id: Option<String>) -> Self {
+        Self {
+            accepted: true,
+            session_id,
+            request_id,
+            message: None,
+        }
+    }
+
+    fn rejected(message: impl Into<String>) -> Self {
+        Self {
+            accepted: false,
+            session_id: None,
+            request_id: None,
+            message: Some(message.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RendererSourceApplication {
+    name: String,
+    bundle_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RendererSelectionAnchor {
+    Selection {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
+    Cursor {
+        x: f64,
+        y: f64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RendererSelectionPayload {
+    selection_id: String,
+    text: String,
+    source_app: RendererSourceApplication,
+    anchor: RendererSelectionAnchor,
+    direction: SelectionDirection,
+    is_fullscreen: bool,
+}
+
+/// Payload emitted when the native runtime dismisses the selection toolbar.
+///
+/// Always force-hides the toolbar; the renderer uses this to clear local
+/// selection / copy-success state that would otherwise outlive the window.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolbarDismissedPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection_id: Option<String>,
+    reason: String,
+}
+
+/// Pure dismiss hide decision so unit tests can assert force-hide without an AppHandle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DismissHidePlan {
+    cleared_selection_id: Option<String>,
+    force_hide: bool,
+}
+
+fn dismiss_hide_plan(cleared_id: Option<String>, _scoped_hide_succeeded: bool) -> DismissHidePlan {
+    DismissHidePlan {
+        cleared_selection_id: cleared_id,
+        // Always force-hide: scoped path may no-op when toolbar_selection_id diverges
+        // (e.g. after copy keeps the toolbar while selection ids drift).
+        force_hide: true,
+    }
+}
+
+/// After copy/dismiss, the host app may still report the same selected text on the
+/// following mouse-up (micro-drag ≥ 4px, or AX lag). Presenting that again makes the
+/// toolbar jump to the click and requires a second outside click. Suppress same-text
+/// auto-presentation for a short window.
+const SAME_TEXT_SELECTION_SUPPRESS_MS: u64 = 2_000;
+
+#[derive(Debug, Clone)]
+struct SameTextSelectionSuppress {
+    text: String,
+    until: Instant,
+}
+
+fn should_suppress_same_text_selection(
+    suppression: Option<&SameTextSelectionSuppress>,
+    selection_text: &str,
+    now: Instant,
+) -> bool {
+    suppression.is_some_and(|guard| now < guard.until && guard.text == selection_text)
+}
+
+fn same_text_selection_suppress(
+    text: impl Into<String>,
+    now: Instant,
+) -> SameTextSelectionSuppress {
+    SameTextSelectionSuppress {
+        text: text.into(),
+        until: now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS),
+    }
+}
+
+/// Arguments for best-effort host OS deselect when a result session ends.
+/// Empty capture text skips clear entirely (nothing to match against).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostSelectionClear {
+    text: String,
+    bundle_id: Option<String>,
+}
+
+fn host_selection_clear_args(text: &str, bundle_id: Option<&str>) -> Option<HostSelectionClear> {
+    let text = text.to_owned();
+    if text.is_empty() {
+        return None;
+    }
+    Some(HostSelectionClear {
+        text,
+        bundle_id: bundle_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+    })
+}
+
+impl RendererSelectionPayload {
+    fn new(selection_id: &str, selection: &SelectionPayload) -> Self {
+        let anchor = selection.bounds.map_or_else(
+            || RendererSelectionAnchor::Cursor {
+                x: selection.mouse.current.x,
+                y: selection.mouse.current.y,
+            },
+            |bounds| RendererSelectionAnchor::Selection {
+                x: bounds.x,
+                y: bounds.y,
+                width: bounds.width.max(0.0),
+                height: bounds.height.max(0.0),
+            },
+        );
+        Self {
+            selection_id: selection_id.to_owned(),
+            text: selection.text.clone(),
+            source_app: RendererSourceApplication {
+                name: selection.source_app.name.clone(),
+                bundle_id: (!selection.source_app.bundle_id.trim().is_empty())
+                    .then(|| selection.source_app.bundle_id.clone()),
+            },
+            anchor,
+            direction: selection.direction,
+            is_fullscreen: selection.is_fullscreen,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CurrentSelection {
+    id: String,
+    payload: SelectionPayload,
+    source_result_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResultSessionSnapshot {
+    session_id: String,
+    session_generation: SessionGeneration,
+    request_id: String,
+    request_generation: RequestGeneration,
+    action_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model_id: Option<String>,
+    selection: RendererSelectionPayload,
+    status: &'static str,
+    content: String,
+    last_sequence: EventSequence,
+    last_content_sequence: EventSequence,
+    content_scalar_count: u64,
+    handshake_generation: HandshakeGeneration,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation_notice: Option<ActionNotice>,
+    error_message: String,
+    retryable: bool,
+    pinned: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ResultSessionMeta {
+    selection: CurrentSelection,
+    action_id: String,
+    pinned: bool,
+}
+
+fn compose_result_ready_snapshot(
+    meta: ResultSessionMeta,
+    begin: ActionBeginReady,
+) -> ResultSessionSnapshot {
+    let ActionBeginReady {
+        snapshot,
+        ack,
+        route,
+    } = begin;
+    let status = match snapshot.status {
+        ActionSnapshotStatus::Running => "streaming",
+        ActionSnapshotStatus::Completed => "completed",
+        ActionSnapshotStatus::Cancelled => "cancelled",
+        ActionSnapshotStatus::Error => "error",
+    };
+    let (provider_id, model_id) = route.map_or((None, None), |route| {
+        let _ = route.thinking_mode;
+        (Some(route.provider_id), Some(route.model_id))
+    });
+
+    ResultSessionSnapshot {
+        session_id: snapshot.session_id,
+        session_generation: snapshot.session_generation,
+        request_id: snapshot.request_id,
+        request_generation: snapshot.request_generation,
+        action_id: meta.action_id,
+        provider_id,
+        model_id,
+        selection: RendererSelectionPayload::new(&meta.selection.id, &meta.selection.payload),
+        status,
+        content: snapshot.content,
+        last_sequence: snapshot.last_sequence,
+        last_content_sequence: snapshot.last_content_sequence,
+        content_scalar_count: snapshot.content_scalar_count,
+        handshake_generation: ack.handshake_generation,
+        generation_notice: snapshot.generation_notice,
+        error_message: snapshot.error_message.unwrap_or_default(),
+        retryable: snapshot.retryable,
+        pinned: meta.pinned,
+    }
+}
+
+fn follow_up_error_result(error: ActionServiceError) -> Result<RunActionResult, String> {
+    match error {
+        error @ (ActionServiceError::Busy | ActionServiceError::SessionEnded) => {
+            Ok(RunActionResult::rejected(error.to_string()))
+        }
+        error => Err(error.to_string()),
+    }
+}
+
+type ResultRevealReceiver = oneshot::Receiver<Result<(), String>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResultRevealHandshakePhase {
+    Pending,
+    Committing,
+    Committed,
+    Failed,
+}
+
+impl ResultRevealHandshakePhase {
+    fn begin_commit(&mut self) -> Result<bool, ()> {
+        match self {
+            Self::Pending => {
+                *self = Self::Committing;
+                Ok(true)
+            }
+            Self::Committing | Self::Committed => Ok(false),
+            Self::Failed => Err(()),
+        }
+    }
+
+    fn finish_commit(&mut self, succeeded: bool) -> bool {
+        if *self != Self::Committing {
+            return false;
+        }
+        *self = if succeeded {
+            Self::Committed
+        } else {
+            Self::Failed
+        };
+        true
+    }
+}
+
+struct ResultRevealHandshake {
+    phase: ResultRevealHandshakePhase,
+    sender: Option<oneshot::Sender<Result<(), String>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingResultSize {
+    revision: u64,
+    size: SettingsWindowSize,
+}
+
+pub struct RuntimeState {
+    pub settings: Arc<SettingsRepository>,
+    pub actions: ActionService,
+    pub windows: WindowCoordinator,
+    selection_monitor: Mutex<SelectionMonitor>,
+    current_selection: Mutex<Option<CurrentSelection>>,
+    consuming_selection_ids: Mutex<HashSet<String>>,
+    /// Blocks re-presenting the same text shortly after copy/dismiss (see
+    /// `should_suppress_same_text_selection`).
+    same_text_selection_suppress: Mutex<Option<SameTextSelectionSuppress>>,
+    result_creation: Mutex<()>,
+    result_sessions: Mutex<HashMap<String, ResultSessionMeta>>,
+    result_reveals: Mutex<HashMap<String, ResultRevealHandshake>>,
+    shortcut_switch: Mutex<()>,
+    registered_shortcut: Mutex<String>,
+    runtime_diagnostics: Mutex<RuntimeDiagnostics>,
+    pending_result_sizes: Mutex<HashMap<String, PendingResultSize>>,
+    resize_revision: AtomicU64,
+    latest_result_size: Mutex<Option<SettingsWindowSize>>,
+    last_permission: Mutex<bool>,
+    settings_renderer_ready: AtomicBool,
+    shutting_down: AtomicBool,
+    pending_settings_guidance: Mutex<Option<SettingsGuidance>>,
+}
+
+impl RuntimeState {
+    pub fn new(
+        settings: Arc<SettingsRepository>,
+        actions: ActionService,
+        monitor: SelectionMonitor,
+    ) -> Self {
+        Self {
+            settings,
+            actions,
+            windows: WindowCoordinator::default(),
+            selection_monitor: Mutex::new(monitor),
+            current_selection: Mutex::new(None),
+            consuming_selection_ids: Mutex::new(HashSet::new()),
+            same_text_selection_suppress: Mutex::new(None),
+            result_creation: Mutex::new(()),
+            result_sessions: Mutex::new(HashMap::new()),
+            result_reveals: Mutex::new(HashMap::new()),
+            shortcut_switch: Mutex::new(()),
+            registered_shortcut: Mutex::new(String::new()),
+            runtime_diagnostics: Mutex::new(RuntimeDiagnostics::default()),
+            pending_result_sizes: Mutex::new(HashMap::new()),
+            resize_revision: AtomicU64::new(0),
+            latest_result_size: Mutex::new(None),
+            last_permission: Mutex::new(SelectionMonitor::is_accessibility_trusted()),
+            settings_renderer_ready: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
+            pending_settings_guidance: Mutex::new(None),
+        }
+    }
+
+    fn arm_same_text_selection_suppress(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        *self.same_text_selection_suppress.lock() = Some(same_text_selection_suppress(
+            text.to_owned(),
+            Instant::now(),
+        ));
+    }
+
+    pub fn process_selection_event(&self, app: &AppHandle, event: SelectionEvent) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        match event {
+            SelectionEvent::Selection(selection) => self.handle_selection(app, selection, false),
+            SelectionEvent::Dismiss(dismiss) => {
+                let point = WindowPoint {
+                    x: dismiss.mouse.x,
+                    y: dismiss.mouse.y,
+                };
+                if dismiss.reason == "mouseDown" && self.windows.point_inside_toolbar(app, point) {
+                    return;
+                }
+                let (selection_id, dismissed_text) = {
+                    let mut current = self.current_selection.lock();
+                    if current.as_ref().is_some_and(|selection| {
+                        dismiss_precedes_selection(
+                            selection.payload.timestamp_ms,
+                            dismiss.timestamp_ms,
+                        )
+                    }) {
+                        return;
+                    }
+                    match current.take() {
+                        Some(selection) => (Some(selection.id), Some(selection.payload.text)),
+                        None => (None, None),
+                    }
+                };
+
+                // Prevent the same still-selected text from re-presenting the toolbar
+                // on the mouse-up that often follows this dismiss (micro-drag / AX lag).
+                if let Some(text) = dismissed_text.as_deref() {
+                    self.arm_same_text_selection_suppress(text);
+                }
+
+                // 1) Try selection-scoped hide first (clears matching toolbar_selection_id).
+                let scoped_hide_ok = if let Some(ref id) = selection_id {
+                    self.windows.hide_toolbar_if_selection(app, id)
+                } else {
+                    false
+                };
+                let plan = dismiss_hide_plan(selection_id.clone(), scoped_hide_ok);
+                // 2) Always force-hide any still-visible toolbar (fixes double outside-click).
+                if plan.force_hide {
+                    self.windows.hide_toolbar(app);
+                }
+
+                // 3) Notify the toolbar renderer even when no selection was held, so
+                // copy-success / React selection state cannot outlive the native window.
+                let _ = app.emit_to(
+                    TOOLBAR_LABEL,
+                    TOOLBAR_DISMISSED_EVENT,
+                    ToolbarDismissedPayload {
+                        selection_id: plan.cleared_selection_id,
+                        reason: dismiss.reason.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    fn clear_current_selection_if(&self, selection_id: &str) -> bool {
+        let mut current = self.current_selection.lock();
+        if current.as_ref().map(|selection| selection.id.as_str()) == Some(selection_id) {
+            *current = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn current_selection_matches(&self, selection_id: &str) -> bool {
+        self.current_selection
+            .lock()
+            .as_ref()
+            .is_some_and(|selection| selection.id == selection_id)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn recover_toolbar_delivery(&self, app: &AppHandle, selection_id: &str) {
+        if !self.current_selection_matches(selection_id) {
+            return;
+        }
+        match self.windows.rebuild_toolbar(app, selection_id) {
+            Ok(_) => {}
+            Err(_) => eprintln!(
+                "[toolbar] stage=delivery-recovery selection_id={} error_class=window",
+                selection_id
+            ),
+        }
+    }
+
+    fn hide_toolbar_for_selection(&self, app: &AppHandle, selection_id: &str) {
+        let _ = self.windows.hide_toolbar_if_selection(app, selection_id);
+    }
+
+    fn clear_and_hide_current_selection_if(&self, app: &AppHandle, selection_id: &str) -> bool {
+        let cleared = self.clear_current_selection_if(selection_id);
+        // The global dismiss hook may already have consumed the logical
+        // selection while the native toolbar is still visible. Always retry
+        // the selection-bound native hide; its coordinator check protects a
+        // newer toolbar generation from an old action completion.
+        self.hide_toolbar_for_selection(app, selection_id);
+        cleared
+    }
+
+    fn clear_current_selection_from_result(&self, session_id: &str) -> Option<String> {
+        let mut current = self.current_selection.lock();
+        if current.as_ref().is_some_and(|selection| {
+            selection_source_matches_result(
+                selection.source_result_session_id.as_deref(),
+                session_id,
+            )
+        }) {
+            current.take().map(|selection| selection.id)
+        } else {
+            None
+        }
+    }
+
+    fn handle_selection(&self, app: &AppHandle, selection: SelectionPayload, force_capture: bool) {
+        let settings = self.settings.get_settings();
+        if !settings.enabled || !SelectionMonitor::is_accessibility_trusted() {
+            self.windows.hide_toolbar(app);
+            *self.current_selection.lock() = None;
+            return;
+        }
+        // Shortcut mode keeps the selection monitor running so outside clicks can
+        // dismiss the toolbar, but automatic selection events must not replace or
+        // clear a shortcut-invoked toolbar.
+        if !should_present_selection_for_trigger(force_capture, settings.trigger.mode) {
+            return;
+        }
+        // After copy/dismiss, ignore automatic re-captures of the same text so the
+        // toolbar does not jump to the click and demand a second outside click.
+        // Shortcut force_capture still presents intentionally re-invoked captures.
+        if !force_capture
+            && should_suppress_same_text_selection(
+                self.same_text_selection_suppress.lock().as_ref(),
+                &selection.text,
+                Instant::now(),
+            )
+        {
+            return;
+        }
+        if !application_is_allowed(&settings.filter, &selection)
+            || selection.text.trim().is_empty()
+            || selection.text.chars().count() > 1_000_000
+        {
+            self.windows.hide_toolbar(app);
+            *self.current_selection.lock() = None;
+            return;
+        }
+
+        // A genuine new selection in another application starts a new
+        // transient workflow. Sticky/pinned results remain available, while
+        // every unpinned result is closed and its in-memory session released.
+        self.close_unpinned_results(app);
+        let anchor = selection_toolbar_anchor(&selection);
+        let current = CurrentSelection {
+            id: Uuid::new_v4().to_string(),
+            payload: selection,
+            source_result_session_id: None,
+        };
+        let toolbar_selection_id = current.id.clone();
+        let public = RendererSelectionPayload::new(&current.id, &current.payload);
+        // Publish before touching the native window. If the toolbar is being
+        // replaced, a stage/emit failure must leave this validated selection
+        // available for the replacement renderer's `toolbar_ready` replay.
+        #[cfg(target_os = "windows")]
+        self.windows.begin_toolbar_selection(&toolbar_selection_id);
+        *self.current_selection.lock() = Some(current);
+        #[cfg(target_os = "windows")]
+        let stage_failed = self
+            .windows
+            .stage_toolbar(app, &toolbar_selection_id, anchor)
+            .is_err();
+        #[cfg(not(target_os = "windows"))]
+        if let Err(error) = self
+            .windows
+            .show_toolbar(app, &toolbar_selection_id, anchor)
+        {
+            self.clear_and_hide_current_selection_if(app, &toolbar_selection_id);
+            eprintln!("[window] 无法显示划词工具栏：{error}");
+            return;
+        }
+        if !self.current_selection_matches(&toolbar_selection_id) {
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        if stage_failed {
+            eprintln!(
+                "[toolbar] stage=selection-stage selection_id={} error_class=window",
+                toolbar_selection_id
+            );
+            self.recover_toolbar_delivery(app, &toolbar_selection_id);
+            return;
+        }
+        if app.emit_to(TOOLBAR_LABEL, SELECTION_EVENT, public).is_err() {
+            #[cfg(target_os = "windows")]
+            {
+                eprintln!(
+                    "[toolbar] stage=selection-emit selection_id={} error_class=window",
+                    toolbar_selection_id
+                );
+                self.recover_toolbar_delivery(app, &toolbar_selection_id);
+            }
+            #[cfg(not(target_os = "windows"))]
+            self.clear_and_hide_current_selection_if(app, &toolbar_selection_id);
+        }
+    }
+
+    pub fn capture_current(&self, app: &AppHandle) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let captured = self.selection_monitor.lock().capture_current();
+        match captured {
+            Ok(Some(selection)) => self.handle_selection(app, selection, true),
+            Ok(None) => {
+                self.windows.hide_toolbar(app);
+                *self.current_selection.lock() = None;
+            }
+            Err(_) => {
+                self.windows.hide_toolbar(app);
+                *self.current_selection.lock() = None;
+            }
+        }
+    }
+
+    pub fn reconcile_capture(&self, app: &AppHandle) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let settings = self.settings.get_settings();
+        let trusted = SelectionMonitor::is_accessibility_trusted();
+        // Keep the native monitor running in both trigger modes while enabled:
+        // shortcut mode still needs dismiss events (outside click) after a
+        // shortcut-invoked toolbar is shown. Auto-selection is filtered in
+        // handle_selection when mode is Shortcut.
+        let should_listen = settings.enabled && trusted;
+        let start_failed = {
+            let monitor = self.selection_monitor.lock();
+            if should_listen {
+                monitor.start().is_err()
+            } else {
+                let _ = monitor.stop();
+                self.windows.hide_toolbar(app);
+                *self.current_selection.lock() = None;
+                false
+            }
+        };
+        let diagnostic = selection_monitor_diagnostic(should_listen, start_failed);
+        if self.set_selection_monitor_error(diagnostic) {
+            if let Ok(public) = self.settings.get_public_settings() {
+                refresh_tray(app, &public);
+            }
+        }
+    }
+
+    pub fn reconcile_shortcut(&self, app: &AppHandle) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let settings = self.settings.get_settings();
+        let requested =
+            shortcut_registration_target(settings.trigger.mode, settings.capture_shortcut.as_str());
+        if let Err(error) = self.switch_shortcut(app, &requested) {
+            // Keep the saved value so the settings page can show exactly what
+            // needs editing. The event is only a prompt; RuntimeDiagnostics is
+            // the replayable source of truth for windows opened afterwards.
+            let _ = app.emit(SHORTCUT_ERROR_EVENT, error);
+        }
+    }
+
+    fn switch_shortcut(&self, app: &AppHandle, requested: &str) -> Result<String, String> {
+        let _transaction = self.shortcut_switch.lock();
+        let requested = requested.trim();
+        let outcome = (|| {
+            let current = self.registered_shortcut.lock().clone();
+            if current == requested {
+                return Ok(current);
+            }
+            if !requested.is_empty() {
+                app.global_shortcut()
+                    .register(requested)
+                    .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?;
+            }
+            if !current.is_empty() && app.global_shortcut().unregister(current.as_str()).is_err() {
+                if !requested.is_empty() {
+                    let _ = app.global_shortcut().unregister(requested);
+                }
+                return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
+            }
+            *self.registered_shortcut.lock() = requested.to_owned();
+            Ok(current)
+        })();
+        self.set_shortcut_error(shortcut_registration_diagnostic(outcome.is_err()));
+        outcome
+    }
+
+    fn set_selection_monitor_error(&self, error: Option<String>) -> bool {
+        let mut diagnostics = self.runtime_diagnostics.lock();
+        if diagnostics.selection_monitor_error == error {
+            return false;
+        }
+        diagnostics.selection_monitor_error = error;
+        true
+    }
+
+    fn handle_selection_receiver_disconnected(&self, app: &AppHandle) {
+        let diagnostic =
+            selection_monitor_disconnect_diagnostic(self.shutting_down.load(Ordering::Acquire));
+        let Some(diagnostic) = diagnostic else {
+            return;
+        };
+
+        // A disconnected receiver means no producer can deliver another event.
+        // Stop the native side as a best effort and clear any stale toolbar.
+        // Native error details are deliberately not logged because providers
+        // may include selected text in their error messages.
+        let diagnostic_changed = self.set_selection_monitor_error(Some(diagnostic));
+        *self.current_selection.lock() = None;
+        self.windows.hide_toolbar(app);
+        self.selection_monitor.lock().shutdown();
+        if diagnostic_changed {
+            if let Ok(public) = self.settings.get_public_settings() {
+                refresh_tray(app, &public);
+            }
+        }
+        eprintln!("[selection] event channel disconnected; selection listening stopped");
+    }
+
+    fn set_shortcut_error(&self, error: Option<String>) -> bool {
+        let mut diagnostics = self.runtime_diagnostics.lock();
+        if diagnostics.shortcut_error == error {
+            return false;
+        }
+        diagnostics.shortcut_error = error;
+        true
+    }
+
+    fn accessibility_status(&self) -> AccessibilityStatus {
+        let platform = accessibility_platform();
+        let trusted = SelectionMonitor::is_accessibility_trusted();
+        let diagnostics = self.runtime_diagnostics.lock().clone();
+        AccessibilityStatus {
+            platform,
+            trusted,
+            can_request: cfg!(target_os = "macos"),
+            available: selection_access_available(platform, trusted, &diagnostics),
+            diagnostics,
+        }
+    }
+
+    pub fn after_settings_changed(&self, app: &AppHandle, settings: &PublicSettings) {
+        self.reconcile_capture(app);
+        self.reconcile_shortcut(app);
+        refresh_tray(app, settings);
+        self.windows.update_result_behavior(
+            app,
+            dismiss_mode(settings.result.dismiss_mode),
+            u64::from(settings.result.dismiss_delay_ms),
+            settings.result.remember_size,
+        );
+        for (label, _) in app.webview_windows() {
+            if label.starts_with(RESULT_LABEL_PREFIX) {
+                let _ = self
+                    .windows
+                    .set_result_opacity(app, &label, settings.result.opacity);
+            }
+        }
+        let _ = app.emit(SETTINGS_CHANGED_EVENT, settings.clone());
+    }
+
+    pub fn poll_permission(&self, app: &AppHandle) {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let trusted = SelectionMonitor::is_accessibility_trusted();
+        let changed = {
+            let mut previous = self.last_permission.lock();
+            let changed = *previous != trusted;
+            *previous = trusted;
+            changed
+        };
+        if changed {
+            self.reconcile_capture(app);
+            if let Ok(settings) = self.settings.get_public_settings() {
+                refresh_tray(app, &settings);
+                let _ = app.emit(SETTINGS_CHANGED_EVENT, settings);
+            }
+        }
+    }
+
+    pub fn shutdown(&self, app: &AppHandle) {
+        if self.shutting_down.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
+        // Reject new capture/action work before cancelling anything already in
+        // flight. Every exit entry point funnels through this idempotent path.
+        self.consuming_selection_ids.lock().clear();
+        self.windows.hide_toolbar(app);
+        *self.current_selection.lock() = None;
+
+        let sessions = self
+            .result_sessions
+            .lock()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session_id in &sessions {
+            let _ = self.actions.cancel(app, session_id);
+        }
+
+        let shortcut = std::mem::take(&mut *self.registered_shortcut.lock());
+        if !shortcut.is_empty() {
+            let _ = app.global_shortcut().unregister(shortcut.as_str());
+        }
+
+        // On Windows this sends Shutdown to the UIA/OLE STA worker and only
+        // waits for a short grace period. A background reaper owns any slower
+        // join, so a blocked third-party COM provider cannot freeze exit.
+        self.selection_monitor.lock().shutdown();
+
+        let latest_revision = self.resize_revision.load(Ordering::Acquire);
+        let latest_session =
+            self.pending_result_sizes
+                .lock()
+                .iter()
+                .find_map(|(session_id, pending)| {
+                    (pending.revision == latest_revision).then(|| session_id.clone())
+                });
+        if let Some(session_id) = latest_session {
+            self.persist_pending_result_size(app, &session_id, Some(latest_revision));
+        }
+        for session_id in sessions {
+            self.actions.clear_session(&session_id);
+        }
+        self.result_reveals.lock().clear();
+        self.result_sessions.lock().clear();
+    }
+
+    fn create_result_session(
+        &self,
+        app: &AppHandle,
+        action_id: &str,
+        action_name: &str,
+        selection: CurrentSelection,
+        cursor: WindowPoint,
+    ) -> Result<(String, String, ResultRevealReceiver), String> {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return Err("TextLens 正在退出".to_owned());
+        }
+        // Different renderer commands can arrive concurrently. Serialize the
+        // short create/replace transaction so a newer selection cannot insert
+        // its result between another request's capacity check and window
+        // creation, which would otherwise allow it to be closed as the
+        // "previous" unpinned result or exceed the pinned-session limit.
+        let _creation_guard = self.result_creation.lock();
+        let session_id = Uuid::new_v4().to_string();
+        let label = result_label(&session_id);
+        let request = ExecuteActionRequest {
+            session_id: session_id.clone(),
+            window_label: label.clone(),
+            action_id: action_id.to_owned(),
+            text: selection.payload.text.clone(),
+            cursor: Some(ActionPoint {
+                x: cursor.x.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+                y: cursor.y.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32,
+            }),
+            target_language: None,
+        };
+
+        // A new unpinned result replaces all existing unpinned results, so
+        // only pinned sessions consume the durable session limit. Check this
+        // before starting the request, while leaving the previous result
+        // untouched if request preparation fails.
+        let pinned_sessions = self
+            .result_sessions
+            .lock()
+            .values()
+            .filter(|meta| meta.pinned)
+            .count();
+        if pinned_sessions >= MAX_RESULT_SESSIONS {
+            return Err(format!(
+                "置顶结果窗口已达到 {MAX_RESULT_SESSIONS} 个，请先关闭部分窗口"
+            ));
+        }
+
+        // `execute` performs the complete validation/preparation exactly once
+        // and starts DNS/TLS/model work immediately. Stream events remain in
+        // the action service's pending queue until the result renderer is
+        // ready, allowing network startup and WKWebView creation to overlap.
+        let request_id = self
+            .actions
+            .execute(app, request)
+            .map_err(|error| error.to_string())?;
+
+        self.close_unpinned_results(app);
+        if self.result_sessions.lock().len() >= MAX_RESULT_SESSIONS {
+            let _ = self.actions.cancel(app, &session_id);
+            self.actions.clear_session(&session_id);
+            return Err(format!(
+                "置顶结果窗口已达到 {MAX_RESULT_SESSIONS} 个，请先关闭部分窗口"
+            ));
+        }
+        // Closing the previous unpinned result may flush a just-resized size;
+        // read result preferences only after that flush so this new window
+        // immediately uses the user's latest dimensions.
+        let result = self.settings.get_settings().result;
+        let size = if result.remember_size {
+            (*self.latest_result_size.lock())
+                .or(result.last_size)
+                .unwrap_or(SettingsWindowSize {
+                    width: RESULT_DEFAULT_WIDTH,
+                    height: RESULT_DEFAULT_HEIGHT,
+                })
+        } else {
+            SettingsWindowSize {
+                width: RESULT_DEFAULT_WIDTH,
+                height: RESULT_DEFAULT_HEIGHT,
+            }
+        };
+        let options = ResultWindowOptions {
+            size: WindowSize {
+                width: size.width,
+                height: size.height,
+            },
+            cursor,
+            follow_cursor: result.follow_cursor,
+            pinned: result.default_pinned,
+            dismiss_mode: dismiss_mode(result.dismiss_mode),
+            dismiss_delay_ms: u64::from(result.dismiss_delay_ms),
+            opacity: result.opacity,
+            remember_size: result.remember_size,
+        };
+        // Publish immutable session metadata before creating the webview. A
+        // fast renderer can invoke its ready handshake during `build()`, and
+        // must already be able to obtain the original text and pin state.
+        self.result_sessions.lock().insert(
+            session_id.clone(),
+            ResultSessionMeta {
+                selection,
+                action_id: action_id.to_owned(),
+                pinned: result.default_pinned,
+            },
+        );
+        let (reveal_sender, reveal_receiver) = oneshot::channel();
+        self.result_reveals.lock().insert(
+            session_id.clone(),
+            ResultRevealHandshake {
+                phase: ResultRevealHandshakePhase::Pending,
+                sender: Some(reveal_sender),
+            },
+        );
+        if let Err(error) =
+            self.windows
+                .create_result_window(app, &session_id, action_name, options)
+        {
+            self.result_reveals.lock().remove(&session_id);
+            let _ = self.actions.cancel(app, &session_id);
+            self.actions.clear_session(&session_id);
+            self.result_sessions.lock().remove(&session_id);
+            return Err(format!("无法创建结果窗口：{error}"));
+        }
+        #[cfg(not(target_os = "windows"))]
+        self.finish_immediate_result_reveal(&session_id);
+        Ok((session_id, request_id, reveal_receiver))
+    }
+
+    fn close_unpinned_results(&self, app: &AppHandle) {
+        let sessions = self
+            .result_sessions
+            .lock()
+            .iter()
+            .filter_map(|(session_id, meta)| {
+                should_close_for_external_selection(meta.pinned).then(|| session_id.clone())
+            })
+            .collect::<Vec<_>>();
+        for session_id in sessions {
+            let label = result_label(&session_id);
+            self.persist_result_size_now(app, &label);
+            if self.windows.close_result(app, &label).is_ok() {
+                self.cleanup_result_session(&session_id);
+            }
+        }
+    }
+
+    fn begin_result_reveal_commit(&self, session_id: &str) -> Result<bool, String> {
+        let mut reveals = self.result_reveals.lock();
+        let handshake = reveals
+            .get_mut(session_id)
+            .ok_or_else(|| "结果显示会话已结束".to_owned())?;
+        handshake
+            .phase
+            .begin_commit()
+            .map_err(|()| "结果窗口初始化已经失败".to_owned())
+    }
+
+    /// Resolves the toolbar's `run_action` call only after the native window
+    /// commit has completed. A false return means a timeout/cleanup won the
+    /// race and the caller must close any window it just made visible.
+    fn finish_result_reveal_commit(&self, session_id: &str, result: Result<(), String>) -> bool {
+        let succeeded = result.is_ok();
+        let sender = {
+            let mut reveals = self.result_reveals.lock();
+            let Some(handshake) = reveals.get_mut(session_id) else {
+                return false;
+            };
+            if !handshake.phase.finish_commit(succeeded) {
+                return handshake.phase == ResultRevealHandshakePhase::Committed;
+            }
+            handshake.sender.take()
+        };
+        if let Some(sender) = sender {
+            let _ = sender.send(result);
+        }
+        true
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn finish_immediate_result_reveal(&self, session_id: &str) {
+        let sender = {
+            let mut reveals = self.result_reveals.lock();
+            let Some(handshake) = reveals.get_mut(session_id) else {
+                return;
+            };
+            handshake.phase = ResultRevealHandshakePhase::Committed;
+            handshake.sender.take()
+        };
+        if let Some(sender) = sender {
+            let _ = sender.send(Ok(()));
+        }
+    }
+
+    fn fail_result_reveal_handshake(&self, session_id: &str, message: String) -> bool {
+        let sender = {
+            let mut reveals = self.result_reveals.lock();
+            let Some(handshake) = reveals.get_mut(session_id) else {
+                return false;
+            };
+            if handshake.phase == ResultRevealHandshakePhase::Committed {
+                return true;
+            }
+            handshake.phase = ResultRevealHandshakePhase::Failed;
+            handshake.sender.take()
+        };
+        if let Some(sender) = sender {
+            let _ = sender.send(Err(message));
+        }
+        true
+    }
+
+    fn abort_result_reveal(&self, app: &AppHandle, session_id: &str) {
+        self.result_reveals.lock().remove(session_id);
+        let _ = self.actions.cancel(app, session_id);
+        let _ = self.windows.close_result(app, &result_label(session_id));
+        self.cleanup_result_session(session_id);
+    }
+
+    pub fn cleanup_result_session(&self, session_id: &str) {
+        self.fail_result_reveal_handshake(
+            session_id,
+            "结果窗口在完成显示前被关闭，请重试".to_owned(),
+        );
+        self.result_reveals.lock().remove(session_id);
+        self.actions.clear_session(session_id);
+        // Closing a translate/explain/etc. window often coincides with an
+        // outside click. Suppress re-presenting the original selection text so
+        // the toolbar does not jump to the cursor after the result disappears.
+        // Then best-effort collapse the host highlight when it still matches.
+        // Order matters: suppress must arm before any AX/UIA write that could
+        // trigger a re-capture. Clipboard-only captures often cannot be written;
+        // suppress still holds for toolbar no-repop.
+        if let Some(meta) = self.result_sessions.lock().remove(session_id) {
+            let text = meta.selection.payload.text.clone();
+            self.arm_same_text_selection_suppress(&text);
+            if let Some(args) = host_selection_clear_args(
+                &text,
+                Some(meta.selection.payload.source_app.bundle_id.as_str()),
+            ) {
+                let _ =
+                    SelectionMonitor::clear_matching_text(args.bundle_id.as_deref(), &args.text);
+            }
+        }
+    }
+
+    pub fn handle_window_event(&self, app: &AppHandle, label: &str, event: &WindowEvent) {
+        if label == TOOLBAR_LABEL {
+            #[cfg(target_os = "windows")]
+            if matches!(event, WindowEvent::Destroyed)
+                && !self.shutting_down.load(Ordering::Acquire)
+                && self.windows.take_toolbar_recovery_pending()
+                && self.windows.ensure_toolbar(app).is_err()
+            {
+                eprintln!("[toolbar] stage=recreate error_class=window");
+            }
+            return;
+        }
+        if label == SETTINGS_LABEL {
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    if self.shutting_down.load(Ordering::Acquire) {
+                        return;
+                    }
+                    api.prevent_close();
+                    #[cfg(target_os = "windows")]
+                    match settings_close_action(
+                        self.settings.get_settings().application.close_behavior,
+                        self.settings_renderer_ready.load(Ordering::Acquire),
+                    ) {
+                        SettingsCloseAction::HideToTray => {
+                            if let Some(window) = app.get_webview_window(label) {
+                                let _ = window.hide();
+                            }
+                        }
+                        SettingsCloseAction::RequestQuitConfirmation => {
+                            if !request_settings_close_confirmation(app) {
+                                quit_application(app);
+                            }
+                        }
+                        SettingsCloseAction::QuitImmediately => quit_application(app),
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    if let Some(window) = app.get_webview_window(label) {
+                        let _ = window.hide();
+                    }
+                }
+                WindowEvent::Destroyed => {
+                    self.settings_renderer_ready.store(false, Ordering::Release);
+                }
+                _ => {}
+            }
+            return;
+        }
+        let Some(session_id) = session_from_result_label(label) else {
+            return;
+        };
+        match event {
+            WindowEvent::Focused(focused) => {
+                self.windows.on_focus_changed(app, label, *focused);
+            }
+            WindowEvent::Resized(size) => {
+                if self.windows.note_result_resize(label) {
+                    if let Some(window) = app.get_webview_window(label) {
+                        if let Ok(scale) = window.scale_factor() {
+                            let logical_size = SettingsWindowSize {
+                                width: size.width as f64 / scale,
+                                height: size.height as f64 / scale,
+                            };
+                            *self.latest_result_size.lock() = Some(logical_size);
+                            let revision = self
+                                .resize_revision
+                                .fetch_add(1, Ordering::AcqRel)
+                                .wrapping_add(1);
+                            self.pending_result_sizes.lock().insert(
+                                session_id.clone(),
+                                PendingResultSize {
+                                    revision,
+                                    size: logical_size,
+                                },
+                            );
+                            self.schedule_resize_persist(app.clone(), session_id, revision);
+                        }
+                    }
+                }
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                self.windows.ignore_resize_temporarily(label);
+            }
+            WindowEvent::CloseRequested { .. } => {
+                self.persist_result_size_now(app, label);
+            }
+            WindowEvent::Destroyed => {
+                self.persist_result_size_now(app, label);
+                // Snapshot original selection text before session cleanup so we
+                // can drop a same-text live selection that a concurrent
+                // mouse-up may have just re-captured.
+                let result_text = self
+                    .result_sessions
+                    .lock()
+                    .get(&session_id)
+                    .map(|meta| meta.selection.payload.text.clone());
+                if let Some(ref text) = result_text {
+                    self.arm_same_text_selection_suppress(text);
+                    let mut current = self.current_selection.lock();
+                    if current
+                        .as_ref()
+                        .is_some_and(|selection| selection.payload.text == *text)
+                    {
+                        *current = None;
+                    }
+                }
+                if let Some(selection_id) = self.clear_current_selection_from_result(&session_id) {
+                    self.hide_toolbar_for_selection(app, &selection_id);
+                }
+                // If nothing else owns a live selection, force-hide any leftover toolbar.
+                if self.current_selection.lock().is_none() {
+                    self.windows.hide_toolbar(app);
+                }
+                self.windows.remove_result(label);
+                self.cleanup_result_session(&session_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn persist_result_size_now(&self, app: &AppHandle, label: &str) {
+        let Some(session_id) = session_from_result_label(label) else {
+            return;
+        };
+        self.persist_pending_result_size(app, &session_id, None);
+    }
+
+    fn persist_pending_result_size(
+        &self,
+        app: &AppHandle,
+        session_id: &str,
+        expected_revision: Option<u64>,
+    ) {
+        let Some(pending) = self.pending_result_sizes.lock().get(session_id).copied() else {
+            return;
+        };
+        if expected_revision.is_some_and(|revision| revision != pending.revision) {
+            return;
+        }
+        if pending.revision != self.resize_revision.load(Ordering::Acquire) {
+            let mut sizes = self.pending_result_sizes.lock();
+            if sizes
+                .get(session_id)
+                .is_some_and(|current| current.revision == pending.revision)
+            {
+                sizes.remove(session_id);
+            }
+            return;
+        }
+        if let Ok(public) = self.settings.update_result_last_size(pending.size) {
+            let mut sizes = self.pending_result_sizes.lock();
+            if sizes
+                .get(session_id)
+                .is_some_and(|current| current.revision == pending.revision)
+            {
+                sizes.remove(session_id);
+            }
+            let _ = app.emit(SETTINGS_CHANGED_EVENT, public);
+        }
+    }
+
+    fn schedule_resize_persist(&self, app: AppHandle, session_id: String, revision: u64) {
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(RESIZE_PERSIST_DELAY_MS)).await;
+            let state = app.state::<RuntimeState>();
+            state.persist_pending_result_size(&app, &session_id, Some(revision));
+        });
+    }
+}
+
+async fn wait_for_result_reveal_with_timeout(
+    receiver: ResultRevealReceiver,
+    timeout: Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(timeout, receiver).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err("结果窗口在显示前已关闭，请重试".to_owned()),
+        Err(_) => Err("结果窗口初始化超时，请重试".to_owned()),
+    }
+}
+
+pub fn spawn_selection_loop(
+    app: AppHandle,
+    receiver: SelectionEventReceiver,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("textlens-events".to_owned())
+        .spawn(move || selection_loop(app, receiver))
+        .map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionLoopStep {
+    Continue,
+    EventPanicked,
+    StopForShutdown,
+    StopForDisconnect,
+}
+
+fn handle_selection_loop_receive<T>(
+    shutting_down: bool,
+    received: Result<T, RecvTimeoutError>,
+    process: impl FnOnce(T),
+) -> SelectionLoopStep {
+    if shutting_down {
+        return SelectionLoopStep::StopForShutdown;
+    }
+    match received {
+        Ok(event) => match catch_unwind(AssertUnwindSafe(|| process(event))) {
+            Ok(()) => SelectionLoopStep::Continue,
+            Err(_) => SelectionLoopStep::EventPanicked,
+        },
+        Err(RecvTimeoutError::Timeout) => SelectionLoopStep::Continue,
+        Err(RecvTimeoutError::Disconnected) => SelectionLoopStep::StopForDisconnect,
+    }
+}
+
+fn selection_loop(app: AppHandle, receiver: Receiver<SelectionEvent>) {
+    loop {
+        let state = app.state::<RuntimeState>();
+        if state.shutting_down.load(Ordering::Acquire) {
+            break;
+        }
+        let received = receiver.recv_timeout(Duration::from_millis(200));
+        let shutting_down = state.shutting_down.load(Ordering::Acquire);
+        match handle_selection_loop_receive(shutting_down, received, |event| {
+            state.process_selection_event(&app, event);
+        }) {
+            SelectionLoopStep::Continue => {}
+            SelectionLoopStep::EventPanicked => {
+                eprintln!("[selection] event handler panicked; event discarded");
+            }
+            SelectionLoopStep::StopForShutdown => break,
+            SelectionLoopStep::StopForDisconnect => {
+                state.handle_selection_receiver_disconnected(&app);
+                break;
+            }
+        }
+    }
+}
+
+pub fn start_permission_poll(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let state = app.state::<RuntimeState>();
+            if state.shutting_down.load(Ordering::Acquire) {
+                break;
+            }
+            state.poll_permission(&app);
+        }
+    });
+}
+
+pub fn handle_global_shortcut(app: &AppHandle, event: ShortcutEvent) {
+    if event.state == ShortcutState::Pressed {
+        let state = app.state::<RuntimeState>();
+        if state.shutting_down.load(Ordering::Acquire) {
+            return;
+        }
+        let settings = state.settings.get_settings();
+        if settings.enabled && settings.trigger.mode == TriggerMode::Shortcut {
+            state.capture_current(app);
+        }
+    }
+}
+
+pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let settings = app.state::<RuntimeState>().settings.get_public_settings()?;
+    let menu = build_tray_menu(app, &settings)?;
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!(
+        "../../apps/macos/icons/tray-template.png"
+    ))?;
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon =
+        tauri::image::Image::from_bytes(include_bytes!("../../apps/windows/icons/32x32.png"))?;
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .tooltip("TextLens")
+        .icon(tray_icon)
+        .show_menu_on_left_click(true)
+        .on_menu_event(handle_tray_menu_event);
+    #[cfg(target_os = "macos")]
+    let tray = tray.icon_as_template(true);
+    tray.build(app)?;
+    Ok(())
+}
+
+fn build_tray_menu(
+    app: &AppHandle,
+    settings: &PublicSettings,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    let toggle = CheckMenuItemBuilder::with_id(TRAY_TOGGLE_ID, "启用划词")
+        .checked(settings.enabled)
+        .build(app)?;
+    #[cfg(not(target_os = "windows"))]
+    let accessibility = app.state::<RuntimeState>().accessibility_status();
+    #[cfg(not(target_os = "windows"))]
+    let (permission_label, permission_enabled) = match accessibility.platform {
+        "darwin" if accessibility.available => ("辅助功能：已授权", false),
+        "darwin" if accessibility.trusted => ("辅助功能：划词监听不可用", false),
+        "darwin" => ("辅助功能：需要授权", true),
+        _ => ("选区访问：不受支持", false),
+    };
+    #[cfg(not(target_os = "windows"))]
+    let permission = MenuItemBuilder::with_id(TRAY_PERMISSION_ID, permission_label)
+        .enabled(permission_enabled)
+        .build(app)?;
+    let open_settings = MenuItemBuilder::with_id(TRAY_SETTINGS_ID, "打开设置…").build(app)?;
+    let version = MenuItemBuilder::new(format!("TextLens {}", app.package_info().version))
+        .enabled(false)
+        .build(app)?;
+    let quit = MenuItemBuilder::with_id(TRAY_QUIT_ID, "退出 TextLens").build(app)?;
+    let menu = MenuBuilder::new(app).item(&toggle);
+    #[cfg(not(target_os = "windows"))]
+    let menu = menu.item(&permission);
+    menu.separator()
+        .item(&open_settings)
+        .item(&version)
+        .separator()
+        .item(&quit)
+        .build()
+}
+
+fn refresh_tray(app: &AppHandle, settings: &PublicSettings) {
+    let Some(tray) = app.tray_by_id(TRAY_ID) else {
+        return;
+    };
+    if let Ok(menu) = build_tray_menu(app, settings) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        TRAY_TOGGLE_ID => {
+            let state = app.state::<RuntimeState>();
+            let enabled = !state.settings.get_settings().enabled;
+            if let Ok(public) = state.settings.update(SettingsUpdate {
+                enabled: Some(enabled),
+                ..Default::default()
+            }) {
+                state.after_settings_changed(app, &public);
+            }
+        }
+        TRAY_PERMISSION_ID => {
+            if cfg!(target_os = "macos") {
+                request_accessibility_internal(app);
+            }
+        }
+        TRAY_SETTINGS_ID => open_settings_window(app),
+        // Keep the tray command as a reliable native escape hatch even if the
+        // settings renderer is unhealthy. The settings-page button and the
+        // close-behavior confirmation eventually enter this same controller
+        // through `quit_app`.
+        TRAY_QUIT_ID => quit_application(app),
+        _ => {}
+    }
+}
+
+pub fn open_settings_window(app: &AppHandle) {
+    open_settings_window_with_options(app, None);
+}
+
+pub fn open_settings_window_with_options(app: &AppHandle, options: Option<OpenSettingsOptions>) {
+    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    let Some(options) = options else {
+        return;
+    };
+    let has_guidance = options
+        .focus
+        .as_ref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || options
+            .notice
+            .as_ref()
+            .is_some_and(|value| !value.trim().is_empty());
+    if !has_guidance {
+        return;
+    }
+    let guidance = SettingsGuidance {
+        focus: options
+            .focus
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+        notice: options
+            .notice
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+    };
+    if let Some(state) = app.try_state::<RuntimeState>() {
+        *state.pending_settings_guidance.lock() = Some(guidance.clone());
+    }
+    let _ = app.emit_to(SETTINGS_LABEL, SETTINGS_GUIDANCE_EVENT, guidance);
+}
+
+#[tauri::command]
+pub fn open_settings(
+    app: AppHandle,
+    window: WebviewWindow,
+    options: Option<OpenSettingsOptions>,
+) -> Result<(), String> {
+    ensure_toolbar_caller(&window)?;
+    open_settings_window_with_options(&app, options);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn take_settings_guidance(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+) -> Result<Option<SettingsGuidance>, String> {
+    ensure_settings_caller(&window)?;
+    Ok(state.pending_settings_guidance.lock().take())
+}
+
+#[cfg(target_os = "windows")]
+fn request_settings_close_confirmation(app: &AppHandle) -> bool {
+    app.emit_to(SETTINGS_LABEL, SETTINGS_CLOSE_REQUEST_EVENT, ())
+        .is_ok()
+}
+
+fn quit_application(app: &AppHandle) {
+    app.state::<RuntimeState>().shutdown(app);
+    app.exit(0);
+}
+
+fn request_accessibility_internal(app: &AppHandle) -> AccessibilityStatus {
+    let trusted = SelectionMonitor::request_accessibility();
+    #[cfg(not(target_os = "macos"))]
+    let _ = trusted;
+    #[cfg(target_os = "macos")]
+    if !trusted {
+        let _ = open_system_url(
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        );
+    }
+    let state = app.state::<RuntimeState>();
+    state.reconcile_capture(app);
+    state.accessibility_status()
+}
+
+fn selection_monitor_diagnostic(should_listen: bool, start_failed: bool) -> Option<String> {
+    (should_listen && start_failed).then(|| SELECTION_MONITOR_START_ERROR.to_owned())
+}
+
+fn selection_monitor_disconnect_diagnostic(shutting_down: bool) -> Option<String> {
+    (!shutting_down).then(|| SELECTION_MONITOR_DISCONNECTED_ERROR.to_owned())
+}
+
+fn shortcut_registration_diagnostic(registration_failed: bool) -> Option<String> {
+    registration_failed.then(|| GLOBAL_SHORTCUT_ERROR.to_owned())
+}
+
+fn shortcut_registration_target(mode: TriggerMode, configured: &str) -> String {
+    if mode == TriggerMode::Shortcut {
+        configured.trim().to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// Automatic selection events only show the toolbar in "selected" trigger mode.
+/// Shortcut-driven capture always forces presentation via `force_capture`.
+fn should_present_selection_for_trigger(force_capture: bool, mode: TriggerMode) -> bool {
+    force_capture || mode == TriggerMode::Selected
+}
+
+fn selection_access_available(
+    platform: &str,
+    trusted: bool,
+    diagnostics: &RuntimeDiagnostics,
+) -> bool {
+    platform != "unsupported" && trusted && diagnostics.selection_monitor_error.is_none()
+}
+
+fn accessibility_platform() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "darwin"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "windows"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "unsupported"
+    }
+}
+
+#[tauri::command]
+pub fn get_settings(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+) -> Result<PublicSettings, String> {
+    ensure_known_caller(&window)?;
+    state
+        .settings
+        .get_public_settings()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn settings_ready(window: WebviewWindow, state: State<'_, RuntimeState>) -> Result<(), String> {
+    ensure_settings_caller(&window)?;
+    state.settings_renderer_ready.store(true, Ordering::Release);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_settings(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    update: SettingsUpdate,
+) -> Result<PublicSettings, String> {
+    ensure_settings_caller(&window)?;
+    let shortcut_change_requested = update.capture_shortcut.is_some() || update.trigger.is_some();
+    let previous_shortcut = if shortcut_change_requested {
+        let current = state.settings.get_settings();
+        let configured = update
+            .capture_shortcut
+            .as_deref()
+            .unwrap_or(current.capture_shortcut.as_str());
+        let mode = update
+            .trigger
+            .as_ref()
+            .map_or(current.trigger.mode, |trigger| trigger.mode);
+        let requested = shortcut_registration_target(mode, configured);
+        Some(state.switch_shortcut(&app, &requested)?)
+    } else {
+        None
+    };
+    let public = match state.settings.update(update) {
+        Ok(public) => public,
+        Err(error) => {
+            if let Some(previous) = previous_shortcut {
+                let _ = state.switch_shortcut(&app, &previous);
+            }
+            return Err(error.to_string());
+        }
+    };
+    state.after_settings_changed(&app, &public);
+    Ok(public)
+}
+
+#[tauri::command]
+pub fn reset_result_size(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+) -> Result<PublicSettings, String> {
+    ensure_settings_caller(&window)?;
+    // Reset is deliberately separate from the ordinary settings form update:
+    // this removes the ambiguity between an explicit reset and a stale draft.
+    state.pending_result_sizes.lock().clear();
+    *state.latest_result_size.lock() = None;
+    let public = state
+        .settings
+        .clear_result_last_size()
+        .map_err(|error| error.to_string())?;
+    state.after_settings_changed(&app, &public);
+    Ok(public)
+}
+
+#[tauri::command]
+pub fn create_provider(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    input: CreateProviderInput,
+) -> Result<PublicSettings, String> {
+    ensure_settings_caller(&window)?;
+    let public = state
+        .settings
+        .create_provider(input)
+        .map_err(|error| error.to_string())?;
+    state.after_settings_changed(&app, &public);
+    Ok(public)
+}
+
+#[tauri::command]
+pub fn update_provider(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+    update: UpdateProviderInput,
+) -> Result<PublicSettings, String> {
+    ensure_settings_caller(&window)?;
+    let public = state
+        .settings
+        .update_provider(&provider_id, update)
+        .map_err(|error| error.to_string())?;
+    state.after_settings_changed(&app, &public);
+    Ok(public)
+}
+
+#[tauri::command]
+pub fn delete_provider(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+) -> Result<PublicSettings, String> {
+    ensure_settings_caller(&window)?;
+    let public = state
+        .settings
+        .delete_provider(&provider_id)
+        .map_err(|error| error.to_string())?;
+    state.after_settings_changed(&app, &public);
+    Ok(public)
+}
+
+#[tauri::command]
+pub fn set_provider_api_key(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+    api_key: String,
+) -> Result<PublicSettings, String> {
+    ensure_settings_caller(&window)?;
+    let public = state
+        .settings
+        .set_provider_api_key(&provider_id, &api_key)
+        .map_err(|error| error.to_string())?;
+    state.after_settings_changed(&app, &public);
+    Ok(public)
+}
+
+#[tauri::command]
+pub fn clear_provider_api_key(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+) -> Result<PublicSettings, String> {
+    ensure_settings_caller(&window)?;
+    let public = state
+        .settings
+        .clear_provider_api_key(&provider_id)
+        .map_err(|error| error.to_string())?;
+    state.after_settings_changed(&app, &public);
+    Ok(public)
+}
+
+/// Settings-window only: reveal a saved provider API key for display/editing.
+/// Keys are intentionally never included in `get_settings` / PublicSettings.
+#[tauri::command]
+pub fn get_provider_api_key(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+) -> Result<Option<String>, String> {
+    ensure_settings_caller(&window)?;
+    state
+        .settings
+        .get_api_key(&provider_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn test_provider_connection(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+) -> Result<ConnectionTestResult, String> {
+    ensure_settings_caller(&window)?;
+    Ok(state.actions.test_provider_connection(&provider_id).await)
+}
+
+#[tauri::command]
+pub async fn sync_provider_models(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+) -> Result<SyncModelsResult, String> {
+    ensure_settings_caller(&window)?;
+    let result = state.actions.sync_provider_models(&provider_id).await;
+    if let Some(settings) = &result.settings {
+        state.after_settings_changed(&app, settings);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn get_accessibility_status(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+) -> Result<AccessibilityStatus, String> {
+    ensure_settings_caller(&window)?;
+    Ok(state.accessibility_status())
+}
+
+#[tauri::command]
+pub fn request_accessibility(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<AccessibilityStatus, String> {
+    ensure_settings_caller(&window)?;
+    Ok(request_accessibility_internal(&app))
+}
+
+#[tauri::command]
+pub fn quit_app(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    ensure_settings_caller(&window)?;
+    quit_application(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn toolbar_ready(
+    // Used on Windows to restage the toolbar when the renderer reconnects.
+    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+) -> Result<Option<RendererSelectionPayload>, String> {
+    ensure_toolbar_caller(&window)?;
+    let current = state.current_selection.lock().clone();
+    #[cfg(target_os = "windows")]
+    if let Some(selection) = &current {
+        let anchor = selection_toolbar_anchor(&selection.payload);
+        if state
+            .windows
+            .stage_toolbar(&app, &selection.id, anchor)
+            .is_err()
+        {
+            // Do not discard the replay payload: the renderer can still use
+            // the selection ID to retry presentation or request a rebuild.
+            eprintln!(
+                "[toolbar] stage=replay selection_id={} error_class=window",
+                selection.id
+            );
+        }
+    }
+    Ok(current
+        .as_ref()
+        .map(|selection| RendererSelectionPayload::new(&selection.id, &selection.payload)))
+}
+
+fn toolbar_commit_matches_selection(current_id: Option<&str>, requested_id: &str) -> bool {
+    !requested_id.is_empty() && current_id == Some(requested_id)
+}
+
+#[tauri::command]
+pub fn recover_toolbar(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    selection_id: String,
+) -> Result<bool, String> {
+    ensure_toolbar_caller(&window)?;
+    if selection_id.is_empty() || selection_id.len() > 128 {
+        return Err("Invalid toolbar recovery parameters".to_owned());
+    }
+    let matches = {
+        let current = state.current_selection.lock();
+        toolbar_commit_matches_selection(
+            current.as_ref().map(|selection| selection.id.as_str()),
+            &selection_id,
+        )
+    };
+    if !matches {
+        return Ok(false);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let rebuilt = state
+            .windows
+            .rebuild_toolbar(&app, &selection_id)
+            .map_err(|_| {
+                eprintln!(
+                    "[toolbar] stage=rebuild selection_id={} error_class=window",
+                    selection_id
+                );
+                "Unable to rebuild selection toolbar".to_owned()
+            })?;
+        Ok(rebuilt)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub fn present_toolbar(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    selection_id: String,
+    size: ToolbarSize,
+) -> Result<bool, String> {
+    ensure_toolbar_caller(&window)?;
+    if selection_id.len() > 128 || !size.width.is_finite() || !size.height.is_finite() {
+        return Err("Invalid toolbar presentation parameters".to_owned());
+    }
+    let matches = {
+        let current = state.current_selection.lock();
+        toolbar_commit_matches_selection(
+            current.as_ref().map(|selection| selection.id.as_str()),
+            &selection_id,
+        )
+    };
+    if !matches {
+        return Ok(false);
+    }
+
+    #[cfg(target_os = "windows")]
+    let presented = state
+        .windows
+        .present_toolbar(
+            &app,
+            &selection_id,
+            WindowSize {
+                width: size.width,
+                height: size.height,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(target_os = "windows"))]
+    let presented = state
+        .windows
+        .update_toolbar_size(
+            &app,
+            Some(&selection_id),
+            WindowSize {
+                width: size.width,
+                height: size.height,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    if !presented {
+        return Ok(false);
+    }
+
+    // A global dismiss or a newer selection may win while the native UI
+    // operation is queued. Never leave that stale toolbar visible.
+    let still_matches = {
+        let current = state.current_selection.lock();
+        toolbar_commit_matches_selection(
+            current.as_ref().map(|selection| selection.id.as_str()),
+            &selection_id,
+        )
+    };
+    if !still_matches {
+        let _ = state.windows.hide_toolbar_if_selection(&app, &selection_id);
+    }
+    Ok(still_matches)
+}
+
+#[tauri::command]
+pub async fn run_action(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    action_id: String,
+    cursor: Option<CursorPoint>,
+    selection_id: Option<String>,
+    search_engine_id: Option<String>,
+) -> Result<RunActionResult, String> {
+    if let Err(message) = ensure_toolbar_caller(&window) {
+        return Ok(RunActionResult::rejected(message));
+    }
+    if state.shutting_down.load(Ordering::Acquire) {
+        return Ok(RunActionResult::rejected("TextLens 正在退出"));
+    }
+    let Some(selection) = state.current_selection.lock().clone() else {
+        return Ok(RunActionResult::rejected("当前没有可用的选中文本"));
+    };
+    if selection_id.as_ref().is_some_and(|value| value.len() > 128) {
+        return Ok(RunActionResult::rejected("选区标识无效"));
+    }
+    if selection_id.as_deref() != Some(selection.id.as_str()) {
+        return Ok(RunActionResult::rejected("选区已发生变化，请重新选择文字"));
+    }
+    let settings = state.settings.get_settings();
+    let Some(action) = settings
+        .actions
+        .iter()
+        .find(|candidate| candidate.id == action_id && candidate.enabled)
+        .cloned()
+    else {
+        return Ok(RunActionResult::rejected("动作不存在或已停用"));
+    };
+
+    let selection_token = selection.id.clone();
+    if !state
+        .consuming_selection_ids
+        .lock()
+        .insert(selection_token.clone())
+    {
+        return Ok(RunActionResult::rejected("该选区动作正在启动，请稍候"));
+    }
+
+    let result = match action.kind {
+        ActionKind::Copy => match clipboard::write_text(&selection.payload.text) {
+            Ok(()) => {
+                // Keep the toolbar for the success icon, but arm same-text
+                // suppression so the next outside click's mouse-up re-capture
+                // cannot re-show the toolbar near the cursor.
+                state.arm_same_text_selection_suppress(&selection.payload.text);
+                // Quietly return key focus to the source app (no ActivateAllWindows
+                // flash). Next outside click then deselects + dismisses in one step.
+                let _ =
+                    restore_source_app_activation(&app, &selection.payload.source_app.bundle_id);
+                RunActionResult::accepted(None, None)
+            }
+            Err(message) => RunActionResult::rejected(message),
+        },
+        ActionKind::Quote => {
+            let quoted = selection
+                .payload
+                .text
+                .lines()
+                .map(|line| format!("> {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            match clipboard::write_text(&quoted) {
+                Ok(()) => {
+                    state.arm_same_text_selection_suppress(&selection.payload.text);
+                    state.clear_and_hide_current_selection_if(&app, &selection_token);
+                    RunActionResult::accepted(None, None)
+                }
+                Err(message) => RunActionResult::rejected(message),
+            }
+        }
+        ActionKind::Search => {
+            let template = match crate::models::resolve_search_template(
+                action.search_engine_id.as_deref(),
+                search_engine_id.as_deref(),
+            ) {
+                Ok(value) => value,
+                Err(message) => {
+                    state
+                        .consuming_selection_ids
+                        .lock()
+                        .remove(&selection_token);
+                    return Ok(RunActionResult::rejected(message));
+                }
+            };
+            match resolve_search_target(&selection.payload.text, template) {
+                Ok(target) => match open_system_url(&target) {
+                    Ok(()) => {
+                        state.arm_same_text_selection_suppress(&selection.payload.text);
+                        state.clear_and_hide_current_selection_if(&app, &selection_token);
+                        RunActionResult::accepted(None, None)
+                    }
+                    Err(_) => RunActionResult::rejected("无法打开浏览器"),
+                },
+                Err(message) => RunActionResult::rejected(message),
+            }
+        }
+        _ if action.kind.is_ai() => {
+            let cursor = action_result_cursor(&app, cursor, &selection.payload);
+            // Capture text before the selection moves into the result session.
+            let selected_text = selection.payload.text.clone();
+            match state.create_result_session(&app, &action.id, &action.name, selection, cursor) {
+                Ok((session_id, request_id, reveal_receiver)) => {
+                    // Window creation has its own bounded error path. Start
+                    // the renderer reveal budget only after a real session
+                    // exists so cold WebView2 construction cannot consume the
+                    // entire handshake timeout before the renderer can reply.
+                    match wait_for_result_reveal_with_timeout(
+                        reveal_receiver,
+                        RESULT_REVEAL_TIMEOUT,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            // Same as copy: outside click after the result is
+                            // dismissed must not re-present this selection.
+                            state.arm_same_text_selection_suppress(&selected_text);
+                            state.clear_and_hide_current_selection_if(&app, &selection_token);
+                            RunActionResult::accepted(Some(session_id), Some(request_id))
+                        }
+                        Err(message) => {
+                            state.abort_result_reveal(&app, &session_id);
+                            RunActionResult::rejected(message)
+                        }
+                    }
+                }
+                Err(message) => RunActionResult::rejected(message),
+            }
+        }
+        _ => RunActionResult::rejected("暂不支持该动作"),
+    };
+    state
+        .consuming_selection_ids
+        .lock()
+        .remove(&selection_token);
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn hide_toolbar(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    selection_id: Option<String>,
+) -> Result<(), String> {
+    ensure_toolbar_caller(&window)?;
+    let (should_hide, current_id) = {
+        let mut current = state.current_selection.lock();
+        let current_id = current.as_ref().map(|selection| selection.id.clone());
+        let should_hide =
+            should_hide_toolbar_for_selection(current_id.as_deref(), selection_id.as_deref());
+        if should_hide
+            && (selection_id.is_none() || current_id.as_deref() == selection_id.as_deref())
+        {
+            *current = None;
+        }
+        (should_hide, current_id)
+    };
+    if should_hide {
+        if let Some(id) = selection_id.as_deref().or(current_id.as_deref()) {
+            let _ = state.windows.hide_toolbar_if_selection(&app, id);
+        } else {
+            state.windows.hide_toolbar(&app);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn report_toolbar_size(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    size: ToolbarSize,
+    selection_id: Option<String>,
+) -> Result<(), String> {
+    ensure_toolbar_caller(&window)?;
+    if selection_id.as_ref().is_some_and(|value| value.len() > 128)
+        || !size.width.is_finite()
+        || !size.height.is_finite()
+    {
+        return Err("工具栏尺寸无效".to_owned());
+    }
+    if let Some(selection_id) = selection_id.as_deref() {
+        let current = state.current_selection.lock();
+        if !toolbar_commit_matches_selection(
+            current.as_ref().map(|selection| selection.id.as_str()),
+            selection_id,
+        ) {
+            return Ok(());
+        }
+    }
+    state
+        .windows
+        .update_toolbar_size(
+            &app,
+            selection_id.as_deref(),
+            WindowSize {
+                width: size.width,
+                height: size.height,
+            },
+        )
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn begin_result_ready(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<ResultSessionSnapshot, String> {
+    ensure_result_caller(&window, &session_id)?;
+    let meta = state
+        .result_sessions
+        .lock()
+        .get(&session_id)
+        .cloned()
+        .ok_or_else(|| "结果会话已结束".to_owned())?;
+    let begin = state
+        .actions
+        .begin_ready(&session_id, window.label())
+        .map_err(|error| error.to_string())?;
+    Ok(compose_result_ready_snapshot(meta, begin))
+}
+
+#[tauri::command]
+pub fn ack_result_ready(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    ack: ResultReadyAck,
+) -> Result<bool, String> {
+    ensure_result_caller(&window, &ack.session_id)?;
+    Ok(state.actions.ack_ready(&app, ack))
+}
+
+#[tauri::command]
+pub fn prepare_result_reveal(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    if !state.result_sessions.lock().contains_key(&session_id) {
+        return Err("结果会话已结束".to_owned());
+    }
+    if let Err(error) = state.windows.prepare_result_reveal(&app, window.label()) {
+        let message = format!("无法准备结果窗口：{error}");
+        state.fail_result_reveal_handshake(&session_id, message.clone());
+        return Err(message);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn commit_result_reveal(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    if !state.begin_result_reveal_commit(&session_id)? {
+        return Ok(());
+    }
+
+    let commit = state
+        .windows
+        .commit_result_reveal(&app, window.label())
+        .map(|_| ())
+        .map_err(|error| format!("无法显示结果窗口：{error}"));
+    let accepted = state.finish_result_reveal_commit(&session_id, commit.clone());
+    if !accepted {
+        // A 3-second timeout may win while the UI-thread operation is already
+        // running. Never leave the resulting stale window visible.
+        let _ = state.windows.close_result(&app, window.label());
+        return Err("结果显示会话已结束".to_owned());
+    }
+    commit
+}
+
+#[tauri::command]
+pub fn fail_result_reveal(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    message: String,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    let message = message.trim();
+    let message = if message.is_empty() || message.chars().count() > 512 {
+        "结果窗口初始化失败".to_owned()
+    } else {
+        message.to_owned()
+    };
+    state
+        .fail_result_reveal_handshake(&session_id, message)
+        .then_some(())
+        .ok_or_else(|| "结果显示会话已结束".to_owned())
+}
+
+#[tauri::command]
+pub fn set_result_pinned(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    pinned: bool,
+) -> Result<bool, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state
+        .windows
+        .set_result_pinned(&app, window.label(), pinned)
+        .map_err(|error| error.to_string())?;
+    let mut sessions = state.result_sessions.lock();
+    let Some(meta) = sessions.get_mut(&session_id) else {
+        return Ok(false);
+    };
+    meta.pinned = pinned;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn set_result_pointer_inside(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    inside: bool,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    state
+        .windows
+        .set_pointer_inside(&app, window.label(), inside);
+    Ok(())
+}
+
+/// Accepts a second selection made strictly inside a known result webview.
+/// The text is kept only in `current_selection`; it is never written to the
+/// settings repository, result history, logs, clipboard, or filesystem.
+#[tauri::command]
+pub fn show_result_selection(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    text: String,
+    cursor: CursorPoint,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    if !state.result_sessions.lock().contains_key(&session_id) {
+        return Err("结果会话已结束".to_owned());
+    }
+    if text.trim().is_empty() {
+        return Err("所选文字为空".to_owned());
+    }
+    if text.chars().count() > 1_000_000 {
+        return Err("所选文字过长".to_owned());
+    }
+    if !cursor.x.is_finite() || !cursor.y.is_finite() {
+        return Err("选区位置无效".to_owned());
+    }
+
+    let cursor = result_selection_cursor(&app, cursor)?;
+    let point = SelectionPoint {
+        x: cursor.x,
+        y: cursor.y,
+    };
+    let selection = SelectionPayload {
+        text,
+        source_app: SourceApplication {
+            bundle_id: app.config().identifier.clone(),
+            name: "TextLens 结果".to_owned(),
+        },
+        bounds: None,
+        start_top: None,
+        start_bottom: None,
+        end_top: None,
+        end_bottom: None,
+        mouse: SelectionMouse {
+            start: Some(point),
+            end: Some(point),
+            current: point,
+        },
+        direction: SelectionDirection::Forward,
+        is_fullscreen: false,
+        method: SelectionMethod::Accessibility,
+        trigger: SelectionTrigger::Manual,
+        timestamp_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64,
+    };
+    let current = CurrentSelection {
+        id: Uuid::new_v4().to_string(),
+        payload: selection,
+        source_result_session_id: Some(session_id.clone()),
+    };
+    let public = RendererSelectionPayload::new(&current.id, &current.payload);
+    let toolbar_anchor = WindowPoint {
+        x: cursor.x,
+        y: cursor.y,
+    };
+    #[cfg(target_os = "windows")]
+    state.windows.begin_toolbar_selection(&current.id);
+    *state.current_selection.lock() = Some(current.clone());
+    #[cfg(target_os = "windows")]
+    let stage_failed = state
+        .windows
+        .stage_toolbar(&app, &current.id, toolbar_anchor)
+        .is_err();
+    #[cfg(not(target_os = "windows"))]
+    if let Err(error) = state
+        .windows
+        .show_toolbar(&app, &current.id, toolbar_anchor)
+    {
+        state.clear_and_hide_current_selection_if(&app, &current.id);
+        return Err(format!("无法显示划词工具栏：{error}"));
+    }
+    if !state.current_selection_matches(&current.id) {
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    if stage_failed {
+        eprintln!(
+            "[toolbar] stage=result-selection-stage selection_id={} error_class=window",
+            current.id
+        );
+        state.recover_toolbar_delivery(&app, &current.id);
+        return Ok(());
+    }
+    if app.emit_to(TOOLBAR_LABEL, SELECTION_EVENT, public).is_err() {
+        #[cfg(target_os = "windows")]
+        {
+            eprintln!(
+                "[toolbar] stage=result-selection-emit selection_id={} error_class=window",
+                current.id
+            );
+            state.recover_toolbar_delivery(&app, &current.id);
+            return Ok(());
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            state.clear_and_hide_current_selection_if(&app, &current.id);
+            return Err("无法更新划词工具栏".to_owned());
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn cancel_action(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    state
+        .actions
+        .cancel(&app, &session_id)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn retry_action(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    target_language: Option<crate::models::Locale>,
+    provider_id: Option<String>,
+    model_id: Option<String>,
+) -> Result<RunActionResult, String> {
+    ensure_result_caller(&window, &session_id)?;
+    match state.actions.retry_with_options(
+        &app,
+        &session_id,
+        target_language,
+        provider_id,
+        model_id,
+    ) {
+        Ok(request_id) => Ok(RunActionResult::accepted(
+            Some(session_id),
+            Some(request_id),
+        )),
+        Err(error) => follow_up_error_result(error),
+    }
+}
+
+#[tauri::command]
+pub fn continue_action(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    question: String,
+) -> Result<RunActionResult, String> {
+    ensure_result_caller(&window, &session_id)?;
+    if !state.result_sessions.lock().contains_key(&session_id) {
+        return Ok(RunActionResult::rejected("结果会话已结束"));
+    }
+    match state
+        .actions
+        .continue_with_question(&app, &session_id, &question)
+    {
+        Ok(request_id) => Ok(RunActionResult::accepted(
+            Some(session_id),
+            Some(request_id),
+        )),
+        Err(error) => follow_up_error_result(error),
+    }
+}
+
+#[tauri::command]
+pub fn copy_text(window: WebviewWindow, text: String) -> Result<(), String> {
+    ensure_result_window(&window)?;
+    if text.chars().count() > 1_000_000 {
+        return Err("复制内容过长".to_owned());
+    }
+    clipboard::write_text(&text)
+}
+
+#[tauri::command]
+pub fn open_external(window: WebviewWindow, url: String) -> Result<(), String> {
+    ensure_result_window(&window)?;
+    if url.len() > 2_048 {
+        return Err("外部链接过长".to_owned());
+    }
+    let parsed = safe_http_url(&url).ok_or_else(|| "仅允许打开安全的 HTTP(S) 链接".to_owned())?;
+    open_system_url(parsed.as_str()).map_err(|_| "无法打开外部链接".to_owned())
+}
+
+#[tauri::command]
+pub fn hide_result(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.persist_result_size_now(&app, window.label());
+    state
+        .windows
+        .close_result(&app, window.label())
+        .map_err(|error| error.to_string())?;
+    state.cleanup_result_session(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn close_result(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.persist_result_size_now(&app, window.label());
+    state
+        .windows
+        .close_result(&app, window.label())
+        .map_err(|error| error.to_string())?;
+    state.cleanup_result_session(&session_id);
+    Ok(())
+}
+
+fn ensure_result_caller(window: &WebviewWindow, session_id: &str) -> Result<(), String> {
+    if Uuid::parse_str(session_id).is_err() || window.label() != result_label(session_id) {
+        return Err("结果会话无效".to_owned());
+    }
+    Ok(())
+}
+
+fn ensure_known_caller(window: &WebviewWindow) -> Result<(), String> {
+    if window.label() == SETTINGS_LABEL
+        || window.label() == TOOLBAR_LABEL
+        || session_from_result_label(window.label()).is_some()
+    {
+        Ok(())
+    } else {
+        Err("拒绝来自未知窗口的请求".to_owned())
+    }
+}
+
+fn ensure_settings_caller(window: &WebviewWindow) -> Result<(), String> {
+    (window.label() == SETTINGS_LABEL)
+        .then_some(())
+        .ok_or_else(|| "该操作只能从设置窗口执行".to_owned())
+}
+
+fn ensure_toolbar_caller(window: &WebviewWindow) -> Result<(), String> {
+    (window.label() == TOOLBAR_LABEL)
+        .then_some(())
+        .ok_or_else(|| "该操作只能从划词工具栏执行".to_owned())
+}
+
+fn ensure_result_window(window: &WebviewWindow) -> Result<(), String> {
+    session_from_result_label(window.label())
+        .map(|_| ())
+        .ok_or_else(|| "该操作只能从结果窗口执行".to_owned())
+}
+
+fn dismiss_mode(mode: ResultDismissMode) -> DismissMode {
+    match mode {
+        ResultDismissMode::Manual => DismissMode::Manual,
+        ResultDismissMode::Blur => DismissMode::Blur,
+        ResultDismissMode::PointerLeave => DismissMode::PointerLeave,
+    }
+}
+
+fn selection_toolbar_anchor(selection: &SelectionPayload) -> WindowPoint {
+    // The native monitor reports the release point independently from text
+    // direction. Backward selections therefore still anchor at `mouse.end`,
+    // not at the logical start of the selected string.
+    let point = selection.mouse.end.unwrap_or(selection.mouse.current);
+    WindowPoint {
+        x: point.x,
+        y: point.y,
+    }
+}
+
+fn should_hide_toolbar_for_selection(
+    current_selection_id: Option<&str>,
+    requested_selection_id: Option<&str>,
+) -> bool {
+    match requested_selection_id {
+        None => true,
+        Some(requested) => current_selection_id.is_none_or(|current| current == requested),
+    }
+}
+
+fn dismiss_precedes_selection(selection_timestamp_ms: u64, dismiss_timestamp_ms: u64) -> bool {
+    // Windows hook and WinEvent timestamps have millisecond resolution. If a
+    // delayed dismiss lands in the same tick as the completed selection, the
+    // selection wins; a genuine later input receives a newer hook generation
+    // and timestamp.
+    dismiss_timestamp_ms <= selection_timestamp_ms
+}
+
+fn action_result_cursor(
+    app: &AppHandle,
+    renderer_cursor: Option<CursorPoint>,
+    selection: &SelectionPayload,
+) -> WindowPoint {
+    #[cfg(target_os = "windows")]
+    {
+        let native_cursor = app.cursor_position().ok().map(|cursor| WindowPoint {
+            x: cursor.x,
+            y: cursor.y,
+        });
+        return windows_physical_cursor(
+            renderer_cursor,
+            native_cursor,
+            Some(WindowPoint {
+                x: selection.mouse.current.x,
+                y: selection.mouse.current.y,
+            }),
+        )
+        .expect("the physical selection cursor is always available as a fallback");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    renderer_cursor
+        .filter(|point| point.x.is_finite() && point.y.is_finite())
+        .map(|point| WindowPoint {
+            x: point.x,
+            y: point.y,
+        })
+        .unwrap_or_else(|| cursor_near_toolbar(app, selection))
+}
+
+fn result_selection_cursor(
+    _app: &AppHandle,
+    renderer_cursor: CursorPoint,
+) -> Result<WindowPoint, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let native_cursor = _app.cursor_position().ok().map(|cursor| WindowPoint {
+            x: cursor.x,
+            y: cursor.y,
+        });
+        return windows_physical_cursor(Some(renderer_cursor), native_cursor, None)
+            .ok_or_else(|| "无法读取鼠标的物理屏幕位置".to_owned());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    Ok(WindowPoint {
+        x: renderer_cursor.x,
+        y: renderer_cursor.y,
+    })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_physical_cursor(
+    _renderer_cursor: Option<CursorPoint>,
+    native_cursor: Option<WindowPoint>,
+    fallback: Option<WindowPoint>,
+) -> Option<WindowPoint> {
+    // WebView2 MouseEvent.screenX/screenY are CSS/DIP values. They cannot be
+    // mixed with UIA, Win32 cursor, monitor, and window coordinates, which are
+    // all physical virtual-desktop pixels in the Windows backend.
+    native_cursor.or(fallback)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn cursor_near_toolbar(app: &AppHandle, selection: &SelectionPayload) -> WindowPoint {
+    if let Ok(cursor) = app.cursor_position() {
+        let scale = app
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|monitor| monitor.scale_factor())
+            .unwrap_or(1.0);
+        return WindowPoint {
+            x: cursor.x / scale,
+            y: cursor.y / scale,
+        };
+    }
+    WindowPoint {
+        x: selection.mouse.current.x,
+        y: selection.mouse.current.y,
+    }
+}
+
+fn session_from_result_label(label: &str) -> Option<String> {
+    let session = label.strip_prefix(RESULT_LABEL_PREFIX)?;
+    Uuid::parse_str(session).ok().map(|value| value.to_string())
+}
+
+fn application_is_allowed(
+    filter: &crate::models::ApplicationFilterSettings,
+    selection: &SelectionPayload,
+) -> bool {
+    use crate::models::FilterMode;
+
+    if filter.mode == FilterMode::Default {
+        return true;
+    }
+    let name = selection.source_app.name.trim().to_lowercase();
+    let bundle = selection.source_app.bundle_id.trim().to_lowercase();
+    let matches = filter.applications.iter().any(|item| {
+        let item = item.trim().to_lowercase();
+        !item.is_empty()
+            && [name.as_str(), bundle.as_str()].iter().any(|candidate| {
+                !candidate.is_empty() && (candidate.contains(&item) || item.contains(candidate))
+            })
+    });
+    match filter.mode {
+        FilterMode::Whitelist => matches,
+        FilterMode::Blacklist => !matches,
+        FilterMode::Default => true,
+    }
+}
+
+fn should_close_for_external_selection(pinned: bool) -> bool {
+    !pinned
+}
+
+fn selection_source_matches_result(
+    source_result_session_id: Option<&str>,
+    result_session_id: &str,
+) -> bool {
+    source_result_session_id == Some(result_session_id)
+}
+
+fn safe_http_url(value: &str) -> Option<Url> {
+    let url = Url::parse(value.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    Some(url)
+}
+
+/// Opens a validated URL through the platform workspace without exposing a
+/// general-purpose launcher to the renderer. On macOS this deliberately uses
+/// AppKit directly instead of spawning `/usr/bin/open`.
+#[cfg(target_os = "macos")]
+fn open_system_url(value: &str) -> Result<(), ()> {
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSString, NSURL};
+
+    let value = NSString::from_str(value);
+    let url = NSURL::URLWithString(&value).ok_or(())?;
+    NSWorkspace::sharedWorkspace()
+        .openURL(&url)
+        .then_some(())
+        .ok_or(())
+}
+
+#[cfg(target_os = "windows")]
+fn open_system_url(value: &str) -> Result<(), ()> {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+    use windows::{
+        core::PCWSTR,
+        Win32::UI::{
+            Shell::{ShellExecuteExW, SHELLEXECUTEINFOW},
+            WindowsAndMessaging::SW_SHOWNORMAL,
+        },
+    };
+
+    // The previous launcher cold-started a hidden PowerShell process before
+    // handing the URL to the browser, adding a visible 1-2 second delay. Ask
+    // the Windows shell directly and allow it to complete slow DDE dispatch in
+    // the background. Immediate association failures still return to the
+    // toolbar so the current selection remains usable.
+    let target = OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut execute = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: windows_url_shell_execute_mask(),
+        lpFile: PCWSTR::from_raw(target.as_ptr()),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+
+    unsafe { ShellExecuteExW(&mut execute) }.map_err(|_| ())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_url_shell_execute_mask() -> u32 {
+    use windows::Win32::UI::Shell::{SEE_MASK_ASYNCOK, SEE_MASK_FLAG_NO_UI};
+
+    SEE_MASK_ASYNCOK | SEE_MASK_FLAG_NO_UI
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn open_system_url(_value: &str) -> Result<(), ()> {
+    Err(())
+}
+
+fn resolve_search_target(text: &str, template: &str) -> Result<String, String> {
+    let value = text.trim();
+    if value.is_empty() {
+        return Err("选中文本为空".to_owned());
+    }
+    if value.chars().count() > 2_000 {
+        return Err("选中文本过长，无法作为浏览器地址或搜索词打开".to_owned());
+    }
+    if !value.chars().any(char::is_whitespace) {
+        if let Some(url) = safe_http_url(value) {
+            return Ok(url.to_string());
+        }
+        if let Ok(address) = value.parse::<IpAddr>() {
+            return Ok(match address {
+                IpAddr::V4(address) => format!("https://{address}/"),
+                IpAddr::V6(address) => format!("https://[{address}]/"),
+            });
+        }
+        if let Some(url) = infer_domain_or_ip_url(value) {
+            return Ok(url.to_string());
+        }
+    }
+    if template.matches("{{text}}").count() != 1 {
+        return Err("搜索地址必须且只能包含一个 {{text}}".to_owned());
+    }
+    let encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
+    let target = template.replace("{{text}}", &encoded);
+    safe_http_url(&target)
+        .map(|url| url.to_string())
+        .ok_or_else(|| "搜索地址无效".to_owned())
+}
+
+fn infer_domain_or_ip_url(value: &str) -> Option<Url> {
+    let url = safe_http_url(&format!("https://{value}"))?;
+    match url.host()? {
+        Host::Ipv4(_) | Host::Ipv6(_) => Some(url),
+        Host::Domain(host) => {
+            let looks_numeric = host
+                .chars()
+                .all(|character| character.is_ascii_digit() || character == '.');
+            let valid_domain = !looks_numeric
+                && host.contains('.')
+                && host.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                        && label
+                            .chars()
+                            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+                });
+            let localhost_with_port =
+                host.eq_ignore_ascii_case("localhost") && url.port().is_some();
+            (valid_domain || localhost_with_port).then_some(url)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        actions::{ActionBeginReady, SessionRouteIdentity},
+        models::{
+            ActionNotice, ActionSnapshot, EventSequence, HandshakeGeneration, RequestGeneration,
+            ResultReadyAck, SessionGeneration,
+        },
+    };
+
+    fn result_meta() -> ResultSessionMeta {
+        ResultSessionMeta {
+            selection: CurrentSelection {
+                id: "selection-1".to_owned(),
+                payload: SelectionPayload {
+                    text: "selected".to_owned(),
+                    source_app: SourceApplication {
+                        bundle_id: "com.test.app".to_owned(),
+                        name: "Test".to_owned(),
+                    },
+                    bounds: None,
+                    start_top: None,
+                    start_bottom: None,
+                    end_top: None,
+                    end_bottom: None,
+                    mouse: SelectionMouse {
+                        start: None,
+                        end: None,
+                        current: SelectionPoint { x: 10.0, y: 20.0 },
+                    },
+                    direction: SelectionDirection::Unknown,
+                    is_fullscreen: false,
+                    method: SelectionMethod::Accessibility,
+                    trigger: SelectionTrigger::Manual,
+                    timestamp_ms: 0,
+                },
+                source_result_session_id: Some("s".to_owned()),
+            },
+            action_id: "translate".to_owned(),
+            pinned: false,
+        }
+    }
+
+    fn initial_preparing_begin() -> ActionBeginReady {
+        ActionBeginReady {
+            snapshot: ActionSnapshot {
+                session_id: "s".to_owned(),
+                session_generation: SessionGeneration(7),
+                request_id: "r".to_owned(),
+                request_generation: RequestGeneration(3),
+                action_id: "translate".to_owned(),
+                status: ActionSnapshotStatus::Running,
+                content: String::new(),
+                last_sequence: EventSequence::NONE,
+                last_content_sequence: EventSequence::NONE,
+                content_scalar_count: 0,
+                generation_notice: None,
+                error_code: None,
+                error_message: None,
+                retryable: false,
+            },
+            ack: ResultReadyAck {
+                session_id: "s".to_owned(),
+                session_generation: SessionGeneration(7),
+                request_generation: RequestGeneration(3),
+                last_sequence: EventSequence::NONE,
+                handshake_generation: HandshakeGeneration(1),
+            },
+            route: None,
+        }
+    }
+
+    #[test]
+    fn result_ready_snapshot_preserves_watermarks_and_ordered_notice() {
+        let begin = ActionBeginReady {
+            snapshot: ActionSnapshot {
+                session_id: "s".into(),
+                session_generation: SessionGeneration(7),
+                request_id: "r".into(),
+                request_generation: RequestGeneration(3),
+                action_id: "translate".into(),
+                status: ActionSnapshotStatus::Running,
+                content: "A".into(),
+                last_sequence: EventSequence(12),
+                last_content_sequence: EventSequence(11),
+                content_scalar_count: 1,
+                generation_notice: Some(ActionNotice {
+                    code: "THINKING_CONTROL_DOWNGRADED".into(),
+                    message: "Provider default is in use".into(),
+                }),
+                error_code: None,
+                error_message: None,
+                retryable: false,
+            },
+            ack: ResultReadyAck {
+                session_id: "s".into(),
+                session_generation: SessionGeneration(7),
+                request_generation: RequestGeneration(3),
+                last_sequence: EventSequence(12),
+                handshake_generation: HandshakeGeneration(4),
+            },
+            route: Some(SessionRouteIdentity {
+                provider_id: "p".into(),
+                model_id: "m".into(),
+                thinking_mode: crate::models::ThinkingMode::Off,
+            }),
+        };
+        let result = compose_result_ready_snapshot(result_meta(), begin);
+        assert_eq!(result.last_sequence, EventSequence(12));
+        assert_eq!(result.last_content_sequence, EventSequence(11));
+        assert_eq!(result.handshake_generation, HandshakeGeneration(4));
+        assert_eq!(
+            result
+                .generation_notice
+                .as_ref()
+                .map(|notice| notice.code.as_str()),
+            Some("THINKING_CONTROL_DOWNGRADED")
+        );
+        assert_eq!(result.provider_id.as_deref(), Some("p"));
+        assert_eq!(result.model_id.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn result_ready_snapshot_before_initial_prepare_has_optional_route_fields() {
+        let result = compose_result_ready_snapshot(result_meta(), initial_preparing_begin());
+        assert_eq!(result.provider_id, None);
+        assert_eq!(result.model_id, None);
+    }
+
+    #[test]
+    fn retry_and_continue_return_busy_and_ended_as_rejections() {
+        for error in [ActionServiceError::Busy, ActionServiceError::SessionEnded] {
+            let result = follow_up_error_result(error).unwrap();
+            assert!(!result.accepted);
+            assert!(result.message.is_some());
+        }
+        assert_eq!(
+            follow_up_error_result(ActionServiceError::NothingToRetry).unwrap_err(),
+            "没有可重试的动作"
+        );
+    }
+
+    #[test]
+    fn selection_loop_isolates_a_panicking_event_and_processes_the_next_one() {
+        let processed = std::cell::Cell::new(0_u8);
+        assert_eq!(
+            handle_selection_loop_receive(false, Ok(()), |_| panic!("test event panic")),
+            SelectionLoopStep::EventPanicked
+        );
+        assert_eq!(processed.get(), 0);
+
+        assert_eq!(
+            handle_selection_loop_receive(false, Ok(()), |_| processed.set(1)),
+            SelectionLoopStep::Continue
+        );
+        assert_eq!(processed.get(), 1);
+    }
+
+    #[test]
+    fn selection_loop_classifies_idle_disconnect_and_shutdown_without_dispatching() {
+        let processed = std::cell::Cell::new(false);
+        assert_eq!(
+            handle_selection_loop_receive(
+                false,
+                Result::<(), _>::Err(RecvTimeoutError::Timeout),
+                |_| processed.set(true),
+            ),
+            SelectionLoopStep::Continue
+        );
+        assert_eq!(
+            handle_selection_loop_receive(
+                false,
+                Result::<(), _>::Err(RecvTimeoutError::Disconnected),
+                |_| processed.set(true),
+            ),
+            SelectionLoopStep::StopForDisconnect
+        );
+        assert_eq!(
+            handle_selection_loop_receive(true, Ok(()), |_| processed.set(true)),
+            SelectionLoopStep::StopForShutdown
+        );
+        assert!(!processed.get());
+    }
+
+    #[test]
+    fn selection_receiver_disconnect_is_not_reported_during_shutdown() {
+        assert_eq!(selection_monitor_disconnect_diagnostic(true), None);
+        assert_eq!(
+            selection_monitor_disconnect_diagnostic(false).as_deref(),
+            Some(SELECTION_MONITOR_DISCONNECTED_ERROR)
+        );
+    }
+
+    #[test]
+    fn selection_monitor_diagnostic_only_reports_an_expected_listener_failure() {
+        assert_eq!(
+            selection_monitor_diagnostic(true, true).as_deref(),
+            Some(SELECTION_MONITOR_START_ERROR)
+        );
+        assert_eq!(selection_monitor_diagnostic(true, false), None);
+        assert_eq!(selection_monitor_diagnostic(false, true), None);
+    }
+
+    #[test]
+    fn runtime_availability_and_shortcut_diagnostics_clear_after_success() {
+        let mut diagnostics = RuntimeDiagnostics {
+            selection_monitor_error: selection_monitor_diagnostic(true, true),
+            shortcut_error: shortcut_registration_diagnostic(true),
+        };
+        assert!(!selection_access_available("windows", true, &diagnostics));
+        assert_eq!(
+            diagnostics.shortcut_error.as_deref(),
+            Some(GLOBAL_SHORTCUT_ERROR)
+        );
+
+        diagnostics.selection_monitor_error = selection_monitor_diagnostic(true, false);
+        diagnostics.shortcut_error = shortcut_registration_diagnostic(false);
+        assert!(selection_access_available("windows", true, &diagnostics));
+        assert_eq!(diagnostics.shortcut_error, None);
+        assert!(!selection_access_available("darwin", false, &diagnostics));
+        assert!(!selection_access_available(
+            "unsupported",
+            true,
+            &diagnostics
+        ));
+    }
+
+    #[test]
+    fn runtime_diagnostics_never_include_native_errors_or_selected_text() {
+        let native_error = "hook failed while reading TOP SECRET selected text";
+        let diagnostics = RuntimeDiagnostics {
+            selection_monitor_error: selection_monitor_diagnostic(true, !native_error.is_empty()),
+            shortcut_error: shortcut_registration_diagnostic(true),
+        };
+        let serialized = serde_json::to_string(&diagnostics).unwrap();
+        assert!(!serialized.contains(native_error));
+        assert!(!serialized.contains("TOP SECRET"));
+    }
+
+    #[test]
+    fn global_shortcut_is_registered_only_in_shortcut_mode() {
+        let configured = "CommandOrControl+Shift+S";
+        assert_eq!(
+            shortcut_registration_target(TriggerMode::Shortcut, configured),
+            configured
+        );
+        assert_eq!(
+            shortcut_registration_target(TriggerMode::Selected, configured),
+            ""
+        );
+        // Only the effective registration changes; the saved configuration is
+        // retained for a later switch back to shortcut mode.
+        assert_eq!(configured, "CommandOrControl+Shift+S");
+    }
+
+    #[test]
+    fn selection_auto_present_is_gated_by_trigger_mode() {
+        assert!(should_present_selection_for_trigger(
+            false,
+            TriggerMode::Selected
+        ));
+        assert!(!should_present_selection_for_trigger(
+            false,
+            TriggerMode::Shortcut
+        ));
+        assert!(should_present_selection_for_trigger(
+            true,
+            TriggerMode::Shortcut
+        ));
+        assert!(should_present_selection_for_trigger(
+            true,
+            TriggerMode::Selected
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_close_behavior_accounts_for_renderer_readiness() {
+        assert_eq!(
+            settings_close_action(ApplicationCloseBehavior::HideToTray, false),
+            SettingsCloseAction::HideToTray
+        );
+        assert_eq!(
+            settings_close_action(ApplicationCloseBehavior::Quit, true),
+            SettingsCloseAction::RequestQuitConfirmation
+        );
+        assert_eq!(
+            settings_close_action(ApplicationCloseBehavior::Quit, false),
+            SettingsCloseAction::QuitImmediately
+        );
+    }
+
+    #[test]
+    fn direct_urls_domains_and_ips_take_precedence_over_search() {
+        let template = "https://www.google.com/search?q={{text}}";
+        assert_eq!(
+            resolve_search_target("https://example.com/a", template).unwrap(),
+            "https://example.com/a"
+        );
+        assert_eq!(
+            resolve_search_target("example.com/a", template).unwrap(),
+            "https://example.com/a"
+        );
+        assert_eq!(
+            resolve_search_target("192.168.1.10", template).unwrap(),
+            "https://192.168.1.10/"
+        );
+        assert_eq!(
+            resolve_search_target("2001:db8::1", template).unwrap(),
+            "https://[2001:db8::1]/"
+        );
+    }
+
+    #[test]
+    fn malformed_addresses_and_words_are_searched() {
+        let template = "https://www.google.com/search?q={{text}}";
+        assert_eq!(
+            resolve_search_target("999.168.1.10", template).unwrap(),
+            "https://www.google.com/search?q=999.168.1.10"
+        );
+        assert_eq!(
+            resolve_search_target("Tauri 划词", template).unwrap(),
+            "https://www.google.com/search?q=Tauri+%E5%88%92%E8%AF%8D"
+        );
+    }
+
+    #[test]
+    fn search_engines_use_the_expected_regional_endpoints() {
+        assert_eq!(
+            crate::models::resolve_search_template(Some("google"), None).unwrap(),
+            "https://www.google.com/search?q={{text}}"
+        );
+        assert_eq!(
+            crate::models::resolve_search_template(Some("google"), Some("bing-china")).unwrap(),
+            "https://cn.bing.com/search?q={{text}}"
+        );
+        assert_eq!(
+            crate::models::resolve_search_template(Some("google"), Some("baidu")).unwrap(),
+            "https://www.baidu.com/s?wd={{text}}"
+        );
+    }
+
+    #[test]
+    fn persisted_search_engine_is_used_unless_an_override_is_supplied() {
+        assert_eq!(
+            crate::models::resolve_search_template(Some("bing-china"), None).unwrap(),
+            "https://cn.bing.com/search?q={{text}}"
+        );
+        assert_eq!(
+            crate::models::resolve_search_template(Some("bing-china"), Some("baidu")).unwrap(),
+            "https://www.baidu.com/s?wd={{text}}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_search_uses_non_blocking_native_shell_dispatch() {
+        use windows::Win32::UI::Shell::{SEE_MASK_ASYNCOK, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC};
+
+        let mask = windows_url_shell_execute_mask();
+        assert_ne!(mask & SEE_MASK_ASYNCOK, 0);
+        assert_ne!(mask & SEE_MASK_FLAG_NO_UI, 0);
+        assert_eq!(mask & SEE_MASK_NOASYNC, 0);
+    }
+
+    #[test]
+    fn only_uuid_namespaced_result_labels_are_accepted() {
+        let session = "3f82ff66-6d82-45e8-a854-e28a62cfb510";
+        assert_eq!(
+            session_from_result_label(&result_label(session)).as_deref(),
+            Some(session)
+        );
+        assert!(session_from_result_label("selection-result-").is_none());
+        assert!(session_from_result_label("selection-result-settings").is_none());
+        assert!(session_from_result_label("selection-result-../../settings").is_none());
+        assert!(session_from_result_label("settings").is_none());
+    }
+
+    #[test]
+    fn external_selection_closes_only_unpinned_results() {
+        assert!(should_close_for_external_selection(false));
+        assert!(!should_close_for_external_selection(true));
+    }
+
+    #[test]
+    fn destroyed_result_matches_only_its_own_selection() {
+        assert!(selection_source_matches_result(
+            Some("result-a"),
+            "result-a"
+        ));
+        assert!(!selection_source_matches_result(
+            Some("result-b"),
+            "result-a"
+        ));
+        assert!(!selection_source_matches_result(None, "result-a"));
+    }
+
+    #[test]
+    fn result_reveal_commit_is_idempotent_and_failed_sessions_cannot_restart() {
+        let mut phase = ResultRevealHandshakePhase::Pending;
+        assert_eq!(phase.begin_commit(), Ok(true));
+        assert_eq!(phase.begin_commit(), Ok(false));
+        assert!(phase.finish_commit(true));
+        assert_eq!(phase, ResultRevealHandshakePhase::Committed);
+        assert_eq!(phase.begin_commit(), Ok(false));
+        assert!(!phase.finish_commit(true));
+
+        let mut failed = ResultRevealHandshakePhase::Pending;
+        assert_eq!(failed.begin_commit(), Ok(true));
+        assert!(failed.finish_commit(false));
+        assert_eq!(failed, ResultRevealHandshakePhase::Failed);
+        assert_eq!(failed.begin_commit(), Err(()));
+    }
+
+    #[tokio::test]
+    async fn result_reveal_wait_is_bounded_and_reports_a_closed_renderer() {
+        let (_sender, receiver) = oneshot::channel();
+        let timeout = wait_for_result_reveal_with_timeout(receiver, Duration::from_millis(1))
+            .await
+            .unwrap_err();
+        assert!(timeout.contains("超时"));
+
+        let (sender, receiver) = oneshot::channel::<Result<(), String>>();
+        drop(sender);
+        let closed = wait_for_result_reveal_with_timeout(receiver, Duration::from_secs(1))
+            .await
+            .unwrap_err();
+        assert!(closed.contains("关闭"));
+    }
+
+    #[test]
+    fn stale_toolbar_hide_is_safe_but_can_finish_an_already_consumed_selection() {
+        assert!(should_hide_toolbar_for_selection(None, Some("finished")));
+        assert!(should_hide_toolbar_for_selection(
+            Some("same"),
+            Some("same")
+        ));
+        assert!(!should_hide_toolbar_for_selection(Some("new"), Some("old")));
+        assert!(should_hide_toolbar_for_selection(Some("new"), None));
+    }
+
+    #[test]
+    fn stale_dismiss_cannot_clear_a_newer_selection() {
+        assert!(dismiss_precedes_selection(2_000, 1_999));
+        assert!(dismiss_precedes_selection(2_000, 2_000));
+        assert!(!dismiss_precedes_selection(2_000, 2_001));
+    }
+
+    #[test]
+    fn dismiss_should_force_hide_even_if_selection_scoped_hide_returns_false() {
+        let plan = dismiss_hide_plan(Some("selection-1".to_owned()), false);
+        assert_eq!(plan.cleared_selection_id.as_deref(), Some("selection-1"));
+        assert!(plan.force_hide);
+    }
+
+    #[test]
+    fn dismiss_without_selection_still_force_hides() {
+        let plan = dismiss_hide_plan(None, false);
+        assert!(plan.cleared_selection_id.is_none());
+        assert!(plan.force_hide);
+    }
+
+    #[test]
+    fn dismiss_force_hides_even_when_scoped_hide_succeeds() {
+        let plan = dismiss_hide_plan(Some("selection-1".to_owned()), true);
+        assert!(plan.force_hide);
+    }
+
+    #[test]
+    fn same_text_selection_is_suppressed_until_deadline() {
+        let now = Instant::now();
+        let guard = same_text_selection_suppress("hello", now);
+        assert!(should_suppress_same_text_selection(
+            Some(&guard),
+            "hello",
+            now + Duration::from_millis(10)
+        ));
+        assert!(!should_suppress_same_text_selection(
+            Some(&guard),
+            "other",
+            now + Duration::from_millis(10)
+        ));
+        assert!(!should_suppress_same_text_selection(
+            Some(&guard),
+            "hello",
+            now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS + 1)
+        ));
+        assert!(!should_suppress_same_text_selection(None, "hello", now));
+    }
+
+    #[test]
+    fn host_clear_args_skip_empty_text() {
+        assert!(host_selection_clear_args("", Some("com.apple.TextEdit")).is_none());
+    }
+
+    #[test]
+    fn host_clear_args_keep_bundle_and_text() {
+        let args = host_selection_clear_args("你好", Some("com.apple.TextEdit")).unwrap();
+        assert_eq!(args.text, "你好");
+        assert_eq!(args.bundle_id.as_deref(), Some("com.apple.TextEdit"));
+    }
+
+    #[test]
+    fn host_clear_args_drop_blank_bundle_id() {
+        let args = host_selection_clear_args("hello", Some("   ")).unwrap();
+        assert_eq!(args.text, "hello");
+        assert!(args.bundle_id.is_none());
+        let no_bundle = host_selection_clear_args("hello", None).unwrap();
+        assert!(no_bundle.bundle_id.is_none());
+    }
+
+    #[test]
+    fn toolbar_commit_only_matches_the_current_selection() {
+        assert!(toolbar_commit_matches_selection(
+            Some("selection-current"),
+            "selection-current"
+        ));
+        assert!(!toolbar_commit_matches_selection(
+            Some("selection-new"),
+            "selection-stale"
+        ));
+        assert!(!toolbar_commit_matches_selection(None, "selection-stale"));
+    }
+
+    #[test]
+    fn windows_cursor_resolution_never_mixes_webview_dips_with_physical_pixels() {
+        let renderer_dip = CursorPoint {
+            x: 1_280.0,
+            y: 320.0,
+        };
+        let native_physical = WindowPoint {
+            x: 2_080.0,
+            y: 480.0,
+        };
+        let selection_physical = WindowPoint {
+            x: -400.0,
+            y: 700.0,
+        };
+
+        assert_eq!(
+            windows_physical_cursor(
+                Some(renderer_dip),
+                Some(native_physical),
+                Some(selection_physical),
+            ),
+            Some(native_physical)
+        );
+        assert_eq!(
+            windows_physical_cursor(Some(renderer_dip), None, Some(selection_physical)),
+            Some(selection_physical)
+        );
+        assert_eq!(
+            windows_physical_cursor(Some(renderer_dip), None, None),
+            None
+        );
+    }
+}

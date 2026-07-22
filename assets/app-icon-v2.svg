@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="textlens-bg" x1="154" y1="122" x2="884" y2="914" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7696ff"/>
+      <stop offset="1" stop-color="#6458df"/>
+    </linearGradient>
+    <filter id="textlens-shadow" x="-25%" y="-35%" width="150%" height="180%">
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#2f2d75" flood-opacity=".25"/>
+    </filter>
+  </defs>
+
+  <rect x="48" y="48" width="928" height="928" rx="224" fill="url(#textlens-bg)"/>
+  <path d="M175 225c123-112 323-155 499-103 55 16 102 40 143 70" fill="none" stroke="#fff" stroke-width="24" stroke-linecap="round" opacity=".12"/>
+
+  <g filter="url(#textlens-shadow)">
+    <rect x="176" y="376" width="672" height="272" rx="136" fill="#fff"/>
+  </g>
+
+  <rect x="272" y="450" width="256" height="42" rx="21" fill="#596ce8"/>
+  <rect x="272" y="530" width="188" height="42" rx="21" fill="#596ce8" opacity=".55"/>
+  <rect x="576" y="438" width="10" height="148" rx="5" fill="#dfe4fa"/>
+
+  <path d="M698 429c9 50 34 75 84 84-50 9-75 34-84 84-9-50-34-75-84-84 50-9 75-34 84-84Z" fill="#596ce8"/>
+  <circle cx="779" cy="438" r="18" fill="#aab7ff"/>
+</svg>

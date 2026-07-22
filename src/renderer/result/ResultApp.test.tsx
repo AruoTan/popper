@@ -1,0 +1,812 @@
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
+
+import {
+  countUnicodeScalars,
+  DEFAULT_PUBLIC_SETTINGS,
+  type PublicSettings,
+  type ResultSessionSnapshot,
+  type WindowTextLensApi
+} from '../../shared'
+import type { ResultSessionBootstrap } from './resultSessionBootstrap'
+
+const { startDragging, startResizeDragging } = vi.hoisted(() => ({
+  startDragging: vi.fn(),
+  startResizeDragging: vi.fn()
+}))
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ startDragging, startResizeDragging })
+}))
+
+function resultSnapshot(
+  overrides: Partial<ResultSessionSnapshot> = {},
+  includeRoute = true
+): ResultSessionSnapshot {
+  const content = overrides.content ?? '可选择的结果'
+  return {
+    sessionId: 'session-1',
+    sessionGeneration: 1,
+    requestId: crypto.randomUUID(),
+    requestGeneration: 1,
+    actionId: 'translate',
+    ...(includeRoute
+      ? { providerId: 'openai-compatible', modelId: 'model-1' }
+      : {}),
+    selection: {
+      selectionId: 'selection-1',
+      text: 'hello',
+      sourceApp: { name: 'TextEdit', bundleId: 'com.apple.TextEdit' },
+      anchor: { kind: 'cursor', x: 100, y: 120 },
+      direction: 'unknown',
+      isFullscreen: false
+    },
+    status: 'completed',
+    content,
+    lastSequence: 3,
+    lastContentSequence: 2,
+    contentScalarCount: countUnicodeScalars(content),
+    handshakeGeneration: 1,
+    errorMessage: '',
+    retryable: false,
+    pinned: false,
+    ...overrides
+  }
+}
+
+const completedSession = resultSnapshot()
+
+function settingsWithFontSize(fontSize = 18): PublicSettings {
+  return {
+    ...DEFAULT_PUBLIC_SETTINGS,
+    result: { ...DEFAULT_PUBLIC_SETTINGS.result, fontSize },
+    providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+      ...provider,
+      keyConfigured: true,
+      models: [{ id: 'model-1', name: '模型一' }]
+    })),
+    actions: DEFAULT_PUBLIC_SETTINGS.actions.map((action) =>
+      'modelId' in action ? { ...action, modelId: 'model-1' } : action
+    )
+  } as PublicSettings
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolver) => {
+    resolve = resolver
+  })
+  return { promise, resolve }
+}
+
+async function waitForAnimationFrame(): Promise<void> {
+  await act(async () => {
+    await new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => resolve())
+    })
+  })
+}
+
+async function renderResult(
+  snapshot: ResultSessionSnapshot = completedSession,
+  settings: PublicSettings = settingsWithFontSize(),
+  apiOverrides: Partial<WindowTextLensApi> = {},
+  renderOptions: {
+    strict?: boolean
+    bootstrap?: Partial<ResultSessionBootstrap>
+  } = {}
+) {
+  const showResultSelection = vi.fn().mockResolvedValue(undefined)
+  const continueAction = vi.fn().mockResolvedValue({
+    accepted: true,
+    requestId: 'request-followup'
+  })
+  const retryAction = vi.fn().mockResolvedValue({ accepted: true })
+  const prepareResultReveal = vi.fn().mockResolvedValue(undefined)
+  const commitResultReveal = vi.fn().mockResolvedValue(undefined)
+  const failResultReveal = vi.fn().mockResolvedValue(undefined)
+  const ackResultReady = vi.fn().mockResolvedValue(true)
+  let settingsListener: ((next: PublicSettings) => void) | null = null
+  const api = {
+    getSettings: vi.fn().mockResolvedValue(settings),
+    beginResultReady: vi.fn().mockResolvedValue(snapshot),
+    ackResultReady,
+    prepareResultReveal,
+    commitResultReveal,
+    failResultReveal,
+    setResultPinned: vi.fn().mockResolvedValue(true),
+    setResultPointerInside: vi.fn().mockResolvedValue(undefined),
+    showResultSelection,
+    cancelAction: vi.fn().mockResolvedValue(undefined),
+    retryAction,
+    continueAction,
+    copyText: vi.fn().mockResolvedValue(undefined),
+    openExternal: vi.fn().mockResolvedValue(undefined),
+    closeResult: vi.fn().mockResolvedValue(undefined),
+    onSettingsChanged: vi.fn((listener: (next: PublicSettings) => void) => {
+      settingsListener = listener
+      return () => {
+        if (settingsListener === listener) settingsListener = null
+      }
+    }),
+    ...apiOverrides
+  } as unknown as WindowTextLensApi
+  Object.defineProperty(window, 'textLens', { configurable: true, value: api })
+  window.history.replaceState({}, '', '/result/index.html?sessionId=session-1')
+
+  const store = await import('./actionEventStore')
+  store.hydrateActionEventStore(snapshot)
+  const { ResultApp } = await import('./ResultApp')
+  const bootstrap: ResultSessionBootstrap = {
+    sessionId: 'session-1',
+    start: vi.fn().mockResolvedValue(snapshot),
+    retryStart: vi.fn().mockResolvedValue(snapshot),
+    recover: vi.fn().mockResolvedValue(snapshot),
+    reveal: vi.fn(async (run: () => Promise<void>) => run()),
+    ...renderOptions.bootstrap
+  }
+  const view = render(
+    renderOptions.strict ? <StrictMode><ResultApp bootstrap={bootstrap} /></StrictMode> :
+      <ResultApp bootstrap={bootstrap} />
+  )
+  await screen.findByRole('heading', { name: settings.actions.find((action) => action.id === snapshot.actionId)?.name })
+  return {
+    ...view,
+    api,
+    showResultSelection,
+    continueAction,
+    retryAction,
+    prepareResultReveal,
+    commitResultReveal,
+    failResultReveal,
+    bootstrap,
+    emitSettings: (next: PublicSettings) => settingsListener?.(next)
+  }
+}
+
+beforeEach(() => {
+  vi.resetModules()
+  startDragging.mockReset()
+  startDragging.mockResolvedValue(undefined)
+  startResizeDragging.mockReset()
+  startResizeDragging.mockResolvedValue(undefined)
+})
+
+afterEach(() => {
+  Reflect.deleteProperty(window, 'textLens')
+})
+
+describe('ResultApp sessionId query', () => {
+  async function renderWithoutSessionId(search = ''): Promise<{
+    beginResultReady: ReturnType<typeof vi.fn>
+    closeResult: ReturnType<typeof vi.fn>
+  }> {
+    const beginResultReady = vi.fn().mockResolvedValue(completedSession)
+    const closeResult = vi.fn().mockResolvedValue(undefined)
+    const api = {
+      getSettings: vi.fn().mockResolvedValue(settingsWithFontSize()),
+      beginResultReady,
+      ackResultReady: vi.fn().mockResolvedValue(true),
+      closeResult,
+      onSettingsChanged: vi.fn().mockReturnValue(() => undefined)
+    } as unknown as WindowTextLensApi
+    Object.defineProperty(window, 'textLens', { configurable: true, value: api })
+    window.history.replaceState({}, '', `/result/index.html${search}`)
+
+    const { ResultApp } = await import('./ResultApp')
+    render(<ResultApp />)
+    return { beginResultReady, closeResult }
+  }
+
+  it('shows a fatal error when sessionId is missing and does not begin a legacy session', async () => {
+    const { beginResultReady, closeResult } = await renderWithoutSessionId()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('结果会话无效')
+    await waitFor(() => {
+      expect(beginResultReady).not.toHaveBeenCalled()
+    })
+    expect(closeResult).not.toHaveBeenCalledWith('legacy')
+    expect(closeResult).not.toHaveBeenCalled()
+  })
+
+  it('treats blank sessionId query values as missing', async () => {
+    const { beginResultReady, closeResult } = await renderWithoutSessionId('?sessionId=%20%20')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('结果会话无效')
+    expect(beginResultReady).not.toHaveBeenCalled()
+    expect(closeResult).not.toHaveBeenCalledWith('legacy')
+  })
+})
+
+describe('ResultApp window interactions', () => {
+  it('hydrates and reveals while getSettings remains pending', async () => {
+    const settings = deferred<PublicSettings>()
+    const { prepareResultReveal } = await renderResult(
+      completedSession,
+      settingsWithFontSize(),
+      { getSettings: vi.fn(() => settings.promise) }
+    )
+
+    await waitFor(() => expect(prepareResultReveal).toHaveBeenCalledWith('session-1'))
+    expect(screen.getByText(completedSession.content)).toBeInTheDocument()
+    await act(async () => settings.resolve(settingsWithFontSize()))
+  })
+
+  it('uses defaults and still reveals when getSettings rejects', async () => {
+    const { container, commitResultReveal } = await renderResult(
+      completedSession,
+      settingsWithFontSize(),
+      { getSettings: vi.fn().mockRejectedValue(new Error('settings unavailable')) }
+    )
+
+    await waitFor(() => expect(commitResultReveal).toHaveBeenCalled())
+    expect(container.querySelector('.result-window')).toHaveStyle(
+      `--result-font-size: ${DEFAULT_PUBLIC_SETTINGS.result.fontSize}px`
+    )
+  })
+
+  it('does not let an older settings read overwrite a newer settings event', async () => {
+    const initial = deferred<PublicSettings>()
+    const { container, emitSettings } = await renderResult(
+      completedSession,
+      settingsWithFontSize(12),
+      { getSettings: vi.fn(() => initial.promise) }
+    )
+
+    act(() => emitSettings(settingsWithFontSize(20)))
+    await act(async () => initial.resolve(settingsWithFontSize(12)))
+    await waitFor(() => {
+      expect(container.querySelector('.result-window')).toHaveStyle('--result-font-size: 20px')
+    })
+  })
+
+  it('shows an explicit retry when bootstrap startup fails', async () => {
+    const start = vi.fn().mockRejectedValue(new Error('session unavailable'))
+    const retryStart = vi.fn().mockResolvedValue(completedSession)
+    const { bootstrap } = await renderResult(
+      completedSession,
+      settingsWithFontSize(),
+      {},
+      { bootstrap: { start, retryStart } }
+    )
+
+    expect(await screen.findByRole('button', { name: '重新连接结果会话' })).toBeInTheDocument()
+    retryStart.mockResolvedValueOnce(completedSession)
+    fireEvent.click(screen.getByRole('button', { name: '重新连接结果会话' }))
+    await waitFor(() => expect(retryStart).toHaveBeenCalledOnce())
+    expect(bootstrap.start).toHaveBeenCalledOnce()
+  })
+
+  it('publishes native reveal completion and renders snapshot notices independently', async () => {
+    const store = await import('./actionEventStore')
+    const flush = vi.spyOn(store, 'flushPendingActionEvents')
+    const notice = resultSnapshot({
+      generationNotice: { code: 'THINKING_CONTROL_FALLBACK', message: '当前设置暂不支持关闭思考，已按默认设置继续。' }
+    })
+    const { commitResultReveal } = await renderResult(notice)
+
+    await waitFor(() => expect(commitResultReveal).toHaveBeenCalled())
+    await waitFor(() => expect(flush).toHaveBeenCalledWith('native-reveal'))
+    expect(screen.getByRole('status')).toHaveTextContent('当前设置暂不支持关闭思考')
+    flush.mockRestore()
+  })
+
+  it('accepts the Task 4 bootstrap prop while the legacy adapter remains active', async () => {
+    const bootstrap: ResultSessionBootstrap = {
+      sessionId: 'session-1',
+      start: vi.fn().mockResolvedValue(completedSession),
+      retryStart: vi.fn().mockResolvedValue(completedSession),
+      recover: vi.fn().mockResolvedValue(completedSession),
+      reveal: vi.fn().mockResolvedValue(undefined)
+    }
+    const { ResultApp } = await import('./ResultApp')
+    const settings = settingsWithFontSize()
+    const api = {
+      getSettings: vi.fn().mockResolvedValue(settings),
+      beginResultReady: vi.fn().mockResolvedValue(completedSession),
+      ackResultReady: vi.fn().mockResolvedValue(true),
+      prepareResultReveal: vi.fn().mockResolvedValue(undefined),
+      commitResultReveal: vi.fn().mockResolvedValue(undefined),
+      failResultReveal: vi.fn().mockResolvedValue(undefined),
+      onSettingsChanged: vi.fn().mockReturnValue(() => undefined)
+    } as unknown as WindowTextLensApi
+    Object.defineProperty(window, 'textLens', { configurable: true, value: api })
+    window.history.replaceState({}, '', '/result/index.html?sessionId=session-1')
+
+    render(<ResultApp bootstrap={bootstrap} />)
+    expect(await screen.findByRole('heading')).toBeInTheDocument()
+  })
+
+  it('coalesces repeated retry shortcuts while one retry IPC is in flight', async () => {
+    const pending = deferred<{ accepted: true }>()
+    const { retryAction } = await renderResult()
+    retryAction.mockReturnValue(pending.promise)
+
+    fireEvent.keyDown(window, { key: 'r' })
+    fireEvent.keyDown(window, { key: 'r' })
+
+    await waitFor(() => expect(retryAction).toHaveBeenCalledTimes(1))
+    await act(async () => pending.resolve({ accepted: true }))
+  })
+
+  it('exposes all eight native resize directions in Windows WebView2', async () => {
+    const userAgent = vi
+      .spyOn(window.navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) WebView2')
+    try {
+      const { container } = await renderResult()
+      const handles = [...container.querySelectorAll<HTMLElement>('[data-resize-direction]')]
+      expect(handles.map((handle) => handle.dataset.resizeDirection)).toEqual([
+        'NorthWest',
+        'North',
+        'NorthEast',
+        'East',
+        'SouthEast',
+        'South',
+        'SouthWest',
+        'West'
+      ])
+
+      fireEvent.pointerDown(handles[4]!, { button: 0, isPrimary: true })
+      expect(startResizeDragging).toHaveBeenCalledWith('SouthEast')
+      fireEvent.pointerDown(handles[0]!, { button: 2, isPrimary: true })
+      expect(startResizeDragging).toHaveBeenCalledTimes(1)
+    } finally {
+      userAgent.mockRestore()
+    }
+  })
+
+  it('prepares the hydrated renderer and commits only after two animation frames', async () => {
+    const callbacks: FrameRequestCallback[] = []
+    const scheduleFrame = vi.fn((callback: FrameRequestCallback) => {
+      callbacks.push(callback)
+      return callbacks.length
+    })
+    const { waitForResultRevealFrames } = await import('./ResultApp')
+    const frames = waitForResultRevealFrames(scheduleFrame)
+    expect(callbacks).toHaveLength(1)
+    const firstFrame = callbacks.shift()
+    expect(firstFrame).toBeTypeOf('function')
+    firstFrame!(performance.now())
+    await Promise.resolve()
+    expect(callbacks).toHaveLength(1)
+    const secondFrame = callbacks.shift()
+    expect(secondFrame).toBeTypeOf('function')
+    secondFrame!(performance.now())
+    await frames
+    expect(scheduleFrame).toHaveBeenCalledTimes(2)
+
+    const { prepareResultReveal, commitResultReveal } = await renderResult()
+    await waitFor(() => expect(commitResultReveal).toHaveBeenCalledWith('session-1'))
+    expect(prepareResultReveal).toHaveBeenCalledWith('session-1')
+    expect(
+      prepareResultReveal.mock.invocationCallOrder[0]!
+    ).toBeLessThan(commitResultReveal.mock.invocationCallOrder[0]!)
+  })
+
+  it('starts native dragging only from a non-interactive primary-button header area', async () => {
+    const { container } = await renderResult()
+    const header = container.querySelector<HTMLElement>('.result-header')!
+
+    fireEvent.pointerDown(header, { button: 0, isPrimary: true })
+    expect(startDragging).toHaveBeenCalledOnce()
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: '置顶结果窗口' }), {
+      button: 0,
+      isPrimary: true
+    })
+    fireEvent.pointerDown(screen.getByRole('combobox', { name: '翻译目标语言' }), {
+      button: 0,
+      isPrimary: true
+    })
+    fireEvent.pointerDown(screen.getByRole('combobox', { name: '切换模型' }), {
+      button: 0,
+      isPrimary: true
+    })
+    fireEvent.pointerDown(header, { button: 2, isPrimary: true })
+    expect(startDragging).toHaveBeenCalledOnce()
+  })
+
+  it('consumes detached result-window rejections without exposing private error text', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const closeResult = vi.fn().mockRejectedValue(new Error('private selected text'))
+    const setResultPointerInside = vi.fn().mockRejectedValue(
+      new Error('result session no longer exists')
+    )
+    startDragging.mockRejectedValue(new Error('private drag detail'))
+    const { container } = await renderResult(completedSession, settingsWithFontSize(), {
+      closeResult,
+      setResultPointerInside
+    })
+
+    const resultWindow = container.querySelector<HTMLElement>('.result-window')!
+    fireEvent.pointerEnter(resultWindow)
+    fireEvent.pointerLeave(resultWindow)
+    fireEvent.pointerDown(container.querySelector<HTMLElement>('.result-header')!, {
+      button: 0,
+      isPrimary: true
+    })
+    fireEvent.click(screen.getByRole('button', { name: '关闭结果窗口' }))
+
+    await waitFor(() => expect(closeResult).toHaveBeenCalledWith('session-1'))
+    await act(async () => Promise.resolve())
+    expect(screen.getByRole('alert')).toHaveTextContent('private selected text')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('private drag detail')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('result session no longer exists')
+    warn.mockRestore()
+  })
+
+  it('shows aligned compact translation controls and pin/close actions on Windows', async () => {
+    const userAgent = vi
+      .spyOn(window.navigator, 'userAgent', 'get')
+      .mockReturnValue('Mozilla/5.0 (Windows NT 10.0; Win64; x64) WebView2')
+    try {
+      const { api, container } = await renderResult()
+      const resultWindow = container.querySelector('.result-window')
+      expect(resultWindow).toHaveClass('result-window--windows')
+      expect(container.querySelector('.translation-route__code')).toHaveTextContent('EN')
+      expect(container.querySelector('.translation-route__target > span')).toHaveTextContent('CN')
+
+      const actions = container.querySelector('.result-window-actions')!
+      const buttons = [...actions.querySelectorAll('button')]
+      expect(buttons.map((button) => button.getAttribute('aria-label'))).toEqual([
+        '置顶结果窗口',
+        '关闭结果窗口'
+      ])
+      expect(screen.queryByRole('button', { name: '关闭' })).not.toBeInTheDocument()
+
+      fireEvent.pointerDown(screen.getByRole('button', { name: '关闭结果窗口' }), {
+        button: 0,
+        isPrimary: true
+      })
+      expect(startDragging).not.toHaveBeenCalled()
+
+      fireEvent.click(screen.getByRole('button', { name: '关闭结果窗口' }))
+      await waitFor(() => expect(api.closeResult).toHaveBeenCalledWith('session-1'))
+    } finally {
+      userAgent.mockRestore()
+    }
+  })
+
+  it('keeps translation metadata in the compact header and applies result font size', async () => {
+    const { api, container } = await renderResult()
+    const resultWindow = container.querySelector<HTMLElement>('.result-window')!
+    const footer = container.querySelector<HTMLElement>('.result-footer')!
+    const footerActions = container.querySelector<HTMLElement>('.result-actions')!
+
+    expect(container.querySelector('.result-header .translation-route')).toBeInTheDocument()
+    expect(container.querySelector('.result-header .result-status')).not.toBeInTheDocument()
+    expect(container.querySelector('.result-header')).not.toHaveTextContent('已完成')
+    expect(resultWindow.style.getPropertyValue('--result-font-size')).toBe('18px')
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '复制' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '置顶结果窗口' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '关闭结果窗口' })).toBeInTheDocument()
+    expect(container.querySelector('.result-count')).not.toBeInTheDocument()
+    expect(footer).not.toHaveTextContent(/\d[\d,]*\s*字/u)
+    expect(footer.firstElementChild).toHaveClass('result-followup')
+    expect(footer.querySelector('.result-followup textarea')).toHaveAttribute(
+      'placeholder',
+      '输入继续提问'
+    )
+    expect([...footerActions.children]).toHaveLength(2)
+    for (const control of footerActions.children) {
+      expect(control).toHaveClass('result-footer-button')
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => {
+      expect(api.retryAction).toHaveBeenCalledWith('session-1', undefined)
+    })
+
+    fireEvent.change(screen.getByRole('combobox', { name: '翻译目标语言' }), {
+      target: { value: 'en-US' }
+    })
+    await waitFor(() => {
+      expect(api.retryAction).toHaveBeenLastCalledWith('session-1', {
+        targetLanguage: 'en-US'
+      })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭结果窗口' }))
+    await waitFor(() => expect(api.closeResult).toHaveBeenCalledWith('session-1'))
+  })
+
+  it('shows the close button only in manual dismiss mode', async () => {
+    const manualSettings = settingsWithFontSize()
+    manualSettings.result = { ...manualSettings.result, dismissMode: 'manual' }
+    const { api, container } = await renderResult(completedSession, manualSettings)
+
+    const close = screen.getByRole('button', { name: '关闭' })
+    expect(container.querySelector('.result-actions')).toContainElement(close)
+    fireEvent.click(close)
+
+    await waitFor(() => expect(api.closeResult).toHaveBeenCalledWith('session-1'))
+  })
+
+  it('renders model output as Markdown inside the result window', async () => {
+    const content = [
+      '# Markdown 标题',
+      '',
+      '- 第一项',
+      '- 第二项',
+      '',
+      '> 引用内容',
+      '',
+      '```ts',
+      'const answer = 42',
+      '```'
+    ].join('\n')
+    await renderResult({
+      ...completedSession,
+      content,
+      contentScalarCount: countUnicodeScalars(content)
+    })
+
+    expect(await screen.findByRole('heading', { name: 'Markdown 标题', level: 1 })).toBeInTheDocument()
+    expect(screen.getAllByRole('listitem')).toHaveLength(2)
+    expect(screen.getByText('引用内容').closest('blockquote')).toBeInTheDocument()
+    expect(screen.getByText('const answer = 42').closest('pre')).toBeInTheDocument()
+  })
+
+  it('uses plain text while streaming and switches to Markdown after completion', async () => {
+    await renderResult({
+      ...completedSession,
+      status: 'streaming',
+      content: '# 尚未完成'
+    })
+
+    expect(screen.queryByRole('heading', { name: '尚未完成' })).not.toBeInTheDocument()
+    expect(screen.getByText('# 尚未完成')).toHaveClass('stream-plain-text')
+
+    const store = await import('./actionEventStore')
+    act(() => {
+      store.hydrateActionEventStore({
+        ...completedSession,
+        content: '# 尚未完成'
+      })
+    })
+
+    expect(await screen.findByRole('heading', { name: '尚未完成', level: 1 })).toBeInTheDocument()
+    expect(screen.queryByText('# 尚未完成')).not.toBeInTheDocument()
+  })
+
+  it('copies the rendered result through the native bridge', async () => {
+    const { api } = await renderResult()
+
+    fireEvent.click(screen.getByRole('button', { name: '复制' }))
+
+    await waitFor(() => {
+      expect(api.copyText).toHaveBeenCalledWith('可选择的结果')
+    })
+    expect(await screen.findByRole('button', { name: '已复制' })).toBeInTheDocument()
+  })
+
+  it('expands the follow-up input and submits with Enter using the current session', async () => {
+    const { continueAction, container } = await renderResult()
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    expect(input).toHaveAttribute('placeholder', '输入继续提问')
+
+    const expand = screen.getByRole('button', { name: '放大继续提问输入框' })
+    fireEvent.click(expand)
+    expect(screen.getByRole('button', { name: '收起继续提问输入框' })).toHaveAttribute(
+      'aria-expanded',
+      'true'
+    )
+    expect(container.querySelector('.result-window')).toHaveClass(
+      'result-window--followup-expanded'
+    )
+
+    fireEvent.change(input, { target: { value: '  解释第二句话  ' } })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(continueAction).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(continueAction).toHaveBeenCalledWith('session-1', '解释第二句话')
+    })
+    await waitFor(() => expect(input).toHaveValue(''))
+  })
+
+  it('keeps a follow-up question when the backend rejects it', async () => {
+    const { continueAction } = await renderResult()
+    continueAction.mockResolvedValueOnce({ accepted: false, message: '上下文过长' })
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    fireEvent.change(input, { target: { value: '继续说明' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('上下文过长')
+    expect(input).toHaveValue('继续说明')
+  })
+
+  it('restores an accepted follow-up question if streaming later fails', async () => {
+    const { continueAction, retryAction } = await renderResult()
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    fireEvent.change(input, { target: { value: '继续说明失败原因' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => expect(continueAction).toHaveBeenCalledOnce())
+    await waitFor(() => expect(input).toHaveValue(''))
+
+    const store = await import('./actionEventStore')
+    act(() => {
+      store.hydrateActionEventStore({
+        ...completedSession,
+        requestId: 'request-followup',
+        status: 'error',
+        content: '',
+        contentScalarCount: 0,
+        errorMessage: '网络中断',
+        retryable: true
+      })
+    })
+
+    await waitFor(() => expect(input).toHaveValue('继续说明失败原因'))
+
+    let resolveRetry!: (value: { accepted: true; requestId: string }) => void
+    const retryPromise = new Promise<{ accepted: true; requestId: string }>((resolve) => {
+      resolveRetry = resolve
+    })
+    retryAction.mockReturnValueOnce(retryPromise)
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(retryAction).toHaveBeenCalled())
+
+    act(() => {
+      store.hydrateActionEventStore({
+        ...completedSession,
+        requestId: 'request-followup-retry',
+        status: 'completed',
+        content: '重试后的回答',
+        errorMessage: '',
+        retryable: false
+      })
+    })
+    expect(input).toHaveValue('继续说明失败原因')
+
+    await act(async () => {
+      resolveRetry({ accepted: true, requestId: 'request-followup-retry' })
+      await retryPromise
+    })
+    await waitFor(() => expect(input).toHaveValue(''))
+  })
+
+  it('shows the selected provider and model in non-translation result headers', async () => {
+    const summary = { ...completedSession, actionId: 'summary' }
+    const { container } = await renderResult(summary)
+
+    expect(container.querySelector('.result-header .translation-route')).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '切换模型' })).toHaveValue(
+      JSON.stringify(['openai-compatible', 'model-1'])
+    )
+    expect(container.querySelector('.result-model-switch')).toHaveAttribute(
+      'title',
+      'OpenAI Compatible · 模型一'
+    )
+  })
+
+  it('hydrates initial preparing snapshot without route and uses default model route', async () => {
+    const initialPreparing = resultSnapshot({
+      status: 'streaming',
+      content: '',
+      lastSequence: 0,
+      lastContentSequence: 0,
+      contentScalarCount: 0
+    }, false)
+    const { api, bootstrap } = await renderResult(initialPreparing)
+
+    expect(screen.getByText('正在等待模型响应…')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '切换模型' })).toHaveValue(
+      JSON.stringify(['openai-compatible', 'model-1'])
+    )
+    expect(bootstrap.start).toHaveBeenCalledOnce()
+    expect(api.ackResultReady).not.toHaveBeenCalled()
+    expect(api.failResultReveal).not.toHaveBeenCalled()
+  })
+
+  it('groups available models by provider and regenerates in the same session', async () => {
+    const settings = settingsWithFontSize()
+    settings.providers.push({
+      id: 'provider-two',
+      name: '备用服务商',
+      baseUrl: 'http://localhost:11434/v1',
+      keyConfigured: true,
+      models: [
+        { id: 'model-fast', name: '快速模型', thinkingLevels: [] },
+        { id: 'model-deep', name: '深度模型', thinkingLevels: [] }
+      ]
+    })
+    const { container, retryAction } = await renderResult(completedSession, settings)
+    const selector = screen.getByRole('combobox', { name: '切换模型' })
+    const groups = [...container.querySelectorAll('optgroup')]
+    expect(groups.map((group) => group.label)).toEqual(['OpenAI Compatible', '备用服务商'])
+
+    fireEvent.change(selector, {
+      target: { value: JSON.stringify(['provider-two', 'model-deep']) }
+    })
+
+    await waitFor(() => {
+      expect(retryAction).toHaveBeenLastCalledWith('session-1', {
+        providerId: 'provider-two',
+        modelId: 'model-deep'
+      })
+    })
+    expect(selector).toHaveValue(JSON.stringify(['provider-two', 'model-deep']))
+  })
+
+  it('shows the app toolbar for a real text selection inside result content', async () => {
+    const { container, showResultSelection } = await renderResult()
+    expect(container.querySelector('.stream-plain-text')).toBeInTheDocument()
+
+    const selected = screen.getByText('可选择的结果')
+    const range = document.createRange()
+    range.selectNodeContents(selected)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    fireEvent.pointerUp(selected, {
+      button: 0,
+      isPrimary: true,
+      screenX: 320,
+      screenY: 240
+    })
+
+    await waitFor(() => {
+      expect(showResultSelection).toHaveBeenCalledWith(
+        'session-1',
+        '可选择的结果',
+        { x: 320, y: 240 }
+      )
+    })
+
+    showResultSelection.mockClear()
+    const originalToggle = screen.getByRole('button', { name: '显示原文' })
+    fireEvent.pointerUp(originalToggle, { button: 0, isPrimary: true, screenX: 10, screenY: 10 })
+    await waitForAnimationFrame()
+    expect(showResultSelection).not.toHaveBeenCalled()
+
+    const outsideRange = document.createRange()
+    outsideRange.selectNodeContents(screen.getByRole('heading', { name: '翻译' }))
+    selection.removeAllRanges()
+    selection.addRange(outsideRange)
+    fireEvent.pointerUp(container.querySelector('.result-content')!, {
+      button: 0,
+      isPrimary: true,
+      screenX: 20,
+      screenY: 30
+    })
+    await waitForAnimationFrame()
+    expect(showResultSelection).not.toHaveBeenCalled()
+    // The deferred Markdown chunk may replace its initial plain-text node, so
+    // assert against the live result container instead of the stale span.
+    expect(container.querySelector('.result-content')).toHaveTextContent(completedSession.content)
+  })
+
+  it('uses stop while streaming and keeps error/loading states operable', async () => {
+    const streaming = {
+      ...completedSession,
+      status: 'streaming' as const,
+      content: '',
+      contentScalarCount: 0
+    }
+    const first = await renderResult(streaming)
+    expect(screen.getByRole('button', { name: '停止' })).toBeInTheDocument()
+    expect(screen.getByText('正在等待模型响应…')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '继续提问' })).toBeDisabled()
+    first.unmount()
+
+    vi.resetModules()
+    const failed = {
+      ...completedSession,
+      status: 'error' as const,
+      content: '',
+      contentScalarCount: 0,
+      errorMessage: '连接失败',
+      retryable: true
+    }
+    await renderResult(failed)
+    expect(screen.getByRole('alert')).toHaveTextContent('连接失败')
+    expect(screen.getByRole('button', { name: '重试' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: '关闭' })).not.toBeInTheDocument()
+  })
+})

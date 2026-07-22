@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "TextLens",
+  "version": "0.3.49",
+  "identifier": "com.local.textlens",
+  "build": {
+    "beforeBuildCommand": "pnpm build:web",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "settings",
+        "title": "TextLens 设置",
+        "url": "settings/index.html",
+        "width": 760,
+        "height": 780,
+        "minWidth": 660,
+        "minHeight": 600,
+        "visible": false,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' customprotocol: asset:; connect-src ipc: http://ipc.localhost; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": ["../apps/macos/icons/icon.icns"],
+    "resources": {
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../LICENSE.selection-hook": "LICENSE.selection-hook"
+    },
+    "category": "Productivity",
+    "shortDescription": "轻量 macOS 划词助手",
+    "longDescription": "选中文本后快速复制、搜索、翻译、解释、总结和优化。",
+    "copyright": "Copyright © 2026 TextLens contributors",
+    "macOS": {
+      "infoPlist": "Info.plist",
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": null
+    }
+  }
+}
