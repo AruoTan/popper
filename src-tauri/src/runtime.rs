@@ -2259,6 +2259,7 @@ pub async fn run_action(
         _ if action.kind.opens_result_without_generation() => {
             let cursor = action_result_cursor(&app, cursor, &selection.payload);
             let selected_text = selection.payload.text.clone();
+            let source_bundle_id = selection.payload.source_app.bundle_id.clone();
             match state.create_ask_result_session(
                 &app,
                 &action.id,
@@ -2276,6 +2277,9 @@ pub async fn run_action(
                         Ok(()) => {
                             state.arm_same_text_selection_suppress(&selected_text);
                             state.clear_and_hide_current_selection_if(&app, &selection_token);
+                            // Soft restore key focus to the source app (same as copy)
+                            // so the next capture sees a stable FrontmostApplication.
+                            let _ = restore_source_app_activation(&app, &source_bundle_id);
                             RunActionResult::accepted(Some(session_id), Some(request_id))
                         }
                         Err(message) => {
@@ -2289,8 +2293,9 @@ pub async fn run_action(
         }
         _ if action.kind.is_ai() => {
             let cursor = action_result_cursor(&app, cursor, &selection.payload);
-            // Capture text before the selection moves into the result session.
+            // Capture text/bundle before the selection moves into the result session.
             let selected_text = selection.payload.text.clone();
+            let source_bundle_id = selection.payload.source_app.bundle_id.clone();
             match state.create_result_session(&app, &action.id, &action.name, selection, cursor) {
                 Ok((session_id, request_id, reveal_receiver)) => {
                     // Window creation has its own bounded error path. Start
@@ -2308,6 +2313,9 @@ pub async fn run_action(
                             // dismissed must not re-present this selection.
                             state.arm_same_text_selection_suppress(&selected_text);
                             state.clear_and_hide_current_selection_if(&app, &selection_token);
+                            // Soft restore key focus to the source app so macOS
+                            // frontmost capture is reliable after Accessory churn.
+                            let _ = restore_source_app_activation(&app, &source_bundle_id);
                             RunActionResult::accepted(Some(session_id), Some(request_id))
                         }
                         Err(message) => {
