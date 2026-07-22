@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
-    time::Duration,
 };
 
 use tokio_util::sync::CancellationToken;
@@ -12,8 +11,8 @@ use crate::models::{
     MAX_WIRE_COUNTER,
 };
 
-const STREAM_COALESCE_WINDOW: Duration = Duration::from_millis(8);
-const STREAM_BATCH_BYTES: usize = 4 * 1024;
+// Content deltas are emitted immediately (no coalesce window / byte batching)
+// so translate/explain/summary TTFB and tail fluency stay as low-latency as possible.
 const MAX_PENDING_EVENTS: usize = 256;
 
 pub(super) struct SessionTable {
@@ -555,118 +554,32 @@ impl SessionTable {
         ) {
             return Ok(DeltaTransition::Stale);
         }
-        let Some(stream) = state.request_stream.as_ref() else {
+        if state.request_stream.is_none() {
             return Ok(DeltaTransition::Stale);
-        };
-
-        if !stream.first_content_sent {
-            let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
-            let pending_limit = preflight_pending_limit(state, 1, sequence)?;
-            let stream = state
-                .request_stream
-                .as_mut()
-                .expect("matching Running request must own a stream");
-            stream.first_content_sent = true;
-            stream.last_emit_at = Some(now);
-            let event = enqueue_payload_at(
-                state,
-                ticket,
-                sequence,
-                ActionStreamPayload::Delta { delta },
-            );
-            apply_pending_limit_plan(state, pending_limit);
-            return Ok(DeltaTransition::Emitted {
-                event,
-                timer: TimerDirective::None,
-            });
         }
 
-        let last_emit_at = stream
-            .last_emit_at
-            .expect("a stream that sent content must have an emit time");
-        if stream.pending.is_empty() && now.duration_since(last_emit_at) >= STREAM_COALESCE_WINDOW {
-            let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
-            let pending_limit = preflight_pending_limit(state, 1, sequence)?;
-            state
-                .request_stream
-                .as_mut()
-                .expect("matching Running request must own a stream")
-                .last_emit_at = Some(now);
-            let event = enqueue_payload_at(
-                state,
-                ticket,
-                sequence,
-                ActionStreamPayload::Delta { delta },
-            );
-            apply_pending_limit_plan(state, pending_limit);
-            return Ok(DeltaTransition::Emitted {
-                event,
-                timer: TimerDirective::None,
-            });
-        }
-
-        if stream.pending.len() + delta.len() >= STREAM_BATCH_BYTES {
-            let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
-            let pending_limit = preflight_pending_limit(state, 1, sequence)?;
-            let (batched, had_deadline) = {
-                let stream = state
-                    .request_stream
-                    .as_mut()
-                    .expect("matching Running request must own a stream");
-                let had_deadline = stream.deadline.is_some();
-                stream.pending_scalar_count += delta.chars().count() as u64;
-                stream.pending.push_str(&delta);
-                let batched = take_pending(stream);
-                stream.last_emit_at = Some(now);
-                (batched, had_deadline)
-            };
-            let event = enqueue_payload_at(
-                state,
-                ticket,
-                sequence,
-                ActionStreamPayload::Delta { delta: batched },
-            );
-            apply_pending_limit_plan(state, pending_limit);
-            return Ok(DeltaTransition::Emitted {
-                event,
-                timer: if had_deadline {
-                    TimerDirective::Cancel
-                } else {
-                    TimerDirective::None
-                },
-            });
-        }
-
-        let next_deadline = if stream.pending.is_empty() {
-            let generation = stream
-                .deadline_generation
-                .checked_next()
-                .ok_or(SessionError::CounterExhausted)?;
-            Some((last_emit_at + STREAM_COALESCE_WINDOW, generation))
-        } else {
-            None
-        };
+        // Always emit content deltas immediately (first token and tail).
+        // If an older code path left pending text, prepend it so nothing is lost.
+        let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
+        let pending_limit = preflight_pending_limit(state, 1, sequence)?;
         let stream = state
             .request_stream
             .as_mut()
             .expect("matching Running request must own a stream");
-        stream.pending_scalar_count += delta.chars().count() as u64;
-        stream.pending.push_str(&delta);
-        if let Some((deadline, generation)) = next_deadline {
-            stream.deadline = Some(deadline);
-            stream.deadline_generation = generation;
-        }
-        Ok(DeltaTransition::Buffered {
-            deadline: stream
-                .deadline
-                .expect("buffered stream must have an installed deadline"),
-            generation: stream.deadline_generation,
-            timer: next_deadline.map_or(TimerDirective::None, |(deadline, generation)| {
-                TimerDirective::Schedule {
-                    deadline,
-                    generation,
-                }
-            }),
+        stream.first_content_sent = true;
+        stream.last_emit_at = Some(now);
+        let mut full = take_pending(stream);
+        full.push_str(&delta);
+        let event = enqueue_payload_at(
+            state,
+            ticket,
+            sequence,
+            ActionStreamPayload::Delta { delta: full },
+        );
+        apply_pending_limit_plan(state, pending_limit);
+        Ok(DeltaTransition::Emitted {
+            event,
+            timer: TimerDirective::None,
         })
     }
 
@@ -2206,7 +2119,30 @@ mod tests {
     }
 
     #[test]
-    fn first_content_is_immediate_and_dense_tail_obeys_8ms_or_4kib() {
+    fn accept_delta_emits_every_content_chunk_immediately_after_first() {
+        let (mut table, ticket) = running_table("s");
+        let t0 = tokio::time::Instant::now();
+        match table.accept_delta(&ticket, "首".into(), t0).unwrap() {
+            DeltaTransition::Emitted { .. } => {}
+            other => panic!("first must emit, got {other:?}"),
+        }
+        match table
+            .accept_delta(&ticket, "字".into(), t0 + Duration::from_millis(1))
+            .unwrap()
+        {
+            DeltaTransition::Emitted { event, timer } => {
+                assert!(matches!(
+                    event.payload,
+                    ActionStreamPayload::Delta { ref delta } if delta == "字"
+                ));
+                assert_eq!(timer, TimerDirective::None);
+            }
+            other => panic!("second must emit immediately, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn first_content_and_tail_are_both_immediate() {
         let (mut table, ticket) = running_table("s");
         let t0 = tokio::time::Instant::now();
         assert_eq!(
@@ -2223,118 +2159,53 @@ mod tests {
         assert!(matches!(&first.payload,
             ActionStreamPayload::Delta { delta } if delta == "首"));
         assert_eq!(first.sequence, EventSequence(2));
-        let (deadline, generation) = match table
+        let second = match table
             .accept_delta(&ticket, "a".into(), t0 + Duration::from_millis(1))
             .unwrap()
         {
-            DeltaTransition::Buffered {
-                deadline,
-                generation,
-                ..
-            } => (deadline, generation),
-            other => panic!("expected buffered tail, got {other:?}"),
+            DeltaTransition::Emitted {
+                event,
+                timer: TimerDirective::None,
+            } => event,
+            other => panic!("expected immediate tail Delta, got {other:?}"),
         };
-        assert_eq!(deadline, t0 + Duration::from_millis(8));
-        assert_eq!(
-            table
-                .flush_due_delta(&ticket, generation, t0 + Duration::from_millis(7))
-                .unwrap(),
-            None
-        );
-        let flushed = table
-            .flush_due_delta(&ticket, generation, t0 + Duration::from_millis(8))
-            .unwrap()
-            .unwrap();
-        assert!(matches!(&flushed.payload,
+        assert!(matches!(&second.payload,
             ActionStreamPayload::Delta { delta } if delta == "a"));
         let large = "x".repeat(4096);
         let event = match table
-            .accept_delta(&ticket, large.clone(), t0 + Duration::from_millis(9))
+            .accept_delta(&ticket, large.clone(), t0 + Duration::from_millis(2))
             .unwrap()
         {
-            DeltaTransition::Emitted { event, .. } => event,
-            other => panic!("expected 4 KiB flush, got {other:?}"),
+            DeltaTransition::Emitted {
+                event,
+                timer: TimerDirective::None,
+            } => event,
+            other => panic!("expected immediate large Delta, got {other:?}"),
         };
         assert!(matches!(&event.payload,
             ActionStreamPayload::Delta { delta } if delta.as_str() == large.as_str()));
     }
 
     #[test]
-    fn buffered_tail_schedules_only_the_new_deadline() {
-        let (mut table, ticket) = running_table("single-timer");
-        let now = tokio::time::Instant::now();
-        assert!(matches!(
-            table.accept_delta(&ticket, "first".into(), now).unwrap(),
-            DeltaTransition::Emitted {
-                timer: TimerDirective::None,
-                ..
-            }
-        ));
-
-        let (deadline, generation) = match table
-            .accept_delta(&ticket, "a".into(), now + Duration::from_millis(1))
-            .unwrap()
-        {
-            DeltaTransition::Buffered {
-                deadline,
-                generation,
-                timer:
-                    TimerDirective::Schedule {
-                        deadline: scheduled_deadline,
-                        generation: scheduled_generation,
-                    },
-            } => {
-                assert_eq!(scheduled_deadline, deadline);
-                assert_eq!(scheduled_generation, generation);
-                (deadline, generation)
-            }
-            other => panic!("first buffered tail must schedule one timer, got {other:?}"),
-        };
-        assert!(matches!(
-            table
-                .accept_delta(&ticket, "b".into(), now + Duration::from_millis(2))
-                .unwrap(),
-            DeltaTransition::Buffered {
-                deadline: same_deadline,
-                generation: same_generation,
-                timer: TimerDirective::None,
-            } if same_deadline == deadline && same_generation == generation
-        ));
-    }
-
-    #[test]
-    fn ten_thousand_dense_single_character_deltas_are_batched_without_loss() {
-        const FRAGMENT_COUNT: usize = 10_000;
+    fn dense_single_character_deltas_emit_each_chunk_without_loss() {
+        // Stay under MAX_PENDING_EVENTS so overflow resync does not hide emit behavior.
+        const FRAGMENT_COUNT: usize = 200;
 
         let (mut table, ticket) = running_table("dense");
         let now = tokio::time::Instant::now();
-        let dense_tail_bytes = FRAGMENT_COUNT - 1;
-        let full_tail_batches = dense_tail_bytes / STREAM_BATCH_BYTES;
-        let residual_tail_bytes = dense_tail_bytes % STREAM_BATCH_BYTES;
-        let expected_accept_emissions = 1 + full_tail_batches;
         let mut accept_emissions = 0;
-        let mut buffered = 0;
 
         for _ in 0..FRAGMENT_COUNT {
             match table.accept_delta(&ticket, "x".to_owned(), now).unwrap() {
                 DeltaTransition::Emitted { event, timer } => {
                     assert_eq!(event.sequence, EventSequence(accept_emissions as u64 + 2));
-                    assert_eq!(
-                        timer,
-                        if accept_emissions == 0 {
-                            TimerDirective::None
-                        } else {
-                            TimerDirective::Cancel
-                        }
-                    );
+                    assert_eq!(timer, TimerDirective::None);
                     accept_emissions += 1;
                 }
-                DeltaTransition::Buffered { .. } => buffered += 1,
-                other => panic!("dense non-empty matching delta must be accepted, got {other:?}"),
+                other => panic!("dense non-empty matching delta must emit, got {other:?}"),
             }
         }
-        assert_eq!(accept_emissions, expected_accept_emissions);
-        assert_eq!(buffered, FRAGMENT_COUNT - expected_accept_emissions);
+        assert_eq!(accept_emissions, FRAGMENT_COUNT);
 
         assert_eq!(
             table
@@ -2352,18 +2223,8 @@ mod tests {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let mut expected_delta_bytes = vec![1];
-        expected_delta_bytes.extend(std::iter::repeat_n(STREAM_BATCH_BYTES, full_tail_batches));
-        if residual_tail_bytes != 0 {
-            expected_delta_bytes.push(residual_tail_bytes);
-        }
-        assert_eq!(
-            delta_events
-                .iter()
-                .map(|(_, delta)| delta.len())
-                .collect::<Vec<_>>(),
-            expected_delta_bytes
-        );
+        assert_eq!(delta_events.len(), FRAGMENT_COUNT);
+        assert!(delta_events.iter().all(|(_, delta)| delta.len() == 1));
         assert_eq!(
             delta_events
                 .iter()
@@ -2464,29 +2325,25 @@ mod tests {
     }
 
     #[test]
-    fn terminal_flushes_pending_once_and_completed_has_no_content() {
+    fn terminal_after_immediate_deltas_completes_with_full_content() {
         let (mut table, ticket) = running_table("s");
         let now = tokio::time::Instant::now();
         table.accept_delta(&ticket, "A".into(), now).unwrap();
-        let deadline_generation = match table
-            .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-            .unwrap()
-        {
-            DeltaTransition::Buffered { generation, .. } => generation,
-            other => panic!("expected buffered B, got {other:?}"),
-        };
+        assert!(matches!(
+            table
+                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
+                .unwrap(),
+            DeltaTransition::Emitted {
+                timer: TimerDirective::None,
+                ..
+            }
+        ));
         assert_eq!(
             table
                 .commit_terminal(&ticket, TerminalKind::Completed)
                 .unwrap()
                 .result,
             TransitionResult::Applied,
-        );
-        assert_eq!(
-            table
-                .flush_due_delta(&ticket, deadline_generation, now + Duration::from_secs(1),)
-                .unwrap(),
-            None
         );
         let state = open_state(&table, "s");
         assert_eq!(state.snapshot.content, "AB");
@@ -2584,68 +2441,57 @@ mod tests {
     }
 
     #[test]
-    fn notice_flushes_earlier_pending_delta_before_notice() {
+    fn notice_after_emitted_deltas_does_not_flush_content() {
         let (mut table, ticket) = running_table("s");
         let now = tokio::time::Instant::now();
         table.accept_delta(&ticket, "A".into(), now).unwrap();
-        let generation = match table
-            .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-            .unwrap()
-        {
-            DeltaTransition::Buffered { generation, .. } => generation,
-            other => panic!("expected buffered B, got {other:?}"),
-        };
+        assert!(matches!(
+            table
+                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
+                .unwrap(),
+            DeltaTransition::Emitted { .. }
+        ));
         let transition = table.enqueue_notice(&ticket, "N", "notice").unwrap();
         assert_eq!(transition.result, TransitionResult::Applied);
-        assert_eq!(transition.timer, TimerDirective::Cancel);
+        assert_eq!(transition.timer, TimerDirective::None);
+        assert_eq!(transition.events.len(), 1);
         assert!(matches!(&transition.events[0].payload,
-            ActionStreamPayload::Delta { delta } if delta == "B"));
-        assert!(matches!(&transition.events[1].payload,
             ActionStreamPayload::Notice { code, message }
                 if code == "N" && message == "notice"));
-        assert_eq!(
-            table
-                .flush_due_delta(&ticket, generation, now + Duration::from_secs(1))
-                .unwrap(),
-            None
-        );
     }
 
     #[test]
-    fn cancel_running_flushes_pending_before_cancelled_and_returns_unsignalled_token() {
+    fn cancel_running_after_emitted_deltas_returns_unsignalled_token() {
         let (mut table, ticket) = running_table("s");
         let now = tokio::time::Instant::now();
         table.accept_delta(&ticket, "A".into(), now).unwrap();
-        let generation = match table
-            .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-            .unwrap()
-        {
-            DeltaTransition::Buffered { generation, .. } => generation,
-            other => panic!("expected buffered B, got {other:?}"),
-        };
+        assert!(matches!(
+            table
+                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
+                .unwrap(),
+            DeltaTransition::Emitted { .. }
+        ));
         let active_token = match &open_state(&table, "s").request_slot {
             RequestSlot::Running { cancellation, .. } => cancellation.clone(),
             _ => panic!("fixture must be Running"),
         };
         let transition = table.cancel("s").unwrap();
+        // Running cancel always cancels any stream timer (even when no pending).
         assert_eq!(transition.timer, TimerDirective::Cancel);
         let events = &open_state(&table, "s").pending_events;
-        assert!(matches!(&events[events.len() - 2].payload,
-            ActionStreamPayload::Delta { delta } if delta == "B"));
         assert!(matches!(
             &events[events.len() - 1].payload,
             ActionStreamPayload::Cancelled
         ));
+        // B was already emitted as its own delta before cancel.
+        assert!(events.iter().any(|event| matches!(
+            &event.payload,
+            ActionStreamPayload::Delta { delta } if delta == "B"
+        )));
         assert!(matches!(
             open_state(&table, "s").request_slot,
             RequestSlot::Vacant
         ));
-        assert_eq!(
-            table
-                .flush_due_delta(&ticket, generation, now + Duration::from_secs(1))
-                .unwrap(),
-            None
-        );
         let returned = transition.cancellation.unwrap();
         assert!(!active_token.is_cancelled());
         assert!(!returned.is_cancelled());
@@ -2683,6 +2529,7 @@ mod tests {
         );
         assert_open_state_exact(&accept, "accept-max", &before);
 
+        // accept_delta no longer advances deadline_generation; second delta emits.
         let (mut deadline, ticket) = running_table("deadline-max");
         deadline.accept_delta(&ticket, "A".into(), now).unwrap();
         set_deadline_generation(
@@ -2690,12 +2537,12 @@ mod tests {
             "deadline-max",
             DeadlineGeneration(MAX_WIRE_COUNTER),
         );
-        let before = comparable_open_state(&deadline, "deadline-max");
-        assert_eq!(
-            deadline.accept_delta(&ticket, "B".into(), now + Duration::from_millis(1)),
-            Err(SessionError::CounterExhausted)
-        );
-        assert_open_state_exact(&deadline, "deadline-max", &before);
+        assert!(matches!(
+            deadline
+                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
+                .unwrap(),
+            DeltaTransition::Emitted { .. }
+        ));
 
         for operation in [
             CounterOperation::Terminal,
@@ -2708,7 +2555,7 @@ mod tests {
             table
                 .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
                 .unwrap();
-            set_sequence_watermark(&mut table, &session_id, EventSequence(MAX_WIRE_COUNTER - 1));
+            set_sequence_watermark(&mut table, &session_id, EventSequence(MAX_WIRE_COUNTER));
             let before = comparable_open_state(&table, &session_id);
             let error = match operation {
                 CounterOperation::Terminal => table
