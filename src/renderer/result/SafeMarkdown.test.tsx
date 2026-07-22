@@ -138,6 +138,30 @@ describe('SafeMarkdown', () => {
     expect(screen.getByText('const answer = 42').closest('pre')).toBeInTheDocument()
   })
 
+  it('renders non-math GFM without KaTeX nodes', () => {
+    const { container } = render(
+      <SafeMarkdown
+        content={[
+          '# 总结',
+          '',
+          '- 要点一',
+          '- 要点二',
+          '',
+          '```ts',
+          'const ok = true',
+          '```'
+        ].join('\n')}
+        onOpenExternal={() => undefined}
+      />
+    )
+
+    expect(screen.getByRole('heading', { name: '总结', level: 1 })).toBeInTheDocument()
+    expect(screen.getByText('要点一').closest('ul')).toBeInTheDocument()
+    expect(screen.getByText('const ok = true').closest('pre')).toBeInTheDocument()
+    expect(container.querySelector('.katex')).toBeNull()
+    expect(container.querySelector('math')).toBeNull()
+  })
+
   it('renders inline and display Markdown formulas with accessible KaTeX output', () => {
     const { container } = render(
       <SafeMarkdown

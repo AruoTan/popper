@@ -577,7 +577,11 @@ body,
   user-select: text;
 }
 
+/* Match rich Markdown metrics so the plain→rich handoff does not jump. */
 .stream-plain-text {
+  color: var(--text);
+  font-size: var(--result-font-size, 14px);
+  line-height: 1.72;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   letter-spacing: 0.01em;
@@ -619,8 +623,17 @@ body,
 .markdown-body ol,
 .markdown-body blockquote,
 .markdown-body pre,
-.markdown-body table {
+.markdown-body table,
+.markdown-body hr {
   margin: 0.7em 0;
+}
+
+.markdown-body hr {
+  height: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 
 .markdown-body ul,
@@ -628,31 +641,76 @@ body,
   padding-left: 1.6em;
 }
 
+.markdown-body li + li {
+  margin-top: 0.2em;
+}
+
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin: 0.3em 0 0.15em;
+}
+
+.markdown-body ul.contains-task-list {
+  list-style: none;
+  padding-left: 0.2em;
+}
+
+.markdown-body .task-list-item {
+  display: flex;
+  gap: 0.45em;
+  align-items: flex-start;
+}
+
+.markdown-body .task-list-item input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 0.95em;
+  height: 0.95em;
+  margin: 0.35em 0 0;
+  accent-color: var(--accent);
+}
+
+.markdown-body .task-list-item > p {
+  margin: 0;
+}
+
 .markdown-body blockquote {
   padding: 1px 0 1px 13px;
   margin-left: 0;
   color: var(--text-secondary);
+  background: color-mix(in srgb, var(--surface-muted) 55%, transparent);
   border-left: 3px solid var(--border-strong);
+  border-radius: 0 6px 6px 0;
 }
 
 .markdown-body code {
   padding: 0.16em 0.36em;
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 0.88em;
+  color: var(--text);
   background: var(--surface-muted);
   border-radius: 5px;
 }
 
 .markdown-body pre {
   padding: 13px 14px;
-  overflow: auto;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
   background: var(--surface-muted);
   border: 1px solid var(--border);
   border-radius: 9px;
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
 }
 
 .markdown-body pre code {
+  display: inline-block;
+  min-width: 100%;
   padding: 0;
+  color: inherit;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
   background: transparent;
 }
 
@@ -663,9 +721,12 @@ body,
 
 .markdown-body table {
   display: block;
+  width: max-content;
   max-width: 100%;
   overflow-x: auto;
   border-collapse: collapse;
+  scrollbar-width: thin;
+  overscroll-behavior-x: contain;
 }
 
 .markdown-body th,
@@ -674,11 +735,18 @@ body,
   border: 1px solid var(--border-strong);
 }
 
+.markdown-body th {
+  font-weight: 620;
+  background: color-mix(in srgb, var(--surface-muted) 80%, transparent);
+  text-align: left;
+}
+
 .markdown-body img {
   max-width: 100%;
 }
 
 .markdown-body .katex {
+  color: var(--text);
   font-size: 1.04em;
 }
 
@@ -988,5 +1056,41 @@ body,
     box-shadow:
       0 1px 2px rgba(0, 0, 0, 0.3),
       0 4px 12px rgba(0, 0, 0, 0.26);
+  }
+
+  /* Lift muted surfaces so code / quotes stay readable on dark chrome. */
+  .markdown-body code,
+  .markdown-body pre {
+    background: color-mix(in srgb, var(--surface-muted) 88%, var(--text) 8%);
+    border-color: color-mix(in srgb, var(--border) 70%, var(--text) 12%);
+  }
+
+  .markdown-body code {
+    border: 0;
+  }
+
+  .markdown-body blockquote {
+    color: color-mix(in srgb, var(--text-secondary) 88%, var(--text) 12%);
+    background: color-mix(in srgb, var(--surface-muted) 70%, transparent);
+    border-left-color: color-mix(in srgb, var(--border-strong) 75%, var(--text) 25%);
+  }
+
+  .markdown-body th {
+    background: color-mix(in srgb, var(--surface-muted) 72%, var(--text) 6%);
+  }
+
+  .markdown-body .katex,
+  .markdown-body .katex .mord,
+  .markdown-body .katex .mbin,
+  .markdown-body .katex .mrel,
+  .markdown-body .katex .mopen,
+  .markdown-body .katex .mclose,
+  .markdown-body .katex .mpunct,
+  .markdown-body .katex .minner {
+    color: var(--text);
+  }
+
+  .markdown-body hr {
+    border-top-color: color-mix(in srgb, var(--border) 80%, var(--text) 12%);
   }
 }

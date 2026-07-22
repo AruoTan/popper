@@ -7,14 +7,16 @@ import remarkMath from 'remark-math'
 import 'katex/dist/katex.min.css'
 
 import { isSafeExternalUrl } from '../../shared'
+import { contentLooksLikeMath } from './markdownPolicy'
 
 export interface SafeMarkdownProps {
   content: string
   onOpenExternal(url: string): void
 }
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath]
-const REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [[
+const REMARK_GFM_ONLY = [remarkGfm]
+const REMARK_WITH_MATH = [remarkGfm, remarkMath]
+const REHYPE_KATEX: NonNullable<React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']> = [[
   rehypeKatex,
   {
     output: 'htmlAndMathml',
@@ -28,13 +30,16 @@ const REHYPE_PLUGINS: NonNullable<React.ComponentProps<typeof ReactMarkdown>['re
 /**
  * Renders model output without raw HTML or automatic remote image requests.
  * Links are handed to the main process only after an explicit HTTP(S) check.
+ * KaTeX plugins run only when content looks like math (conservative heuristic).
  */
 function SafeMarkdownView({ content, onOpenExternal }: SafeMarkdownProps): JSX.Element {
+  const enableMath = contentLooksLikeMath(content)
+
   return (
     <ReactMarkdown
       skipHtml
-      remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={REHYPE_PLUGINS}
+      remarkPlugins={enableMath ? REMARK_WITH_MATH : REMARK_GFM_ONLY}
+      rehypePlugins={enableMath ? REHYPE_KATEX : undefined}
       components={{
         a: ({ href, children }) =>
           href && isSafeExternalUrl(href) ? (

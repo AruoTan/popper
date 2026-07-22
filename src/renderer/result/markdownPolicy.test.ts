@@ -1,5 +1,6 @@
 import {
   RICH_MARKDOWN_SCALAR_LIMIT,
+  contentLooksLikeMath,
   hasLikelyMarkdownSyntax,
   shouldRenderRichMarkdown
 } from './markdownPolicy'
@@ -28,5 +29,28 @@ describe('rich Markdown policy', () => {
     const atLimit = `# ${'😀'.repeat(RICH_MARKDOWN_SCALAR_LIMIT - 2)}`
     expect(shouldRenderRichMarkdown(atLimit, RICH_MARKDOWN_SCALAR_LIMIT)).toBe(true)
     expect(shouldRenderRichMarkdown(`${atLimit}😀`, RICH_MARKDOWN_SCALAR_LIMIT + 1)).toBe(false)
+  })
+})
+
+describe('contentLooksLikeMath', () => {
+  it.each([
+    '# heading only',
+    '- list item',
+    '| A | B |\n| - | - |',
+    'price is $5 without a closing math delimiter',
+    'cost $12 alone'
+  ])('returns false without paired math delimiters: %s', (content) => {
+    expect(contentLooksLikeMath(content)).toBe(false)
+  })
+
+  it.each([
+    '$x^2$',
+    'inline $e^{i\\pi}+1=0$ formula',
+    '$$\n\\int_0^1 x^2\\,dx\n$$',
+    '$$a+b$$',
+    // conservative false positive: paired dollars that are not real math
+    'costs $5 and $10 today'
+  ])('returns true when delimiters look like math: %s', (content) => {
+    expect(contentLooksLikeMath(content)).toBe(true)
   })
 })
