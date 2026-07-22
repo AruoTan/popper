@@ -44,6 +44,13 @@ import {
   subscribeToActionEvents
 } from './actionEventStore'
 import { useAutoFollowOutput } from './autoFollowOutput'
+import {
+  appendUserTurn,
+  beginAssistantTurn,
+  isAskAction,
+  patchStreamingAssistant,
+  type TranscriptTurn
+} from './conversationTranscript'
 import { ResultOutput } from './ResultOutput'
 import { useResultContentOverflow } from './resultContentOverflow'
 import type { ResultSessionBootstrap } from './resultSessionBootstrap'
@@ -176,6 +183,7 @@ function ResultSessionApp({
   const [session, setSession] = useState<ResultSessionSnapshot | null>(null)
   const [pinned, setPinned] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
+  const [turns, setTurns] = useState<TranscriptTurn[]>([])
   const [translationTarget, setTranslationTarget] = useState<SupportedLocale | null>(null)
   const [activeModelRoute, setActiveModelRoute] = useState<ModelRoute | null>(null)
   const [routeSwitching, setRouteSwitching] = useState(false)
@@ -196,6 +204,8 @@ function ResultSessionApp({
   const bootstrapRetryInFlight = useRef(false)
   const disposedRef = useRef(false)
   const followUpComposing = useRef(false)
+  const askOriginalDefaulted = useRef(false)
+  const askSawStreaming = useRef(false)
   const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null)
   const latestResultState = useRef(state)
   latestResultState.current = state
@@ -211,6 +221,12 @@ function ResultSessionApp({
     () => settings?.actions.find((item) => item.id === (state.actionId ?? session?.actionId)),
     [session?.actionId, settings, state.actionId]
   )
+  const isAsk = isAskAction(action?.kind)
+  const followUpDisabled =
+    followUpSubmitting ||
+    state.status === 'streaming' ||
+    (!isAsk && state.status !== 'completed') ||
+    (isAsk && state.status !== 'completed' && state.status !== 'idle')
 
   const defaultModelRoute = useMemo<ModelRoute | null>(() => {
     if (!action || !('providerId' in action) || !action.providerId || !action.modelId) return null
@@ -343,16 +359,32 @@ function ResultSessionApp({
 
   const submitFollowUp = useCallback(async (): Promise<void> => {
     const question = followUpQuestion.trim()
-    if (!question || followUpSubmitting || state.status !== 'completed') return
+    const canSubmit =
+      isAsk
+        ? state.status === 'completed' || state.status === 'idle'
+        : state.status === 'completed'
+    if (!question || followUpSubmitting || !canSubmit) return
     setCommandMessage('')
     setFollowUpSubmitting(true)
     try {
       if (!window.textLens.continueAction) {
         throw new Error('当前版本不支持继续提问')
       }
+      if (isAsk) {
+        const turnId =
+          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `assistant-${Date.now()}`
+        askSawStreaming.current = false
+        setTurns((current) => beginAssistantTurn(appendUserTurn(current, question), turnId))
+      }
       const result = await window.textLens.continueAction(sessionId, question)
       if (!result.accepted) {
         setCommandMessage(result.message)
+        if (isAsk) {
+          askSawStreaming.current = false
+          setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
+        }
         return
       }
       const pending = { question, requestId: result.requestId ?? null }
@@ -361,10 +393,14 @@ function ResultSessionApp({
       reconcilePendingFollowUp(pending)
     } catch (error) {
       setCommandMessage(getErrorMessage(error, '无法继续提问'))
+      if (isAsk) {
+        askSawStreaming.current = false
+        setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
+      }
     } finally {
       setFollowUpSubmitting(false)
     }
-  }, [followUpQuestion, followUpSubmitting, reconcilePendingFollowUp, sessionId, state.status])
+  }, [followUpQuestion, followUpSubmitting, isAsk, reconcilePendingFollowUp, sessionId, state.status])
 
   useEffect(() => {
     let disposed = false
@@ -461,15 +497,45 @@ function ResultSessionApp({
   }, [bootstrap, consumeBootstrap])
 
   useEffect(() => {
+    setTurns([])
+    askOriginalDefaulted.current = false
+    askSawStreaming.current = false
+  }, [sessionId])
+
+  useEffect(() => {
+    if (!isAsk || askOriginalDefaulted.current) return
+    askOriginalDefaulted.current = true
+    setShowOriginal(true)
+  }, [isAsk, sessionId])
+
+  useEffect(() => {
     if (!state.requestId) return
     setCommandMessage('')
     setCopyComplete(false)
-    setShowOriginal(false)
+    if (!isAsk) setShowOriginal(false)
     if (copyResetTimer.current !== null) {
       window.clearTimeout(copyResetTimer.current)
       copyResetTimer.current = null
     }
-  }, [state.requestId])
+  }, [isAsk, state.requestId])
+
+  useEffect(() => {
+    if (!isAsk) return
+    if (state.status === 'streaming') {
+      askSawStreaming.current = true
+      setTurns((current) => patchStreamingAssistant(current, state.content, true))
+      return
+    }
+    if (
+      askSawStreaming.current &&
+      (state.status === 'completed' ||
+        state.status === 'cancelled' ||
+        state.status === 'error')
+    ) {
+      setTurns((current) => patchStreamingAssistant(current, state.content, false))
+      askSawStreaming.current = false
+    }
+  }, [isAsk, state.content, state.requestId, state.status])
 
   useEffect(() => {
     const pending = pendingFollowUp.current
@@ -757,7 +823,48 @@ function ResultSessionApp({
             </section>
           )}
 
-          {state.content ? (
+          {isAsk ? (
+            <>
+              {turns.length === 0 && state.status !== 'streaming' && state.status !== 'error' && (
+                <div className="result-placeholder">
+                  <span>已载入选中文本。请在下方输入问题。</span>
+                </div>
+              )}
+              {turns.map((turn) => (
+                <div
+                  key={turn.id}
+                  className={`result-turn result-turn--${turn.role}`}
+                  data-role={turn.role}
+                >
+                  <div className="result-turn__label">{turn.role === 'user' ? '你' : 'AI'}</div>
+                  {turn.role === 'user' ? (
+                    <div className="result-turn__content">{turn.content}</div>
+                  ) : turn.streaming || !turn.content ? (
+                    turn.content ? (
+                      <div className="result-turn__content stream-plain-text">{turn.content}</div>
+                    ) : (
+                      <div className="result-turn__waiting">
+                        <LoaderCircle className="result-spin" size={16} />
+                        <span>正在等待模型响应…</span>
+                      </div>
+                    )
+                  ) : (
+                    <article className="markdown-body result-turn__content">
+                      <ResultOutput
+                        requestKey={`${state.sessionGeneration ?? 'none'}:${state.requestGeneration ?? 'none'}:${turn.id}`}
+                        status="completed"
+                        content={turn.content}
+                        contentScalarCount={turn.content.length}
+                        contentRevision={1}
+                        revealCommitted={revealCommitted}
+                        onOpenExternal={openExternal}
+                      />
+                    </article>
+                  )}
+                </div>
+              ))}
+            </>
+          ) : state.content ? (
             <article className="markdown-body">
               <ResultOutput
                 requestKey={`${state.sessionGeneration ?? 'none'}:${state.requestGeneration ?? 'none'}:${state.requestId ?? 'none'}`}
@@ -799,12 +906,12 @@ function ResultSessionApp({
         <div className={`result-followup ${followUpExpanded ? 'result-followup--expanded' : ''}`}>
           <textarea
             aria-label="继续提问"
-            placeholder="输入继续提问"
+            placeholder={isAsk ? '输入问题，基于选中文本提问' : '输入继续提问'}
             title="Enter 发送，Shift+Enter 换行"
             rows={followUpExpanded ? 4 : 1}
             maxLength={20_000}
             value={followUpQuestion}
-            disabled={state.status !== 'completed' || followUpSubmitting}
+            disabled={followUpDisabled}
             onChange={(event) => setFollowUpQuestion(event.target.value)}
             onCompositionStart={() => { followUpComposing.current = true }}
             onCompositionEnd={() => { followUpComposing.current = false }}

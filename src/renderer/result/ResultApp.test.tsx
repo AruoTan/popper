@@ -670,6 +670,69 @@ describe('ResultApp window interactions', () => {
     await waitFor(() => expect(input).toHaveValue(''))
   })
 
+  it('enables ask input on empty completed session and renders multi-turn transcript', async () => {
+    const askSettings = settingsWithFontSize()
+    const askSession = resultSnapshot({
+      actionId: 'ask-ai',
+      status: 'completed',
+      content: '',
+      contentScalarCount: 0,
+      selection: {
+        selectionId: 'selection-ask',
+        text: '被选中的上下文',
+        sourceApp: { name: 'TextEdit', bundleId: 'com.apple.TextEdit' },
+        anchor: { kind: 'cursor', x: 100, y: 120 },
+        direction: 'unknown',
+        isFullscreen: false
+      }
+    })
+    const { continueAction, container } = await renderResult(askSession, askSettings)
+
+    expect(screen.getByText('已载入选中文本。请在下方输入问题。')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '隐藏原文' })).toBeInTheDocument()
+    expect(screen.getByText('被选中的上下文')).toBeInTheDocument()
+
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    expect(input).not.toBeDisabled()
+    expect(input).toHaveAttribute('placeholder', '输入问题，基于选中文本提问')
+
+    fireEvent.change(input, { target: { value: '这段话什么意思？' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(continueAction).toHaveBeenCalledWith('session-1', '这段话什么意思？')
+    })
+    expect(screen.getByText('这段话什么意思？')).toBeInTheDocument()
+    expect(container.querySelector('.result-turn--user')).toBeInTheDocument()
+    expect(container.querySelector('.result-turn--assistant')).toBeInTheDocument()
+
+    const store = await import('./actionEventStore')
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askSession,
+        requestId: 'request-followup',
+        status: 'streaming',
+        content: '这是',
+        contentScalarCount: countUnicodeScalars('这是')
+      })
+    })
+    expect(screen.getByText('这是')).toHaveClass('stream-plain-text')
+
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askSession,
+        requestId: 'request-followup',
+        status: 'completed',
+        content: '这是解释。',
+        contentScalarCount: countUnicodeScalars('这是解释。')
+      })
+    })
+    await waitFor(() => {
+      expect(screen.getByText('这是解释。')).toBeInTheDocument()
+    })
+    expect(screen.queryByText('已载入选中文本。请在下方输入问题。')).not.toBeInTheDocument()
+  })
+
   it('shows the selected provider and model in non-translation result headers', async () => {
     const summary = { ...completedSession, actionId: 'summary' }
     const { container } = await renderResult(summary)
