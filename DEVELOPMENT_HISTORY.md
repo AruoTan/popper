@@ -680,6 +680,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 
 - **Windows 划词兼容：** allowlist 应用在 UIA `IsPassword` 未知时允许剪贴板 Ctrl+C 回退；将 WPS / 微信 / QQ 等进程族视为相关目标以改善多进程 UIA；UIA 始终解析不到目标时走前台 Ctrl+C 路径；上述路径仅短时重试一次后 break，避免额外延迟。
 - **macOS 划词兼容：** 剪贴板 allowlist 匹配改为大小写不敏感；拓宽金山 / WPS 的 bundle id 与应用名识别，覆盖渠道变体。
-- **结果 Markdown：** 渲染前规范化模型输出——句末单换行拆成段落、识别中文列表标记（`1、` / `•`）、在块边界补空行；表格行与同级列表项保持紧凑、代码围栏内容不改动；normalize / math 检测 / 组件 memo 化；段落与列表 CSS 节奏收紧，thinking 字号略小于正文。
+- **结果 Markdown：** 渲染前规范化模型输出——句末单换行拆成段落、识别中文列表标记（`1、` / `•`）、在块边界补空行；表格行与同级列表项保持紧凑、代码围栏内容不改动；normalize / math 检测 / 组件 memo 化；段落与列表 CSS 节奏收紧。
+- **思考区字号：** 思考正文不再挂 `stream-plain-text`（该规则与答案同字号且写在后面，会盖掉缩小设置）；`.result-thinking__body` 使用 `max(11px, calc(var(--result-font-size) * 0.82))`，默认约 11.5px，明显小于答案正文。
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.54；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.54。
