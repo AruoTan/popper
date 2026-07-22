@@ -18,3 +18,4 @@ src-tauri/target/
 portable-dev-sources/
 .tmp-textlens-start-diagnostic/
 .superpowers/
+.worktrees/
