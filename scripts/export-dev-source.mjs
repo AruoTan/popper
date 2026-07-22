@@ -29,7 +29,7 @@ const includeEntries = [
   'LICENSE.selection-hook',
   'README.md',
   'THIRD_PARTY_NOTICES.md',
-  'DEVELOPMENT_HISTORY_0.3.16-0.3.38.md',
+  'DEVELOPMENT_HISTORY.md',
   'apps',
   'assets',
   'package.json',
@@ -178,7 +178,7 @@ writeFileSync(join(outputDirectory, 'PORTABLE_DEV_SOURCE.md'), manifest, 'utf8')
 for (const [entry, kind] of [
   ['apps', 'directory'],
   ['assets', 'directory'],
-  ['DEVELOPMENT_HISTORY_0.3.16-0.3.38.md', 'file'],
+  ['DEVELOPMENT_HISTORY.md', 'file'],
   ['src', 'directory'],
   ['src-tauri', 'directory'],
   ['package.json', 'file'],
