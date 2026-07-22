@@ -462,35 +462,34 @@ body,
   gap: 10px;
   align-items: center;
   justify-content: center;
-  min-height: 230px;
+  min-height: 200px;
   color: var(--text-tertiary);
-  font-size: max(13px, calc(var(--result-font-size, 14px) * 0.93));
+  /* Between former title (0.93/13px) and hint (0.78/11px). */
+  font-size: max(12px, calc(var(--result-font-size, 14px) * 0.86));
   text-align: center;
-  animation: result-fade-in 220ms ease-out;
+  animation: result-fade-in 200ms ease-out;
 }
 
 .result-placeholder--waiting {
-  gap: 12px;
+  gap: 10px;
+  min-height: 180px;
 }
 
-.result-placeholder__hint {
-  max-width: 240px;
-  color: var(--text-tertiary);
-  font-size: max(11px, calc(var(--result-font-size, 14px) * 0.78));
-  line-height: 1.45;
-  opacity: 0.9;
+.result-placeholder__label {
+  line-height: 1.4;
+  letter-spacing: 0.01em;
 }
 
 .result-waiting-dots {
   display: inline-flex;
-  gap: 6px;
+  gap: 5px;
   align-items: center;
-  height: 14px;
+  height: 12px;
 }
 
 .result-waiting-dots span {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: color-mix(in srgb, var(--accent) 75%, var(--text-tertiary));
   animation: result-dot-bounce 1.05s ease-in-out infinite;
@@ -504,36 +503,39 @@ body,
   animation-delay: 0.28s;
 }
 
-/* Collapsible chain-of-thought above the answer body. */
+/* Collapsible chain-of-thought above the answer body. Collapsed chrome is tight. */
 .result-thinking {
-  margin: 0 0 14px;
-  padding: 9px 12px;
-  border-radius: 11px;
-  background: color-mix(in srgb, var(--text, #0f172a) 3.5%, transparent);
+  margin: 0 0 10px;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text, #0f172a) 3%, transparent);
   border: 1px solid color-mix(in srgb, var(--border, #e2e8f0) 80%, transparent);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--text, #0f172a) 3%, transparent);
+  box-shadow: none;
   transition:
-    border-color 180ms ease,
-    background 180ms ease,
-    box-shadow 180ms ease;
-  animation: result-fade-in 200ms ease-out;
+    border-color 160ms ease,
+    background 160ms ease,
+    padding 160ms ease;
+  animation: result-fade-in 180ms ease-out;
+}
+
+.result-thinking--open {
+  padding: 6px 10px;
 }
 
 .result-thinking--live {
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 42%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 38%, transparent);
 }
 
 .result-thinking__toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  min-height: 28px;
+  min-height: 20px;
   margin: 0;
-  padding: 2px 0;
+  padding: 1px 0;
   border: 0;
   background: transparent;
   color: var(--text-secondary, #64748b);
@@ -542,63 +544,55 @@ body,
   font-weight: 600;
   cursor: pointer;
   text-align: left;
-  border-radius: 6px;
+  border-radius: 5px;
 }
 
 .result-thinking__toggle:hover {
   color: var(--text, #0f172a);
 }
 
-.result-thinking__toggle:hover .result-thinking__hint {
-  opacity: 1;
+.result-thinking__toggle:hover .result-thinking__meta {
+  color: var(--text-secondary, #64748b);
 }
 
 .result-thinking__toggle:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent, #2563eb) 55%, transparent);
-  outline-offset: 2px;
+  outline-offset: 1px;
 }
 
 .result-thinking__title {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
 }
 
 .result-thinking__meta {
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 4px;
   align-items: center;
   color: var(--text-tertiary);
-}
-
-.result-thinking__hint {
-  font-size: 11px;
-  font-weight: 500;
-  opacity: 0.75;
+  opacity: 0.7;
 }
 
 .result-thinking__badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 28px;
-  padding: 1px 6px;
+  min-width: 26px;
+  height: 16px;
+  padding: 0 6px;
   color: var(--accent);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.02em;
+  line-height: 1;
   background: var(--accent-soft);
   border-radius: 999px;
 }
 
-.result-thinking__pulse {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
+.result-thinking__badge--live {
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent);
   animation: result-thinking-pulse 1.4s ease-out infinite;
 }
 
@@ -612,17 +606,17 @@ body,
 }
 
 .result-thinking__body {
-  margin-top: 8px;
-  max-height: min(40vh, 280px);
+  margin-top: 6px;
+  max-height: min(36vh, 240px);
   overflow: auto;
-  padding-top: 8px;
+  padding-top: 6px;
   border-top: 1px dashed color-mix(in srgb, var(--border) 85%, transparent);
   color: var(--text-secondary, #64748b);
   font-size: max(12px, calc(var(--result-font-size, 14px) * 0.9));
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  animation: result-fade-in 160ms ease-out;
+  animation: result-fade-in 150ms ease-out;
 }
 
 .markdown-body {
@@ -1198,7 +1192,7 @@ body,
   }
 
   .result-waiting-dots span,
-  .result-thinking__pulse,
+  .result-thinking__badge--live,
   .result-placeholder,
   .result-thinking,
   .result-thinking__body,

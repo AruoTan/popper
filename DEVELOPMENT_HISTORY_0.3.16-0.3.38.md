@@ -1,15 +1,15 @@
-# TextLens 从 macOS 0.3.16 到 0.3.52 的开发记录
+# TextLens 从 macOS 0.3.16 到 0.3.53 的开发记录
 
 整理日期：2026-07-22  
-版本范围：macOS 0.3.16 至 TextLens 0.3.52
+版本范围：macOS 0.3.16 至 TextLens 0.3.53
 
 ## 文档说明
 
-本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.52 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
+本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.53 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
 
 这段开发并不是一次简单的平台移植。macOS 版本依赖 Accessibility API、Event Tap、Core Graphics 和 AppKit；Windows 需要重新处理 UI Automation、Win32 输入 Hook、OLE 剪贴板、WebView2、混合 DPI、窗口激活规则和通知区域生命周期。项目始终保留同一套 React renderer、设置结构、动作服务、模型请求和流式输出，仅在必须依赖操作系统的部分使用平台实现。
 
-版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.52**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
+版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.53**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
 
 ## 开发阶段概览
 
@@ -662,3 +662,14 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **结果 Markdown：** 结果窗 Markdown 样式与明暗主题兼容性增强；仅在内容疑似含公式时启用 remark-math / rehype-katex。
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.52；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.52。
+
+## 0.3.53：结果后重划工具栏 + 选择性模型获取 + UI 打磨
+
+（整理日期：2026-07-22）
+
+- **划词工具栏可靠性：** 结果关闭后延迟清除宿主选区，避免与下一次手势竞态；宿主清除完成后再释放 same-text 抑制，同一文本也可重新弹出工具栏；AI 结果展示不再强制把焦点交还来源应用，避免失焦关闭结果窗失效。
+- **结果内再划词 dismiss：** 结果正文再次划词弹出工具栏后，在结果框内点击工具栏以外区域应与外部点击一致地隐藏工具栏、且不关闭结果窗。新增 `hide_result_selection` IPC（仅清除来自该结果会话的选区并 force-hide 工具栏，reason `resultClick`）；结果窗 `pointerdown` / 无选区 `pointerup` 调用；macOS `selection_bridge` 对本进程 mouseDown/scroll 仍 enqueue dismiss（不捕获选区；点在工具栏上由 runtime 忽略）。
+- **服务商模型：** 新增 `list_provider_models`（只读拉取，不写设置）；设置页「获取模型」→ 多选合并到草稿列表，支持纵向拖拽排序；不再用整表同步覆盖已选模型。
+- **UI 打磨：** 设置页分区说明与脏保存强调更清晰；结果窗单行等待态、thinking 仅「思考」徽章 + 自动展开、停止/复制等微交互与减少动效路径；保留 TextLens 原生 token，不引入外来 AI 紫配色。
+- **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.53；`pnpm export:dev-source` 导出可迁移源码包。
+- 产品版本升至 0.3.53。

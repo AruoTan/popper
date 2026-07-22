@@ -2689,6 +2689,39 @@ pub fn show_result_selection(
     Ok(())
 }
 
+/// Dismiss a toolbar that was opened from a selection inside this result window.
+///
+/// Clicks inside TextLens webviews (especially macOS, where the native hook
+/// ignores own-process targets) do not generate a global outside-click dismiss.
+/// The result renderer calls this on pointer-down so in-window clicks match the
+/// normal “click outside toolbar → hide” behavior without closing the result.
+#[tauri::command]
+pub fn hide_result_selection(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    let Some(selection_id) = state.clear_current_selection_from_result(&session_id) else {
+        return Ok(());
+    };
+    let _ = state
+        .windows
+        .hide_toolbar_if_selection(&app, &selection_id);
+    // Force-hide matches the native dismiss path when scoped hide is a no-op.
+    state.windows.hide_toolbar(&app);
+    let _ = app.emit_to(
+        TOOLBAR_LABEL,
+        TOOLBAR_DISMISSED_EVENT,
+        ToolbarDismissedPayload {
+            selection_id: Some(selection_id),
+            reason: "resultClick".to_owned(),
+        },
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub fn cancel_action(
     app: AppHandle,

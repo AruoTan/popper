@@ -4043,7 +4043,7 @@ dependencies = [
 
 [[package]]
 name = "textlens"
-version = "0.3.52"
+version = "0.3.53"
 dependencies = [
  "base64 0.22.1",
  "bytes",

@@ -117,6 +117,8 @@ export interface WindowTextLensApi {
   setResultPinned?(sessionId: string, pinned: boolean): Promise<boolean | void>
   setResultPointerInside?(sessionId: string, inside: boolean): Promise<void>
   showResultSelection?(sessionId: string, text: string, cursor: Point): Promise<void>
+  /** Result window only: dismiss toolbar opened from an in-result selection. */
+  hideResultSelection?(sessionId: string): Promise<void>
   cancelAction(sessionId?: string): Promise<void>
   retryAction(
     sessionId?: string,

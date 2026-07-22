@@ -1230,7 +1230,22 @@ struct TextLensSelectionMonitor {
 
     void handleEvent(CGEventType type, CGEventRef event) {
         const int64_t targetPid = CGEventGetIntegerValueField(event, kCGEventTargetUnixProcessID);
+        // Clicks/scrolls targeting TextLens itself must still dismiss an open
+        // toolbar (e.g. re-select toolbar over the result webview). Runtime
+        // ignores dismiss points that land on the no-activate toolbar window.
+        // Never schedule selection capture for the own process.
         if (targetPid == getpid()) {
+            if (type == kCGEventLeftMouseDown ||
+                type == kCGEventRightMouseDown ||
+                type == kCGEventOtherMouseDown) {
+                const CGPoint point = CGEventGetLocation(event);
+                captureGeneration.fetch_add(1, std::memory_order_acq_rel);
+                enqueueDismiss("mouseDown", point, targetPid);
+            } else if (type == kCGEventScrollWheel) {
+                const CGPoint point = CGEventGetLocation(event);
+                captureGeneration.fetch_add(1, std::memory_order_acq_rel);
+                enqueueDismiss("scroll", point, targetPid);
+            }
             return;
         }
         const CGPoint point = CGEventGetLocation(event);

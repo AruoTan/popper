@@ -146,6 +146,7 @@ pub fn run() {
             runtime::set_result_pinned,
             runtime::set_result_pointer_inside,
             runtime::show_result_selection,
+            runtime::hide_result_selection,
             runtime::cancel_action,
             runtime::retry_action,
             runtime::continue_action,

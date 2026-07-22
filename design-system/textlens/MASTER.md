@@ -17,7 +17,7 @@
 | Surface | Goals |
 |---------|--------|
 | Settings | Progressive disclosure, numbered provider setup, dirty save emphasis, section enter motion |
-| Result | Streaming wait affordance, live thinking auto-expand, stop emphasis, reduced-motion safe |
+| Result | Single-line wait label + dots; badge-only thinking chrome (auto-expand live); stop emphasis; reduced-motion safe |
 
 ## Anti-patterns avoided
 

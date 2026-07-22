@@ -98,6 +98,7 @@ async function renderResult(
   } = {}
 ) {
   const showResultSelection = vi.fn().mockResolvedValue(undefined)
+  const hideResultSelection = vi.fn().mockResolvedValue(undefined)
   const continueAction = vi.fn().mockResolvedValue({
     accepted: true,
     requestId: 'request-followup'
@@ -118,6 +119,7 @@ async function renderResult(
     setResultPinned: vi.fn().mockResolvedValue(true),
     setResultPointerInside: vi.fn().mockResolvedValue(undefined),
     showResultSelection,
+    hideResultSelection,
     cancelAction: vi.fn().mockResolvedValue(undefined),
     retryAction,
     continueAction,
@@ -155,6 +157,7 @@ async function renderResult(
     ...view,
     api,
     showResultSelection,
+    hideResultSelection,
     continueAction,
     retryAction,
     prepareResultReveal,
@@ -842,6 +845,47 @@ describe('ResultApp window interactions', () => {
     expect(container.querySelector('.result-content')).toHaveTextContent(completedSession.content)
   })
 
+  it('dismisses the in-result selection toolbar when clicking elsewhere inside the result window', async () => {
+    const { container, hideResultSelection, showResultSelection } = await renderResult()
+
+    // Any primary pointer-down inside the result chrome should dismiss a
+    // toolbar that was opened from a prior in-result selection (macOS does not
+    // deliver own-process outside-click dismiss to the native hook).
+    fireEvent.pointerDown(container.querySelector('.result-header')!, {
+      button: 0,
+      isPrimary: true
+    })
+    expect(hideResultSelection).toHaveBeenCalledWith('session-1')
+
+    hideResultSelection.mockClear()
+    fireEvent.pointerDown(container.querySelector('.result-content')!, {
+      button: 0,
+      isPrimary: true
+    })
+    expect(hideResultSelection).toHaveBeenCalledWith('session-1')
+
+    // Non-primary / right-click must not dismiss.
+    hideResultSelection.mockClear()
+    fireEvent.pointerDown(container.querySelector('.result-content')!, {
+      button: 2,
+      isPrimary: false
+    })
+    expect(hideResultSelection).not.toHaveBeenCalled()
+
+    // pointer-up with no selectable text also dismisses (covers cleared selection).
+    hideResultSelection.mockClear()
+    window.getSelection()?.removeAllRanges()
+    fireEvent.pointerUp(container.querySelector('.result-content')!, {
+      button: 0,
+      isPrimary: true,
+      screenX: 40,
+      screenY: 50
+    })
+    await waitForAnimationFrame()
+    expect(hideResultSelection).toHaveBeenCalledWith('session-1')
+    expect(showResultSelection).not.toHaveBeenCalled()
+  })
+
   it('auto-expands thinking while reasoning and collapses on manual toggle', async () => {
     await renderResult(
       resultSnapshot({
@@ -853,7 +897,9 @@ describe('ResultApp window interactions', () => {
     )
 
     expect(screen.getByTestId('result-thinking')).toBeInTheDocument()
-    // While the model is still thinking (no answer yet), expand so users see progress.
+    // Badge-only chrome (no「思考过程」); live state still auto-expands body.
+    expect(screen.queryByText('思考过程')).not.toBeInTheDocument()
+    expect(screen.getByText('思考')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /思考中/ })).toHaveAttribute(
       'aria-expanded',
       'true'
@@ -866,6 +912,19 @@ describe('ResultApp window interactions', () => {
       'false'
     )
     expect(screen.queryByText('先拆解题意，再给出解释。')).not.toBeInTheDocument()
+  })
+
+  it('shows a single-line waiting label without the streaming-hint subtitle', async () => {
+    await renderResult(
+      resultSnapshot({
+        status: 'streaming',
+        content: '',
+        contentScalarCount: 0
+      })
+    )
+
+    expect(screen.getByText('正在等待模型响应…')).toBeInTheDocument()
+    expect(screen.queryByText(/收到首字后会/)).not.toBeInTheDocument()
   })
 
   it('uses stop while streaming and keeps error/loading states operable', async () => {

@@ -205,72 +205,66 @@ function ResultStreamBody({
  * Thinking panel: auto-expands while the model is still reasoning (no answer yet)
  * so users see progress; collapses once an answer arrives unless the user toggled.
  * Click always wins after the first manual interaction.
+ *
+ * Chrome is intentionally minimal: only the accent「思考」badge + chevron.
  */
 function ThinkingPanel(): JSX.Element | null {
   const thinkingContent = useResultField((state) => state.thinkingContent)
   const status = useResultField((state) => state.status)
+  const requestGeneration = useResultField((state) => state.requestGeneration)
   const hasAnswer = useResultField((state) => state.content.length > 0)
   const [expanded, setExpanded] = useState(false)
   const userToggledRef = useRef(false)
 
-  const streaming = status === 'streaming' && !hasAnswer
+  const live = status === 'streaming' && !hasAnswer
+  const hasThinking = thinkingContent.length > 0
 
-  // New request clears thinking → reset collapse + user preference.
+  // New request (retry / continue / model switch) always restarts collapse preference.
   useEffect(() => {
-    if (thinkingContent.length === 0) {
-      setExpanded(false)
-      userToggledRef.current = false
-    }
-  }, [thinkingContent])
+    setExpanded(false)
+    userToggledRef.current = false
+  }, [requestGeneration])
 
-  // Auto open while reasoning, auto close when the answer starts (unless user toggled).
+  // Auto open while reasoning; auto close when the answer starts (unless user toggled).
   useEffect(() => {
-    if (thinkingContent.length === 0 || userToggledRef.current) return
-    if (streaming) setExpanded(true)
+    if (!hasThinking || userToggledRef.current) return
+    if (live) setExpanded(true)
     else if (hasAnswer) setExpanded(false)
-  }, [thinkingContent.length, streaming, hasAnswer])
+  }, [hasThinking, live, hasAnswer])
 
-  if (!thinkingContent) return null
+  if (!hasThinking) return null
 
   return (
     <section
-      className={`result-thinking ${streaming ? 'result-thinking--live' : ''} ${expanded ? 'result-thinking--open' : ''}`}
+      className={`result-thinking ${live ? 'result-thinking--live' : ''} ${expanded ? 'result-thinking--open' : ''}`}
       data-testid="result-thinking"
-      aria-label="思考过程"
     >
       <button
         type="button"
         className="result-thinking__toggle"
         aria-expanded={expanded}
+        aria-label={live ? '思考中，点击展开或收起' : '思考，点击展开或收起'}
         onClick={() => {
           userToggledRef.current = true
           setExpanded((current) => !current)
         }}
       >
         <span className="result-thinking__title">
-          {streaming ? (
-            <>
-              <span className="result-thinking__pulse" aria-hidden="true" />
-              <span>思考中…</span>
-            </>
-          ) : (
-            <>
-              <span className="result-thinking__badge" aria-hidden="true">思考</span>
-              <span>思考过程</span>
-            </>
-          )}
-        </span>
-        <span className="result-thinking__meta">
-          <span className="result-thinking__hint">
-            {expanded ? '收起' : '展开'}
+          <span
+            className={`result-thinking__badge ${live ? 'result-thinking__badge--live' : ''}`}
+            aria-hidden="true"
+          >
+            思考
           </span>
-          <ChevronDown size={14} className={expanded ? 'is-expanded' : ''} />
+        </span>
+        <span className="result-thinking__meta" aria-hidden="true">
+          <ChevronDown size={12} className={expanded ? 'is-expanded' : ''} />
         </span>
       </button>
       {expanded && (
         <div className="result-thinking__body stream-plain-text">
           {thinkingContent}
-          {streaming && <span className="stream-caret" aria-hidden="true" />}
+          {live && <span className="stream-caret" aria-hidden="true" />}
         </div>
       )}
     </section>
@@ -813,6 +807,25 @@ function ResultSessionApp({
     })
   }
 
+  /**
+   * In-result clicks never reach the native outside-click dismiss path on
+   * macOS (own-process events are filtered). Mirror external “click outside
+   * toolbar → hide” on pointer-down; pointer-up may re-present if text is
+   * still selected in the result body.
+   */
+  const dismissResultSelectionToolbar = useCallback((): void => {
+    if (!window.textLens.hideResultSelection) return
+    runDetached(window.textLens.hideResultSelection(sessionId), {
+      scope: 'result',
+      operation: 'hide-result-selection'
+    })
+  }, [sessionId])
+
+  const handleResultPointerDown = (event: ReactPointerEvent<HTMLElement>): void => {
+    if (event.button !== 0 || !event.isPrimary) return
+    dismissResultSelectionToolbar()
+  }
+
   const showSelectionToolbar = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return
     const cursor = { x: event.screenX, y: event.screenY }
@@ -820,7 +833,13 @@ function ResultSessionApp({
     selectionFrame.current = window.requestAnimationFrame(() => {
       selectionFrame.current = null
       const text = selectedTextWithin(contentRef.current, window.getSelection())
-      if (!text || !window.textLens.showResultSelection) return
+      if (!text || !window.textLens.showResultSelection) {
+        // Click cleared the selection or landed outside selectable text —
+        // ensure any result-sourced toolbar is gone (pointer-down may have
+        // already done this; this covers edge cases / older backends).
+        dismissResultSelectionToolbar()
+        return
+      }
       void window.textLens
         .showResultSelection(sessionId, text, cursor)
         .catch((error: unknown) => {
@@ -874,6 +893,7 @@ function ResultSessionApp({
       style={style}
       onPointerEnter={pointerEnter}
       onPointerLeave={pointerLeave}
+      onPointerDown={handleResultPointerDown}
     >
       {windowsRenderer && RESULT_RESIZE_DIRECTIONS.map((direction) => (
         <div
@@ -1075,13 +1095,10 @@ function ResultSessionApp({
                         <span />
                         <span />
                       </span>
-                      <span>正在等待模型响应…</span>
-                      <span className="result-placeholder__hint">
-                        收到首字后会实时流式显示
-                      </span>
+                      <span className="result-placeholder__label">正在等待模型响应…</span>
                     </>
                   ) : (
-                    <span>正在准备结果…</span>
+                    <span className="result-placeholder__label">正在准备结果…</span>
                   )}
                 </div>
               )}

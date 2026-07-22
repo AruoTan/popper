@@ -416,6 +416,11 @@ describe('Tauri renderer bridge', () => {
       cursor: { x: 120, y: 240 }
     })
 
+    await window.textLens.hideResultSelection?.('session-1')
+    expect(invokeMock).toHaveBeenCalledWith('hide_result_selection', {
+      sessionId: 'session-1'
+    })
+
     await window.textLens.resetResultSize?.()
     expect(invokeMock).toHaveBeenCalledWith('reset_result_size')
 

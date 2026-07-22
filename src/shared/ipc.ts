@@ -30,6 +30,7 @@ export const TAURI_COMMANDS = {
   setResultPinned: 'set_result_pinned',
   setResultPointerInside: 'set_result_pointer_inside',
   showResultSelection: 'show_result_selection',
+  hideResultSelection: 'hide_result_selection',
   cancelAction: 'cancel_action',
   retryAction: 'retry_action',
   continueAction: 'continue_action',

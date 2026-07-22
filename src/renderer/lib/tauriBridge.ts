@@ -404,6 +404,11 @@ export function installTauriBridge(): void {
     async showResultSelection(sessionId: string, text: string, cursor: Point) {
       await invoke(TAURI_COMMANDS.showResultSelection, { sessionId, text, cursor })
     },
+    async hideResultSelection(sessionId: string) {
+      await invoke(TAURI_COMMANDS.hideResultSelection, {
+        sessionId: requiredSessionId(sessionId)
+      })
+    },
     async cancelAction(sessionId?: string) {
       await invoke(TAURI_COMMANDS.cancelAction, { sessionId: requiredSessionId(sessionId) })
     },
