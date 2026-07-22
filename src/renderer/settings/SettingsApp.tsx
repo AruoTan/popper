@@ -22,8 +22,7 @@ import {
   SortableContext,
   sortableKeyboardCoordinates,
   useSortable,
-  verticalListSortingStrategy,
-  rectSortingStrategy
+  verticalListSortingStrategy
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import {
@@ -66,6 +65,7 @@ import { ActionIcon } from '../components/ActionIcon'
 import { runDetached } from '../lib/asyncEffects'
 import { getErrorMessage } from '../lib/errors'
 import { CustomActionDialog, type ActionEditorValue } from './CustomActionDialog'
+import { mergeProviderModelsOnPick } from './providerModels'
 import {
   buildSettingsUpdate,
   moveActionToZone,
@@ -84,6 +84,13 @@ import {
 
 type Operation = string | null
 type Banner = { kind: 'success' | 'error'; text: string } | null
+type ModelPickerState = {
+  providerId: string
+  providerName: string
+  previous: ProviderModel[]
+  remoteModels: ProviderModel[]
+  checkedIds: Set<string>
+}
 type SettingsSectionId =
   | 'general'
   | 'providers'
@@ -220,6 +227,7 @@ export function SettingsApp(): JSX.Element {
   const [editor, setEditor] = useState<ActionDefinition | 'new' | null>(null)
   const [providerPendingDelete, setProviderPendingDelete] = useState<PublicProviderSettings | null>(null)
   const [actionPendingDelete, setActionPendingDelete] = useState<ActionDefinition | null>(null)
+  const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null)
   const [quitConfirmationOpen, setQuitConfirmationOpen] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('general')
@@ -736,8 +744,8 @@ export function SettingsApp(): JSX.Element {
     }
   }
 
-  const syncModels = async (provider: PublicProviderSettings): Promise<void> => {
-    setOperation(`sync:${provider.id}`)
+  const openModelPicker = async (provider: PublicProviderSettings): Promise<void> => {
+    setOperation(`fetch:${provider.id}`)
     setBanner(null)
     const saved = await persist()
     if (!saved) {
@@ -745,44 +753,63 @@ export function SettingsApp(): JSX.Element {
       return
     }
     try {
-      if (window.textLens.syncProviderModels) {
-        const result = await window.textLens.syncProviderModels(provider.id)
-        if (!result.ok) {
-          setBanner({ kind: 'error', text: result.message })
-        } else {
-          const refreshed = result.settings ?? await window.textLens.getSettings()
-          setDraft(normalizePublicSettings(refreshed))
-          setBanner({ kind: 'success', text: `已同步 ${result.models.length} 个模型` })
-        }
-      } else {
-        const result = window.textLens.testProviderConnection
+      const result = window.textLens.listProviderModels
+        ? await window.textLens.listProviderModels(provider.id)
+        : window.textLens.testProviderConnection
           ? await window.textLens.testProviderConnection(provider.id)
           : window.textLens.testConnection
             ? await window.textLens.testConnection()
-            : { ok: false as const, message: '当前后端尚未提供模型同步接口' }
-        if (!result.ok) {
-          setBanner({ kind: 'error', text: result.message })
-        } else {
-          const models = normalizedModels(result.models)
-          const current = saved.providers.find((candidate) => candidate.id === provider.id)
-          if (!current) throw new Error('服务商已不存在')
-          const next = normalizePublicSettings({
-            ...saved,
-            providers: saved.providers.map((candidate) =>
-              candidate.id === provider.id ? { ...candidate, models } : candidate
-            )
-          })
-          setDraft(next)
-          dirtyRef.current = true
-          setDirty(true)
-          setBanner({ kind: 'success', text: `已读取 ${models.length} 个模型，请保存设置` })
-        }
+            : { ok: false as const, message: '当前后端尚未提供模型列表接口' }
+      if (!result.ok) {
+        setBanner({ kind: 'error', text: result.message })
+        return
       }
+      const remoteModels = normalizedModels(result.models)
+      const current = draft?.providers.find((candidate) => candidate.id === provider.id)
+        ?? saved.providers.find((candidate) => candidate.id === provider.id)
+      if (!current) throw new Error('服务商已不存在')
+      setModelPicker({
+        providerId: provider.id,
+        providerName: provider.name,
+        previous: current.models.map((model) => ({ ...model })),
+        remoteModels,
+        checkedIds: new Set(current.models.map((model) => model.id))
+      })
     } catch (error) {
-      setBanner({ kind: 'error', text: getErrorMessage(error, '同步模型失败') })
+      setBanner({ kind: 'error', text: getErrorMessage(error, '获取模型失败') })
     } finally {
       setOperation(null)
     }
+  }
+
+  const applyModelPicker = (checkedIds: ReadonlySet<string>): void => {
+    if (!modelPicker) return
+    const { providerId, previous, remoteModels } = modelPicker
+    const nextModels = mergeProviderModelsOnPick({
+      previous,
+      remote: remoteModels,
+      checkedIds
+    })
+    const removedIds = previous
+      .map((model) => model.id)
+      .filter((id) => !nextModels.some((model) => model.id === id))
+    changeDraft((current) => {
+      let next = current
+      for (const modelId of removedIds) {
+        next = removeProviderModelFromSettings(next, providerId, modelId)
+      }
+      return {
+        ...next,
+        providers: next.providers.map((provider) =>
+          provider.id === providerId ? { ...provider, models: nextModels } : provider
+        )
+      }
+    })
+    setModelPicker(null)
+    setBanner({
+      kind: 'success',
+      text: `已选择 ${nextModels.length} 个模型，请保存设置`
+    })
   }
 
   const reorderProviderModels = (
@@ -1178,8 +1205,8 @@ export function SettingsApp(): JSX.Element {
                 <div className="provider-actions">
                   <button className="button" type="button" disabled={busy} onClick={() => void testProvider(provider)}>
                     {operation === `test:${provider.id}` && <LoaderCircle className="settings-spin" size={15} />}测试连接</button>
-                  <button className="button" type="button" disabled={busy} onClick={() => void syncModels(provider)}>
-                    {operation === `sync:${provider.id}` ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}同步模型</button>
+                  <button className="button" type="button" disabled={busy} onClick={() => void openModelPicker(provider)}>
+                    {operation === `fetch:${provider.id}` ? <LoaderCircle className="settings-spin" size={15} /> : <RefreshCw size={15} />}获取模型</button>
                   <button className="button button--danger" type="button" disabled={busy || !provider.keyConfigured}
                     onClick={() => void clearProviderKey(provider)}>清除密钥</button>
                 </div>
@@ -1203,11 +1230,11 @@ export function SettingsApp(): JSX.Element {
                   >
                     <SortableContext
                       items={provider.models.map((model) => model.id)}
-                      strategy={rectSortingStrategy}
+                      strategy={verticalListSortingStrategy}
                     >
-                      <div className="model-chip-list" role="list">
+                      <div className="model-row-list" role="list">
                         {provider.models.map((model) => (
-                          <SortableModelChip
+                          <SortableModelRow
                             key={model.id}
                             model={model}
                             dragging={draggingModelId === model.id}
@@ -1217,7 +1244,7 @@ export function SettingsApp(): JSX.Element {
                           />
                         ))}
                         {provider.models.length === 0 && (
-                          <span className="model-empty">尚无模型，可同步或手动添加。</span>
+                          <span className="model-empty">尚无模型，可获取或手动添加。</span>
                         )}
                       </div>
                     </SortableContext>
@@ -1439,6 +1466,16 @@ export function SettingsApp(): JSX.Element {
           onSave={() => void saveAndQuit()}
         />
       )}
+      {modelPicker && (
+        <ModelPickerDialog
+          providerName={modelPicker.providerName}
+          previous={modelPicker.previous}
+          remoteModels={modelPicker.remoteModels}
+          initialCheckedIds={modelPicker.checkedIds}
+          onCancel={() => setModelPicker(null)}
+          onApply={applyModelPicker}
+        />
+      )}
     </main>
   )
 }
@@ -1630,7 +1667,7 @@ function ActionZone({ title, count, actions, enabled, draggingId, onEdit, onDele
 }
 
 
-function SortableModelChip({ model, dragging, onRemove }: {
+function SortableModelRow({ model, dragging, onRemove }: {
   model: ProviderModel
   dragging: boolean
   onRemove: () => void
@@ -1648,16 +1685,15 @@ function SortableModelChip({ model, dragging, onRemove }: {
     transform: CSS.Transform.toString(transform),
     transition
   }
-  const title =
-    model.name !== model.id ? `${model.name} (${model.id})` : model.id
+  const showId = model.name !== model.id
 
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`model-chip ${dragging || isDragging ? 'is-dragging' : ''}`}
+      className={`model-row ${dragging || isDragging ? 'is-dragging' : ''}`}
       role="listitem"
-      title={title}
+      data-model-id={model.id}
     >
       <button
         ref={setActivatorNodeRef}
@@ -1670,15 +1706,153 @@ function SortableModelChip({ model, dragging, onRemove }: {
       >
         <GripVertical size={14} aria-hidden="true" />
       </button>
-      <span className="model-chip__name">{model.name}</span>
+      <div className="model-row__body">
+        <span className="model-row__name">{model.name}</span>
+        {showId && <span className="model-row__id">{model.id}</span>}
+      </div>
       <button
         type="button"
-        className="model-chip__remove"
+        className="model-row__remove"
         aria-label={`移除模型 ${model.name}`}
         onClick={onRemove}
       >
         <X size={12} />
       </button>
+    </div>
+  )
+}
+
+function ModelPickerDialog({
+  providerName,
+  previous,
+  remoteModels,
+  initialCheckedIds,
+  onCancel,
+  onApply
+}: {
+  providerName: string
+  previous: readonly ProviderModel[]
+  remoteModels: readonly ProviderModel[]
+  initialCheckedIds: ReadonlySet<string>
+  onCancel: () => void
+  onApply: (checkedIds: ReadonlySet<string>) => void
+}): JSX.Element {
+  const [checkedIds, setCheckedIds] = useState(() => new Set(initialCheckedIds))
+  const [query, setQuery] = useState('')
+
+  const listModels = useMemo(() => {
+    const byId = new Map<string, ProviderModel>()
+    for (const model of remoteModels) {
+      if (!byId.has(model.id)) byId.set(model.id, model)
+    }
+    // Manual / previous-only models stay visible so they can be unchecked.
+    for (const model of previous) {
+      if (!byId.has(model.id)) byId.set(model.id, model)
+    }
+    return [...byId.values()]
+  }, [previous, remoteModels])
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return listModels
+    return listModels.filter((model) =>
+      model.id.toLowerCase().includes(needle) || model.name.toLowerCase().includes(needle)
+    )
+  }, [listModels, query])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') onCancel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onCancel])
+
+  const toggle = (id: string): void => {
+    setCheckedIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget) onCancel()
+    }}>
+      <section
+        className="dialog-card model-picker-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="model-picker-title"
+      >
+        <header className="dialog-header">
+          <div>
+            <h2 id="model-picker-title">选择模型</h2>
+            <p>从“{providerName}”获取的模型中勾选要保留的项，应用后请保存设置。</p>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            aria-label="关闭模型选择"
+            onClick={onCancel}
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
+        </header>
+        <div className="model-picker-body">
+          <input
+            className="control"
+            value={query}
+            placeholder="搜索模型 ID 或名称"
+            aria-label="搜索模型"
+            spellCheck={false}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <div className="model-picker-list" role="list">
+            {filtered.map((model) => {
+              const checked = checkedIds.has(model.id)
+              const isManual = !remoteModels.some((remote) => remote.id === model.id)
+              return (
+                <label
+                  key={model.id}
+                  className={`model-picker-option ${checked ? 'is-checked' : ''}`}
+                  role="listitem"
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggle(model.id)}
+                  />
+                  <span className="model-picker-option__text">
+                    <span className="model-picker-option__name">{model.name}</span>
+                    {(model.name !== model.id || isManual) && (
+                      <span className="model-picker-option__meta">
+                        {model.name !== model.id ? model.id : ''}
+                        {isManual ? (model.name !== model.id ? ' · 手动' : '手动') : ''}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              )
+            })}
+            {filtered.length === 0 && (
+              <div className="model-empty">没有匹配的模型</div>
+            )}
+          </div>
+        </div>
+        <footer className="dialog-actions model-picker-dialog__actions">
+          <button className="button" type="button" onClick={onCancel}>取消</button>
+          <button
+            className="button button--primary"
+            type="button"
+            onClick={() => onApply(checkedIds)}
+          >
+            应用所选（{checkedIds.size}）
+          </button>
+        </footer>
+      </section>
     </div>
   )
 }

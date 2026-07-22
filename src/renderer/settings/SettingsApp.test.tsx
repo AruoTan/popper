@@ -935,7 +935,7 @@ describe('SettingsApp provider deletion', () => {
     expect(input).toHaveAttribute('type', 'text')
   })
 
-  it('shows provider models as compact name chips without thinking badges', async () => {
+  it('shows provider models as vertical reorderable rows without thinking badges', async () => {
     const settingsWithModels: PublicSettings = {
       ...DEFAULT_PUBLIC_SETTINGS,
       providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
@@ -961,11 +961,14 @@ describe('SettingsApp provider deletion', () => {
     render(<SettingsApp />)
     await goToSettingsSection('服务商')
 
-    // Model names visible as chip labels (not full-width rows with id + thinking)
+    expect(await screen.findByRole('button', { name: '获取模型' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '同步模型' })).not.toBeInTheDocument()
+
     expect(await screen.findByRole('button', { name: '拖动模型 gpt-4o-mini' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '拖动模型 o3-mini' })).toBeInTheDocument()
-    expect(screen.getByText('gpt-4o-mini', { selector: '.model-chip__name' })).toBeInTheDocument()
-    expect(screen.getByText('o3-mini', { selector: '.model-chip__name' })).toBeInTheDocument()
+    expect(screen.getByText('gpt-4o-mini', { selector: '.model-row__name' })).toBeInTheDocument()
+    expect(screen.getByText('o3-mini', { selector: '.model-row__name' })).toBeInTheDocument()
+    expect(document.querySelector('.model-row-list')).toBeInTheDocument()
 
     // Provider model list must not show thinking badges
     expect(screen.queryByText(/思考\s*:/)).not.toBeInTheDocument()
@@ -975,22 +978,165 @@ describe('SettingsApp provider deletion', () => {
     expect(screen.getAllByRole('button', { name: /移除模型/ }).length).toBeGreaterThan(0)
   })
 
+  it('fetches models into a multi-select picker and merges the subset into the draft', async () => {
+    const settingsWithModels: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        models: [
+          { id: 'gpt-4o-mini', name: 'gpt-4o-mini', thinkingLevels: [] },
+          { id: 'manual-keep', name: 'manual-keep', thinkingLevels: [] }
+        ]
+      }))
+    }
+    const listProviderModels = vi.fn(async () => ({
+      ok: true as const,
+      models: [
+        { id: 'gpt-4o-mini', name: 'GPT-4o Mini', thinkingLevels: [] },
+        { id: 'gpt-4o', name: 'GPT-4o', thinkingLevels: [] },
+        { id: 'o3-mini', name: 'o3-mini', thinkingLevels: ['low', 'medium', 'high'] }
+      ]
+    }))
+    const syncProviderModels = vi.fn()
+    const updateSettings = vi.fn(async (update: SettingsUpdate): Promise<PublicSettings> => ({
+      ...settingsWithModels,
+      ...update,
+      providers: (update.providers ?? settingsWithModels.providers).map((provider) => ({
+        ...provider,
+        keyConfigured: false
+      })),
+      actions: update.actions ?? settingsWithModels.actions
+    }))
+    window.textLens = {
+      getSettings: vi.fn(async () => settingsWithModels),
+      updateSettings,
+      listProviderModels,
+      syncProviderModels,
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    await goToSettingsSection('服务商')
+
+    fireEvent.click(await screen.findByRole('button', { name: '获取模型' }))
+    expect(await screen.findByRole('dialog', { name: '选择模型' })).toBeInTheDocument()
+    await waitFor(() => expect(listProviderModels).toHaveBeenCalled())
+    expect(syncProviderModels).not.toHaveBeenCalled()
+
+    const gpt4oMini = screen.getByRole('checkbox', { name: /GPT-4o Mini/i })
+    const gpt4o = screen.getByRole('checkbox', { name: /GPT-4o$/i })
+    const o3 = screen.getByRole('checkbox', { name: /o3-mini/i })
+    const manual = screen.getByRole('checkbox', { name: /manual-keep/i })
+    expect(gpt4oMini).toBeChecked()
+    expect(manual).toBeChecked()
+    expect(gpt4o).not.toBeChecked()
+    expect(o3).not.toBeChecked()
+
+    fireEvent.click(gpt4o)
+    fireEvent.click(gpt4oMini)
+    fireEvent.click(screen.getByRole('button', { name: /应用所选/ }))
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '选择模型' })).not.toBeInTheDocument()
+    })
+    expect(screen.getByText(/已选择 2 个模型，请保存设置/)).toBeInTheDocument()
+    expect(screen.getByText('GPT-4o', { selector: '.model-row__name' })).toBeInTheDocument()
+    expect(screen.getByText('manual-keep', { selector: '.model-row__name' })).toBeInTheDocument()
+    expect(screen.queryByText('gpt-4o-mini', { selector: '.model-row__name' })).not.toBeInTheDocument()
+    expect(syncProviderModels).not.toHaveBeenCalled()
+  })
+
+  it('cancels the model picker without changing draft models', async () => {
+    const settingsWithModels: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        models: [{ id: 'gpt-4o-mini', name: 'gpt-4o-mini', thinkingLevels: [] }]
+      }))
+    }
+    window.textLens = {
+      getSettings: vi.fn(async () => settingsWithModels),
+      updateSettings: vi.fn(async () => settingsWithModels),
+      listProviderModels: vi.fn(async () => ({
+        ok: true as const,
+        models: [
+          { id: 'gpt-4o-mini', name: 'gpt-4o-mini', thinkingLevels: [] },
+          { id: 'gpt-4o', name: 'gpt-4o', thinkingLevels: [] }
+        ]
+      })),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    await goToSettingsSection('服务商')
+    fireEvent.click(await screen.findByRole('button', { name: '获取模型' }))
+    expect(await screen.findByRole('dialog', { name: '选择模型' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('checkbox', { name: /gpt-4o$/i }))
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: '选择模型' })).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('gpt-4o-mini', { selector: '.model-row__name' })).toBeInTheDocument()
+    expect(screen.queryByText('gpt-4o', { selector: '.model-row__name' })).not.toBeInTheDocument()
+  })
+
+  it('shows an error banner when model fetch fails and leaves models unchanged', async () => {
+    const settingsWithModels: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: DEFAULT_PUBLIC_SETTINGS.providers.map((provider) => ({
+        ...provider,
+        models: [{ id: 'gpt-4o-mini', name: 'gpt-4o-mini', thinkingLevels: [] }]
+      }))
+    }
+    window.textLens = {
+      getSettings: vi.fn(async () => settingsWithModels),
+      updateSettings: vi.fn(async () => settingsWithModels),
+      listProviderModels: vi.fn(async () => ({
+        ok: false as const,
+        message: '无法连接服务商'
+      })),
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: 'darwin',
+        trusted: true,
+        canRequest: true
+      })),
+      requestAccessibility: vi.fn(),
+      onSettingsChanged: vi.fn(() => () => undefined)
+    } as unknown as WindowTextLensApi
+
+    render(<SettingsApp />)
+    await goToSettingsSection('服务商')
+    fireEvent.click(await screen.findByRole('button', { name: '获取模型' }))
+    expect(await screen.findByText('无法连接服务商')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: '选择模型' })).not.toBeInTheDocument()
+    expect(screen.getByText('gpt-4o-mini', { selector: '.model-row__name' })).toBeInTheDocument()
+  })
+
   it('reorders provider models with the keyboard drag handle', async () => {
     const modelIds = ['gpt-4o-mini', 'o3-mini']
     const modelOrder = new Map<string, number>(modelIds.map((id, index) => [id, index]))
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
       this: HTMLElement
     ) {
-      const listitem = this.closest<HTMLElement>('[role="listitem"]')
-      const dragLabel = listitem
-        ?.querySelector<HTMLElement>('[aria-label^="拖动模型"]')
-        ?.getAttribute('aria-label')
-      const modelName = dragLabel?.replace(/^拖动模型\s+/, '') ?? ''
-      const index = modelOrder.get(modelName) ?? 0
-      const left = 20 + index * 180
-      const top = 300
-      const width = listitem ? 160 : 400
-      const height = listitem ? 28 : 120
+      const row = this.closest<HTMLElement>('[data-model-id]')
+      const modelId = row?.dataset.modelId
+      const index = modelId ? modelOrder.get(modelId) ?? 0 : 0
+      const left = 20
+      const top = modelId ? 500 + index * 64 : 480
+      const width = modelId ? 360 : 380
+      const height = modelId ? 54 : 200
       return {
         x: left,
         y: top,
@@ -1046,7 +1192,7 @@ describe('SettingsApp provider deletion', () => {
         'Draggable item gpt-4o-mini was moved over droppable area gpt-4o-mini'
       )
     })
-    fireEvent.keyDown(document, { key: 'ArrowRight', code: 'ArrowRight' })
+    fireEvent.keyDown(document, { key: 'ArrowDown', code: 'ArrowDown' })
     await waitFor(() => {
       expect(document.body.textContent).toContain(
         'Draggable item gpt-4o-mini was moved over droppable area o3-mini'
