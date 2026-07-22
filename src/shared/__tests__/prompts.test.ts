@@ -16,7 +16,7 @@ import {
 
 const action = (kind: ActionKind): ActionDefinition => {
   const base = { id: kind, name: kind, icon: 'sparkles', kind, enabled: true, order: 0 }
-  if (kind === 'copy' || kind === 'quote') return { ...base, kind }
+  if (kind === 'copy') return { ...base, kind }
   if (kind === 'search') return { ...base, kind, searchEngineId: 'google' }
   return {
     ...base,
@@ -225,8 +225,14 @@ Return only the translated content. Do not include explanations, labels, tags, o
   })
 
   it('does not construct AI prompts for local actions', () => {
-    for (const kind of ['copy', 'search', 'quote'] as const) {
+    for (const kind of ['copy', 'search'] as const) {
       expect(() => buildActionPrompt(action(kind), 'text')).toThrowError(PromptBuildError)
     }
+  })
+
+  it('builds ask prompts with selection placeholder expansion', () => {
+    const built = buildActionPrompt(action('ask'), '选中的句子')
+    expect(built.userPrompt).toContain('选中的句子')
+    expect(built.userPrompt).toContain('<selection>')
   })
 })

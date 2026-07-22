@@ -93,11 +93,11 @@ const LANGUAGE_NAMES: Readonly<Record<SupportedLocale, string>> = {
 const ACTION_KIND_NAMES: Readonly<Record<ActionDefinition['kind'], string>> = {
   copy: '复制',
   search: '搜索',
-  quote: '引用',
   translate: '翻译',
   summary: '总结',
   explain: '解释',
   refine: '润色',
+  ask: '问AI',
   custom: '自定义 AI'
 }
 

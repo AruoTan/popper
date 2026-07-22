@@ -10,7 +10,7 @@ const POPULAR_ICONS = [
   'search',
   'clipboard-copy',
   'wand-sparkles',
-  'quote',
+  'message-circle-question',
   'sparkles',
   'book-open',
   'brain',

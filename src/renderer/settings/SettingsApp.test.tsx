@@ -435,7 +435,10 @@ describe('SettingsApp provider deletion', () => {
       altKey: true,
       bubbles: true
     })
-    expect(input).toHaveValue('CommandOrControl+Alt+K')
+    // macOS maps Meta → CommandOrControl; Linux/Windows map Meta → Super.
+    const platform = `${navigator.platform ?? ''} ${navigator.userAgent ?? ''}`.toLowerCase()
+    const isMac = platform.includes('mac') || platform.includes('darwin')
+    expect(input).toHaveValue(isMac ? 'CommandOrControl+Alt+K' : 'Super+Alt+K')
 
     fireEvent.keyDown(input, { key: 'Backspace', code: 'Backspace', bubbles: true })
     expect(input).toHaveValue('')
@@ -552,7 +555,8 @@ describe('SettingsApp provider deletion', () => {
         'explain',
         'summary',
         'copy',
-        'search'
+        'search',
+        'ask-ai'
       ])
     })
 
@@ -565,8 +569,8 @@ describe('SettingsApp provider deletion', () => {
         { id: 'summary', order: 2 },
         { id: 'copy', order: 3 },
         { id: 'search', order: 4 },
-        { id: 'refine', order: 5 },
-        { id: 'quote', order: 6 }
+        { id: 'ask-ai', order: 5 },
+        { id: 'refine', order: 6 }
       ])
   })
 

@@ -83,17 +83,24 @@ export const selectionPayloadSchema = z
   .strict()
 export type SelectionPayload = z.infer<typeof selectionPayloadSchema>
 
-export const localActionKindSchema = z.enum(['copy', 'search', 'quote'])
-export const aiActionKindSchema = z.enum(['translate', 'summary', 'explain', 'refine', 'custom'])
-export const actionKindSchema = z.enum([
-  'copy',
-  'search',
-  'quote',
+export const localActionKindSchema = z.enum(['copy', 'search'])
+export const aiActionKindSchema = z.enum([
   'translate',
   'summary',
   'explain',
   'refine',
-  'custom'
+  'custom',
+  'ask'
+])
+export const actionKindSchema = z.enum([
+  'copy',
+  'search',
+  'translate',
+  'summary',
+  'explain',
+  'refine',
+  'custom',
+  'ask'
 ])
 /** @deprecated Prefer ActionKind. */
 export const actionTypeSchema = actionKindSchema
@@ -268,13 +275,6 @@ export const copyActionSchema = z
   })
   .strict()
 
-export const quoteActionSchema = z
-  .object({
-    ...actionBaseShape,
-    kind: z.literal('quote')
-  })
-  .strict()
-
 export const searchActionSchema = z
   .object({
     ...actionBaseShape,
@@ -285,7 +285,6 @@ export const searchActionSchema = z
 
 export const localActionSchema = z.discriminatedUnion('kind', [
   copyActionSchema,
-  quoteActionSchema,
   searchActionSchema
 ])
 
@@ -321,14 +320,17 @@ export const customActionSchema = z
 /** Actions shipped by default are editable and use the same runtime shape as user actions. */
 export const builtInActionSchema = z.discriminatedUnion('kind', [
   copyActionSchema,
-  quoteActionSchema,
   searchActionSchema,
-  z.object({ ...aiActionBaseShape, kind: z.enum(['translate', 'summary', 'explain', 'refine']) }).strict()
+  z
+    .object({
+      ...aiActionBaseShape,
+      kind: z.enum(['translate', 'summary', 'explain', 'refine', 'ask'])
+    })
+    .strict()
 ])
 
 export const actionDefinitionSchema = z.discriminatedUnion('kind', [
   copyActionSchema,
-  quoteActionSchema,
   searchActionSchema,
   aiActionSchema
 ])

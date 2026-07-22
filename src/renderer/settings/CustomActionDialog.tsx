@@ -21,11 +21,11 @@ import { ActionIconPicker } from './ActionIconPicker'
 const ACTION_KIND_NAMES: Readonly<Record<ActionKind, string>> = {
   copy: '复制',
   search: '搜索 / 打开网址',
-  quote: '引用',
   translate: '翻译',
   summary: '总结',
   explain: '解释',
   refine: '润色',
+  ask: '问AI',
   custom: '自定义 AI'
 }
 
@@ -34,7 +34,13 @@ function isAiKind(kind: ActionKind): boolean {
 }
 
 function defaultPrompt(kind: ActionKind): string {
-  if (kind === 'translate' || kind === 'summary' || kind === 'explain' || kind === 'refine') {
+  if (
+    kind === 'translate' ||
+    kind === 'summary' ||
+    kind === 'explain' ||
+    kind === 'refine' ||
+    kind === 'ask'
+  ) {
     return DEFAULT_ACTION_PROMPTS[kind]
   }
   return DEFAULT_ACTION_PROMPTS.custom

@@ -26,9 +26,9 @@ import {
 } from '..'
 
 describe('settings schemas and defaults', () => {
-  it('provides v10 defaults with search engine bound to the search action', () => {
+  it('provides v11 defaults with search engine bound to the search action', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
-    expect(DEFAULT_APP_SETTINGS.version).toBe(10)
+    expect(DEFAULT_APP_SETTINGS.version).toBe(11)
     expect(DEFAULT_APP_SETTINGS.enabled).toBe(true)
     expect(DEFAULT_APP_SETTINGS.actions.find((action) => action.kind === 'search')).toMatchObject({
       searchEngineId: 'google'
@@ -56,14 +56,58 @@ describe('settings schemas and defaults', () => {
       'search',
       'copy',
       'refine',
-      'quote'
+      'ask'
     ])
+    expect(DEFAULT_ACTIONS.find((action) => action.kind === 'ask')).toMatchObject({
+      id: 'ask-ai',
+      name: '问AI',
+      enabled: true
+    })
     expect(DEFAULT_ACTIONS.filter((action) => action.kind === 'search')).toMatchObject([
       { id: 'search', searchEngineId: 'google' }
     ])
     for (const action of DEFAULT_ACTIONS.filter((candidate) => 'prompt' in candidate)) {
       expect(action.prompt).toContain(TEXT_PLACEHOLDER)
     }
+  })
+
+  it('accepts ask AI actions and rejects quote local actions', () => {
+    expect(() => actionDefinitionSchema.parse({
+      id: 'ask-ai',
+      name: '问AI',
+      icon: 'message-circle-question',
+      kind: 'ask',
+      enabled: true,
+      order: 0,
+      prompt: `上下文：${TEXT_PLACEHOLDER}`,
+      providerId: 'openai-compatible',
+      modelId: 'gpt',
+      thinkingMode: 'off'
+    })).not.toThrow()
+
+    expect(() => actionDefinitionSchema.parse({
+      id: 'quote',
+      name: '引用',
+      icon: 'quote',
+      kind: 'quote',
+      enabled: true,
+      order: 0
+    })).toThrow()
+  })
+
+  it('migrates legacy quote actions to ask-ai', () => {
+    const migrated = migrateAppSettings({
+      ...DEFAULT_APP_SETTINGS,
+      version: 10,
+      actions: [
+        { id: 'quote', name: '引用', icon: 'quote', kind: 'quote', enabled: true, order: 6 }
+      ]
+    })
+    const ask = migrated.actions.find((action) => action.id === 'ask-ai' || action.kind === 'ask')
+    expect(ask?.kind).toBe('ask')
+    expect(ask?.name).toBe('问AI')
+    expect(migrated.version).toBe(11)
+    expect(migrated.actions.filter((action) => action.kind === 'ask')).toHaveLength(1)
   })
 
   it('never includes provider API keys in public settings', () => {
@@ -123,14 +167,13 @@ describe('settings schemas and defaults', () => {
 
     for (const local of [
       { id: 'copy', name: '复制', icon: 'clipboard-copy', kind: 'copy' as const, enabled: true, order: 0 },
-      { id: 'quote', name: '引用', icon: 'quote', kind: 'quote' as const, enabled: true, order: 1 },
       {
         id: 'search',
         name: '搜索',
         icon: 'search',
         kind: 'search' as const,
         enabled: true,
-        order: 2,
+        order: 1,
         searchEngineId: 'google' as const
       }
     ]) {
@@ -259,7 +302,7 @@ describe('settings schemas and defaults', () => {
       ]
     }
     const migrated = migrateAppSettings(legacy)
-    expect(migrated.version).toBe(10)
+    expect(migrated.version).toBe(11)
     expect(migrated.providers[0]).toMatchObject({
       baseUrl: 'https://example.com/v1',
       apiKey: 'secret',
@@ -376,7 +419,7 @@ describe('settings schemas and defaults', () => {
       actions: [...DEFAULT_APP_SETTINGS.actions, secondTranslate]
     })
 
-    expect(migrated.version).toBe(10)
+    expect(migrated.version).toBe(11)
     expect(migrated.providers[1]).toEqual({
       ...secondProvider,
       models: [{ id: 'model-b', name: 'Model B', thinkingLevels: [] }]
@@ -420,7 +463,7 @@ describe('settings schemas and defaults', () => {
       ]
     })
 
-    expect(migrated.version).toBe(10)
+    expect(migrated.version).toBe(11)
     expect(migrated.actions.find((action) => action.id === 'translate')).toMatchObject({
       prompt: DEFAULT_ACTION_PROMPTS.translate
     })
@@ -478,7 +521,7 @@ describe('settings schemas and defaults', () => {
     const migratedPublic = migratePublicSettings(withV4Prompts(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(10)
+      expect(settings.version).toBe(11)
       expect(settings.actions.find((action) => action.id === 'summary')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.summary
       })
@@ -538,7 +581,7 @@ describe('settings schemas and defaults', () => {
         return rest
       })
     })
-    expect(fromV8.version).toBe(10)
+    expect(fromV8.version).toBe(11)
     expect(fromV8.actions.find((action) => action.kind === 'search')).toMatchObject({
       searchEngineId: 'baidu'
     })
@@ -558,7 +601,7 @@ describe('settings schemas and defaults', () => {
       ]
     })
 
-    expect(migrated.version).toBe(10)
+    expect(migrated.version).toBe(11)
     expect(migrated.actions.filter((action) => action.kind === 'search')).toMatchObject([
       { id: 'search', icon: 'search', searchEngineId: 'google' }
     ])

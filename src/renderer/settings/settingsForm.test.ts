@@ -120,7 +120,8 @@ describe('settings form helpers', () => {
       'explain',
       'summary',
       'search',
-      'copy'
+      'copy',
+      'ask-ai'
     ])
     expect(moved.find((action) => action.id === 'refine')?.enabled).toBe(true)
   })
