@@ -23,8 +23,8 @@ use crate::{
         ActionDefinition, ActionKind, ActionSnapshot, ActionSnapshotStatus, AppSettings,
         ConnectionTestResult, ExecuteActionRequest, Locale, Point, ProviderConfig, ProviderModel,
         RequestGeneration, ResultReadyAck, SessionGeneration, SyncModelsResult, ThinkingMode,
-        UpdateProviderInput, AI_PROMPT_LIMIT, AI_TEXT_LIMIT, OUTPUT_LANGUAGE_PLACEHOLDER,
-        TARGET_LANGUAGE_PLACEHOLDER, TEXT_PLACEHOLDER,
+        TranslationLanguage, TranslationSettings, UpdateProviderInput, AI_PROMPT_LIMIT,
+        AI_TEXT_LIMIT, OUTPUT_LANGUAGE_PLACEHOLDER, TARGET_LANGUAGE_PLACEHOLDER, TEXT_PLACEHOLDER,
     },
     openai_protocol::provider_error_from_value,
     openai_transport::{
@@ -134,7 +134,7 @@ struct FrozenActionRequest {
     action_id: String,
     source_text: String,
     cursor: Option<Point>,
-    target_language: Option<Locale>,
+    target_language: Option<TranslationLanguage>,
 }
 
 impl From<&ExecuteActionRequest> for FrozenActionRequest {
@@ -170,7 +170,7 @@ struct ActionSessionContext {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct RetryPreparationOptions {
-    target_language: Option<Locale>,
+    target_language: Option<TranslationLanguage>,
     provider_id: Option<String>,
     model_id: Option<String>,
 }
@@ -772,7 +772,7 @@ impl ActionService {
         &self,
         app: &AppHandle<R>,
         session_id: &str,
-        target_language: Option<Locale>,
+        target_language: Option<TranslationLanguage>,
     ) -> Result<String, ActionServiceError> {
         self.retry_with_options(app, session_id, target_language, None, None)
     }
@@ -781,7 +781,7 @@ impl ActionService {
         &self,
         app: &AppHandle<R>,
         session_id: &str,
-        target_language: Option<Locale>,
+        target_language: Option<TranslationLanguage>,
         provider_id: Option<String>,
         model_id: Option<String>,
     ) -> Result<String, ActionServiceError> {
@@ -1948,7 +1948,7 @@ fn build_prompt(
     action: &ActionDefinition,
     text: &str,
     settings: &AppSettings,
-    target_language: Option<Locale>,
+    target_language: Option<TranslationLanguage>,
     boundary_seed: &str,
 ) -> Result<BuiltPrompt, ActionServiceError> {
     if text.chars().count() > AI_TEXT_LIMIT {
@@ -1966,31 +1966,13 @@ fn build_prompt(
     }
     let mut template = prompt.to_owned();
     if action.kind == ActionKind::Translate {
-        let target = if let Some(target) = target_language {
-            target
-        } else {
-            let detected = if text.chars().any(is_han_character) {
-                Locale::ZhCn
-            } else {
-                Locale::EnUs
-            };
-            let source = if detected == settings.translate.primary_language
-                || detected == settings.translate.alternate_language
-            {
-                detected
-            } else {
-                settings.translate.primary_language
-            };
-            if source == settings.translate.primary_language {
-                settings.translate.alternate_language
-            } else {
-                settings.translate.primary_language
-            }
-        };
-        template = template.replace(
-            TARGET_LANGUAGE_PLACEHOLDER,
-            cherry_target_language_name(target),
-        );
+        let target = target_language.unwrap_or_else(|| {
+            default_translation_target(
+                detect_translation_language(text),
+                &settings.translate,
+            )
+        });
+        template = template.replace(TARGET_LANGUAGE_PLACEHOLDER, target.english_name());
     } else if matches!(action.kind, ActionKind::Summary | ActionKind::Explain) {
         template = template.replace(OUTPUT_LANGUAGE_PLACEHOLDER, locale_code(settings.locale));
     }
@@ -2013,7 +1995,7 @@ fn build_prompt(
         )));
     }
     let mut system = if action.kind == ActionKind::Translate {
-        "You are a translation expert. Follow the user's editable translation instruction exactly."
+        "You are a multilingual translation expert. Follow the user's editable translation instruction exactly."
             .to_owned()
     } else {
         match settings.locale {
@@ -2128,17 +2110,45 @@ fn validate_conversation_messages(messages: &[ChatMessage]) -> Result<(), Action
     Ok(())
 }
 
-fn cherry_target_language_name(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhCn => "Chinese (Simplified)",
-        Locale::EnUs => "English",
-    }
-}
-
 fn locale_code(locale: Locale) -> &'static str {
     match locale {
         Locale::ZhCn => "zh-CN",
         Locale::EnUs => "en-US",
+    }
+}
+
+/// Detect the likely source language of selected text (mirrors TS `detectTranslationLanguage`).
+fn detect_translation_language(text: &str) -> TranslationLanguage {
+    let has_han = text.chars().any(is_han_character);
+    let has_kana = text.chars().any(is_kana_character);
+    if has_kana {
+        return TranslationLanguage::JaJp;
+    }
+    if text.chars().any(is_hangul_character) {
+        return TranslationLanguage::KoKr;
+    }
+    if has_han {
+        return TranslationLanguage::ZhCn;
+    }
+    if text.chars().any(is_cyrillic_character) {
+        return TranslationLanguage::RuRu;
+    }
+    TranslationLanguage::EnUs
+}
+
+/// Default translation target (mirrors TS `defaultTranslationTarget`).
+fn default_translation_target(
+    source: TranslationLanguage,
+    pair: &TranslationSettings,
+) -> TranslationLanguage {
+    if source == pair.primary_language {
+        pair.alternate_language
+    } else if source == pair.alternate_language {
+        pair.primary_language
+    } else if source == TranslationLanguage::ZhCn {
+        TranslationLanguage::EnUs
+    } else {
+        TranslationLanguage::ZhCn
     }
 }
 
@@ -2147,6 +2157,18 @@ fn is_han_character(character: char) -> bool {
         character as u32,
         0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF
     )
+}
+
+fn is_kana_character(character: char) -> bool {
+    matches!(character as u32, 0x3040..=0x309F | 0x30A0..=0x30FF)
+}
+
+fn is_hangul_character(character: char) -> bool {
+    matches!(character as u32, 0xAC00..=0xD7AF | 0x1100..=0x11FF)
+}
+
+fn is_cyrillic_character(character: char) -> bool {
+    matches!(character as u32, 0x0400..=0x04FF)
 }
 
 fn build_base_body(prepared: &PreparedRequest) -> Value {
@@ -2457,6 +2479,7 @@ mod tests {
                     provider: ProviderConfig {
                         id: "provider-fixture".to_owned(),
                         name: "Provider Fixture".to_owned(),
+                        enabled: true,
                         base_url: "http://127.0.0.1:1/v1".to_owned(),
                         models: Vec::new(),
                     },
@@ -2498,6 +2521,7 @@ mod tests {
             provider: ProviderConfig {
                 id: "provider-fixture".to_owned(),
                 name: "Provider Fixture".to_owned(),
+                enabled: true,
                 base_url: "http://localhost:11434/v1".to_owned(),
                 models: vec![ProviderModel {
                     id: model.to_owned(),
@@ -2906,7 +2930,7 @@ mod tests {
         )
         .unwrap();
         assert!(translated.system.starts_with(
-            "You are a translation expert. Follow the user's editable translation instruction exactly."
+            "You are a multilingual translation expert. Follow the user's editable translation instruction exactly."
         ));
         assert!(translated.user.contains("English"));
         assert!(translated.user.contains("这是测试。"));
@@ -2923,18 +2947,28 @@ mod tests {
         .unwrap();
         assert!(translated_to_chinese.user.contains("Chinese (Simplified)"));
 
-        let explicitly_chinese = build_prompt(
+        let japanese_to_chinese = build_prompt(
+            translate,
+            "これはテストです。",
+            &settings,
+            None,
+            "request-japanese",
+        )
+        .unwrap();
+        assert!(japanese_to_chinese.user.contains("Chinese (Simplified)"));
+
+        let explicitly_french = build_prompt(
             translate,
             "这是测试。",
             &settings,
-            Some(Locale::ZhCn),
+            Some(TranslationLanguage::FrFr),
             "request-explicit",
         )
         .unwrap();
-        assert!(explicitly_chinese.user.contains("Chinese (Simplified)"));
+        assert!(explicitly_french.user.contains("French"));
 
-        settings.translate.primary_language = Locale::EnUs;
-        settings.translate.alternate_language = Locale::ZhCn;
+        settings.translate.primary_language = TranslationLanguage::EnUs;
+        settings.translate.alternate_language = TranslationLanguage::ZhCn;
         let translate = settings
             .actions
             .iter()
@@ -3470,6 +3504,7 @@ mod tests {
         settings.providers.push(ProviderConfig {
             id: "provider-two".to_owned(),
             name: "Provider Two".to_owned(),
+            enabled: true,
             base_url: "http://localhost:11434/v1".to_owned(),
             models: vec![ProviderModel {
                 id: "model-two".to_owned(),

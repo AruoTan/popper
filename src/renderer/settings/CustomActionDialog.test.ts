@@ -42,6 +42,7 @@ describe('promptAfterKindChange', () => {
       providers: [{
         id: 'provider-one',
         name: '服务商一',
+        enabled: true,
         baseUrl: 'https://example.com/v1',
         keyConfigured: true,
         models: [{ id: 'model-one', name: '模型一', thinkingLevels: [] }]
@@ -64,14 +65,18 @@ describe('promptAfterKindChange', () => {
   })
 })
 
-describe('CustomActionDialog thinking mode', () => {
-  it('shows thinking select when model supports levels and saves off by default', () => {
+describe('CustomActionDialog model + thinking', () => {
+  const modelRoute = (providerId: string, modelId: string): string =>
+    JSON.stringify([providerId, modelId])
+
+  it('uses a unified provider+model list and saves thinking mode', () => {
     const onSave = vi.fn()
     render(createElement(CustomActionDialog, {
       action: null,
       providers: [{
         id: 'provider-one',
         name: '服务商一',
+        enabled: true,
         baseUrl: 'https://example.com/v1',
         keyConfigured: true,
         models: [{
@@ -85,8 +90,9 @@ describe('CustomActionDialog thinking mode', () => {
     }))
 
     fireEvent.change(screen.getByLabelText('动作名称'), { target: { value: '深度思考' } })
-    fireEvent.change(screen.getByLabelText('服务商'), { target: { value: 'provider-one' } })
-    fireEvent.change(screen.getByLabelText('模型'), { target: { value: 'model-think' } })
+    fireEvent.change(screen.getByLabelText('模型'), {
+      target: { value: modelRoute('provider-one', 'model-think') }
+    })
 
     const thinkingSelect = screen.getByLabelText('思考强度')
     expect(thinkingSelect).toBeInTheDocument()
@@ -98,9 +104,48 @@ describe('CustomActionDialog thinking mode', () => {
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
       kind: 'custom',
+      providerId: 'provider-one',
       modelId: 'model-think',
       thinkingMode: 'medium'
     }))
+  })
+
+  it('hides disabled providers and infers thinking from model id', () => {
+    render(createElement(CustomActionDialog, {
+      action: null,
+      providers: [
+        {
+          id: 'provider-off',
+          name: '已关闭',
+          enabled: false,
+          baseUrl: 'https://example.com/v1',
+          keyConfigured: true,
+          models: [{ id: 'hidden-model', name: '隐藏模型', thinkingLevels: [] }]
+        },
+        {
+          id: 'provider-on',
+          name: '启用',
+          enabled: true,
+          baseUrl: 'https://example.com/v1',
+          keyConfigured: true,
+          models: [{ id: 'deepseek-r1', name: 'DeepSeek R1', thinkingLevels: [] }]
+        }
+      ],
+      onCancel: vi.fn(),
+      onSave: vi.fn()
+    }))
+
+    const modelSelect = screen.getByLabelText('模型') as HTMLSelectElement
+    const optionTexts = Array.from(modelSelect.querySelectorAll('option')).map(
+      (option) => option.textContent
+    )
+    expect(optionTexts.join('\n')).not.toContain('隐藏模型')
+    expect(optionTexts.join('\n')).toContain('DeepSeek R1')
+
+    fireEvent.change(modelSelect, {
+      target: { value: modelRoute('provider-on', 'deepseek-r1') }
+    })
+    expect(screen.getByLabelText('思考强度')).toBeInTheDocument()
   })
 
   it('hides thinking select when model has no thinking levels', () => {
@@ -109,6 +154,7 @@ describe('CustomActionDialog thinking mode', () => {
       providers: [{
         id: 'provider-one',
         name: '服务商一',
+        enabled: true,
         baseUrl: 'https://example.com/v1',
         keyConfigured: true,
         models: [{ id: 'model-plain', name: '普通模型', thinkingLevels: [] }]
@@ -117,8 +163,9 @@ describe('CustomActionDialog thinking mode', () => {
       onSave: vi.fn()
     }))
 
-    fireEvent.change(screen.getByLabelText('服务商'), { target: { value: 'provider-one' } })
-    fireEvent.change(screen.getByLabelText('模型'), { target: { value: 'model-plain' } })
+    fireEvent.change(screen.getByLabelText('模型'), {
+      target: { value: modelRoute('provider-one', 'model-plain') }
+    })
     expect(screen.queryByLabelText('思考强度')).not.toBeInTheDocument()
   })
 })

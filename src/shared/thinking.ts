@@ -74,3 +74,24 @@ export function thinkingModeLabel(mode: ThinkingMode): string {
   if (mode === 'off') return '关闭思考'
   return THINKING_LEVEL_LABELS[mode]
 }
+
+/**
+ * Levels to offer in the action model picker: prefer stored metadata, else
+ * infer from the model id so thinking models still show intensity controls.
+ */
+export function effectiveThinkingLevels(
+  modelId: string,
+  storedLevels?: readonly ThinkingLevel[] | null
+): ThinkingLevel[] {
+  if (storedLevels && storedLevels.length > 0) return [...storedLevels]
+  return inferThinkingLevels(modelId)
+}
+
+/**
+ * Whether the action editor should offer “关闭思考”.
+ * Always available when the model has thinking levels; backend adapts via
+ * `supportsOff` (inject off-control vs omit the field).
+ */
+export function modelSupportsThinkingOff(levels: readonly ThinkingLevel[]): boolean {
+  return levels.length > 0
+}

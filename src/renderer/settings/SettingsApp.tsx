@@ -50,6 +50,8 @@ import {
   MAX_ENABLED_ACTIONS,
   RESULT_FONT_SIZE_MAX,
   RESULT_FONT_SIZE_MIN,
+  TRANSLATION_LANGUAGES,
+  TRANSLATION_LANGUAGE_NAMES,
   actionDefinitionSchema,
   isAiActionDefinition,
   searchEngineDisplayName,
@@ -59,7 +61,8 @@ import {
   type PublicSettings,
   type ProviderModel,
   type SettingsGuidance,
-  type SupportedLocale
+  type SupportedLocale,
+  type TranslationLanguage
 } from '../../shared'
 import { ActionIcon } from '../components/ActionIcon'
 import { runDetached } from '../lib/asyncEffects'
@@ -135,11 +138,6 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     blurb: '可限制只在部分应用中启用划词，或排除干扰较多的应用。'
   }
 ]
-
-const LANGUAGE_NAMES: Readonly<Record<SupportedLocale, string>> = {
-  'zh-CN': '简体中文',
-  'en-US': 'English'
-}
 
 const ACTION_KIND_NAMES: Readonly<Record<ActionDefinition['kind'], string>> = {
   copy: '复制',
@@ -666,6 +664,7 @@ export function SettingsApp(): JSX.Element {
     const provider: PublicProviderSettings = {
       id,
       name: `服务商 ${(draft?.providers.length ?? 0) + 1}`,
+      enabled: true,
       baseUrl: DEFAULT_OPENAI_BASE_URL,
       keyConfigured: false,
       models: []
@@ -1193,13 +1192,33 @@ export function SettingsApp(): JSX.Element {
         </div>
         <div className="provider-stack">
           {draft.providers.map((provider) => (
-            <article className="settings-card provider-card" key={provider.id}>
+            <article
+              className={`settings-card provider-card ${provider.enabled === false ? 'provider-card--disabled' : ''}`}
+              key={provider.id}
+            >
               <header className="provider-card__header">
                 <div className="provider-card__identity"><span className="provider-avatar"><Sparkles size={17} /></span>
                   <input className="provider-name-input" value={provider.name} maxLength={80} aria-label="服务商名称"
                     onChange={(event) => changeProvider(provider.id, (current) => ({ ...current, name: event.target.value }))} /></div>
-                <button className="icon-button action-delete" type="button" title="删除服务商" aria-label={`删除${provider.name}`}
-                  onClick={() => setProviderPendingDelete(provider)}><Trash2 size={16} /></button>
+                <div className="provider-card__header-actions">
+                  <label className="provider-enabled-toggle" title={provider.enabled === false ? '已关闭：动作与结果中不显示其模型' : '已启用'}>
+                    <span className="provider-enabled-toggle__label">
+                      {provider.enabled === false ? '已关闭' : '已启用'}
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={`${provider.name}：${provider.enabled === false ? '启用' : '关闭'}服务商`}
+                      checked={provider.enabled !== false}
+                      onChange={(event) => changeProvider(provider.id, (current) => ({
+                        ...current,
+                        enabled: event.target.checked
+                      }))}
+                    />
+                  </label>
+                  <button className="icon-button action-delete" type="button" title="删除服务商" aria-label={`删除${provider.name}`}
+                    onClick={() => setProviderPendingDelete(provider)}><Trash2 size={16} /></button>
+                </div>
               </header>
               <div className="provider-grid">
                 <label className="field field--wide"><span className="field__label">API 地址（HTTP / HTTPS）</span>
@@ -1378,44 +1397,56 @@ export function SettingsApp(): JSX.Element {
             <span className="field__label">翻译主要语言</span>
             <select
               className="control"
+              aria-label="翻译主要语言"
               value={draft.translate.primaryLanguage}
               onChange={(event) => {
-                const primaryLanguage = event.target.value as SupportedLocale
-                changeDraft((current) => ({
-                  ...current,
-                  translate: {
-                    primaryLanguage,
-                    alternateLanguage: primaryLanguage === 'zh-CN' ? 'en-US' : 'zh-CN'
+                const primaryLanguage = event.target.value as TranslationLanguage
+                changeDraft((current) => {
+                  const alternateLanguage =
+                    current.translate.alternateLanguage === primaryLanguage
+                      ? (primaryLanguage === 'zh-CN' ? 'en-US' : 'zh-CN')
+                      : current.translate.alternateLanguage
+                  return {
+                    ...current,
+                    translate: { primaryLanguage, alternateLanguage }
                   }
-                }))
+                })
               }}
             >
-              <option value="zh-CN">简体中文</option>
-              <option value="en-US">English</option>
+              {TRANSLATION_LANGUAGES.map((code) => (
+                <option value={code} key={code}>{TRANSLATION_LANGUAGE_NAMES[code]}</option>
+              ))}
             </select>
           </label>
           <label className="field">
             <span className="field__label">翻译另一语言</span>
             <select
               className="control"
+              aria-label="翻译另一语言"
               value={draft.translate.alternateLanguage}
               onChange={(event) => {
-                const alternateLanguage = event.target.value as SupportedLocale
-                changeDraft((current) => ({
-                  ...current,
-                  translate: {
-                    alternateLanguage,
-                    primaryLanguage: alternateLanguage === 'zh-CN' ? 'en-US' : 'zh-CN'
+                const alternateLanguage = event.target.value as TranslationLanguage
+                changeDraft((current) => {
+                  const primaryLanguage =
+                    current.translate.primaryLanguage === alternateLanguage
+                      ? (alternateLanguage === 'zh-CN' ? 'en-US' : 'zh-CN')
+                      : current.translate.primaryLanguage
+                  return {
+                    ...current,
+                    translate: { primaryLanguage, alternateLanguage }
                   }
-                }))
+                })
               }}
             >
-              <option value="en-US">English</option>
-              <option value="zh-CN">简体中文</option>
+              {TRANSLATION_LANGUAGES.map((code) => (
+                <option value={code} key={code}>{TRANSLATION_LANGUAGE_NAMES[code]}</option>
+              ))}
             </select>
           </label>
           <p className="translation-summary field--wide">
-            检测到 {LANGUAGE_NAMES[draft.translate.primaryLanguage]} 时译为 {LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然。
+            默认：检测到 {TRANSLATION_LANGUAGE_NAMES[draft.translate.primaryLanguage]} 时译为{' '}
+            {TRANSLATION_LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然；
+            其他语种默认译为中文，中文默认译为英语。结果框可切换为日语、韩语、俄语、德语、法语等。
           </p>
         </div>
       </section>

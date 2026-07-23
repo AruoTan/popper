@@ -36,9 +36,14 @@ describe('settings schemas and defaults', () => {
     expect(DEFAULT_APP_SETTINGS.application).toEqual({ closeBehavior: 'hide-to-tray' })
     expect(DEFAULT_APP_SETTINGS.providers[0]).toMatchObject({
       id: DEFAULT_PROVIDER_ID,
+      enabled: true,
       baseUrl: 'https://api.openai.com/v1',
       apiKey: '',
       models: []
+    })
+    expect(DEFAULT_APP_SETTINGS.translate).toEqual({
+      primaryLanguage: 'zh-CN',
+      alternateLanguage: 'en-US'
     })
     expect(DEFAULT_APP_SETTINGS.providers).toHaveLength(1)
     expect(DEFAULT_APP_SETTINGS.result).toMatchObject({
@@ -422,6 +427,7 @@ describe('settings schemas and defaults', () => {
     expect(migrated.version).toBe(11)
     expect(migrated.providers[1]).toEqual({
       ...secondProvider,
+      enabled: true,
       models: [{ id: 'model-b', name: 'Model B', thinkingLevels: [] }]
     })
     expect(migrated.actions.at(-1)).toMatchObject({

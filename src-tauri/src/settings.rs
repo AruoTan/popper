@@ -22,6 +22,7 @@ use crate::models::{
     LEGACY_V3_EXPLAIN_PROMPT, LEGACY_V3_REFINE_PROMPT, LEGACY_V3_SUMMARY_PROMPT,
     LEGACY_V3_TRANSLATE_PROMPT, LEGACY_V4_EXPLAIN_PROMPT, LEGACY_V4_REFINE_PROMPT,
     LEGACY_V4_SUMMARY_PROMPT, LEGACY_V4_TRANSLATE_PROMPT, LEGACY_V5_TRANSLATE_PROMPT,
+    LEGACY_V11_CONCISE_EXPLAIN_PROMPT, LEGACY_V11_CONCISE_TRANSLATE_PROMPT,
     LEGACY_V11_EXPLAIN_PROMPT, LEGACY_V11_SUMMARY_PROMPT, LEGACY_V11_TRANSLATE_PROMPT,
     SETTINGS_VERSION,
 };
@@ -239,6 +240,7 @@ impl SettingsRepository {
                     .map(|provider| ProviderConfig {
                         id: provider.id,
                         name: provider.name,
+                        enabled: provider.enabled,
                         base_url: provider.base_url,
                         models: provider.models,
                     })
@@ -259,6 +261,7 @@ impl SettingsRepository {
             settings.providers.push(ProviderConfig {
                 id: provider_id,
                 name: input.name,
+                enabled: true,
                 base_url: input.base_url,
                 models: Vec::new(),
             });
@@ -799,6 +802,7 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
                             | LEGACY_V4_TRANSLATE_PROMPT
                             | LEGACY_V5_TRANSLATE_PROMPT
                             | LEGACY_V11_TRANSLATE_PROMPT
+                            | LEGACY_V11_CONCISE_TRANSLATE_PROMPT
                     )
                 ) =>
             {
@@ -823,6 +827,7 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
                         LEGACY_V3_EXPLAIN_PROMPT
                             | LEGACY_V4_EXPLAIN_PROMPT
                             | LEGACY_V11_EXPLAIN_PROMPT
+                            | LEGACY_V11_CONCISE_EXPLAIN_PROMPT
                     )
                 ) =>
             {
@@ -920,6 +925,7 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
     let provider = ProviderConfig {
         id: DEFAULT_PROVIDER_ID.to_owned(),
         name: "OpenAI Compatible".to_owned(),
+        enabled: true,
         base_url: legacy.ai.base_url,
         models: if model.is_empty() {
             Vec::new()
@@ -2158,7 +2164,7 @@ mod tests {
         );
         assert!(fs::read_to_string(path)
             .unwrap()
-            .contains("You are a professional translator."));
+            .contains("You are a professional multilingual translator."));
     }
 
     #[test]
@@ -2235,7 +2241,7 @@ mod tests {
                 .and_then(|action| action.prompt.as_deref()),
             Some(LEGACY_V11_EXPLAIN_PROMPT)
         );
-        assert!(DEFAULT_EXPLAIN_PROMPT.contains("专业、准确"));
+        assert!(DEFAULT_EXPLAIN_PROMPT.contains("整体解释"));
     }
 
     #[test]

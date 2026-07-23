@@ -1,15 +1,15 @@
-# TextLens 从 macOS 0.3.16 到 0.3.54 的开发记录
+# TextLens 从 macOS 0.3.16 到 0.3.55 的开发记录
 
 整理日期：2026-07-23  
-版本范围：macOS 0.3.16 至 TextLens 0.3.54
+版本范围：macOS 0.3.16 至 TextLens 0.3.55
 
 ## 文档说明
 
-本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.54 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
+本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.55 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
 
 这段开发并不是一次简单的平台移植。macOS 版本依赖 Accessibility API、Event Tap、Core Graphics 和 AppKit；Windows 需要重新处理 UI Automation、Win32 输入 Hook、OLE 剪贴板、WebView2、混合 DPI、窗口激活规则和通知区域生命周期。项目始终保留同一套 React renderer、设置结构、动作服务、模型请求和流式输出，仅在必须依赖操作系统的部分使用平台实现。
 
-版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.54**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
+版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.55**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
 
 ## 开发阶段概览
 
@@ -684,3 +684,15 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **思考区字号：** 思考正文不再挂 `stream-plain-text`（该规则与答案同字号且写在后面，会盖掉缩小设置）；`.result-thinking__body` 使用 `max(11px, calc(var(--result-font-size) * 0.82))`，默认约 11.5px，明显小于答案正文。
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.54；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.54。
+
+## 0.3.55：服务商启停 + 多语言翻译 + 统一模型/思考选择
+
+（整理日期：2026-07-23）
+
+- **服务商启停：** `ProviderConfig.enabled`（默认 true）；设置页可禁用服务商；禁用后不出现在动作模型绑定与结果窗换模列表，已绑定该服务商的动作仍可运行。
+- **动作模型选择：** 编辑动作时由「服务商 + 模型」双列表改为按服务商分组的统一 optgroup 列表（与结果窗一致）；过滤未启用服务商。
+- **思考档位：** 按模型名自动推断可用思考强度（`inferThinkingLevels` / `effectiveThinkingLevels`），支持「关闭思考」；无思考能力的模型不展示档位。
+- **多语言翻译：** 目标语言扩展为简体中文 / English / 日本語 / 한국어 / Русский / Deutsch / Français；结果标题栏以 CN/EN/JA/KO/RU/DE/FR 短码切换；`detectTranslationLanguage` 与 `defaultTranslationTarget` 双端对齐——匹配设置语言对则翻转，中文默认译英，其他语种默认译中。
+- **提示词：** 翻译提示词强化多语言专业翻译；解释提示词改为整体解释、仅展开重要术语；未改动的内置默认文案在加载时迁移，自定义提示词保留。
+- **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.55；`pnpm export:dev-source` 导出可迁移源码包。
+- 产品版本升至 0.3.55。

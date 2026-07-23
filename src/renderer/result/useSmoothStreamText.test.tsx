@@ -1,5 +1,5 @@
 import { act, render, screen } from '@testing-library/react'
-import { useState } from 'react'
+import { useState, type ReactElement } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { useSmoothStreamText, type SmoothStreamFrameScheduler } from './useSmoothStreamText'
@@ -18,7 +18,7 @@ function Harness({
   requestFrame: SmoothStreamFrameScheduler
   cancelFrame: (id: number) => void
   now: () => number
-}): JSX.Element {
+}): ReactElement {
   const text = useSmoothStreamText(
     target,
     streaming,
@@ -149,7 +149,7 @@ describe('useSmoothStreamText', () => {
       return frames.length
     }
 
-    function Driver(): JSX.Element {
+    function Driver(): ReactElement {
       const [key, setKey] = useState('req-a')
       const [target, setTarget] = useState('第一段内容较多一些文字')
       return (

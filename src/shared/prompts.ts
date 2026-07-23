@@ -7,6 +7,12 @@ import {
   TARGET_LANGUAGE_PLACEHOLDER,
   TEXT_PLACEHOLDER
 } from './constants'
+import {
+  defaultTranslationTarget,
+  detectTranslationLanguage,
+  translationTargetEnglishName,
+  type TranslationLanguage
+} from './languages'
 import type {
   ActionDefinition,
   AiActionDefinition,
@@ -19,8 +25,8 @@ export interface ActionPrompt {
   systemPrompt: string
   userPrompt: string
   sourceBoundary?: SourceBoundary
-  sourceLanguage?: SupportedLocale
-  targetLanguage?: SupportedLocale
+  sourceLanguage?: TranslationLanguage
+  targetLanguage?: TranslationLanguage
 }
 
 export interface SourceBoundary {
@@ -31,7 +37,7 @@ export interface SourceBoundary {
 export interface PromptBuildOptions {
   outputLocale?: SupportedLocale
   translate?: TranslationSettings
-  targetLanguage?: SupportedLocale
+  targetLanguage?: TranslationLanguage
   maxTextLength?: number
   sourceBoundarySeed?: string
 }
@@ -85,13 +91,8 @@ export function assertAiTextWithinLimit(text: string, maxTextLength = AI_TEXT_LI
   }
 }
 
-export function detectTranslationLanguage(text: string): SupportedLocale {
-  return /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/u.test(text) ? 'zh-CN' : 'en-US'
-}
-
-function cherryTargetLanguageName(locale: SupportedLocale): string {
-  return locale === 'zh-CN' ? 'Chinese (Simplified)' : 'English'
-}
+// Re-export for callers that imported detection from prompts.
+export { detectTranslationLanguage } from './languages'
 
 function generalSystemPrompt(locale: SupportedLocale): string {
   return locale === 'zh-CN'
@@ -125,25 +126,17 @@ export function buildActionPrompt(
   }
 
   let template = action.prompt
-  let sourceLanguage: SupportedLocale | undefined
-  let targetLanguage: SupportedLocale | undefined
+  let sourceLanguage: TranslationLanguage | undefined
+  let targetLanguage: TranslationLanguage | undefined
   let sourceBoundary: SourceBoundary | undefined
   if (action.kind === 'translate') {
     const pair = options.translate ?? DEFAULT_TRANSLATION_PAIR
-    const detected = detectTranslationLanguage(text)
-    sourceLanguage =
-      detected === pair.primaryLanguage || detected === pair.alternateLanguage
-        ? detected
-        : pair.primaryLanguage
-    if (options.targetLanguage) {
-      targetLanguage = options.targetLanguage
-      sourceLanguage =
-        targetLanguage === pair.primaryLanguage ? pair.alternateLanguage : pair.primaryLanguage
-    } else {
-      targetLanguage =
-        sourceLanguage === pair.primaryLanguage ? pair.alternateLanguage : pair.primaryLanguage
-    }
-    template = template.replaceAll(TARGET_LANGUAGE_PLACEHOLDER, cherryTargetLanguageName(targetLanguage))
+    sourceLanguage = detectTranslationLanguage(text)
+    targetLanguage = options.targetLanguage ?? defaultTranslationTarget(sourceLanguage, pair)
+    template = template.replaceAll(
+      TARGET_LANGUAGE_PLACEHOLDER,
+      translationTargetEnglishName(targetLanguage)
+    )
   } else if (action.kind === 'summary' || action.kind === 'explain') {
     template = template.replaceAll(OUTPUT_LANGUAGE_PLACEHOLDER, outputLocale)
   }
@@ -166,7 +159,7 @@ export function buildActionPrompt(
 
   const baseSystemPrompt =
     action.kind === 'translate'
-      ? "You are a translation expert. Follow the user's editable translation instruction exactly."
+      ? "You are a multilingual translation expert. Follow the user's editable translation instruction exactly."
       : generalSystemPrompt(outputLocale)
 
   return {

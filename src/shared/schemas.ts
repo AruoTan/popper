@@ -14,6 +14,7 @@ import {
   SETTINGS_VERSION,
   TEXT_PLACEHOLDER
 } from './constants'
+import { TRANSLATION_LANGUAGES, UI_LOCALES } from './languages'
 import {
   THINKING_LEVELS,
   thinkingCapabilitySchema,
@@ -23,8 +24,13 @@ import {
 import { countUnicodeScalars, hasAtMostUnicodeScalars } from './unicode'
 import { isSafeExternalUrl, validateOpenAiBaseUrl } from './urls'
 
-export const supportedLocaleSchema = z.enum(['zh-CN', 'en-US'])
+/** UI / AI output language (summary, explain). */
+export const supportedLocaleSchema = z.enum(UI_LOCALES)
 export type SupportedLocale = z.infer<typeof supportedLocaleSchema>
+
+/** Translate action target languages (result-box switcher + settings pair). */
+export const translationLanguageSchema = z.enum(TRANSLATION_LANGUAGES)
+export type { TranslationLanguage } from './languages'
 
 /** Fixed built-in search engines (templates live in constants, not user settings). */
 export const searchEngineIdSchema = z.enum(BUILTIN_SEARCH_ENGINE_IDS)
@@ -375,8 +381,8 @@ export const actionsSchema = z
 
 export const translationSettingsSchema = z
   .object({
-    primaryLanguage: supportedLocaleSchema,
-    alternateLanguage: supportedLocaleSchema
+    primaryLanguage: translationLanguageSchema,
+    alternateLanguage: translationLanguageSchema
   })
   .strict()
   .refine((value) => value.primaryLanguage !== value.alternateLanguage, {
@@ -402,6 +408,8 @@ const providerMetadataShape = {
     .max(64)
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u, '服务商 ID 格式无效'),
   name: z.string().trim().min(1).max(80),
+  /** When false, hidden from action model pickers and the result model switcher. */
+  enabled: z.boolean().default(true),
   baseUrl: z
     .string()
     .trim()

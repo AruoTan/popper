@@ -543,7 +543,9 @@ describe('ResultApp window interactions', () => {
       contentScalarCount: countUnicodeScalars(content)
     })
 
-    expect(await screen.findByRole('heading', { name: 'Markdown 标题', level: 1 })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Markdown 标题', level: 1 }, { timeout: 5_000 })
+    ).toBeInTheDocument()
     expect(screen.getAllByRole('listitem')).toHaveLength(2)
     expect(screen.getByText('引用内容').closest('blockquote')).toBeInTheDocument()
     expect(screen.getByText('const answer = 42').closest('pre')).toBeInTheDocument()
@@ -771,6 +773,7 @@ describe('ResultApp window interactions', () => {
     settings.providers.push({
       id: 'provider-two',
       name: '备用服务商',
+      enabled: true,
       baseUrl: 'http://localhost:11434/v1',
       keyConfigured: true,
       models: [

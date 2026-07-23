@@ -10,10 +10,10 @@ import type {
   ResultSessionSnapshot,
   SelectionPayload,
   SettingsUpdate,
-  SupportedLocale,
   ToolbarDismissedEvent,
   ToolbarPointerEvent,
-  ToolbarSize
+  ToolbarSize,
+  TranslationLanguage
 } from './schemas'
 
 export type Unsubscribe = () => void
@@ -46,7 +46,7 @@ export type RunActionResult =
   | { accepted: false; message: string }
 
 export interface ActionRetryOptions {
-  targetLanguage?: SupportedLocale
+  targetLanguage?: TranslationLanguage
   providerId?: string
   modelId?: string
 }

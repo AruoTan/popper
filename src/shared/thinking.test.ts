@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   clampThinkingMode,
+  effectiveThinkingLevels,
   inferThinkingLevels,
+  modelSupportsThinkingOff,
   THINKING_LEVELS
 } from './thinking'
 
@@ -38,5 +40,24 @@ describe('clampThinkingMode', () => {
 
   it('keeps supported mode', () => {
     expect(clampThinkingMode('medium', ['low', 'medium', 'high'])).toBe('medium')
+  })
+})
+
+describe('effectiveThinkingLevels', () => {
+  it('prefers stored metadata over inference', () => {
+    expect(effectiveThinkingLevels('gpt-4o', ['low', 'high'])).toEqual(['low', 'high'])
+    expect(effectiveThinkingLevels('deepseek-r1', ['medium'])).toEqual(['medium'])
+  })
+
+  it('falls back to model-id heuristics when metadata is empty', () => {
+    expect(effectiveThinkingLevels('deepseek-r1', [])).toEqual(['low', 'medium', 'high'])
+    expect(effectiveThinkingLevels('gpt-4o-mini', [])).toEqual([])
+  })
+})
+
+describe('modelSupportsThinkingOff', () => {
+  it('is true whenever thinking levels exist', () => {
+    expect(modelSupportsThinkingOff(['low', 'medium'])).toBe(true)
+    expect(modelSupportsThinkingOff([])).toBe(false)
   })
 })

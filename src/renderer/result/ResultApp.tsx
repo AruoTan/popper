@@ -29,12 +29,15 @@ import {
   DEFAULT_RESULT_FONT_SIZE,
   RESULT_FONT_SIZE_MAX,
   RESULT_FONT_SIZE_MIN,
+  TRANSLATION_LANGUAGES,
+  TRANSLATION_LANGUAGE_CODES,
   countUnicodeScalars,
+  defaultTranslationTarget,
   detectTranslationLanguage,
   type ActionRetryOptions,
   type PublicSettings,
   type ResultSessionSnapshot,
-  type SupportedLocale
+  type TranslationLanguage
 } from '../../shared'
 import { ActionIcon } from '../components/ActionIcon'
 import { runDetached } from '../lib/asyncEffects'
@@ -58,7 +61,6 @@ import type { ResultSessionBootstrap } from './resultSessionBootstrap'
 import type { ResultState } from './resultState'
 import { useSmoothStreamText } from './useSmoothStreamText'
 
-const LANGUAGE_CODES = { 'zh-CN': 'CN', 'en-US': 'EN' } as const
 const RESULT_RESIZE_DIRECTIONS = [
   'NorthWest',
   'North',
@@ -353,7 +355,7 @@ function ResultSessionApp({
   const [pinned, setPinned] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
   const [turns, setTurns] = useState<TranscriptTurn[]>([])
-  const [translationTarget, setTranslationTarget] = useState<SupportedLocale | null>(null)
+  const [translationTarget, setTranslationTarget] = useState<TranslationLanguage | null>(null)
   const [activeModelRoute, setActiveModelRoute] = useState<ModelRoute | null>(null)
   const [routeSwitching, setRouteSwitching] = useState(false)
   const [retrying, setRetrying] = useState(false)
@@ -404,7 +406,7 @@ function ResultSessionApp({
   const effectiveModelRoute = activeModelRoute ?? defaultModelRoute
   const modelGroups = useMemo(() => (
     settings?.providers
-      .filter((provider) => provider.models.length > 0)
+      .filter((provider) => provider.enabled !== false && provider.models.length > 0)
       .map((provider) => ({
         id: provider.id,
         name: provider.name,
@@ -754,11 +756,7 @@ function ResultSessionApp({
       return
     }
     const detected = detectTranslationLanguage(session.selection.text)
-    setTranslationTarget(
-      detected === settings.translate.primaryLanguage
-        ? settings.translate.alternateLanguage
-        : settings.translate.primaryLanguage
-    )
+    setTranslationTarget(defaultTranslationTarget(detected, settings.translate))
   }, [action?.kind, session?.sessionId, session?.selection, settings?.translate])
 
   const openExternal = useCallback(async (url: string): Promise<void> => {
@@ -852,13 +850,11 @@ function ResultSessionApp({
   const translationRoute = useMemo(() => {
     if (action?.kind !== 'translate' || !selection || !settings) return null
     const detected = detectTranslationLanguage(selection.text)
-    const defaultTarget = detected === settings.translate.primaryLanguage
-      ? settings.translate.alternateLanguage
-      : settings.translate.primaryLanguage
+    const defaultTarget = defaultTranslationTarget(detected, settings.translate)
     return { detected, target: translationTarget ?? defaultTarget }
   }, [action?.kind, selection, settings, translationTarget])
   const translationSwitching = status === 'streaming' || routeSwitching || retrying
-  const changeTranslationTarget = (target: SupportedLocale): void => {
+  const changeTranslationTarget = (target: TranslationLanguage): void => {
     const previous = translationTarget
     setRouteSwitching(true)
     setTranslationTarget(target)
@@ -916,13 +912,17 @@ function ResultSessionApp({
               <div className="translation-route" aria-label="翻译方向" data-no-drag>
                 {windowsRenderer ? (
                   <>
-                    <span className="translation-route__code">{LANGUAGE_CODES[translationRoute.detected]}</span>
+                    <span className="translation-route__code">
+                      {TRANSLATION_LANGUAGE_CODES[translationRoute.detected]}
+                    </span>
                     <ArrowRight className="translation-route__arrow" size={10} />
                     <span
                       className="translation-route__target"
                       data-disabled={translationSwitching ? 'true' : undefined}
                     >
-                      <span aria-hidden="true">{LANGUAGE_CODES[translationRoute.target]}</span>
+                      <span aria-hidden="true">
+                        {TRANSLATION_LANGUAGE_CODES[translationRoute.target]}
+                      </span>
                       <ChevronDown size={9} aria-hidden="true" />
                       <select
                         className="translation-route__native-select"
@@ -930,27 +930,34 @@ function ResultSessionApp({
                         value={translationRoute.target}
                         disabled={translationSwitching}
                         onChange={(event) => changeTranslationTarget(
-                          event.target.value as SupportedLocale
+                          event.target.value as TranslationLanguage
                         )}
                       >
-                        <option value="zh-CN">CN</option>
-                        <option value="en-US">EN</option>
+                        {TRANSLATION_LANGUAGES.map((code) => (
+                          <option key={code} value={code}>
+                            {TRANSLATION_LANGUAGE_CODES[code]}
+                          </option>
+                        ))}
                       </select>
                     </span>
                   </>
                 ) : (
                   <>
-                    <span>{LANGUAGE_CODES[translationRoute.detected]}</span><ArrowRight size={11} />
+                    <span>{TRANSLATION_LANGUAGE_CODES[translationRoute.detected]}</span>
+                    <ArrowRight size={11} />
                     <select
                       aria-label="翻译目标语言"
                       value={translationRoute.target}
                       disabled={translationSwitching}
                       onChange={(event) => changeTranslationTarget(
-                        event.target.value as SupportedLocale
+                        event.target.value as TranslationLanguage
                       )}
                     >
-                      <option value="zh-CN">CN</option>
-                      <option value="en-US">EN</option>
+                      {TRANSLATION_LANGUAGES.map((code) => (
+                        <option key={code} value={code}>
+                          {TRANSLATION_LANGUAGE_CODES[code]}
+                        </option>
+                      ))}
                     </select>
                   </>
                 )}

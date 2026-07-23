@@ -2743,7 +2743,7 @@ pub fn retry_action(
     window: WebviewWindow,
     state: State<'_, RuntimeState>,
     session_id: String,
-    target_language: Option<crate::models::Locale>,
+    target_language: Option<crate::models::TranslationLanguage>,
     provider_id: Option<String>,
     model_id: Option<String>,
 ) -> Result<RunActionResult, String> {

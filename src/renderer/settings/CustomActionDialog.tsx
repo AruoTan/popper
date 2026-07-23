@@ -9,6 +9,8 @@ import {
   THINKING_LEVEL_LABELS,
   aiActionKindSchema,
   clampThinkingMode,
+  effectiveThinkingLevels,
+  modelSupportsThinkingOff,
   type ActionDefinition,
   type ActionKind,
   type PublicProviderSettings,
@@ -69,11 +71,38 @@ export interface ActionEditorValue {
   searchEngineId?: SearchEngineId
 }
 
-interface CustomActionDialogProps {
-  action: ActionDefinition | null
-  providers: readonly PublicProviderSettings[]
-  onCancel: () => void
-  onSave: (value: ActionEditorValue) => void
+interface ModelRoute {
+  providerId: string
+  modelId: string
+}
+
+function modelRouteValue(route: ModelRoute): string {
+  return JSON.stringify([route.providerId, route.modelId])
+}
+
+function parseModelRoute(value: string): ModelRoute | null {
+  if (!value) return null
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === 2 &&
+      typeof parsed[0] === 'string' &&
+      typeof parsed[1] === 'string'
+    ) {
+      return { providerId: parsed[0], modelId: parsed[1] }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null
+}
+
+interface ModelChoice extends ModelRoute {
+  value: string
+  providerName: string
+  modelName: string
+  thinkingLevels: ReturnType<typeof effectiveThinkingLevels>
 }
 
 export function CustomActionDialog({
@@ -81,17 +110,21 @@ export function CustomActionDialog({
   providers,
   onCancel,
   onSave
-}: CustomActionDialogProps): JSX.Element {
+}: {
+  action: ActionDefinition | null
+  providers: readonly PublicProviderSettings[]
+  onCancel: () => void
+  onSave: (value: ActionEditorValue) => void
+}): JSX.Element {
   const initialAi = action && 'prompt' in action ? action : null
   const initialSearchEngineId =
     action && action.kind === 'search' && 'searchEngineId' in action
       ? action.searchEngineId
       : DEFAULT_SEARCH_ENGINE_ID
-  const firstProvider = providers[0]
   const [name, setName] = useState(action?.name ?? '')
   const [icon, setIcon] = useState(action?.icon ?? 'sparkles')
   const [kind, setKind] = useState<ActionKind>(action?.kind ?? 'custom')
-  const [providerId, setProviderId] = useState(initialAi?.providerId ?? firstProvider?.id ?? '')
+  const [providerId, setProviderId] = useState(initialAi?.providerId ?? '')
   const [modelId, setModelId] = useState(initialAi?.modelId ?? '')
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(initialAi?.thinkingMode ?? 'off')
   const [searchEngineId, setSearchEngineId] = useState<SearchEngineId>(initialSearchEngineId)
@@ -100,15 +133,47 @@ export function CustomActionDialog({
   const nameRef = useRef<HTMLInputElement>(null)
   const dialogRef = useRef<HTMLElement>(null)
 
-  const provider = useMemo(
-    () => providers.find((candidate) => candidate.id === providerId),
-    [providerId, providers]
+  const enabledProviders = useMemo(
+    () => providers.filter((provider) => provider.enabled !== false),
+    [providers]
   )
-  const selectedModel = useMemo(
-    () => provider?.models.find((candidate) => candidate.id === modelId),
-    [modelId, provider]
+
+  const modelGroups = useMemo(() => {
+    return enabledProviders
+      .filter((provider) => provider.models.length > 0)
+      .map((provider) => ({
+        id: provider.id,
+        name: provider.name,
+        keyConfigured: provider.keyConfigured,
+        choices: provider.models.map<ModelChoice>((model) => ({
+          providerId: provider.id,
+          modelId: model.id,
+          providerName: provider.name,
+          modelName: model.name,
+          thinkingLevels: effectiveThinkingLevels(model.id, model.thinkingLevels),
+          value: modelRouteValue({ providerId: provider.id, modelId: model.id })
+        }))
+      }))
+  }, [enabledProviders])
+
+  const modelChoices = useMemo(
+    () => modelGroups.flatMap((group) => group.choices),
+    [modelGroups]
   )
-  const thinkingLevels = selectedModel?.thinkingLevels ?? []
+
+  const selectedChoice = useMemo(() => {
+    if (!providerId || !modelId) return null
+    return modelChoices.find(
+      (choice) => choice.providerId === providerId && choice.modelId === modelId
+    ) ?? null
+  }, [modelChoices, modelId, providerId])
+
+  const modelSelectValue = providerId && modelId
+    ? modelRouteValue({ providerId, modelId })
+    : ''
+
+  const thinkingLevels = selectedChoice?.thinkingLevels ?? []
+  const showThinkingOff = modelSupportsThinkingOff(thinkingLevels)
 
   useEffect(() => {
     nameRef.current?.focus()
@@ -155,7 +220,7 @@ export function CustomActionDialog({
         prompt: cleanPrompt,
         providerId,
         modelId,
-        thinkingMode
+        thinkingMode: clampThinkingMode(thinkingMode, thinkingLevels)
       })
       return
     }
@@ -183,6 +248,24 @@ export function CustomActionDialog({
     setPrompt((current) => promptAfterKindChange(kind, next, current))
     setKind(next)
     setError('')
+  }
+
+  const changeModelRoute = (value: string): void => {
+    const route = parseModelRoute(value)
+    if (!route) {
+      setProviderId('')
+      setModelId('')
+      setThinkingMode('off')
+      return
+    }
+    const choice = modelChoices.find(
+      (item) => item.providerId === route.providerId && item.modelId === route.modelId
+    )
+    setProviderId(route.providerId)
+    setModelId(route.modelId)
+    setThinkingMode((current) =>
+      clampThinkingMode(current, choice?.thinkingLevels ?? [])
+    )
   }
 
   return (
@@ -270,62 +353,54 @@ export function CustomActionDialog({
 
           {isAiKind(kind) && (
             <>
-              <div className="dialog-form-grid">
-                <label className="field">
-                  <span className="field__label">服务商</span>
-                  <select
-                    className="control"
-                    value={providerId}
-                    onChange={(event) => {
-                      setProviderId(event.target.value)
-                      setModelId('')
-                      setThinkingMode('off')
-                    }}
-                  >
-                    <option value="">尚未选择</option>
-                    {providers.map((candidate) => (
-                      <option value={candidate.id} key={candidate.id}>{candidate.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
-                  <span className="field__label">模型</span>
-                  <select
-                    className="control"
-                    value={modelId}
-                    disabled={!provider}
-                    onChange={(event) => {
-                      const nextModelId = event.target.value
-                      const nextLevels =
-                        provider?.models.find((model) => model.id === nextModelId)?.thinkingLevels
-                        ?? []
-                      setModelId(nextModelId)
-                      setThinkingMode((current) => clampThinkingMode(current, nextLevels))
-                    }}
-                  >
-                    <option value="">尚未选择</option>
-                    {provider?.models.map((model) => (
-                      <option value={model.id} key={model.id}>{model.name}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
+              <label className="field">
+                <span className="field__label">模型</span>
+                <select
+                  className="control"
+                  aria-label="模型"
+                  value={modelSelectValue}
+                  onChange={(event) => changeModelRoute(event.target.value)}
+                >
+                  <option value="">尚未选择</option>
+                  {modelGroups.map((group) => (
+                    <optgroup
+                      key={group.id}
+                      label={group.keyConfigured ? group.name : `${group.name}（未配置密钥）`}
+                    >
+                      {group.choices.map((choice) => (
+                        <option key={choice.value} value={choice.value}>
+                          {choice.modelName}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                <span className="field__hint">
+                  已启用的服务商与其模型列在同一列表中；可在「服务商」中关闭不需要的服务商。
+                </span>
+              </label>
 
               {thinkingLevels.length > 0 && (
                 <label className="field">
                   <span className="field__label">思考强度</span>
                   <select
                     className="control"
+                    aria-label="思考强度"
                     value={thinkingMode}
                     onChange={(event) => setThinkingMode(event.target.value as ThinkingMode)}
                   >
-                    <option value="off">关闭思考（更快首字）</option>
+                    {showThinkingOff && (
+                      <option value="off">关闭思考（更快首字）</option>
+                    )}
                     {thinkingLevels.map((level) => (
                       <option key={level} value={level}>
                         {THINKING_LEVEL_LABELS[level]}
                       </option>
                     ))}
                   </select>
+                  <span className="field__hint">
+                    已根据模型 ID 自动识别思考能力；关闭思考可缩短首字延迟。
+                  </span>
                 </label>
               )}
 

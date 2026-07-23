@@ -241,6 +241,7 @@ describe('result action stream reducer', () => {
       },
       status: 'streaming',
       content: '😀',
+      thinkingContent: '',
       contentScalarCount: 1,
       lastContentSequence: 2,
       lastSequence: 2,
