@@ -10,17 +10,17 @@ TextLens 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon
 
 ## 界面预览
 
-### 结果窗口
+### 设置 · AI 服务商与模型
 
-<img src="./assets/screenshots/result.png" alt="结果窗口" width="480" />
+<img src="./assets/screenshots/settings-ai-providers.png" alt="设置-AI服务商与模型" width="520" />
 
 ### 设置 · 工具栏动作
 
 <img src="./assets/screenshots/settings-toolbar-actions.png" alt="设置-工具栏动作" width="520" />
 
-### 设置 · AI 服务商与模型
+### 结果窗口
 
-<img src="./assets/screenshots/settings-ai-providers.png" alt="设置-AI服务商与模型" width="520" />
+<img src="./assets/screenshots/result.png" alt="结果窗口" width="480" />
 
 ## 设计灵感与第三方来源
 
