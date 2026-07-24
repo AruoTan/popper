@@ -12,15 +12,15 @@ Both platforms share the same renderer, settings, actions, model requests, strea
 
 ### Result window
 
-![Result window](./assets/screenshots/result.png)
+<img src="./assets/screenshots/result.png" alt="Result window" width="480" />
 
 ### Settings · Toolbar actions
 
-![Settings - Toolbar actions](./assets/screenshots/settings-toolbar-actions.png)
+<img src="./assets/screenshots/settings-toolbar-actions.png" alt="Settings - Toolbar actions" width="520" />
 
 ### Settings · AI providers and models
 
-![Settings - AI providers and models](./assets/screenshots/settings-ai-providers.png)
+<img src="./assets/screenshots/settings-ai-providers.png" alt="Settings - AI providers and models" width="520" />
 
 ## Design inspiration and third-party sources
 
