@@ -74,6 +74,24 @@ const RESULT_RESIZE_DIRECTIONS = [
 
 type ResultResizeDirection = (typeof RESULT_RESIZE_DIRECTIONS)[number]
 
+/**
+ * Collapse WebKit/AppKit native popup menus (e.g. `<select>`) before the
+ * result window is destroyed. An open NSMenu tracking session nests a run
+ * loop that can re-enter window Destroyed handling; combined with a stale
+ * WindowState lock this previously deadlocked the tray.
+ */
+function dismissNativeOverlays(): void {
+  const active = document.activeElement
+  if (active instanceof HTMLElement) {
+    active.blur()
+  }
+  for (const select of document.querySelectorAll('select')) {
+    if (select instanceof HTMLSelectElement) {
+      select.blur()
+    }
+  }
+}
+
 interface ModelRoute {
   providerId: string
   modelId: string
@@ -468,6 +486,7 @@ function ResultSessionApp({
   }, [])
 
   const closeWindow = useCallback(async (): Promise<void> => {
+    dismissNativeOverlays()
     await window.textLens.closeResult(sessionId)
   }, [sessionId])
 
@@ -713,7 +732,13 @@ function ResultSessionApp({
   }, [reconcilePendingFollowUp, requestId, status])
 
   useEffect(() => {
+    const onPageHide = (): void => {
+      dismissNativeOverlays()
+    }
+    window.addEventListener('pagehide', onPageHide)
     return () => {
+      window.removeEventListener('pagehide', onPageHide)
+      dismissNativeOverlays()
       if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current)
       if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current)
     }

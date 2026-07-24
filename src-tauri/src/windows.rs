@@ -341,6 +341,15 @@ impl WindowState {
         }
     }
 
+    /// Records the toolbar's current selection ownership and returns the size
+    /// that should be used for layout. Callers must drop the `WindowState` lock
+    /// before any work that waits on the UI thread.
+    fn commit_toolbar_selection(&mut self, selection_id: &str, anchor: Point) -> WindowSize {
+        self.toolbar_anchor = Some(anchor);
+        self.toolbar_selection_id = Some(selection_id.to_owned());
+        self.toolbar_size
+    }
+
     #[cfg(any(test, target_os = "windows"))]
     fn reserve_toolbar_recovery(&mut self, selection_id: &str) -> bool {
         if self.toolbar_recovery_selection_id.as_deref() != Some(selection_id)
@@ -520,14 +529,23 @@ impl WindowCoordinator {
         anchor: Point,
     ) -> tauri::Result<()> {
         let window = self.ensure_toolbar(app)?;
-        let mut state = self.state.lock();
-        state.toolbar_anchor = Some(anchor);
-        state.toolbar_selection_id = Some(selection_id.to_owned());
-        let size = state.toolbar_size;
+        // Never hold WindowState across UI-thread hops. On macOS,
+        // order_front_without_focus (and often set_position/set_size) blocks
+        // until the AppKit main thread runs the work. Holding the coordinator
+        // lock while waiting deadlocks with main-thread handlers such as
+        // WindowEvent::Destroyed → remove_result, which freezes the tray icon.
+        let size = {
+            let mut state = self.state.lock();
+            state.commit_toolbar_selection(selection_id, anchor)
+        };
         let layout = toolbar_layout(&window, anchor, size)?;
+        // A concurrent hide/rebuild may have replaced this selection while we
+        // computed layout off-lock. Do not resurrect a stale toolbar.
+        if self.state.lock().toolbar_selection_id.as_deref() != Some(selection_id) {
+            return Ok(());
+        }
         apply_window_layout(&window, layout)?;
         order_front_without_focus(&window)?;
-        drop(state);
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.start_toolbar_pointer_tracking(app, &window);
         Ok(())
@@ -3382,6 +3400,25 @@ mod tests {
         assert!(pointer_leave_should_close(true, true, false));
         assert!(!pointer_leave_should_close(false, true, false));
         assert!(!pointer_leave_should_close(true, false, false));
+    }
+
+    #[test]
+    fn commit_toolbar_selection_updates_ownership_without_requiring_ui_work() {
+        let coordinator = WindowCoordinator::default();
+        let mut state = coordinator.state.lock();
+        let anchor = Point { x: 120.0, y: 80.0 };
+        let size = state.commit_toolbar_selection("selection-show", anchor);
+        assert_eq!(size, state.toolbar_size);
+        assert_eq!(state.toolbar_selection_id.as_deref(), Some("selection-show"));
+        assert_eq!(state.toolbar_anchor, Some(anchor));
+
+        // Drop the state lock before any main-thread window work would run.
+        // This documents the show_toolbar ordering that prevents the macOS
+        // tray deadlock (events thread holds state → waits for main orderFront;
+        // main holds nested popup menu → remove_result waits for state).
+        drop(state);
+        let state = coordinator.state.lock();
+        assert_eq!(state.toolbar_selection_id.as_deref(), Some("selection-show"));
     }
 
     #[test]

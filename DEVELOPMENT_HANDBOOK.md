@@ -1,17 +1,139 @@
-# TextLens 从 macOS 0.3.16 到 0.3.55 的开发记录
+# TextLens 开发手册
 
-整理日期：2026-07-23  
-版本范围：macOS 0.3.16 至 TextLens 0.3.55
+本手册面向继续开发 TextLens 的贡献者与迁移工作区，涵盖本地开发环境、可迁移源码导出，以及版本演进记录。产品简介、功能说明与安装步骤见 [README.md](./README.md)。
 
-## 文档说明
+## 本地开发
 
-本文记录 TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代到 0.3.55 的过程。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
+两个平台共用同一套 renderer、设置、动作、模型请求和流式输出；差异集中在选区捕获、剪贴板、原生窗口与系统集成。依赖目录 `node_modules`、网页构建目录 `dist` 和 Rust 编译目录 `src-tauri/target` 不应提交或放入源码快照。
+
+### Windows
+
+环境要求：
+
+- Windows 10/11 x64
+- Visual Studio Build Tools，包含 MSVC x64 C++ 工具链和 Windows SDK
+- Rust stable 与 `x86_64-pc-windows-msvc` target
+- Node.js 22.12+、pnpm 11+ 和 Microsoft Edge WebView2 Runtime
+
+安装并启动：
+
+    pnpm install
+    rustup target add x86_64-pc-windows-msvc
+    pnpm dev:windows
+
+`pnpm dev:windows` 会像正式应用一样隐藏启动设置窗口并显示短暂提示。通过通知区打开设置页；测试完整退出时，使用通知区菜单，或将设置窗口关闭行为改为“退出 TextLens”。
+
+常用命令：
+
+    pnpm typecheck                 # 检查 TypeScript
+    pnpm test                      # 运行 renderer/shared 单元测试
+    pnpm test:rust:windows         # 运行 Windows Rust 测试
+    pnpm check:rust:windows        # 检查 Windows Rust 后端
+    pnpm verify:windows            # 完整 Windows 自动化验证
+    pnpm package:windows           # 构建并核验未签名 NSIS 安装包
+
+### macOS
+
+环境要求：
+
+- Apple Silicon Mac，macOS 12 或更高版本
+- Xcode Command Line Tools
+- Rust stable，并安装 aarch64-apple-darwin target
+- Node.js 22.12+ 与 pnpm 11+
+
+安装并启动：
+
+    pnpm install
+    rustup target add aarch64-apple-darwin
+    pnpm dev
+
+常用命令：
+
+    pnpm dev              # 启动 arm64 Tauri 开发应用
+    pnpm typecheck        # 检查 TypeScript
+    pnpm test             # 运行 renderer/shared 单元测试
+    pnpm check:rust       # 检查 arm64 Rust 后端
+    pnpm verify           # 类型、测试、网页构建和 Rust 检查
+    pnpm package:app      # 只构建 arm64 TextLens.app
+    pnpm package:dmg      # 构建并核验 arm64 TextLens.app 和 DMG
+
+构建产物：
+
+    src-tauri/target/aarch64-apple-darwin/release/bundle/macos/TextLens.app
+    src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/TextLens_<version>_aarch64.dmg
+
+## 导出可迁移开发源码
+
+如需把当前开发环境迁移到另一台机器继续开发，可在仓库根目录执行：
+
+    pnpm export:dev-source
+
+该命令会生成一个新的干净目录：
+
+    portable-dev-sources/TextLens-<version>-dev-source
+
+例如版本 0.3.56 会导出为：
+
+    portable-dev-sources/TextLens-0.3.56-dev-source
+
+也可将上述目录复制到仓库外，作为独立的 `TextLens-<version>-dev-source` 文件夹或压缩包分发；包内只含源码与文档，便于整夹拷贝到其他机器继续开发。
+
+### 导出内容
+
+会保留：
+
+- 共享前端源码 `src/`
+- 平台代码与资源 `apps/`、`assets/`
+- Rust/Tauri 后端 `src-tauri/`（不含编译产物）
+- 脚本、锁文件、配置、README（中/英）、本开发手册、许可证与第三方说明
+
+不会包含：
+
+- 已编译安装包或 `release/` 发布快照
+- 前端构建产物 `dist/`
+- 依赖目录 `node_modules/`
+- Rust 编译目录 `src-tauri/target/`
+- 嵌套的 `portable-dev-sources/`、缓存、日志和 `.tsbuildinfo`
+
+### 迁移到其他电脑后
+
+1. 把整个 `TextLens-<version>-dev-source` 文件夹（或已重命名的 `TextLens` 工作区）复制到目标机器。
+2. 安装 Node.js 22+、pnpm 11+，以及对应平台的 Rust / 平台工具链。
+3. 在源码根目录执行：
+
+       pnpm install
+
+4. 验证：
+
+       # Windows
+       pnpm verify:windows
+
+       # Apple Silicon macOS
+       pnpm verify
+
+5. 开发或打包：
+
+       # Windows 开发
+       pnpm dev:windows
+
+       # Windows 安装包
+       pnpm package:windows
+
+       # macOS 开发 / 打包
+       pnpm dev
+       pnpm package
+
+默认设置中只会预置 OpenAI 的 Base URL，API Key 为空；不会把开发机上的密钥或私有配置编译进应用。迁移后的环境与命令说明见本手册「本地开发」与上文迁移步骤。
+
+## 版本演进与开发记录
+
+以下记录根据本项目连续开发需求与当前实现整理。部分小版本是内部迭代，重点记录功能变化，不等同于正式公开发行说明。
+
+TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版本并继续迭代。内容覆盖界面变化、设置调整、功能对齐、跨应用选区兼容、窗口生命周期、性能与稳定性修复，以及桌面端构建发布链。
 
 这段开发并不是一次简单的平台移植。macOS 版本依赖 Accessibility API、Event Tap、Core Graphics 和 AppKit；Windows 需要重新处理 UI Automation、Win32 输入 Hook、OLE 剪贴板、WebView2、混合 DPI、窗口激活规则和通知区域生命周期。项目始终保留同一套 React renderer、设置结构、动作服务、模型请求和流式输出，仅在必须依赖操作系统的部分使用平台实现。
 
-版本记录中的部分小版本属于连续内部迭代，不等同于正式公开发行。当前源码版本为 **0.3.55**；macOS 应用默认作为不出现在 Dock 的菜单栏代理运行，Windows 仍提供未签名 current-user NSIS 测试包。
-
-## 开发阶段概览
+### 开发阶段概览
 
 | 阶段 | 版本 | 工作重点 | 结果 |
 | --- | --- | --- | --- |
@@ -23,7 +145,64 @@
 | 菜单栏与文档收尾 | 0.3.31–0.3.33 | 结果窗关闭按钮、LSUIElement 菜单栏代理、选区兼容、复制反馈、测试与文档同步 | macOS 默认不进入 Dock，并完成一轮发布前稳定性复查 |
 | 设置体验与搜索引擎 | 0.3.34 | 搜索引擎列表整合、API Key 显隐、模型拖拽排序、schema v9 迁移 | 设置页更易管理搜索与模型，配置可安全升级 |
 
-## 0.3.16：macOS 功能基线
+### 版本摘要
+
+| 版本 | 主要变化 |
+| --- | --- |
+| 0.3.2 | API Key 改为应用本地 AES-256-GCM 加密存储，不再访问系统钥匙串；移除划词工具栏外层矩形阴影。 |
+| 0.3.3–0.3.4 | 修复工具栏和结果窗复制；压缩结果窗标题栏；重做底部关闭、重试、复制按钮；加入继续提问和多轮上下文，并确定不携带 system 与原始任务提示。 |
+| 0.3.5 | 修复设置页动作拖动排序；整理稳定的 macOS 基线；开始 Windows 10/11 x64 适配。 |
+| 0.3.6 | 暂停 Windows 发布，集中优化 macOS；工具栏取消默认/上次动作底色；后端与前端加入轻量流式缓冲，改善首字等待和输出流畅度。 |
+| 0.3.7–0.3.9 | 优化结果窗等待阶段和滚动条；反复修正工具栏 hover，最终通过 macOS 原生全局指针跟踪实现“无需按下鼠标，移入即高亮、移出即消失”。 |
+| 0.3.10 | 清理开发测试调用与正式构建边界，避免本机测试工具路径进入发布行为；继续加固工具栏指针状态隔离。 |
+| 0.3.11–0.3.13 | 更新专业翻译与格式修复默认提示词；提示词支持修改和一键重置；结果窗加入按服务商分组的模型切换并支持原窗口重新生成；优化标题栏语言缩写和空间分配。 |
+| 0.3.14 | 扩展微信、WPS 等自绘文本区域的选区捕获，加入临时复制并恢复剪贴板的兼容路径。 |
+| 0.3.15 | 结果框改为以鼠标为中心定位；安全 Markdown 增加数学公式解析和 KaTeX 渲染。 |
+| 0.3.16 | 最终定位调整为相对鼠标中心向右 10%、向下 30%，保留屏幕边缘钳制；整理 Apple Silicon 源码、TextLens.app、DMG 和校验文件。 |
+| 0.3.17 | 完成 Windows 10/11 x64 对齐：UI Automation 与剪贴板兼容捕获、完整剪贴板恢复、非激活 hover、混合 DPI、多屏窗口、通知区、单实例、WebView2、NSIS 和 Windows 产物校验。 |
+| 0.3.18 | 引入 Windows 任务栏主窗口、可配置的关闭行为、设置页退出入口和有界 UIA/OLE 关闭流程，并修复原生窗口操作的重复投递。 |
+| 0.3.19 | 将 AI 动作的结果窗口创建事务移出同步 Tauri IPC 主线程，修复 0.3.18 中点击翻译等动作仍可能一直转圈的问题；增加设置页关闭监听就绪握手，消除启动后立即关闭时的退出请求丢失。 |
+| 0.3.20 | Windows 普通启动改为非激活轻提示；修复冷启动首个 AI 结果窗闪烁；结果窗恢复干净圆角、八方向缩放和尺寸记忆；缩小并重新定位划词工具栏；加固 UIA、剪贴板竞争保护和常见自绘应用兼容性。 |
+| 0.3.21 | 尝试在 detached 动态结果窗创建后轮询原生 HWND，以缓解过早访问窗口句柄导致的 WebView 消息错误，但该方案未证明 WebView2 renderer 已真正就绪，未能彻底解决现场创建失败；同时将搜索改为异步 Windows Shell 直接打开，通过经验证的父子进程关系支持 Cherry Studio 等 Electron 应用，并将启动提示改为屏幕底部居中。 |
+| 0.3.22 | 取消 detached build 后的 HWND 轮询，改为等待结果 renderer 的 prepare IPC，再一次完成原生样式、透明隐藏、定位和尺寸准备，commit 时恢复用户透明度与焦点；Windows 工具栏加入 selection ID 保护的 prepare/present 握手，以最终 DOM 尺寸原子定位并显示，消除旧尺寸闪烁；复用预热的 STA/UIA 通道，缩短选区稳定等待和重试间隔，减少进程树快照与 Runtime ID 去重开销，并确保 UIA COM 接口在 OLE apartment 撤销前完成释放。 |
+| 0.3.23 | 修复隐藏结果 WebView 默认取得焦点后触发 blur、导致窗口在 reveal 前被关闭的生命周期竞态；结果窗口的焦点失效关闭仅在 committed 后启用；pending 会话清理返回明确原因，避免把准备阶段的关闭误报为普通创建失败。 |
+| 0.3.24 | Windows 结果窗口失焦改为延迟检查真实前台 HWND，WebView2 文档、模型下拉、窗口拖拽和缩放不再被误判为外部失焦；工具栏改为 UI 线程同步原生隐藏，并在 renderer 中销毁已消费选区，避免结果出现后工具栏残留或被旧布局再次显示。 |
+| 0.3.25 | 完成 Windows 稳定性与响应速度审计：工具栏 stage/present/hide/resize 在 UI 线程按 selection 原子提交且不跨线程持共享锁；原生 HWND 指针采样取代 60 Hz Tauri 窗口查询；旧 Dismiss 不再清除新选区；UIA 瞬时失败可重试，捕获预算为 worker 回复留出余量，剪贴板事务固定输入 generation 并复用进程快照；renderer 隔离非关键初始化错误、合并并发重试、稳定全局键盘监听并删除首次重复尺寸 IPC；加固 Windows 并发首次创建本地加密密钥。 |
+| 0.3.26 | 统一翻译结果标题栏的语言方向字号、字重和中心线；Windows 结果窗继续跳过任务栏，标题栏固定提供置顶和关闭按钮。将第三方 UIA/OLE provider 的不可信捕获迁移到同一程序的隔离 helper 进程，超时、崩溃或协议异常后可终止并重建；增加低级输入 Hook 异常检测和恢复能力，避免捕获资源被卡死的 provider 永久耗尽。 |
+| 0.3.27 | 修复 Foreground 事件在鼠标 Down/Up 之间清空有效手势、导致划词隔次失败的问题，并在无害的前台 generation 变化后将 pending capture rebase 到最新 generation；删除每 30 秒盲目重装 Hook 的逻辑，改由 instance token 和线程退出状态只替换失效实例；启动后在后台预热选区 helper，降低首次捕获延迟；彻底删除结果窗最小化 IPC、状态、图标和任务栏恢复链路，保留置顶与关闭。 |
+| 0.3.28 | 删除来源应用 HWND/PID 与捕获时前台窗口必须一致的不可靠硬门控，仅在 TextLens 自身仍占前台或暂时没有有效前台窗口时进行有界等待；工具栏对 present、监听和设置 IPC 的瞬时失败进行有限重试，并可重建失效 WebView 后恢复最新选区；补充 Down/Up、前台切换、helper 回传及 renderer 恢复的状态机与事件交付测试。 |
+| 0.3.29 | 修复结果窗或搜索切换前台后第一轮划词被错误外部窗口捕获、以及迟到 Foreground 关闭新工具栏的问题；捕获前使用 root/PID/进程族进行软关联等待，保留最近成功 generation 过滤同源迟到事件。Windows UIA 增加 focused element 备选，放宽不可靠祖先密码属性对 UIA 文本的阻断，并为 ChatGPT/Codex、EmEditor 及已验证文本控件启用安全剪贴板回退。 |
+| 0.3.30 | 修复 Windows 点击翻译、解释、总结后、结果窗出现前短暂显示系统“🚫”光标的问题；保留现有 busyActionId 单飞锁与 spinner 时序，只在工具栏作用域内覆盖 disabled 光标为中性状态，并为忙态单飞与禁用光标增加前端回归测试。 |
+| 0.3.31 | 为结果窗标题栏补齐手动关闭按钮；macOS 和 Windows 的标题栏按钮顺序统一为“置顶、关闭”，避免用户只能依赖失焦或底部关闭入口。 |
+| 0.3.32 | 将 macOS 调整为默认不显示在 Dock 的菜单栏代理应用，并完成一轮源码稳定性复查：收敛结果窗延迟加载测试噪音、清理 Apple Silicon 编译警告、同步文档与可迁移源码导出说明。 |
+| 0.3.33 | 为 macOS Codex/ChatGPT 输出区增加受限辅助功能与剪贴板兼容回退；复制成功后保留工具栏并临时显示 `clipboard-check`；安全迁移旧标识目录中的模型与加密密钥；模型未配置时提供可操作提示；单一搜索动作默认使用谷歌，搜索引擎可在设置页切换为必应中国版或百度；统一原生桥 TextLens 命名并补充跨平台回归测试。 |
+| 0.3.34 | 整合搜索引擎与地址模板（默认 Google / Bing / 百度，支持自定义添加）；API Key 输入支持显示/隐藏；模型列表支持拖动手柄排序；设置 schema 升级至 v9 并兼容迁移旧配置。 |
+| 0.3.35 | 搜索引擎改为绑定「搜索」动作（三选一下拉，无模板/自定义）；设置页分区重排（AI 服务商在工具栏动作之前）；已保存 API Key 以黑点显示并支持小眼睛明文回显；设置 schema 升级至 v10。 |
+| 0.3.36 | 未配置 AI 模型时点翻译等动作自动打开设置并定位到工具栏动作，短暂提示配置服务商/模型；快捷键触发模式下保持选区监听以支持点工具栏外关闭。 |
+| 0.3.37 | 设置顶部提示统一为绿/红、约 2 秒自动消失，悬浮不透明 toast 避免与正文叠字；流式合批与显示平滑参数收紧以改善首字与跟手。 |
+| 0.3.38 | 进一步优化翻译/解释/总结等流式首字与跟手：前段立即下发与显示，短增量实时跟上，大块仍平滑；HTTP 开启 TCP_NODELAY。 |
+| 0.3.39 | Review 加固与 CodeG 划词兼容：API Key 点击查看、删除旧 IPC_CHANNELS、CodeG 剪贴板回退白名单、macOS changeCount 复查、流式 sessionId/输出上限、取消 legacy session、Markdown 非主键导航抑制、API Key 写入同锁。 |
+| 0.3.40 | 流式首字再加速（加宽 SSE 首包与前端即时字符/字素预算）；同步模型思考档位，AI 动作可选手动档位或关闭思考（默认 off），请求注入 `reasoning_effort`。 |
+| 0.3.41 | 设置页服务商模型列表改为紧凑 chip（仅名称、一行多个），去掉每模型思考档位徽章；思考档位仍仅在工具栏动作编辑中选择。 |
+| 0.3.42 | 复制成功后 Dismiss 强制 hide 并同步前端；流式 SSE/store/播放预算再收紧。 |
+| 0.3.43 | 复制成功后抑制同一选区文本的短时重捕获，避免工具栏跳到点击处并需点两次才消失。 |
+| 0.3.44 | 复制成功后把键盘焦点还给划词来源应用，避免第一次外点只用于切回窗口。 |
+| 0.3.45 | 复制后无感交还焦点（避免窗口闪动）；结果框底部继续提问/重试/复制仅悬停下沿时显示。 |
+| 0.3.46 | 翻译/解释等结果窗关闭后抑制原选区重弹工具栏，与复制后一次外点逻辑一致。 |
+| 0.3.47 | 关闭结果时尽量取消宿主划词高亮；流式首字近零延迟（document 就绪前置、hydrate 后即时预算、streaming 直通）。 |
+| 0.3.48 | 消除翻译流式卡顿：SSE 逐段即时 emit、store 取消 rAF 合并、playback 同步直通（跳过全文 Segmenter）。 |
+| 0.3.49 | 同步源码包版本与文档，导出可迁移开发源码快照。 |
+| 0.3.50 | 将默认「引用」动作升级为「问AI」：打开结果窗多轮提问（首轮可只带上下文）；多轮 transcript UI；SSE content delta 立即下发、前端同步直通，降低首字延迟；设置 schema 迁移。 |
+| 0.3.51 | 结果窗自适应打字机式流式显示（store 仍即时收齐逻辑文本）；thinking/reasoning 增量端到端透传；action flusher 按批 yield 降低 IPC 抖动。 |
+| 0.3.52 | 设置页改为左侧导航 + 右侧分区内容；精简翻译/总结/解释默认提示词并同步 Rust 默认值与未改动内置项迁移；结果窗 Markdown 视觉与明暗主题优化，无公式内容跳过 math 插件。 |
+| 0.3.53 | 结果关闭后延迟清除宿主选区，清除完成后释放 same-text 抑制，避免下次划词工具栏缺失；结果正文再次划词后，在结果框内点击工具栏外区域可正确隐藏工具栏；服务商模型改为 `list_provider_models` 获取 → 多选合并 → 纵向拖拽排序；设置页与结果窗交互打磨。 |
+| 0.3.54 | Windows 划词：allowlist 应用在 `IsPassword` 未知时允许剪贴板回退；WPS/微信/QQ 等进程族 UIA 关联；UIA 无目标时前台 Ctrl+C 路径；短时重试后及时 break。macOS：剪贴板 allowlist 大小写不敏感，拓宽金山/WPS 识别。结果 Markdown：句末单换行段落、中文列表标记与块边界规范化；思考区字号约为结果设置的 0.82 倍。 |
+| 0.3.55 | 服务商 `enabled` 启停；动作模型选择改为按服务商分组的统一 optgroup 列表，并按模型名自动推断思考档位（含「关闭思考」）；翻译目标语言扩展为 zh/en/ja/ko/ru/de/fr，结果标题栏短码切换；默认其他语种→中文、中文→英文；收紧翻译与解释默认提示词。 |
+| 0.3.56 | 修复 macOS 主线程死锁（持 WindowState 锁等待 orderFront 导致托盘无响应）；结果窗关闭前 blur 原生 select；文档改为 DEVELOPMENT_HANDBOOK 开发手册并精简 README。 |
+
+跨版本累计完成的其他能力包括：多服务商多模型、自定义动作、HTTP 服务地址、URL/IP 直达、结果窗拖动与尺寸记忆、置顶与多种自动关闭方式、结果正文再次划词、安全 Markdown、模型重试与临时切换。
+
+### 0.3.16：macOS 功能基线
 
 0.3.16 是本轮 Windows 开发的参照版本。它已经具备一套完整的划词工作流：
 
@@ -39,8 +218,6 @@
 0.3.16 还确定了结果窗口的跟随鼠标定位规则：先让结果框中心对齐动作点击时的鼠标位置，再向右偏移结果框宽度的 10%，向下偏移高度的 30%，接近屏幕边缘时限制在当前显示器工作区内。
 
 这一版整理了 Apple Silicon 源码、`TextLens.app`、DMG 和 SHA-256 文件。它既是功能基线，也是可回归的 macOS 发布快照。
-
-## 逐版本开发记录
 
 ### 0.3.17：完成 Windows 10/11 x64 首次对齐
 
@@ -272,9 +449,9 @@ helper 等待期间排队的 Foreground 事件还可能在 SelectionEvent 发出
 
 本轮没有采用可能增加热路径堆分配的大 enum 装箱等机械优化，优先保持已经验证的响应速度和捕获状态机边界。
 
-## 界面演进
+### 界面演进
 
-### 启动、设置窗口和通知区域
+#### 启动、设置窗口和通知区域
 
 Windows 版本最初以通知区域为主要入口。0.3.18 曾让设置窗口成为普通启动时显示的任务栏主窗口，以建立清晰的桌面应用生命周期。根据后续使用反馈，0.3.20 又改为普通启动只显示短暂轻提示，设置窗口由通知区域的“打开设置”进入。
 
@@ -288,7 +465,7 @@ Windows 版本最初以通知区域为主要入口。0.3.18 曾让设置窗口�
 - 设置页不再提供单独的退出按钮，通知区域菜单保留退出入口。
 - 最小化设置窗口不停止后台划词。
 
-### 划词工具栏
+#### 划词工具栏
 
 Windows 工具栏始终按工具窗口处理，不进入任务栏，也不激活来源应用之外的焦点。它经历了几轮明显调整：
 
@@ -300,7 +477,7 @@ Windows 工具栏始终按工具窗口处理，不进入任务栏，也不激活
 - 通过 selection ID 保护 prepare、present、resize 和 hide，旧异步任务不能覆盖新选区。
 - renderer 或 IPC 瞬时失败时有限重试，必要时重建 singleton WebView。
 
-### 结果窗口
+#### 结果窗口
 
 结果窗口的最终外观和交互经过多次修正：
 
@@ -314,7 +491,7 @@ Windows 工具栏始终按工具窗口处理，不进入任务栏，也不激活
 - 结果窗口在 renderer 完成首帧后才提交可见，减少冷启动白帧和窗口壳闪烁。
 - 结果正文仍可再次划词；置顶窗口不会被新的外部选区自动关闭。
 
-## 设置变化
+### 设置变化
 
 Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型、动作、提示词和加密 API Key 可以直接沿用。当前设置 schema 为 v6，主要增加的是 Windows 应用生命周期设置，其他变化通过原字段扩展和默认迁移完成。
 
@@ -333,9 +510,9 @@ Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型�
 
 保存成功提示在 0.3.20 后改为 1.5 秒内完成显示和淡出；连续保存不会堆叠多个提示。保存错误保留在页面中，便于用户处理。
 
-## Windows 选区捕获与兼容性
+### Windows 选区捕获与兼容性
 
-### 捕获顺序
+#### 捕获顺序
 
 0.3.29 的自动捕获链路可以概括为：
 
@@ -348,7 +525,7 @@ Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型�
 7. 检查前台窗口、PID/进程族、generation、UIPI、密码属性和用户输入竞争。
 8. 返回 `SelectionMethod::Accessibility` 或 `SelectionMethod::Clipboard`，两种结果进入同一 renderer 接口。
 
-### 安全边界
+#### 安全边界
 
 兼容性增强没有取消以下限制：
 
@@ -361,7 +538,7 @@ Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型�
 - 只有剪贴板仍由本次 TextLens 捕获修改时才恢复原始多格式内容。
 - 选中文本最多读取 1,000,000 个字符，避免异常 provider 导致无界分配。
 
-### 兼容范围
+#### 兼容范围
 
 已建立兼容 profile 或 UIA 支持路径的应用类别包括：
 
@@ -375,7 +552,7 @@ Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型�
 
 具体应用是否可用仍取决于版本、渲染方式、完整性级别和 UIA provider 质量。未完成实机测试的应用不能标为已认证。
 
-## 关键 Bug 与根因
+### 关键 Bug 与根因
 
 | 现象 | 根因 | 最终处理 |
 | --- | --- | --- |
@@ -394,7 +571,7 @@ Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型�
 | 浏览器、ChatGPT/Codex、EmEditor 无法捕获 | point UIA、进程关系、密码属性和边界检查过严，且缺少兼容 profile | 增加 focused 备选、双向进程关系、安全 fallback 和边界降级 |
 | 搜索延迟一到两秒 | 同步启动浏览器阻塞动作链路 | 使用异步 Windows Shell 调度 |
 
-## 保留、撤销和替换的方案
+### 保留、撤销和替换的方案
 
 开发过程中特别需要记录几项曾经实现或讨论、但最终没有保留的设计：
 
@@ -408,7 +585,7 @@ Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型�
 
 这些撤销说明 Windows 的可靠性不能只靠增加等待时间或更严格地匹配窗口。WebView2、Electron 和 UI Automation 都有异步、多进程和第三方 provider 行为，最终方案必须允许短暂的不一致，同时用 generation、session ID 和安全边界拒绝真正过期或越权的结果。
 
-## 架构复用情况
+### 架构复用情况
 
 从 0.3.16 到 0.3.38，项目没有复制一套 Windows 前端。两平台继续共享：
 
@@ -430,7 +607,7 @@ Windows 适配没有另起一套设置文件。现有 macOS 服务商、模型�
 | 系统入口 | 菜单栏 | 通知区域、单实例和 Windows 启动提示 |
 | 安装发布 | Apple Silicon `.app`/DMG | x64 current-user NSIS |
 
-## 构建、测试和发布链
+### 构建、测试和发布链
 
 Windows 构建目标是 `x86_64-pc-windows-msvc`，要求 MSVC x64 Build Tools、Windows SDK、Rust stable、Node.js、pnpm 和 WebView2 Runtime。
 
@@ -467,7 +644,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - API Key：设置页可从本地加密存储加载已保存密钥，默认黑点隐藏，小眼睛切换明文；通用 getSettings 仍不返回密钥。
 - 设置页分区顺序：通用 → 权限 → AI 服务商与模型 → 工具栏动作 → 翻译语言 → 结果窗口 → 应用过滤。
 
-## 0.3.35 当前状态
+### 0.3.35 当前状态
 
 0.3.34 在 0.3.33 能力之上，进一步统一搜索引擎管理体验，并改善服务商密钥与模型列表的设置交互。应用仍具备与 macOS 0.3.16 对齐的核心划词、动作、设置和结果输出能力，以及 Windows 原生窗口、多屏 DPI、通知区域、单实例、选区 helper、自愈 Hook 和 NSIS 交付链；macOS 保持 Codex/ChatGPT 兼容与菜单栏代理形态，搜索动作使用当前选中引擎的地址模板打开浏览器。
 
@@ -506,7 +683,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - 显示层：短增量（约 16 字以内）立即显示，仅较大突发再平滑；完成排空更快。
 - 产品版本升至 0.3.38。
 
-## 0.3.38 当前状态
+### 0.3.38 当前状态
 
 当前推荐验证路径：
 
@@ -514,7 +691,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 2. 配置模型后 AI 动作正常。
 3. 快捷键模式唤起工具栏后点外部关闭；划词模式回归正常。
 
-## 后续开发建议
+### 后续开发建议
 
 后续版本应优先保持当前状态机边界，避免再用固定延迟或 exact HWND 匹配解决竞态。每次修改选区链路时，至少回归以下序列：
 
@@ -530,17 +707,17 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 
 发布前还需要完成真实应用兼容矩阵、安装与卸载验收、Windows 代码签名、第三方许可证复核，以及 macOS Apple Silicon 回归。
 
-## 资料依据
+### 资料依据
 
-本文根据以下项目内容整理：
+本文档的版本演进部分根据以下项目内容整理：
 
-- `README.md` 中的 0.3.16–0.3.38 开发记录。
-- `src/shared/schemas.ts` 中的当前设置 schema 和迁移边界。
-- `src/renderer/settings`、`toolbar`、`result` 中的当前界面与测试。
+- 历次 README / 开发记录中的版本摘要（现已并入本手册）。
+- `src/shared/schemas.ts` 中的设置 schema 和迁移边界。
+- `src/renderer/settings`、`toolbar`、`result` 中的界面与测试。
 - `src-tauri/src/runtime.rs`、`windows.rs` 和 `apps/windows/src/selection.rs` 中的窗口、事件及捕获实现。
 - `src-tauri/tauri.windows.conf.json` 和 `apps/windows/scripts/verify-artifacts.mjs` 中的 Windows 打包与产物规则。
 
-## 0.3.39：Review 加固与 CodeG 划词兼容
+### 0.3.39：Review 加固与 CodeG 划词兼容
 
 （整理日期：2026-07-21）
 
@@ -553,7 +730,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **安全/正确性：** macOS 剪贴板恢复前复查 `changeCount`；流式事件强制 `sessionId` 与输出上限；结果窗取消 `legacy` session 回退；Markdown 链接抑制非主键导航；API Key 写入与 provider 删除同锁。
 - 产品版本升至 0.3.39。
 
-## 0.3.40：流式首字加速与模型思考档位
+### 0.3.40：流式首字加速与模型思考档位
 
 （整理日期：2026-07-21）
 
@@ -561,7 +738,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **思考档位：** 同步模型时写入各模型支持的思考强度（API 元数据优先，模型 ID 启发式回退）；AI 动作可手动选择档位或「关闭思考」（默认关闭以优先速度）；请求体注入 `reasoning_effort` 等 OpenAI 兼容字段。
 - 产品版本升至 0.3.40。
 
-## 0.3.41：服务商模型列表紧凑展示
+### 0.3.41：服务商模型列表紧凑展示
 
 （整理日期：2026-07-21）
 
@@ -569,7 +746,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **思考档位：** 继续仅在工具栏动作编辑中选择；同步得到的 `thinkingLevels` 数据保留，供动作配置使用。
 - 产品版本升至 0.3.41。
 
-## 0.3.42：复制后一次点空白收起工具栏 + 流式再加速
+### 0.3.42：复制后一次点空白收起工具栏 + 流式再加速
 
 （整理日期：2026-07-21）
 
@@ -577,21 +754,21 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **流式：** 进一步收紧 SSE 首包/合并与结果窗 store/播放预算，改善翻译/解释/总结/润色首字与流畅度。
 - 产品版本升至 0.3.42。
 
-## 0.3.43：复制后一次外点真正收起工具栏
+### 0.3.43：复制后一次外点真正收起工具栏
 
 （整理日期：2026-07-21）
 
 - **工具栏：** 复制成功后，若外点触发的 mouse-up 再次捕获到同一段仍选中文本，会短暂抑制自动弹出，避免工具栏跳到点击处并需点第二次才消失。
 - 产品版本升至 0.3.43。
 
-## 0.3.44：复制后恢复来源应用焦点
+### 0.3.44：复制后恢复来源应用焦点
 
 （整理日期：2026-07-21）
 
 - **工具栏：** 复制成功后立即把激活状态还给划词来源应用，避免下一次外点只用于「切回窗口」而仍需再点一次才取消选区/收起工具栏。
 - 产品版本升至 0.3.44。
 
-## 0.3.45：无感焦点交还 + 结果框底部悬停显示
+### 0.3.45：无感焦点交还 + 结果框底部悬停显示
 
 （整理日期：2026-07-21）
 
@@ -599,14 +776,14 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **结果窗：** 「继续提问 / 重试 / 复制」仅在指针位于结果框下沿热区时显示，平时隐藏。
 - 产品版本升至 0.3.45。
 
-## 0.3.46：结果窗关闭后不再重弹工具栏
+### 0.3.46：结果窗关闭后不再重弹工具栏
 
 （整理日期：2026-07-21）
 
 - **结果窗：** 翻译/解释/总结/润色等结果展示期间及关闭时，对原文选区做同文短时抑制；关闭时清掉同源 live selection 并 force-hide 工具栏，避免外点后工具栏跟鼠标弹出。
 - 产品版本升至 0.3.46。
 
-## 0.3.47：结果关闭取消宿主划词 + 流式首字近零延迟
+### 0.3.47：结果关闭取消宿主划词 + 流式首字近零延迟
 
 （整理日期：2026-07-21）
 
@@ -616,7 +793,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - 产品版本升至 0.3.47。
 
 
-## 0.3.48：翻译流式去卡顿
+### 0.3.48：翻译流式去卡顿
 
 （整理日期：2026-07-21）
 
@@ -625,7 +802,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **播放层：** streaming 时同步返回 target 文本（无 useLayoutEffect 一帧延迟），安全后缀跳过全文 Segmenter；仅 ZWJ/组合字符仍排队。
 - 产品版本升至 0.3.48。
 
-## 0.3.49：可迁移开发源码包
+### 0.3.49：可迁移开发源码包
 
 （整理日期：2026-07-22）
 
@@ -633,7 +810,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **包内说明：** 增加 `PORTABLE_DEV_SOURCE.md`，约定新机器上的 Node / pnpm / Rust 与平台工具链要求。
 - 产品版本升至 0.3.49。
 
-## 0.3.50：问AI 多轮对话 + 流式首字再优化
+### 0.3.50：问AI 多轮对话 + 流式首字再优化
 
 （整理日期：2026-07-22）
 
@@ -643,7 +820,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **文档：** README 功能与版本表同步到 0.3.50。
 - 产品版本升至 0.3.50。
 
-## 0.3.51：自适应流式显示与 thinking 透传
+### 0.3.51：自适应流式显示与 thinking 透传
 
 （整理日期：2026-07-22）
 
@@ -653,7 +830,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **版本对齐：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.51。
 - 产品版本升至 0.3.51。
 
-## 0.3.52：设置页侧边栏 + 精简提示词 + Markdown 优化
+### 0.3.52：设置页侧边栏 + 精简提示词 + Markdown 优化
 
 （整理日期：2026-07-22）
 
@@ -663,7 +840,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.52；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.52。
 
-## 0.3.53：结果后重划工具栏 + 选择性模型获取 + UI 打磨
+### 0.3.53：结果后重划工具栏 + 选择性模型获取 + UI 打磨
 
 （整理日期：2026-07-22）
 
@@ -674,7 +851,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.53；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.53。
 
-## 0.3.54：划词工具栏兼容加固 + 结果 Markdown 段落/列表
+### 0.3.54：划词工具栏兼容加固 + 结果 Markdown 段落/列表
 
 （整理日期：2026-07-23）
 
@@ -685,7 +862,7 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.54；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.54。
 
-## 0.3.55：服务商启停 + 多语言翻译 + 统一模型/思考选择
+### 0.3.55：服务商启停 + 多语言翻译 + 统一模型/思考选择
 
 （整理日期：2026-07-23）
 
@@ -696,3 +873,13 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **提示词：** 翻译提示词强化多语言专业翻译；解释提示词改为整体解释、仅展开重要术语；未改动的内置默认文案在加载时迁移，自定义提示词保留。
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、README 与开发记录统一为 0.3.55；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.55。
+
+### 0.3.56：macOS 托盘死锁修复 + 开发手册
+
+（整理日期：2026-07-24）
+
+- **死锁修复：** 现场 sample 显示 macOS 长跑后菜单栏图标不可点，CPU 极低（睡眠等待）而非忙循环。根因是 `show_toolbar` 在持有 `WindowState` 锁时调用 `order_front_without_focus`（`run_on_main_thread` + `recv`），与主线程在 WebKit 原生 `<select>` 弹层嵌套 runloop 中处理 `Destroyed → remove_result` 互相等待。修复为：先 `commit_toolbar_selection` 并释放锁，再算 layout / `apply_window_layout` / `order_front`；展示前复查 `toolbar_selection_id`，避免 hide 竞态后复活工具栏。
+- **结果窗防护：** 关闭、pagehide、卸载时 blur 原生 `<select>`，降低 NSMenu 嵌套 runloop 与窗口销毁并发的触发概率。
+- **文档：** `DEVELOPMENT_HISTORY.md` 重命名为 `DEVELOPMENT_HANDBOOK.md`（开发手册），并入本地开发（Windows / macOS）、可迁移源码导出与版本演进；README 去掉版本号简介与上述开发小节，改为指向手册；「设计灵感与第三方来源」标题不再出现第三方产品名；安装小节改为「安装 - Windows / 安装 - macOS」。
+- **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf 统一为 0.3.56；`pnpm export:dev-source` 导出可迁移源码包。
+- 产品版本升至 0.3.56。

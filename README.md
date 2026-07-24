@@ -1,17 +1,31 @@
 # TextLens
 
-TextLens 是一个轻量的桌面划词助手。当前源码版本是 **0.3.55**，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
+[English](./README.en.md) | **中文**
+
+TextLens 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
 
 用户在其他应用中选中文字后，可以直接执行复制、搜索、翻译、总结、解释、润色、问AI 及自定义 AI 动作。macOS 版本常驻菜单栏，默认不在 Dock 显示；Windows 版本普通启动后在通知区域和后台运行，仅显示短暂的“TextLens 已启动”提示，设置窗口由用户从通知区域打开。TextLens 不保存划词历史，只有用户主动点击 AI 动作后才会把选中文字发送给所配置的模型服务。
 
-当前源码和文档已同步到 0.3.55。本版本支持服务商启停（禁用后不出现在动作绑定与结果窗换模列表）；动作模型选择改为按服务商分组的统一列表，并自动识别思考模型与「关闭思考」档位；翻译扩展到中/英/日/韩/俄/德/法，结果标题栏短码切换目标语言，默认其他语种→中文、中文→英文；并收紧翻译与解释默认提示词。0.3.54 加固 WPS 等复杂应用划词与结果 Markdown 段落/列表。Windows 测试安装包继续由 NSIS 构建。两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。
+两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。本地开发、可迁移源码导出与版本演进记录见 [DEVELOPMENT_HANDBOOK.md](./DEVELOPMENT_HANDBOOK.md)。
 
-## 与 Cherry Studio 的关系
+## 界面预览
 
-- Cherry Studio 项目地址：[CherryHQ/cherry-studio](https://github.com/CherryHQ/cherry-studio)
-- TextLens 的产品方向和部分交互习惯参考了 Cherry Studio 的“划词助手”，包括划词工具栏、结果窗、置顶、失焦关闭、再次划词和模型切换等使用逻辑。
+### 结果窗口
+
+![结果窗口](./assets/screenshots/result.png)
+
+### 设置 · 工具栏动作
+
+![设置-工具栏动作](./assets/screenshots/settings-toolbar-actions.png)
+
+### 设置 · AI 服务商与模型
+
+![设置-AI服务商与模型](./assets/screenshots/settings-ai-providers.png)
+
+## 设计灵感与第三方来源
+
+- TextLens 的产品方向和部分交互习惯参考了 [CherryHQ/cherry-studio](https://github.com/CherryHQ/cherry-studio) 的“划词助手”，包括划词工具栏、结果窗、置顶、失焦关闭、再次划词和模型切换等使用逻辑。
 - Cherry Studio 主体使用 Electron；TextLens 主要使用更轻量的 Tauri 框架，把其中启发性的“划词助手”工作流重构为独立桌面工具，并保留自己的窗口管理、设置存储、模型请求与界面实现。
-- 默认翻译、总结、解释和润色提示词的部分内容由 Cherry Studio 的 AGPL-3.0 源码改编。对应来源修订、文件链接和许可说明记录在 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) 中。
 - macOS 选区捕获桥接层基于 MIT 许可的 [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2) 改造，完整 MIT 许可保存在 [LICENSE.selection-hook](./LICENSE.selection-hook)。
 
 TextLens 当前没有声明独立的开源许可证。Cherry Studio 改编材料仍受其上游 AGPL-3.0 条款约束，selection-hook 改编部分仍受 MIT 许可证约束。公开分发或二次开发前，请先阅读第三方许可文件。
@@ -122,7 +136,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 - OpenAI-compatible 服务地址支持 HTTP 和 HTTPS。HTTP 会使 API Key 和内容在网络中以未加密方式传输，只建议用于本机或可信局域网；其他场景应使用 HTTPS。
 - 服务地址需要包含版本前缀，例如 https://api.openai.com/v1，但不要包含 /chat/completions。连接测试访问 {baseUrl}/models，正式动作访问 {baseUrl}/chat/completions。
 
-## 安装 Windows
+## 安装 - Windows
 
 当前 Windows 版本面向 Windows 10/11 x64，使用标准用户权限和 current-user NSIS 安装，不要求管理员权限。
 
@@ -134,33 +148,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 当前 Windows 安装包仍是未签名测试版，可能触发 Microsoft Defender SmartScreen；自动化验证不能替代不同应用、权限和 DPI 环境下的实机验收，不适合在完成代码签名和完整兼容性验收前公开分发。
 
-## Windows 本地开发
-
-环境要求：
-
-- Windows 10/11 x64
-- Visual Studio Build Tools，包含 MSVC x64 C++ 工具链和 Windows SDK
-- Rust stable 与 `x86_64-pc-windows-msvc` target
-- Node.js 22.12+、pnpm 11+ 和 Microsoft Edge WebView2 Runtime
-
-安装并启动：
-
-    pnpm install
-    rustup target add x86_64-pc-windows-msvc
-    pnpm dev:windows
-
-`pnpm dev:windows` 会像正式应用一样隐藏启动设置窗口并显示短暂提示。通过通知区打开设置页；测试完整退出时，使用通知区菜单，或将设置窗口关闭行为改为“退出 TextLens”。
-
-常用命令：
-
-    pnpm typecheck                 # 检查 TypeScript
-    pnpm test                      # 运行 renderer/shared 单元测试
-    pnpm test:rust:windows         # 运行 Windows Rust 测试
-    pnpm check:rust:windows        # 检查 Windows Rust 后端
-    pnpm verify:windows            # 完整 Windows 自动化验证
-    pnpm package:windows           # 构建并核验未签名 NSIS 安装包
-
-## 安装 macOS
+## 安装 - macOS
 
 当前只发布 Apple Silicon 版本，不能在 Intel Mac 上运行。
 
@@ -170,162 +158,6 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 4. 按提示到“系统设置 → 隐私与安全性 → 辅助功能”启用 TextLens，然后重新启动应用。
 
 当前 macOS DMG 仍是未签名、未公证的测试产物，不适合直接公开分发。正式发布前仍需 Apple Developer ID 签名和公证。
-
-## macOS 本地开发
-
-环境要求：
-
-- Apple Silicon Mac，macOS 12 或更高版本
-- Xcode Command Line Tools
-- Rust stable，并安装 aarch64-apple-darwin target
-- Node.js 22.12+ 与 pnpm 11+
-
-安装并启动：
-
-    pnpm install
-    rustup target add aarch64-apple-darwin
-    pnpm dev
-
-常用命令：
-
-    pnpm dev              # 启动 arm64 Tauri 开发应用
-    pnpm typecheck        # 检查 TypeScript
-    pnpm test             # 运行 renderer/shared 单元测试
-    pnpm check:rust       # 检查 arm64 Rust 后端
-    pnpm verify           # 类型、测试、网页构建和 Rust 检查
-    pnpm package:app      # 只构建 arm64 TextLens.app
-    pnpm package:dmg      # 构建并核验 arm64 TextLens.app 和 DMG
-
-构建产物：
-
-    src-tauri/target/aarch64-apple-darwin/release/bundle/macos/TextLens.app
-    src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/TextLens_<version>_aarch64.dmg
-
-依赖目录 node_modules、网页构建目录 dist 和 Rust 编译目录 src-tauri/target 不应提交或放入源码快照。
-
-## 导出可迁移开发源码
-
-如需把当前开发环境迁移到另一台机器继续开发，可在仓库根目录执行：
-
-    pnpm export:dev-source
-
-该命令会生成一个新的干净目录：
-
-    portable-dev-sources/TextLens-<version>-dev-source
-
-例如当前版本会导出为：
-
-    portable-dev-sources/TextLens-0.3.55-dev-source
-
-也可将上述目录复制到仓库外，作为独立的 `TextLens-0.3.55-dev-source` 文件夹或压缩包分发；包内只含源码与文档，便于整夹拷贝到其他机器继续开发。
-
-### 导出内容
-
-会保留：
-
-- 共享前端源码 `src/`
-- 平台代码与资源 `apps/`、`assets/`
-- Rust/Tauri 后端 `src-tauri/`（不含编译产物）
-- 脚本、锁文件、配置、README、开发历史、许可证与第三方说明
-- 包内说明文件 `PORTABLE_DEV_SOURCE.md`
-
-不会包含：
-
-- 已编译安装包或 `release/` 发布快照
-- 前端构建产物 `dist/`
-- 依赖目录 `node_modules/`
-- Rust 编译目录 `src-tauri/target/`
-- 嵌套的 `portable-dev-sources/`、缓存、日志和 `.tsbuildinfo`
-
-### 迁移到其他电脑后
-
-1. 把整个 `TextLens-0.3.55-dev-source` 文件夹（或已重命名的 `TextLens` 工作区）复制到目标机器。
-2. 安装 Node.js 22+、pnpm 11+，以及对应平台的 Rust / 平台工具链。
-3. 在源码根目录执行：
-
-       pnpm install
-
-4. 验证：
-
-       # Windows
-       pnpm verify:windows
-
-       # Apple Silicon macOS
-       pnpm verify
-
-5. 开发或打包：
-
-       # Windows 开发
-       pnpm dev:windows
-
-       # Windows 安装包
-       pnpm package:windows
-
-       # macOS 开发 / 打包
-       pnpm dev
-       pnpm package
-
-默认设置中只会预置 OpenAI 的 Base URL，API Key 为空；不会把开发机上的密钥或私有配置编译进应用。
-
-## 开发记录
-
-以下记录根据本项目连续开发需求与当前实现整理。部分小版本是内部迭代，重点记录功能变化，不等同于正式公开发行说明。
-
-macOS 0.3.16 到 0.3.55 的完整开发复盘见 [DEVELOPMENT_HISTORY.md](./DEVELOPMENT_HISTORY.md)。
-
-| 版本 | 主要变化 |
-| --- | --- |
-| 0.3.2 | API Key 改为应用本地 AES-256-GCM 加密存储，不再访问系统钥匙串；移除划词工具栏外层矩形阴影。 |
-| 0.3.3–0.3.4 | 修复工具栏和结果窗复制；压缩结果窗标题栏；重做底部关闭、重试、复制按钮；加入继续提问和多轮上下文，并确定不携带 system 与原始任务提示。 |
-| 0.3.5 | 修复设置页动作拖动排序；整理稳定的 macOS 基线；开始 Windows 10/11 x64 适配。 |
-| 0.3.6 | 暂停 Windows 发布，集中优化 macOS；工具栏取消默认/上次动作底色；后端与前端加入轻量流式缓冲，改善首字等待和输出流畅度。 |
-| 0.3.7–0.3.9 | 优化结果窗等待阶段和滚动条；反复修正工具栏 hover，最终通过 macOS 原生全局指针跟踪实现“无需按下鼠标，移入即高亮、移出即消失”。 |
-| 0.3.10 | 清理开发测试调用与正式构建边界，避免本机测试工具路径进入发布行为；继续加固工具栏指针状态隔离。 |
-| 0.3.11–0.3.13 | 更新专业翻译与格式修复默认提示词；提示词支持修改和一键重置；结果窗加入按服务商分组的模型切换并支持原窗口重新生成；优化标题栏语言缩写和空间分配。 |
-| 0.3.14 | 扩展微信、WPS 等自绘文本区域的选区捕获，加入临时复制并恢复剪贴板的兼容路径。 |
-| 0.3.15 | 结果框改为以鼠标为中心定位；安全 Markdown 增加数学公式解析和 KaTeX 渲染。 |
-| 0.3.16 | 最终定位调整为相对鼠标中心向右 10%、向下 30%，保留屏幕边缘钳制；整理 Apple Silicon 源码、TextLens.app、DMG 和校验文件。 |
-| 0.3.17 | 完成 Windows 10/11 x64 对齐：UI Automation 与剪贴板兼容捕获、完整剪贴板恢复、非激活 hover、混合 DPI、多屏窗口、通知区、单实例、WebView2、NSIS 和 Windows 产物校验。 |
-| 0.3.18 | 引入 Windows 任务栏主窗口、可配置的关闭行为、设置页退出入口和有界 UIA/OLE 关闭流程，并修复原生窗口操作的重复投递。 |
-| 0.3.19 | 将 AI 动作的结果窗口创建事务移出同步 Tauri IPC 主线程，修复 0.3.18 中点击翻译等动作仍可能一直转圈的问题；增加设置页关闭监听就绪握手，消除启动后立即关闭时的退出请求丢失。 |
-| 0.3.20 | Windows 普通启动改为非激活轻提示；修复冷启动首个 AI 结果窗闪烁；结果窗恢复干净圆角、八方向缩放和尺寸记忆；缩小并重新定位划词工具栏；加固 UIA、剪贴板竞争保护和常见自绘应用兼容性。 |
-| 0.3.21 | 尝试在 detached 动态结果窗创建后轮询原生 HWND，以缓解过早访问窗口句柄导致的 WebView 消息错误，但该方案未证明 WebView2 renderer 已真正就绪，未能彻底解决现场创建失败；同时将搜索改为异步 Windows Shell 直接打开，通过经验证的父子进程关系支持 Cherry Studio 等 Electron 应用，并将启动提示改为屏幕底部居中。 |
-| 0.3.22 | 取消 detached build 后的 HWND 轮询，改为等待结果 renderer 的 prepare IPC，再一次完成原生样式、透明隐藏、定位和尺寸准备，commit 时恢复用户透明度与焦点；Windows 工具栏加入 selection ID 保护的 prepare/present 握手，以最终 DOM 尺寸原子定位并显示，消除旧尺寸闪烁；复用预热的 STA/UIA 通道，缩短选区稳定等待和重试间隔，减少进程树快照与 Runtime ID 去重开销，并确保 UIA COM 接口在 OLE apartment 撤销前完成释放。 |
-| 0.3.23 | 修复隐藏结果 WebView 默认取得焦点后触发 blur、导致窗口在 reveal 前被关闭的生命周期竞态；结果窗口的焦点失效关闭仅在 committed 后启用；pending 会话清理返回明确原因，避免把准备阶段的关闭误报为普通创建失败。 |
-| 0.3.24 | Windows 结果窗口失焦改为延迟检查真实前台 HWND，WebView2 文档、模型下拉、窗口拖拽和缩放不再被误判为外部失焦；工具栏改为 UI 线程同步原生隐藏，并在 renderer 中销毁已消费选区，避免结果出现后工具栏残留或被旧布局再次显示。 |
-| 0.3.25 | 完成 Windows 稳定性与响应速度审计：工具栏 stage/present/hide/resize 在 UI 线程按 selection 原子提交且不跨线程持共享锁；原生 HWND 指针采样取代 60 Hz Tauri 窗口查询；旧 Dismiss 不再清除新选区；UIA 瞬时失败可重试，捕获预算为 worker 回复留出余量，剪贴板事务固定输入 generation 并复用进程快照；renderer 隔离非关键初始化错误、合并并发重试、稳定全局键盘监听并删除首次重复尺寸 IPC；加固 Windows 并发首次创建本地加密密钥。 |
-| 0.3.26 | 统一翻译结果标题栏的语言方向字号、字重和中心线；Windows 结果窗继续跳过任务栏，标题栏固定提供置顶和关闭按钮。将第三方 UIA/OLE provider 的不可信捕获迁移到同一程序的隔离 helper 进程，超时、崩溃或协议异常后可终止并重建；增加低级输入 Hook 异常检测和恢复能力，避免捕获资源被卡死的 provider 永久耗尽。 |
-| 0.3.27 | 修复 Foreground 事件在鼠标 Down/Up 之间清空有效手势、导致划词隔次失败的问题，并在无害的前台 generation 变化后将 pending capture rebase 到最新 generation；删除每 30 秒盲目重装 Hook 的逻辑，改由 instance token 和线程退出状态只替换失效实例；启动后在后台预热选区 helper，降低首次捕获延迟；彻底删除结果窗最小化 IPC、状态、图标和任务栏恢复链路，保留置顶与关闭。 |
-| 0.3.28 | 删除来源应用 HWND/PID 与捕获时前台窗口必须一致的不可靠硬门控，仅在 TextLens 自身仍占前台或暂时没有有效前台窗口时进行有界等待；工具栏对 present、监听和设置 IPC 的瞬时失败进行有限重试，并可重建失效 WebView 后恢复最新选区；补充 Down/Up、前台切换、helper 回传及 renderer 恢复的状态机与事件交付测试。 |
-| 0.3.29 | 修复结果窗或搜索切换前台后第一轮划词被错误外部窗口捕获、以及迟到 Foreground 关闭新工具栏的问题；捕获前使用 root/PID/进程族进行软关联等待，保留最近成功 generation 过滤同源迟到事件。Windows UIA 增加 focused element 备选，放宽不可靠祖先密码属性对 UIA 文本的阻断，并为 ChatGPT/Codex、EmEditor 及已验证文本控件启用安全剪贴板回退。 |
-| 0.3.30 | 修复 Windows 点击翻译、解释、总结后、结果窗出现前短暂显示系统“🚫”光标的问题；保留现有 busyActionId 单飞锁与 spinner 时序，只在工具栏作用域内覆盖 disabled 光标为中性状态，并为忙态单飞与禁用光标增加前端回归测试。 |
-| 0.3.31 | 为结果窗标题栏补齐手动关闭按钮；macOS 和 Windows 的标题栏按钮顺序统一为“置顶、关闭”，避免用户只能依赖失焦或底部关闭入口。 |
-| 0.3.32 | 将 macOS 调整为默认不显示在 Dock 的菜单栏代理应用，并完成一轮源码稳定性复查：收敛结果窗延迟加载测试噪音、清理 Apple Silicon 编译警告、同步 README、开发记录与可迁移源码导出说明。 |
-| 0.3.33 | 为 macOS Codex/ChatGPT 输出区增加受限辅助功能与剪贴板兼容回退；复制成功后保留工具栏并临时显示 `clipboard-check`；安全迁移旧标识目录中的模型与加密密钥；模型未配置时提供可操作提示；单一搜索动作默认使用谷歌，搜索引擎可在设置页切换为必应中国版或百度；统一原生桥 TextLens 命名并补充跨平台回归测试。 |
-| 0.3.34 | 整合搜索引擎与地址模板（默认 Google / Bing / 百度，支持自定义添加）；API Key 输入支持显示/隐藏；模型列表支持拖动手柄排序；设置 schema 升级至 v9 并兼容迁移旧配置。 |
-| 0.3.35 | 搜索引擎改为绑定「搜索」动作（三选一下拉，无模板/自定义）；设置页分区重排（AI 服务商在工具栏动作之前）；已保存 API Key 以黑点显示并支持小眼睛明文回显；设置 schema 升级至 v10。 |
-| 0.3.36 | 未配置 AI 模型时点翻译等动作自动打开设置并定位到工具栏动作，短暂提示配置服务商/模型；快捷键触发模式下保持选区监听以支持点工具栏外关闭。 |
-| 0.3.37 | 设置顶部提示统一为绿/红、约 2 秒自动消失，悬浮不透明 toast 避免与正文叠字；流式合批与显示平滑参数收紧以改善首字与跟手。 |
-| 0.3.38 | 进一步优化翻译/解释/总结等流式首字与跟手：前段立即下发与显示，短增量实时跟上，大块仍平滑；HTTP 开启 TCP_NODELAY。 |
-| 0.3.39 | Review 加固与 CodeG 划词兼容：API Key 点击查看、删除旧 IPC_CHANNELS、CodeG 剪贴板回退白名单、macOS changeCount 复查、流式 sessionId/输出上限、取消 legacy session、Markdown 非主键导航抑制、API Key 写入同锁。 |
-| 0.3.40 | 流式首字再加速（加宽 SSE 首包与前端即时字符/字素预算）；同步模型思考档位，AI 动作可选手动档位或关闭思考（默认 off），请求注入 `reasoning_effort`。 |
-| 0.3.41 | 设置页服务商模型列表改为紧凑 chip（仅名称、一行多个），去掉每模型思考档位徽章；思考档位仍仅在工具栏动作编辑中选择。 |
-| 0.3.42 | 复制成功后 Dismiss 强制 hide 并同步前端；流式 SSE/store/播放预算再收紧。 |
-| 0.3.43 | 复制成功后抑制同一选区文本的短时重捕获，避免工具栏跳到点击处并需点两次才消失。 |
-| 0.3.44 | 复制成功后把键盘焦点还给划词来源应用，避免第一次外点只用于切回窗口。 |
-| 0.3.45 | 复制后无感交还焦点（避免窗口闪动）；结果框底部继续提问/重试/复制仅悬停下沿时显示。 |
-| 0.3.46 | 翻译/解释等结果窗关闭后抑制原选区重弹工具栏，与复制后一次外点逻辑一致。 |
-| 0.3.47 | 关闭结果时尽量取消宿主划词高亮；流式首字近零延迟（document 就绪前置、hydrate 后即时预算、streaming 直通）。 |
-| 0.3.48 | 消除翻译流式卡顿：SSE 逐段即时 emit、store 取消 rAF 合并、playback 同步直通（跳过全文 Segmenter）。 |
-| 0.3.49 | 同步源码包版本与 README，导出可迁移开发源码快照。 |
-| 0.3.50 | 将默认「引用」动作升级为「问AI」：打开结果窗多轮提问（首轮可只带上下文）；多轮 transcript UI；SSE content delta 立即下发、前端同步直通，降低首字延迟；设置 schema 迁移；版本与文档同步。 |
-| 0.3.51 | 结果窗自适应打字机式流式显示（store 仍即时收齐逻辑文本）；thinking/reasoning 增量端到端透传；action flusher 按批 yield 降低 IPC 抖动；版本与文档同步到 0.3.51。 |
-| 0.3.52 | 设置页改为左侧导航 + 右侧分区内容；精简翻译/总结/解释默认提示词并同步 Rust 默认值与未改动内置项迁移；结果窗 Markdown 视觉与明暗主题优化，无公式内容跳过 math 插件；版本与可迁移源码包同步到 0.3.52。 |
-| 0.3.53 | 结果关闭后延迟清除宿主选区，清除完成后释放 same-text 抑制，避免下次划词工具栏缺失；结果正文再次划词后，在结果框内点击工具栏外区域可正确隐藏工具栏（`hide_result_selection` IPC，macOS 对本进程 mouseDown/scroll 仍 enqueue dismiss）；服务商模型改为 `list_provider_models` 获取 → 多选合并 → 纵向拖拽排序；设置页与结果窗交互打磨（分区说明、脏保存强调、单行等待态、thinking 徽章与自动展开等）；版本与可迁移源码包同步到 0.3.53。 |
-| 0.3.54 | Windows 划词：allowlist 应用在 `IsPassword` 未知时允许剪贴板回退；WPS/微信/QQ 等进程族 UIA 关联；UIA 无目标时前台 Ctrl+C 路径；短时重试后及时 break 以保持响应。macOS：剪贴板 allowlist 大小写不敏感，拓宽金山/WPS bundle 与应用名识别。结果 Markdown：句末单换行段落、中文列表标记（`1、`/`•`）与块边界规范化，表格行与同级列表项保持紧凑，代码围栏不改动；normalize/math/components memo 与段落/列表 CSS 节奏优化。思考区正文去掉 `stream-plain-text` 覆盖，字号约为结果设置的 0.82 倍（下限 11px），明显小于答案正文。版本与可迁移源码包同步到 0.3.54。 |
-| 0.3.55 | 服务商 `enabled` 启停：禁用后不出现在动作模型绑定与结果窗换模列表（已绑定动作仍可运行）。动作编辑模型选择改为按服务商分组的统一 optgroup 列表（与结果窗一致），并按模型名自动推断思考档位，支持「关闭思考」。翻译目标语言扩展为 zh/en/ja/ko/ru/de/fr，结果标题栏短码切换；默认检测源语言后其他语种→中文、中文→英文；设置页主/备翻译语言对可从多语言中选择。收紧翻译与解释默认提示词（整体解释、仅重要术语），未改动内置项加载时迁移；TypeScript / Rust 双端契约对齐。版本与可迁移源码包同步到 0.3.55。 |
-
-跨版本累计完成的其他能力包括：多服务商多模型、自定义动作、HTTP 服务地址、URL/IP 直达、结果窗拖动与尺寸记忆、置顶与多种自动关闭方式、结果正文再次划词、安全 Markdown、模型重试与临时切换。
 
 ## 第三方许可与发布检查
 
