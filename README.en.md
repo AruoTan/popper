@@ -168,3 +168,7 @@ When distributing source or binaries, retain at least:
 - Copyright and license texts required by upstream projects
 
 TextLens currently declares no open-source license and has no Apple Developer ID, Windows Authenticode signing, notarization, or auto-update. Before a formal public release, complete full dependency license inventory, security review, signing, notarization, and install acceptance.
+
+## Friend Links
+
+- [LINUX DO](https://linux.do) - 学AI，上L站！

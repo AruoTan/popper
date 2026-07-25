@@ -168,3 +168,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 - 上游项目许可证要求的版权和许可文本
 
 TextLens 当前未声明开源许可证，也没有完成 Apple Developer ID、Windows Authenticode 签名、公证或自动更新。正式公开发布之前，还应完成完整的依赖许可证清单、安全复核、签名、公证和安装验收。
+
+## 友链
+
+- [LINUX DO](https://linux.do) - 学AI，上L站！
