@@ -102,7 +102,7 @@ These projects also pull transitive dependencies. Before a formal public release
 ## Architecture and data flow
 
 1. Platform selection backends listen for global mouse, keyboard, and scroll events; macOS uses Accessibility/Event Tap, Windows uses UI Automation/low-level input hooks. Windows assigns a token per Hook instance and only installs a new instance when the previous one exits abnormally or is confirmed replaced—no periodic blind reinstall.
-2. On Windows, UIA/OLE capture that may block on third-party providers runs in an in-process helper started from the same executable; timeouts, crashes, or protocol errors isolate and rebuild the helper without saturating the main capture thread.
+2. On Windows, UIA/OLE capture that may block on third-party providers runs in a separate helper process started from the same executable; timeouts, crashes, or protocol errors isolate and rebuild the helper without saturating the main capture thread.
 3. When standard APIs cannot read allowed custom-drawn apps, the backend briefly uses copy; original clipboard content is restored only if it was not modified again.
 4. The Rust runtime validates the selection and positions the toolbar.
 5. On action click, local actions run on device; AI actions create a request session and send text.
@@ -157,7 +157,7 @@ Only Apple Silicon builds are published; they do not run on Intel Macs.
 3. If Gatekeeper blocks first launch, right-click TextLens in Finder and choose Open, or allow it under System Settings → Privacy & Security.
 4. Enable TextLens under System Settings → Privacy & Security → Accessibility, then restart the app.
 
-The macOS DMG is still unsigned and notarized-not; not suitable for direct public distribution. Formal release needs Apple Developer ID signing and notarization.
+The macOS DMG is still unsigned and not notarized; it is not suitable for direct public distribution. Formal release needs Apple Developer ID signing and notarization.
 
 ## Third-party licenses and release checklist
 
