@@ -24,15 +24,31 @@ static STARTUP_NOTICE_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
 static WINDOWS_UI_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 const SCREEN_MARGIN: f64 = 8.0;
-const TOOLBAR_SCREEN_MARGIN: f64 = 12.0;
+const TOOLBAR_SCREEN_MARGIN: f64 = 20.0;
+// WebView2's client extent can land a few physical pixels short of a
+// borderless SetWindowPos request on some DPI/driver combinations. Keep a
+// small, scale-aware transparent trailing area outside the measured toolbar
+// content so the last icon is never the pixel that gets clipped at a display
+// edge.
+#[cfg(target_os = "windows")]
+const WINDOWS_TOOLBAR_TRAILING_GUARD_RATIO: f64 = 0.04;
+#[cfg(target_os = "windows")]
+const WINDOWS_TOOLBAR_TRAILING_GUARD_MIN: f64 = 4.0;
+#[cfg(target_os = "windows")]
+const WINDOWS_TOOLBAR_TRAILING_GUARD_MAX: f64 = 12.0;
 #[cfg(any(target_os = "windows", test))]
 const STARTUP_NOTICE_MARGIN: f64 = 18.0;
-const RESULT_HORIZONTAL_SHIFT_RATIO: f64 = 0.10;
+// The action click sits one fifth of a result window in from its left edge,
+// leaving four fifths to the right. This keeps the result out of the way of
+// the toolbar while retaining a stable, intentional click anchor.
+const RESULT_CURSOR_LEFT_ANCHOR_RATIO: f64 = 0.20;
 const RESULT_VERTICAL_SHIFT_RATIO: f64 = 0.30;
 #[cfg(target_os = "windows")]
 const RESULT_BLUR_VERIFY_DELAY: Duration = Duration::from_millis(60);
 #[cfg(target_os = "windows")]
 const RESULT_BLUR_VERIFY_ATTEMPTS: usize = 2;
+#[cfg(target_os = "windows")]
+const WINDOWS_TOOLBAR_HIT_TOLERANCE: f64 = 8.0;
 
 #[cfg(any(target_os = "windows", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +181,15 @@ pub struct Point {
     pub y: f64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolbarPlacement {
+    #[default]
+    BottomMiddle,
+    BottomLeft,
+    BottomRight,
+    TopRight,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowSize {
@@ -288,6 +313,20 @@ fn result_window_step_error(step: &'static str, error: impl std::fmt::Display) -
     std::io::Error::other(format!("result window {step} failed: {error}")).into()
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn trace_toolbar_timing(stage: &str, started: Instant) {
+    let enabled = std::env::var_os("TEXTLENS_SELECTION_TRACE").is_some_and(|value| {
+        let value = value.to_string_lossy();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    });
+    if enabled {
+        eprintln!(
+            "[selection-timing] stage={stage} duration_ms={:.1}",
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+    }
+}
+
 impl ResultRuntime {
     /// Returns a generation token for a blur that is eligible for dismissal.
     ///
@@ -325,6 +364,7 @@ impl ResultRuntime {
 struct WindowState {
     toolbar_size: WindowSize,
     toolbar_anchor: Option<Point>,
+    toolbar_placement: Option<ToolbarPlacement>,
     toolbar_selection_id: Option<String>,
     toolbar_recovery_selection_id: Option<String>,
     toolbar_recovery_attempts: u8,
@@ -345,7 +385,21 @@ impl WindowState {
     /// that should be used for layout. Callers must drop the `WindowState` lock
     /// before any work that waits on the UI thread.
     fn commit_toolbar_selection(&mut self, selection_id: &str, anchor: Point) -> WindowSize {
+        self.commit_toolbar_selection_with_placement(
+            selection_id,
+            anchor,
+            ToolbarPlacement::BottomMiddle,
+        )
+    }
+
+    fn commit_toolbar_selection_with_placement(
+        &mut self,
+        selection_id: &str,
+        anchor: Point,
+        placement: ToolbarPlacement,
+    ) -> WindowSize {
         self.toolbar_anchor = Some(anchor);
+        self.toolbar_placement = Some(placement);
         self.toolbar_selection_id = Some(selection_id.to_owned());
         self.toolbar_size
     }
@@ -381,6 +435,10 @@ impl WindowState {
 #[derive(Clone)]
 pub struct WindowCoordinator {
     state: Arc<Mutex<WindowState>>,
+    /// Serializes the native toolbar transaction across stage, layout, reveal
+    /// and hide. State rechecks alone cannot protect the gap between AppKit
+    /// calls where a stale reveal could otherwise resurrect the toolbar.
+    toolbar_operation: Arc<Mutex<()>>,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     toolbar_tracking_generation: Arc<AtomicU64>,
 }
@@ -394,12 +452,14 @@ impl Default for WindowCoordinator {
                     height: 40.0,
                 },
                 toolbar_anchor: None,
+                toolbar_placement: None,
                 toolbar_selection_id: None,
                 toolbar_recovery_selection_id: None,
                 toolbar_recovery_attempts: 0,
                 toolbar_recovery_pending_selection_id: None,
                 results: HashMap::new(),
             })),
+            toolbar_operation: Arc::new(Mutex::new(())),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             toolbar_tracking_generation: Arc::new(AtomicU64::new(0)),
         }
@@ -528,7 +588,18 @@ impl WindowCoordinator {
         selection_id: &str,
         anchor: Point,
     ) -> tauri::Result<()> {
+        self.show_toolbar_with_placement(app, selection_id, anchor, ToolbarPlacement::BottomMiddle)
+    }
+
+    pub fn show_toolbar_with_placement(
+        &self,
+        app: &AppHandle,
+        selection_id: &str,
+        anchor: Point,
+        placement: ToolbarPlacement,
+    ) -> tauri::Result<()> {
         let window = self.ensure_toolbar(app)?;
+        let _toolbar_operation = self.toolbar_operation.lock();
         // Never hold WindowState across UI-thread hops. On macOS,
         // order_front_without_focus (and often set_position/set_size) blocks
         // until the AppKit main thread runs the work. Holding the coordinator
@@ -536,24 +607,34 @@ impl WindowCoordinator {
         // WindowEvent::Destroyed → remove_result, which freezes the tray icon.
         let size = {
             let mut state = self.state.lock();
-            state.commit_toolbar_selection(selection_id, anchor)
+            state.commit_toolbar_selection_with_placement(selection_id, anchor, placement)
         };
-        let layout = toolbar_layout(&window, anchor, size)?;
+        let layout = toolbar_layout_with_placement(&window, anchor, size, placement)?;
         // A concurrent hide/rebuild may have replaced this selection while we
         // computed layout off-lock. Do not resurrect a stale toolbar.
         if self.state.lock().toolbar_selection_id.as_deref() != Some(selection_id) {
             return Ok(());
         }
-        apply_window_layout(&window, layout)?;
-        order_front_without_focus(&window)?;
+        // On Windows keep all monitor/scale queries outside the event-loop
+        // callback. Calling Tauri window getters from a `run_on_main_thread`
+        // closure can wait on the same dispatcher and leave the toolbar
+        // permanently hidden after the first stalled presentation.
+        #[cfg(target_os = "windows")]
+        apply_toolbar_layout(&window, layout, true)?;
+        #[cfg(not(target_os = "windows"))]
+        {
+            apply_window_layout(&window, layout)?;
+            order_front_without_focus(&window)?;
+        }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.start_toolbar_pointer_tracking(app, &window);
         Ok(())
     }
 
     /// Stages a Windows toolbar update while keeping the singleton WebView
-    /// hidden. The renderer commits the matching selection after React has
-    /// cleared the previous busy/error state and measured the final DOM.
+    /// ready for the renderer update. The native frame remains hidden until
+    /// the renderer commits the new selection and measured size, so a reused
+    /// WebView can never expose an old clickable frame for a new selection.
     #[cfg(target_os = "windows")]
     pub fn stage_toolbar(
         &self,
@@ -561,18 +642,29 @@ impl WindowCoordinator {
         selection_id: &str,
         anchor: Point,
     ) -> tauri::Result<()> {
+        self.stage_toolbar_with_placement(app, selection_id, anchor, ToolbarPlacement::BottomMiddle)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn stage_toolbar_with_placement(
+        &self,
+        app: &AppHandle,
+        selection_id: &str,
+        anchor: Point,
+        placement: ToolbarPlacement,
+    ) -> tauri::Result<()> {
         let window = self.ensure_toolbar(app)?;
-        // A background `WebviewWindow::hide()` only enqueues a runtime message
-        // on Windows. Complete the native hide before publishing the next
-        // selection so React can never repaint new content into an old frame.
-        stage_windows_toolbar(
+        let _toolbar_operation = self.toolbar_operation.lock();
+        // Move the hidden native frame before publishing the next selection.
+        // Renderer updates remain generation-checked, and no cold WebView2
+        // frame can receive a click before the matching selection is rendered.
+        stage_windows_toolbar_with_placement(
             &window,
             Arc::clone(&self.state),
             selection_id.to_owned(),
             anchor,
+            placement,
         )?;
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        self.stop_toolbar_pointer_tracking();
         Ok(())
     }
 
@@ -587,6 +679,8 @@ impl WindowCoordinator {
         size: WindowSize,
     ) -> tauri::Result<bool> {
         let window = self.ensure_toolbar(app)?;
+        let _toolbar_operation = self.toolbar_operation.lock();
+        let native_started = Instant::now();
         let size = toolbar_size(size);
         let presented = present_windows_toolbar(
             &window,
@@ -597,6 +691,94 @@ impl WindowCoordinator {
         if !presented {
             return Ok(false);
         }
+        trace_toolbar_timing("native-visible", native_started);
+        self.start_toolbar_pointer_tracking(app, &window);
+        Ok(true)
+    }
+
+    /// Stages a macOS toolbar update while keeping the singleton WebView fully
+    /// transparent. AppKit's `order_front_without_focus` is idempotent, so
+    /// unlike Windows this does not need a paired native hide — dropping
+    /// alpha to 0 is enough to guarantee the next `present_toolbar` is the
+    /// first visible frame at the new selection's position/size.
+    #[cfg(target_os = "macos")]
+    pub fn stage_toolbar(
+        &self,
+        app: &AppHandle,
+        selection_id: &str,
+        anchor: Point,
+    ) -> tauri::Result<()> {
+        self.stage_toolbar_with_placement(app, selection_id, anchor, ToolbarPlacement::BottomMiddle)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn stage_toolbar_with_placement(
+        &self,
+        app: &AppHandle,
+        selection_id: &str,
+        anchor: Point,
+        placement: ToolbarPlacement,
+    ) -> tauri::Result<()> {
+        let window = self.ensure_toolbar(app)?;
+        let _toolbar_operation = self.toolbar_operation.lock();
+        // Never hold WindowState across the AppKit main-thread hop (see
+        // show_toolbar's invariant above): perform the alpha change first,
+        // then take the lock only for plain in-memory bookkeeping.
+        set_native_alpha_raw(&window, 0.0)?;
+        {
+            let mut state = self.state.lock();
+            state.toolbar_anchor = Some(anchor);
+            state.toolbar_placement = Some(placement);
+            state.toolbar_selection_id = Some(selection_id.to_owned());
+        }
+        self.stop_toolbar_pointer_tracking();
+        Ok(())
+    }
+
+    /// Positions, sizes and reveals the prepared macOS toolbar. AppKit has no
+    /// single-call equivalent of Windows' atomic `SetWindowPos`, so position
+    /// and size are applied while alpha is still 0 and only the final alpha
+    /// flip to 1 is ever visible — matching Windows' one-visible-frame commit.
+    #[cfg(target_os = "macos")]
+    pub fn present_toolbar(
+        &self,
+        app: &AppHandle,
+        selection_id: &str,
+        size: WindowSize,
+    ) -> tauri::Result<bool> {
+        let window = self.ensure_toolbar(app)?;
+        let _toolbar_operation = self.toolbar_operation.lock();
+        let native_started = Instant::now();
+        let size = toolbar_size(size);
+        let (anchor, placement) = {
+            let mut state = self.state.lock();
+            if state.toolbar_selection_id.as_deref() != Some(selection_id) {
+                return Ok(false);
+            }
+            state.toolbar_size = size;
+            (
+                state.toolbar_anchor,
+                state.toolbar_placement.unwrap_or_default(),
+            )
+        };
+        let Some(anchor) = anchor else {
+            return Ok(false);
+        };
+        let layout = toolbar_layout_with_placement(&window, anchor, size, placement)?;
+        // A concurrent hide/newer selection may have replaced this one while
+        // layout was computed off-lock (mirrors show_toolbar's existing
+        // recheck).
+        if self.state.lock().toolbar_selection_id.as_deref() != Some(selection_id) {
+            return Ok(false);
+        }
+        apply_window_layout(&window, layout)?;
+        order_front_without_focus(&window)?;
+        set_native_alpha_raw(&window, 1.0)?;
+        trace_toolbar_timing("native-visible", native_started);
+        // NSTrackingArea helps WKWebView receive mouse-move while non-key, but
+        // it is not reliable enough alone for continuous hover across action
+        // buttons. Keep the same 60 Hz pointer sampler Windows uses so
+        // `data-hovered` (background / soft shadow) updates on every move.
         self.start_toolbar_pointer_tracking(app, &window);
         Ok(true)
     }
@@ -607,6 +789,7 @@ impl WindowCoordinator {
             let _ = self.hide_toolbar_if_selection(app, &selection_id);
             return;
         }
+        let _toolbar_operation = self.toolbar_operation.lock();
         let hidden = if let Some(window) = app.get_webview_window(TOOLBAR_LABEL) {
             hide_toolbar_window(&window).is_ok()
         } else {
@@ -617,14 +800,42 @@ impl WindowCoordinator {
             self.stop_toolbar_pointer_tracking();
             let mut state = self.state.lock();
             state.toolbar_anchor = None;
+            state.toolbar_placement = None;
             state.toolbar_selection_id = None;
         }
+    }
+
+    /// Hides a toolbar without making the selection event consumer wait for
+    /// the Windows UI dispatcher. The native operation rechecks the expected
+    /// selection id before mutating the singleton window, so a newer staged
+    /// selection cannot be hidden by an older dismiss request.
+    pub fn hide_toolbar_if_selection_async(&self, app: &AppHandle, selection_id: &str) {
+        let coordinator = self.clone();
+        let app = app.clone();
+        let selection_id = selection_id.to_owned();
+        let _ = std::thread::Builder::new()
+            .name("textlens-toolbar-hide".to_owned())
+            .spawn(move || {
+                let _ = coordinator.hide_toolbar_if_selection(&app, &selection_id);
+            });
+    }
+
+    /// Fallback hide for a dismiss event that has no logical selection owner.
+    /// This is also kept off the selection event thread for the same reason as
+    /// the selection-scoped variant above.
+    pub fn hide_toolbar_async(&self, app: &AppHandle) {
+        let coordinator = self.clone();
+        let app = app.clone();
+        let _ = std::thread::Builder::new()
+            .name("textlens-toolbar-hide".to_owned())
+            .spawn(move || coordinator.hide_toolbar(&app));
     }
 
     pub fn hide_toolbar_if_selection(&self, app: &AppHandle, selection_id: &str) -> bool {
         let Some(window) = app.get_webview_window(TOOLBAR_LABEL) else {
             return false;
         };
+        let _toolbar_operation = self.toolbar_operation.lock();
         #[cfg(target_os = "windows")]
         let hidden = hide_windows_toolbar_if_selection(
             &window,
@@ -649,6 +860,7 @@ impl WindowCoordinator {
                 false
             } else {
                 state.toolbar_anchor = None;
+                state.toolbar_placement = None;
                 state.toolbar_selection_id = None;
                 true
             }
@@ -666,6 +878,13 @@ impl WindowCoordinator {
             .fetch_add(1, Ordering::AcqRel);
     }
 
+    /// Sample the cursor at ~60 Hz and push hover updates over
+    /// `TOOLBAR_POINTER_EVENT`. Required on both desktop platforms:
+    /// - Windows: WebView2 does not reliably deliver mouse-move to a
+    ///   non-activated toolbar window.
+    /// - macOS: the toolbar is intentionally non-key; NSTrackingArea alone is
+    ///   not enough for continuous hover across action buttons, so the same
+    ///   sampler drives `data-hovered` (background / soft shadow feedback).
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn start_toolbar_pointer_tracking(&self, app: &AppHandle, window: &WebviewWindow) {
         // Invalidating the previous generation before spawning a new sampler
@@ -751,6 +970,7 @@ impl WindowCoordinator {
     ) -> tauri::Result<bool> {
         let size = toolbar_size(size);
         let window = app.get_webview_window(TOOLBAR_LABEL);
+        let _toolbar_operation = self.toolbar_operation.lock();
         #[cfg(target_os = "windows")]
         if let Some(window) = window {
             return update_windows_toolbar_size(
@@ -770,7 +990,7 @@ impl WindowCoordinator {
             return Ok(true);
         }
         #[cfg(not(target_os = "windows"))]
-        let anchor = {
+        let (anchor, placement) = {
             let mut state = self.state.lock();
             if selection_id.is_some() && state.toolbar_selection_id.as_deref() != selection_id {
                 return Ok(false);
@@ -779,12 +999,15 @@ impl WindowCoordinator {
                 return Ok(true);
             }
             state.toolbar_size = size;
-            state.toolbar_anchor
+            (
+                state.toolbar_anchor,
+                state.toolbar_placement.unwrap_or_default(),
+            )
         };
         #[cfg(not(target_os = "windows"))]
         if let Some(window) = window {
             if let (true, Some(anchor)) = (window.is_visible().unwrap_or(false), anchor) {
-                let layout = toolbar_layout(&window, anchor, size)?;
+                let layout = toolbar_layout_with_placement(&window, anchor, size, placement)?;
                 #[cfg(target_os = "windows")]
                 apply_toolbar_layout(&window, layout, false)?;
                 #[cfg(not(target_os = "windows"))]
@@ -880,15 +1103,10 @@ impl WindowCoordinator {
         .focusable(true)
         .focused(false)
         .visible(false);
-        // WebView2's undecorated shadow is still rectangular even when the
-        // HTML surface is rounded. `transparent(true)` already requests an
-        // alpha-zero WebView2 background, so do not repeat that request via
-        // `background_color`: keeping the builder minimal also shortens the
-        // detached native-window initialization path on cold start.
-        #[cfg(target_os = "windows")]
+        // The renderer owns the visible surface and already provides its own
+        // rounded background. A native shadow around the transparent WebView
+        // creates a second rectangular card, especially noticeable over PDFs.
         let builder = builder.shadow(false);
-        #[cfg(not(target_os = "windows"))]
-        let builder = builder.shadow(true);
         let window = match builder
             .build()
             .map_err(|error| result_window_step_error("webview creation", error))
@@ -1205,7 +1423,7 @@ impl WindowCoordinator {
                 let Some(window) = app.get_webview_window(&label) else {
                     return;
                 };
-                match result_foreground_scope(&window) {
+                match result_foreground_scope(&app, &window) {
                     ResultForegroundScope::Internal => return,
                     ResultForegroundScope::Unknown => continue,
                     ResultForegroundScope::External => {
@@ -1336,18 +1554,36 @@ fn toolbar_layout(
     point: Point,
     logical_size: WindowSize,
 ) -> tauri::Result<WindowLayout> {
-    let geometry = monitor_geometry_for_point(window, point)?;
+    toolbar_layout_with_placement(window, point, logical_size, ToolbarPlacement::BottomMiddle)
+}
+
+fn toolbar_layout_with_placement(
+    window: &WebviewWindow,
+    point: Point,
+    logical_size: WindowSize,
+    placement: ToolbarPlacement,
+) -> tauri::Result<WindowLayout> {
+    // Window creation can briefly precede monitor enumeration on Windows.
+    // Placement still has a safe cursor-relative fallback, so a transient
+    // monitor query failure must not suppress an otherwise valid selection.
+    let geometry = monitor_geometry_for_point(window, point).ok().flatten();
     let coordinate_scale = geometry
         .map(|geometry| geometry.coordinate_scale)
         .unwrap_or_else(|| current_window_coordinate_scale(window));
-    let coordinate_size = logical_size_to_coordinates(logical_size, coordinate_scale);
+    let coordinate_size = toolbar_native_frame_size(
+        logical_size_to_coordinates(logical_size, coordinate_scale),
+        coordinate_scale,
+    );
     let position = geometry.map_or_else(
-        || Point {
-            x: point.x - coordinate_size.width / 2.0,
-            y: point.y,
-        },
+        || toolbar_position_without_area(point, coordinate_size, placement),
         |geometry| {
-            toolbar_position_in_area(point, coordinate_size, geometry.work_area, coordinate_scale)
+            toolbar_position_in_area_with_placement(
+                point,
+                coordinate_size,
+                geometry.work_area,
+                coordinate_scale,
+                placement,
+            )
         },
     );
     Ok(WindowLayout {
@@ -1368,8 +1604,7 @@ fn result_layout(
     let coordinate_size = logical_size_to_coordinates(logical_size, coordinate_scale);
     let position = geometry.map_or_else(
         || Point {
-            x: point.x - coordinate_size.width / 2.0
-                + coordinate_size.width * RESULT_HORIZONTAL_SHIFT_RATIO,
+            x: point.x - coordinate_size.width * RESULT_CURSOR_LEFT_ANCHOR_RATIO,
             y: point.y - coordinate_size.height / 2.0
                 + coordinate_size.height * RESULT_VERTICAL_SHIFT_RATIO,
         },
@@ -1389,16 +1624,53 @@ fn toolbar_position_in_area(
     area: WorkArea,
     coordinate_scale: f64,
 ) -> Point {
+    toolbar_position_in_area_with_placement(
+        point,
+        size,
+        area,
+        coordinate_scale,
+        ToolbarPlacement::BottomMiddle,
+    )
+}
+
+fn toolbar_position_without_area(
+    point: Point,
+    size: WindowSize,
+    placement: ToolbarPlacement,
+) -> Point {
+    let x = match placement {
+        ToolbarPlacement::BottomLeft => point.x - size.width,
+        ToolbarPlacement::BottomMiddle => point.x - size.width / 2.0,
+        ToolbarPlacement::BottomRight | ToolbarPlacement::TopRight => point.x,
+    };
+    let y = match placement {
+        ToolbarPlacement::TopRight => point.y - size.height,
+        ToolbarPlacement::BottomLeft
+        | ToolbarPlacement::BottomMiddle
+        | ToolbarPlacement::BottomRight => point.y,
+    };
+    Point { x, y }
+}
+
+fn toolbar_position_in_area_with_placement(
+    point: Point,
+    size: WindowSize,
+    area: WorkArea,
+    coordinate_scale: f64,
+    placement: ToolbarPlacement,
+) -> Point {
     let margin = TOOLBAR_SCREEN_MARGIN * coordinate_scale;
     let left = area.x + margin;
     let right = area.x + area.width - margin;
     let top = area.y + margin;
     let bottom = area.y + area.height - margin;
 
-    // The release point is the horizontal center and top edge of the toolbar.
+    // `point` is Cherry's reference point: the toolbar grows left/right from
+    // the selected endpoint and above it for a backward multi-line range.
     // Work-area clamping takes precedence near taskbars and display edges.
-    let x = (point.x - size.width / 2.0).clamp(left, (right - size.width).max(left));
-    let y = point.y.clamp(top, (bottom - size.height).max(top));
+    let preferred = toolbar_position_without_area(point, size, placement);
+    let x = preferred.x.clamp(left, (right - size.width).max(left));
+    let y = preferred.y.clamp(top, (bottom - size.height).max(top));
     Point { x, y }
 }
 
@@ -1433,9 +1705,10 @@ fn result_position_in_area(
     let top = area.y + margin;
     let bottom = area.y + area.height - margin;
 
-    // Start centered on the action click, then shift right and down by 30% of
-    // the result size. Near display edges the complete window takes priority.
-    let x = (point.x - size.width / 2.0 + size.width * RESULT_HORIZONTAL_SHIFT_RATIO)
+    // Anchor the action click at 20% of the result width, then shift down by
+    // 30% of its height. Near display edges the complete window takes
+    // priority over the preferred click-relative position.
+    let x = (point.x - size.width * RESULT_CURSOR_LEFT_ANCHOR_RATIO)
         .clamp(left, (right - size.width).max(left));
     let y = (point.y - size.height / 2.0 + size.height * RESULT_VERTICAL_SHIFT_RATIO)
         .clamp(top, (bottom - size.height).max(top));
@@ -1555,6 +1828,33 @@ fn logical_size_to_coordinates(size: WindowSize, coordinate_scale: f64) -> Windo
     }
 }
 
+fn toolbar_native_frame_size(size: WindowSize, coordinate_scale: f64) -> WindowSize {
+    #[cfg(target_os = "windows")]
+    {
+        let scale = normalized_scale(coordinate_scale);
+        // The renderer reports CSS pixels while SetWindowPos consumes physical
+        // pixels. Base the guard on the measured frame width, then bias it by
+        // the active scale so narrow icon-only bars get only the clearance
+        // they need while fractional DPI still has room for rounding drift.
+        let width_guard = (size.width * WINDOWS_TOOLBAR_TRAILING_GUARD_RATIO).ceil();
+        let dpi_guard = (scale * 4.0).ceil();
+        let guard = width_guard.max(dpi_guard).clamp(
+            WINDOWS_TOOLBAR_TRAILING_GUARD_MIN,
+            WINDOWS_TOOLBAR_TRAILING_GUARD_MAX,
+        );
+        WindowSize {
+            width: size.width + guard,
+            height: size.height,
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = coordinate_scale;
+        size
+    }
+}
+
 fn normalized_scale(scale: f64) -> f64 {
     if scale.is_finite() && scale > 0.0 {
         scale
@@ -1626,32 +1926,41 @@ fn apply_toolbar_layout(
     layout: WindowLayout,
     show: bool,
 ) -> tauri::Result<()> {
+    run_windows_window_operation(window, move |window| {
+        apply_toolbar_layout_raw(window, layout, show)
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn apply_toolbar_layout_raw(
+    window: &WebviewWindow,
+    layout: WindowLayout,
+    show: bool,
+) -> tauri::Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, HWND_TOPMOST, SET_WINDOW_POS_FLAGS, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     };
 
-    run_windows_window_operation(window, move |window| {
-        let hwnd = window.hwnd()?;
-        let flags = SWP_NOACTIVATE
-            | if show {
-                SWP_SHOWWINDOW
-            } else {
-                SET_WINDOW_POS_FLAGS(0)
-            };
-        unsafe {
-            SetWindowPos(
-                hwnd,
-                Some(HWND_TOPMOST),
-                physical_coordinate(layout.position.x),
-                physical_coordinate(layout.position.y),
-                physical_dimension(layout.coordinate_size.width) as i32,
-                physical_dimension(layout.coordinate_size.height) as i32,
-                flags,
-            )
-            .map_err(windows_error)?;
-        }
-        Ok(())
-    })
+    let hwnd = window.hwnd()?;
+    let flags = SWP_NOACTIVATE
+        | if show {
+            SWP_SHOWWINDOW
+        } else {
+            SET_WINDOW_POS_FLAGS(0)
+        };
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            physical_coordinate(layout.position.x),
+            physical_coordinate(layout.position.y),
+            physical_dimension(layout.coordinate_size.width) as i32,
+            physical_dimension(layout.coordinate_size.height) as i32,
+            flags,
+        )
+        .map_err(windows_error)?;
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -1688,11 +1997,44 @@ fn stage_windows_toolbar(
     selection_id: String,
     anchor: Point,
 ) -> tauri::Result<()> {
-    run_windows_window_operation(window, move |window| {
+    stage_windows_toolbar_with_placement(
+        window,
+        state,
+        selection_id,
+        anchor,
+        ToolbarPlacement::BottomMiddle,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn stage_windows_toolbar_with_placement(
+    window: &WebviewWindow,
+    state: Arc<Mutex<WindowState>>,
+    selection_id: String,
+    anchor: Point,
+    placement: ToolbarPlacement,
+) -> tauri::Result<()> {
+    // Resolve monitor geometry before entering the event-loop callback. WRY's
+    // monitor and scale getters may synchronously dispatch work; using them
+    // from the UI callback itself can deadlock that dispatcher on Windows.
+    let size = {
         let mut state = state.lock();
-        hide_toolbar_window_raw(window)?;
         state.toolbar_anchor = Some(anchor);
-        state.toolbar_selection_id = Some(selection_id);
+        state.toolbar_placement = Some(placement);
+        state.toolbar_selection_id = Some(selection_id.clone());
+        state.toolbar_size
+    };
+    let layout = toolbar_layout_with_placement(window, anchor, size, placement)?;
+    run_windows_window_operation(window, move |window| {
+        // Do not let a delayed native callback resurrect an older selection.
+        if state.lock().toolbar_selection_id.as_deref() != Some(selection_id.as_str()) {
+            return Ok(());
+        }
+        // Hide the old frame before moving it. The renderer will reveal this
+        // generation through present_toolbar after React has received the new
+        // selection and measured the actual DOM size.
+        hide_toolbar_window_raw(window)?;
+        apply_toolbar_layout_raw(window, layout, false)?;
         Ok(())
     })
 }
@@ -1706,17 +2048,29 @@ fn present_windows_toolbar(
 ) -> tauri::Result<bool> {
     let presented = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let committed = Arc::clone(&presented);
-    run_windows_window_operation(window, move |window| {
-        let mut state = state.lock();
+    let (anchor, placement) = {
+        let state = state.lock();
         if state.toolbar_selection_id.as_deref() != Some(selection_id.as_str()) {
-            return Ok(());
+            return Ok(false);
         }
         let anchor = state
             .toolbar_anchor
             .ok_or_else(|| std::io::Error::other("toolbar anchor is unavailable"))?;
-        state.toolbar_size = size;
-        let layout = toolbar_layout(window, anchor, size)?;
-        apply_toolbar_layout(window, layout, true)?;
+        let placement = state.toolbar_placement.unwrap_or_default();
+        (anchor, placement)
+    };
+    // See `stage_windows_toolbar_with_placement`: this must stay outside the
+    // UI operation to avoid re-entering the Windows event dispatcher.
+    let layout = toolbar_layout_with_placement(window, anchor, size, placement)?;
+    run_windows_window_operation(window, move |window| {
+        if state.lock().toolbar_selection_id.as_deref() != Some(selection_id.as_str()) {
+            return Ok(());
+        }
+        apply_toolbar_layout_raw(window, layout, true)?;
+        // Publish the measured size only after the native visible commit has
+        // succeeded. A stale or timed-out operation must not poison the next
+        // selection's initial layout with an unpresented size.
+        state.lock().toolbar_size = size;
         committed.store(true, Ordering::Release);
         Ok(())
     })?;
@@ -1738,6 +2092,7 @@ fn hide_windows_toolbar_if_selection(
         }
         hide_toolbar_window_raw(window)?;
         state.toolbar_anchor = None;
+        state.toolbar_placement = None;
         state.toolbar_selection_id = None;
         committed.store(true, Ordering::Release);
         Ok(())
@@ -1752,26 +2107,54 @@ fn update_windows_toolbar_size(
     selection_id: Option<String>,
     size: WindowSize,
 ) -> tauri::Result<bool> {
+    let anchor_and_placement = {
+        let state = state.lock();
+        if selection_id.is_some()
+            && state.toolbar_selection_id.as_deref() != selection_id.as_deref()
+        {
+            return Ok(false);
+        }
+        if state.toolbar_size == size {
+            return Ok(true);
+        }
+        state
+            .toolbar_anchor
+            .map(|anchor| (anchor, state.toolbar_placement.unwrap_or_default()))
+    };
+
+    let Some((anchor, placement)) = anchor_and_placement else {
+        // There is no staged selection yet. Scale lookup is safe here because
+        // this call is outside the native UI operation.
+        set_window_size_for_current_monitor(window, size)?;
+        let mut state = state.lock();
+        if selection_id.is_some()
+            && state.toolbar_selection_id.as_deref() != selection_id.as_deref()
+        {
+            return Ok(false);
+        }
+        state.toolbar_size = size;
+        return Ok(true);
+    };
+    let layout = toolbar_layout_with_placement(window, anchor, size, placement)?;
     let updated = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let committed = Arc::clone(&updated);
     run_windows_window_operation(window, move |window| {
+        {
+            let state = state.lock();
+            if selection_id.is_some()
+                && state.toolbar_selection_id.as_deref() != selection_id.as_deref()
+            {
+                return Ok(());
+            }
+        }
+        apply_toolbar_layout_raw(window, layout, false)?;
         let mut state = state.lock();
         if selection_id.is_some()
             && state.toolbar_selection_id.as_deref() != selection_id.as_deref()
         {
             return Ok(());
         }
-        if state.toolbar_size == size {
-            committed.store(true, Ordering::Release);
-            return Ok(());
-        }
         state.toolbar_size = size;
-        if let (true, Some(anchor)) = (window.is_visible().unwrap_or(false), state.toolbar_anchor) {
-            let layout = toolbar_layout(window, anchor, size)?;
-            apply_toolbar_layout(window, layout, false)?;
-        } else {
-            set_window_size_for_current_monitor(window, size)?;
-        }
         committed.store(true, Ordering::Release);
         Ok(())
     })?;
@@ -1819,7 +2202,7 @@ fn physical_coordinate(value: f64) -> i32 {
 
 #[cfg(target_os = "windows")]
 fn physical_dimension(value: f64) -> u32 {
-    value.round().clamp(1.0, u32::MAX as f64) as u32
+    value.ceil().clamp(1.0, u32::MAX as f64) as u32
 }
 
 fn cursor_is_outside(app: &AppHandle, label: &str) -> bool {
@@ -1853,10 +2236,17 @@ fn classify_result_foreground(
     root_match: bool,
     root_owner_match: bool,
     owner_chain_match: bool,
+    toolbar_match: bool,
 ) -> ResultForegroundScope {
     if !foreground_available {
         ResultForegroundScope::Unknown
-    } else if direct_match || child_match || root_match || root_owner_match || owner_chain_match {
+    } else if direct_match
+        || child_match
+        || root_match
+        || root_owner_match
+        || owner_chain_match
+        || toolbar_match
+    {
         ResultForegroundScope::Internal
     } else {
         ResultForegroundScope::External
@@ -1864,7 +2254,7 @@ fn classify_result_foreground(
 }
 
 #[cfg(target_os = "windows")]
-fn result_foreground_scope(window: &WebviewWindow) -> ResultForegroundScope {
+fn result_foreground_scope(app: &AppHandle, window: &WebviewWindow) -> ResultForegroundScope {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetAncestor, GetForegroundWindow, GetWindow, IsChild, GA_ROOT, GA_ROOTOWNER, GW_OWNER,
     };
@@ -1897,6 +2287,21 @@ fn result_foreground_scope(window: &WebviewWindow) -> ResultForegroundScope {
         candidate = owner;
     }
 
+    // The selection toolbar is a separate no-activate top-level webview. On
+    // some WebView2 builds clicking it briefly makes that window foreground;
+    // it is still an internal continuation of a result-window selection and
+    // must not trigger the source result's blur-close before run_action reads
+    // the selection.
+    let toolbar_match = app
+        .get_webview_window(TOOLBAR_LABEL)
+        .and_then(|toolbar| toolbar.hwnd().ok())
+        .is_some_and(|toolbar_hwnd| {
+            foreground == toolbar_hwnd
+                || unsafe { IsChild(toolbar_hwnd, foreground).as_bool() }
+                || unsafe { GetAncestor(foreground, GA_ROOT) } == toolbar_hwnd
+                || unsafe { GetAncestor(foreground, GA_ROOTOWNER) } == toolbar_hwnd
+        });
+
     classify_result_foreground(
         true,
         direct_match,
@@ -1904,6 +2309,7 @@ fn result_foreground_scope(window: &WebviewWindow) -> ResultForegroundScope {
         root_match,
         root_owner_match,
         owner_chain_match,
+        toolbar_match,
     )
 }
 
@@ -1955,10 +2361,11 @@ fn windows_point_inside_window(window: &WebviewWindow, point: Point) -> bool {
     if unsafe { GetWindowRect(hwnd, &mut rectangle) }.is_err() {
         return false;
     }
-    point.x >= f64::from(rectangle.left)
-        && point.x <= f64::from(rectangle.right)
-        && point.y >= f64::from(rectangle.top)
-        && point.y <= f64::from(rectangle.bottom)
+    let tolerance = WINDOWS_TOOLBAR_HIT_TOLERANCE;
+    point.x >= f64::from(rectangle.left) - tolerance
+        && point.x <= f64::from(rectangle.right) + tolerance
+        && point.y >= f64::from(rectangle.top) - tolerance
+        && point.y <= f64::from(rectangle.bottom) + tolerance
 }
 
 #[cfg(target_os = "windows")]
@@ -2402,17 +2809,16 @@ fn order_front_without_focus(window: &WebviewWindow) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
+fn set_native_alpha_raw(window: &WebviewWindow, alpha: f64) -> tauri::Result<()> {
     use objc2_app_kit::NSWindow;
 
-    let opacity = opacity.clamp(0.2, 1.0);
     let app = window.app_handle().clone();
     let window = window.clone();
     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
     app.run_on_main_thread(move || {
         let result = window.ns_window().map(|pointer| unsafe {
             let window = &*(pointer as *const NSWindow);
-            window.setAlphaValue(opacity);
+            window.setAlphaValue(alpha);
         });
         let _ = sender.send(result);
     })?;
@@ -2420,6 +2826,11 @@ fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()>
         .recv()
         .map_err(|_| tauri::Error::FailedToReceiveMessage)??;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
+    set_native_alpha_raw(window, opacity.clamp(0.2, 1.0))
 }
 
 #[cfg(target_os = "windows")]
@@ -2840,7 +3251,7 @@ mod tests {
     #[test]
     fn windows_blur_only_closes_for_an_explicit_external_foreground() {
         assert_eq!(
-            classify_result_foreground(false, false, false, false, false, false),
+            classify_result_foreground(false, false, false, false, false, false, false),
             ResultForegroundScope::Unknown
         );
         for internal_relation in 0..5 {
@@ -2854,13 +3265,18 @@ mod tests {
                     relations[2],
                     relations[3],
                     relations[4],
+                    false,
                 ),
                 ResultForegroundScope::Internal
             );
         }
         assert_eq!(
-            classify_result_foreground(true, false, false, false, false, false),
+            classify_result_foreground(true, false, false, false, false, false, false),
             ResultForegroundScope::External
+        );
+        assert_eq!(
+            classify_result_foreground(true, false, false, false, false, false, true),
+            ResultForegroundScope::Internal
         );
     }
 
@@ -3128,8 +3544,8 @@ mod tests {
             area,
             1.0,
         );
-        assert_eq!(clamped.x, -1_908.0);
-        assert_eq!(clamped.y, 1_024.0);
+        assert_eq!(clamped.x, -1_900.0);
+        assert_eq!(clamped.y, 1_016.0);
     }
 
     #[test]
@@ -3153,7 +3569,7 @@ mod tests {
     }
 
     #[test]
-    fn result_offsets_from_pointer_and_clamps_at_work_area_edges() {
+    fn result_anchors_click_at_one_fifth_width_and_clamps_at_work_area_edges() {
         let area = WorkArea {
             x: 0.0,
             y: 0.0,
@@ -3164,11 +3580,11 @@ mod tests {
             width: 520.0,
             height: 420.0,
         };
-        let centered = result_position_in_area(Point { x: 800.0, y: 450.0 }, size, area, 1.0);
-        assert_eq!(centered, Point { x: 592.0, y: 366.0 });
+        let anchored = result_position_in_area(Point { x: 800.0, y: 450.0 }, size, area, 1.0);
+        assert_eq!(anchored, Point { x: 696.0, y: 366.0 });
 
         let top = result_position_in_area(Point { x: 800.0, y: 20.0 }, size, area, 1.0);
-        assert_eq!(top, Point { x: 592.0, y: 8.0 });
+        assert_eq!(top, Point { x: 696.0, y: 8.0 });
 
         let edge = result_position_in_area(Point { x: 40.0, y: 880.0 }, size, area, 1.0);
         assert_eq!(edge.x, 8.0);
@@ -3304,11 +3720,14 @@ mod tests {
             },
             coordinate_scale: 1.5,
         };
-        let toolbar_size = logical_size_to_coordinates(
-            WindowSize {
-                width: 520.0,
-                height: 44.0,
-            },
+        let toolbar_size = toolbar_native_frame_size(
+            logical_size_to_coordinates(
+                WindowSize {
+                    width: 520.0,
+                    height: 44.0,
+                },
+                geometry.coordinate_scale,
+            ),
             geometry.coordinate_scale,
         );
         let toolbar = toolbar_position_in_area(
@@ -3329,6 +3748,30 @@ mod tests {
         assert!(
             toolbar.y + toolbar_size.height
                 <= geometry.work_area.y + geometry.work_area.height - 12.0
+        );
+
+        let icon_toolbar = toolbar_native_frame_size(
+            logical_size_to_coordinates(
+                WindowSize {
+                    width: 132.0,
+                    height: 36.0,
+                },
+                geometry.coordinate_scale,
+            ),
+            geometry.coordinate_scale,
+        );
+        let icon_toolbar_at_right_edge = toolbar_position_in_area(
+            Point {
+                x: geometry.work_area.x + geometry.work_area.width - 1.0,
+                y: 80.0,
+            },
+            icon_toolbar,
+            geometry.work_area,
+            geometry.coordinate_scale,
+        );
+        assert!(
+            icon_toolbar_at_right_edge.x + icon_toolbar.width
+                <= geometry.work_area.x + geometry.work_area.width - 12.0
         );
 
         let logical_result = fit_logical_size_to_geometry(
@@ -3357,6 +3800,36 @@ mod tests {
             result.y + result_size.height
                 <= geometry.work_area.y + geometry.work_area.height - 12.0
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn toolbar_frame_guard_scales_with_content_and_dpi() {
+        let icon_at_100 = toolbar_native_frame_size(
+            WindowSize {
+                width: 132.0,
+                height: 36.0,
+            },
+            1.0,
+        );
+        let icon_at_150 = toolbar_native_frame_size(
+            WindowSize {
+                width: 198.0,
+                height: 54.0,
+            },
+            1.5,
+        );
+        let wide = toolbar_native_frame_size(
+            WindowSize {
+                width: 1_000.0,
+                height: 54.0,
+            },
+            1.5,
+        );
+
+        assert_eq!(icon_at_100.width, 138.0);
+        assert_eq!(icon_at_150.width, 206.0);
+        assert_eq!(wide.width, 1_012.0);
     }
 
     #[test]
@@ -3409,7 +3882,10 @@ mod tests {
         let anchor = Point { x: 120.0, y: 80.0 };
         let size = state.commit_toolbar_selection("selection-show", anchor);
         assert_eq!(size, state.toolbar_size);
-        assert_eq!(state.toolbar_selection_id.as_deref(), Some("selection-show"));
+        assert_eq!(
+            state.toolbar_selection_id.as_deref(),
+            Some("selection-show")
+        );
         assert_eq!(state.toolbar_anchor, Some(anchor));
 
         // Drop the state lock before any main-thread window work would run.
@@ -3418,7 +3894,10 @@ mod tests {
         // main holds nested popup menu → remove_result waits for state).
         drop(state);
         let state = coordinator.state.lock();
-        assert_eq!(state.toolbar_selection_id.as_deref(), Some("selection-show"));
+        assert_eq!(
+            state.toolbar_selection_id.as_deref(),
+            Some("selection-show")
+        );
     }
 
     #[test]

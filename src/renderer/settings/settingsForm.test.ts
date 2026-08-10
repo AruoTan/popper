@@ -38,6 +38,22 @@ describe('settings form helpers', () => {
     if (result.valid) expect(result.value.application).toEqual({ closeBehavior: 'quit' })
   })
 
+  it('includes per-application capture strategies in ordinary settings updates', () => {
+    const result = buildSettingsUpdate({
+      ...DEFAULT_PUBLIC_SETTINGS,
+      selectionCapture: {
+        defaultStrategy: 'selection-hook',
+        applications: [{ application: 'reader.exe', strategy: 'clipboard' }]
+      }
+    })
+
+    expect(result.valid).toBe(true)
+    if (result.valid) expect(result.value.selectionCapture).toEqual({
+      defaultStrategy: 'selection-hook',
+      applications: [{ application: 'reader.exe', strategy: 'clipboard' }]
+    })
+  })
+
   it('rejects shortcut names that Tauri cannot register', () => {
     expect(buildSettingsUpdate({
       ...DEFAULT_PUBLIC_SETTINGS,

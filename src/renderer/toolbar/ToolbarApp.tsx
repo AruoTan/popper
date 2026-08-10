@@ -72,6 +72,19 @@ function logToolbarDiagnostic(
   })
 }
 
+function traceToolbarTiming(stage: string, startedAt: number | null): void {
+  if (startedAt === null) return
+  try {
+    if (window.localStorage.getItem('textlens.selectionTrace') !== '1') return
+  } catch {
+    return
+  }
+  console.debug('[TextLens][selection-timing]', {
+    stage,
+    durationMs: Math.max(0, performance.now() - startedAt)
+  })
+}
+
 function toolbarControlIdFromElement(
   target: Element | null,
   toolbar: HTMLElement | null
@@ -79,6 +92,7 @@ function toolbarControlIdFromElement(
   const control = target?.closest<HTMLElement>('[data-toolbar-control]') ?? null
   if (!control || !toolbar?.contains(control)) return null
   if (control instanceof HTMLButtonElement && control.disabled) return null
+  if (control.getAttribute('aria-disabled') === 'true') return null
   return control.dataset.toolbarControl || null
 }
 
@@ -95,6 +109,7 @@ export function ToolbarApp(): JSX.Element {
   const [message, setMessage] = useState('')
   const operationGenerationRef = useRef(0)
   const selectionGenerationRef = useRef(0)
+  const selectionTimingStartedAtRef = useRef<number | null>(null)
 
   const blurToolbarFocus = (): void => {
     const activeElement = document.activeElement
@@ -169,6 +184,7 @@ export function ToolbarApp(): JSX.Element {
     void loadSettings(0)
 
     const unsubscribeSelection = window.textLens.onSelection((nextSelection) => {
+      selectionTimingStartedAtRef.current = performance.now()
       resetCopySuccess()
       clearRetainedToolbarFocus()
       selectionGenerationRef.current += 1
@@ -271,17 +287,13 @@ export function ToolbarApp(): JSX.Element {
     if (
       !element ||
       !presentToolbar ||
-      !settings ||
       !selectionId ||
-      busyActionId ||
-      message ||
-      copySuccessActiveRef.current
+      !settings
     ) return
 
-    // The native Windows toolbar stays hidden until this layout effect. At
-    // this point React has replaced the previous selection, cleared any old
-    // spinner/error/hover state and rendered the final action list, so the
-    // backend can position, size and show it in one native operation.
+    // Windows keeps the native frame hidden during staging. Commit the first
+    // measured DOM size here so only the current renderer generation can make
+    // the toolbar visible; the observer below handles later content changes.
     const rectangle = element.getBoundingClientRect()
     const size = {
       width: Math.max(1, Math.ceil(rectangle.width)),
@@ -289,6 +301,8 @@ export function ToolbarApp(): JSX.Element {
     }
     let disposed = false
     let retryFrame = 0
+    const timingStartedAt = selectionTimingStartedAtRef.current
+    traceToolbarTiming('renderer', timingStartedAt)
     const scheduleRetry = (attempt: number): void => {
       retryFrame = requestAnimationFrame(() => void present(attempt))
     }
@@ -341,7 +355,12 @@ export function ToolbarApp(): JSX.Element {
         }
       }
 
-      if (disposed || presented) return
+      if (disposed) return
+      if (presented) {
+        traceToolbarTiming('native-visible', timingStartedAt)
+        selectionTimingStartedAtRef.current = null
+        return
+      }
       const stillMatches = await currentSelectionStillMatches(attempt)
       if (disposed || !stillMatches) return
       if (attempt + 1 < TOOLBAR_PRESENTATION_ATTEMPTS) {
@@ -355,7 +374,7 @@ export function ToolbarApp(): JSX.Element {
       disposed = true
       cancelAnimationFrame(retryFrame)
     }
-  }, [busyActionId, message, selection, settings, visibleActions])
+  }, [selection?.selectionId, settings, visibleActions])
 
   useEffect(() => {
     const element = toolbarRef.current
@@ -508,17 +527,19 @@ export function ToolbarApp(): JSX.Element {
       <div className="toolbar-pill">
         {visibleActions.map((action) => {
           const busy = busyActionId === action.id
+          const muted = busyActionId !== null && !busy
           const copySucceeded = action.kind === 'copy' && copySuccessActionId === action.id
           return (
             <button
-              className={`toolbar-action ${iconOnly ? 'toolbar-action--icon-only' : ''}`}
+              className={`toolbar-action ${iconOnly ? 'toolbar-action--icon-only' : ''} ${muted ? 'toolbar-action--muted' : ''}`}
               type="button"
               key={action.id}
               data-toolbar-control={`action:${action.id}`}
               data-hovered={hoveredControlId === `action:${action.id}` ? 'true' : undefined}
               title={action.name}
               aria-label={action.name}
-              disabled={busyActionId !== null}
+              disabled={busy}
+              aria-disabled={muted ? 'true' : undefined}
               onMouseDown={(event) => event.preventDefault()}
               onClick={(event) => void runAction(action.id, event)}
             >

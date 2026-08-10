@@ -56,6 +56,7 @@ function resultSnapshot(
 }
 
 const completedSession = resultSnapshot()
+const askCompletedSession = resultSnapshot({ actionId: 'ask-ai' })
 
 function settingsWithFontSize(fontSize = 18): PublicSettings {
   return {
@@ -399,7 +400,7 @@ describe('ResultApp window interactions', () => {
       button: 0,
       isPrimary: true
     })
-    fireEvent.pointerDown(screen.getByRole('combobox', { name: '切换模型' }), {
+    fireEvent.pointerDown(screen.getByRole('button', { name: '切换模型' }), {
       button: 0,
       isPrimary: true
     })
@@ -469,7 +470,7 @@ describe('ResultApp window interactions', () => {
   })
 
   it('keeps translation metadata in the compact header and applies result font size', async () => {
-    const { api, container } = await renderResult()
+    const { api, container, continueAction } = await renderResult()
     const resultWindow = container.querySelector<HTMLElement>('.result-window')!
     const footer = container.querySelector<HTMLElement>('.result-footer')!
     const footerActions = container.querySelector<HTMLElement>('.result-actions')!
@@ -484,15 +485,23 @@ describe('ResultApp window interactions', () => {
     expect(screen.getByRole('button', { name: '关闭结果窗口' })).toBeInTheDocument()
     expect(container.querySelector('.result-count')).not.toBeInTheDocument()
     expect(footer).not.toHaveTextContent(/\d[\d,]*\s*字/u)
-    expect(footer.firstElementChild).toHaveClass('result-followup')
-    expect(footer.querySelector('.result-followup textarea')).toHaveAttribute(
+    expect(footer.querySelector('.result-followup')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '继续提问' })).toHaveAttribute(
       'placeholder',
       '输入继续提问'
     )
+    expect(footer.firstElementChild).toHaveClass('result-followup')
     expect([...footerActions.children]).toHaveLength(2)
     for (const control of footerActions.children) {
       expect(control).toHaveClass('result-footer-button')
     }
+
+    const followUp = screen.getByRole('textbox', { name: '继续提问' })
+    fireEvent.change(followUp, { target: { value: '继续解释这一段' } })
+    fireEvent.keyDown(followUp, { key: 'Enter' })
+    await waitFor(() => {
+      expect(continueAction).toHaveBeenCalledWith('session-1', '继续解释这一段')
+    })
 
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     await waitFor(() => {
@@ -551,15 +560,18 @@ describe('ResultApp window interactions', () => {
     expect(screen.getByText('const answer = 42').closest('pre')).toBeInTheDocument()
   })
 
-  it('uses plain text while streaming and switches to Markdown after completion', async () => {
+  it('starts Markdown while streaming and keeps that renderer after completion', async () => {
     await renderResult({
       ...completedSession,
       status: 'streaming',
       content: '# 尚未完成'
     })
 
-    expect(screen.queryByRole('heading', { name: '尚未完成' })).not.toBeInTheDocument()
-    expect(screen.getByText('# 尚未完成')).toHaveClass('stream-plain-text')
+    const streamingHeading = await screen.findByRole(
+      'heading',
+      { name: '尚未完成', level: 1 },
+      { timeout: 5_000 }
+    )
 
     const store = await import('./actionEventStore')
     act(() => {
@@ -569,7 +581,7 @@ describe('ResultApp window interactions', () => {
       })
     })
 
-    expect(await screen.findByRole('heading', { name: '尚未完成', level: 1 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '尚未完成', level: 1 })).toBe(streamingHeading)
     expect(screen.queryByText('# 尚未完成')).not.toBeInTheDocument()
   })
 
@@ -585,9 +597,9 @@ describe('ResultApp window interactions', () => {
   })
 
   it('expands the follow-up input and submits with Enter using the current session', async () => {
-    const { continueAction, container } = await renderResult()
+    const { continueAction, container } = await renderResult(askCompletedSession)
     const input = screen.getByRole('textbox', { name: '继续提问' })
-    expect(input).toHaveAttribute('placeholder', '输入继续提问')
+    expect(input).toHaveAttribute('placeholder', '输入问题，基于选中文本提问')
 
     const expand = screen.getByRole('button', { name: '放大继续提问输入框' })
     fireEvent.click(expand)
@@ -611,7 +623,7 @@ describe('ResultApp window interactions', () => {
   })
 
   it('keeps a follow-up question when the backend rejects it', async () => {
-    const { continueAction } = await renderResult()
+    const { continueAction } = await renderResult(askCompletedSession)
     continueAction.mockResolvedValueOnce({ accepted: false, message: '上下文过长' })
     const input = screen.getByRole('textbox', { name: '继续提问' })
     fireEvent.change(input, { target: { value: '继续说明' } })
@@ -622,7 +634,7 @@ describe('ResultApp window interactions', () => {
   })
 
   it('restores an accepted follow-up question if streaming later fails', async () => {
-    const { continueAction, retryAction } = await renderResult()
+    const { continueAction, retryAction } = await renderResult(askCompletedSession)
     const input = screen.getByRole('textbox', { name: '继续提问' })
     fireEvent.change(input, { target: { value: '继续说明失败原因' } })
     fireEvent.keyDown(input, { key: 'Enter' })
@@ -633,7 +645,7 @@ describe('ResultApp window interactions', () => {
     const store = await import('./actionEventStore')
     act(() => {
       store.hydrateActionEventStore({
-        ...completedSession,
+        ...askCompletedSession,
         requestId: 'request-followup',
         status: 'error',
         content: '',
@@ -655,7 +667,7 @@ describe('ResultApp window interactions', () => {
 
     act(() => {
       store.hydrateActionEventStore({
-        ...completedSession,
+        ...askCompletedSession,
         requestId: 'request-followup-retry',
         status: 'completed',
         content: '重试后的回答',
@@ -740,13 +752,12 @@ describe('ResultApp window interactions', () => {
     const { container } = await renderResult(summary)
 
     expect(container.querySelector('.result-header .translation-route')).not.toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: '切换模型' })).toHaveValue(
-      JSON.stringify(['openai-compatible', 'model-1'])
-    )
+    expect(screen.getByRole('button', { name: '切换模型' })).toHaveTextContent('模型一')
     expect(container.querySelector('.result-model-switch')).toHaveAttribute(
       'title',
       'OpenAI Compatible · 模型一'
     )
+    expect(container.querySelector('.result-model-switch select')).not.toBeInTheDocument()
   })
 
   it('hydrates initial preparing snapshot without route and uses default model route', async () => {
@@ -760,9 +771,7 @@ describe('ResultApp window interactions', () => {
     const { api, bootstrap } = await renderResult(initialPreparing)
 
     expect(screen.getByText('正在等待模型响应…')).toBeInTheDocument()
-    expect(screen.getByRole('combobox', { name: '切换模型' })).toHaveValue(
-      JSON.stringify(['openai-compatible', 'model-1'])
-    )
+    expect(screen.getByRole('button', { name: '切换模型' })).toHaveTextContent('模型一')
     expect(bootstrap.start).toHaveBeenCalledOnce()
     expect(api.ackResultReady).not.toHaveBeenCalled()
     expect(api.failResultReveal).not.toHaveBeenCalled()
@@ -781,14 +790,15 @@ describe('ResultApp window interactions', () => {
         { id: 'model-deep', name: '深度模型', thinkingLevels: [] }
       ]
     })
-    const { container, retryAction } = await renderResult(completedSession, settings)
-    const selector = screen.getByRole('combobox', { name: '切换模型' })
-    const groups = [...container.querySelectorAll('optgroup')]
-    expect(groups.map((group) => group.label)).toEqual(['OpenAI Compatible', '备用服务商'])
+    const { retryAction } = await renderResult(completedSession, settings)
+    const selector = screen.getByRole('button', { name: '切换模型' })
+    fireEvent.click(selector)
 
-    fireEvent.change(selector, {
-      target: { value: JSON.stringify(['provider-two', 'model-deep']) }
-    })
+    expect(screen.getByRole('listbox', { name: '可用模型' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'OpenAI Compatible' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: '备用服务商' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('option', { name: '深度模型' }))
 
     await waitFor(() => {
       expect(retryAction).toHaveBeenLastCalledWith('session-1', {
@@ -796,7 +806,7 @@ describe('ResultApp window interactions', () => {
         modelId: 'model-deep'
       })
     })
-    expect(selector).toHaveValue(JSON.stringify(['provider-two', 'model-deep']))
+    expect(selector).toHaveTextContent('深度模型')
   })
 
   it('shows the app toolbar for a real text selection inside result content', async () => {
@@ -944,7 +954,7 @@ describe('ResultApp window interactions', () => {
     const first = await renderResult(streaming)
     expect(screen.getByRole('button', { name: '停止' })).toBeInTheDocument()
     expect(screen.getByText('正在等待模型响应…')).toBeInTheDocument()
-    expect(screen.getByRole('textbox', { name: '继续提问' })).toBeDisabled()
+    expect(screen.queryByRole('textbox', { name: '继续提问' })).not.toBeInTheDocument()
     first.unmount()
 
     vi.resetModules()

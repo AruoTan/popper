@@ -446,14 +446,15 @@ describe('SettingsApp provider deletion', () => {
   })
 
   it('records a capture shortcut from keyboard input instead of free typing', async () => {
+    const updateSettings = vi.fn(async (update: SettingsUpdate) => ({
+      ...DEFAULT_PUBLIC_SETTINGS,
+      ...update,
+      trigger: update.trigger ?? DEFAULT_PUBLIC_SETTINGS.trigger,
+      captureShortcut: update.captureShortcut ?? DEFAULT_PUBLIC_SETTINGS.captureShortcut
+    }))
     window.textLens = {
       getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      updateSettings: vi.fn(async (update) => ({
-        ...DEFAULT_PUBLIC_SETTINGS,
-        ...update,
-        trigger: update.trigger ?? DEFAULT_PUBLIC_SETTINGS.trigger,
-        captureShortcut: update.captureShortcut ?? DEFAULT_PUBLIC_SETTINGS.captureShortcut
-      })),
+      updateSettings,
       getAccessibilityStatus: vi.fn(async () => ({
         platform: 'darwin' as const,
         trusted: true,
@@ -481,7 +482,16 @@ describe('SettingsApp provider deletion', () => {
     // macOS maps Meta → CommandOrControl; Linux/Windows map Meta → Super.
     const platform = `${navigator.platform ?? ''} ${navigator.userAgent ?? ''}`.toLowerCase()
     const isMac = platform.includes('mac') || platform.includes('darwin')
-    expect(input).toHaveValue(isMac ? 'CommandOrControl+Alt+K' : 'Super+Alt+K')
+    const recorded = isMac ? 'CommandOrControl+Alt+K' : 'Super+Alt+K'
+    expect(input).toHaveValue(recorded)
+
+    fireEvent.click(screen.getByRole('button', { name: '保存设置' }))
+    await waitFor(() => {
+      expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+        trigger: { mode: 'shortcut' },
+        captureShortcut: recorded
+      }))
+    })
 
     fireEvent.keyDown(input, { key: 'Backspace', code: 'Backspace', bubbles: true })
     expect(input).toHaveValue('')

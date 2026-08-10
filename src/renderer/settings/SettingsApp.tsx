@@ -100,6 +100,7 @@ type SettingsSectionId =
   | 'actions'
   | 'language'
   | 'result'
+  | 'capture'
   | 'filter'
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
@@ -133,11 +134,29 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     blurb: '结果窗口出现位置、默认大小，以及点击外部时如何关闭。'
   },
   {
+    id: 'capture',
+    label: '划词获取',
+    blurb: '为个别程序选择获取选中文本的方式。'
+  },
+  {
     id: 'filter',
     label: '过滤',
     blurb: '可限制只在部分应用中启用划词，或排除干扰较多的应用。'
   }
 ]
+
+const SETTINGS_ACTIVE_SECTION_STORAGE_KEY = 'textlens.settings.active-section'
+
+function restoredSettingsSection(): SettingsSectionId {
+  try {
+    const value = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY)
+    return SETTINGS_SECTIONS.some((section) => section.id === value)
+      ? value as SettingsSectionId
+      : 'general'
+  } catch {
+    return 'general'
+  }
+}
 
 const ACTION_KIND_NAMES: Readonly<Record<ActionDefinition['kind'], string>> = {
   copy: '复制',
@@ -204,7 +223,7 @@ function accessibilityPresentation(status: AccessibilityStatus | null): {
   if (status?.platform === 'windows') {
     return {
       heading: 'Windows 选区访问',
-      description: '优先通过 Windows UI Automation 读取选区，兼容应用可临时复制并恢复剪贴板；不需要单独授权。',
+      description: '优先通过 Windows UI Automation、Legacy UIA 与 MSAA 读取选区；不会改动系统剪贴板，也不需要单独授权。',
       state: available ? '选区访问可用' : '选区访问不可用',
       detail: monitorError ?? (available
         ? `${APP_NAME} 可以响应新的文本选择。`
@@ -252,7 +271,9 @@ export function SettingsApp(): JSX.Element {
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null)
   const [quitConfirmationOpen, setQuitConfirmationOpen] = useState(false)
   const [draggingId, setDraggingId] = useState<string | null>(null)
-  const [activeSection, setActiveSection] = useState<SettingsSectionId>('general')
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(restoredSettingsSection)
+  const activeSectionRef = useRef(activeSection)
+  activeSectionRef.current = activeSection
   const dirtyRef = useRef(false)
   const unsavedChangesRef = useRef(false)
   const quittingRef = useRef(false)
@@ -276,6 +297,29 @@ export function SettingsApp(): JSX.Element {
   useEffect(() => {
     draftReadyRef.current = draft !== null
   }, [draft])
+
+  useEffect(() => {
+    // A hidden settings WebView normally stays mounted, preserving unsaved
+    // form values (including API-key input). Keep only the active section as
+    // a fallback for a later renderer recreation; never persist form data.
+    const persistActiveSection = (): void => {
+      if (document.visibilityState !== 'hidden') return
+      try {
+        window.sessionStorage.setItem(
+          SETTINGS_ACTIVE_SECTION_STORAGE_KEY,
+          activeSectionRef.current
+        )
+      } catch {
+        // Storage may be unavailable in hardened WebView configurations.
+      }
+    }
+    document.addEventListener('visibilitychange', persistActiveSection)
+    window.addEventListener('pagehide', persistActiveSection)
+    return () => {
+      document.removeEventListener('visibilitychange', persistActiveSection)
+      window.removeEventListener('pagehide', persistActiveSection)
+    }
+  }, [])
 
   const applySettingsGuidance = useCallback((lease: SettingsGuidanceLease): void => {
     if (!draftReadyRef.current) {
@@ -1479,6 +1523,103 @@ export function SettingsApp(): JSX.Element {
           <div className="setting-row"><div><strong>窗口透明度</strong><p>内容和控件会保持统一透明度。</p></div>
             <div className="range-control"><input type="range" min={20} max={100} value={Math.round(draft.result.opacity * 100)}
               onChange={(event) => changeDraft((current) => ({ ...current, result: { ...current.result, opacity: Number(event.target.value) / 100 } }))} /><span>{Math.round(draft.result.opacity * 100)}%</span></div></div>
+        </div>
+      </section>
+          )}
+
+          {activeSection === 'capture' && (
+      <section className="settings-section settings-section--enter" aria-labelledby="capture-title">
+        <div className="section-heading"><div><h2 id="capture-title">划词获取</h2><p>{activeMeta.blurb}</p></div></div>
+        <div className="settings-card settings-card--rows">
+          <div className="setting-row setting-row--stackable">
+            <div><strong>默认方式</strong><p>优先使用 Selection Hook；已知 PDF 和画布程序仅在安全校验通过时使用受控复制回退。</p></div>
+            <select className="control compact-control" aria-label="默认划词获取方式" value={draft.selectionCapture.defaultStrategy}
+              onChange={(event) => changeDraft((current) => ({
+                ...current,
+                selectionCapture: {
+                  ...current.selectionCapture,
+                  defaultStrategy: event.target.value as PublicSettings['selectionCapture']['defaultStrategy']
+                }
+              }))}>
+              <option value="selection-hook">Selection Hook</option>
+              <option value="auto">自动回退</option>
+              <option value="clipboard">受控 Ctrl+C</option>
+            </select>
+          </div>
+          <div className="setting-row setting-row--column">
+            <div><strong>程序规则</strong><p>填写可执行文件名或完整路径。受控 Ctrl+C 仅在已完成的划词手势后运行。</p></div>
+            <div className="capture-rule-list" role="list">
+              {draft.selectionCapture.applications.map((rule, index) => (
+                <div className="capture-rule" key={`${rule.application}-${index}`} role="listitem">
+                  <input
+                    className="control"
+                    aria-label={`程序规则 ${index + 1}`}
+                    value={rule.application}
+                    placeholder="acrobat.exe"
+                    spellCheck={false}
+                    onChange={(event) => changeDraft((current) => ({
+                      ...current,
+                      selectionCapture: {
+                        ...current.selectionCapture,
+                        applications: current.selectionCapture.applications.map((candidate, candidateIndex) =>
+                          candidateIndex === index ? { ...candidate, application: event.target.value } : candidate
+                        )
+                      }
+                    }))}
+                  />
+                  <select
+                    className="control"
+                    aria-label={`${rule.application || '程序'} 的划词获取方式`}
+                    value={rule.strategy}
+                    onChange={(event) => changeDraft((current) => ({
+                      ...current,
+                      selectionCapture: {
+                        ...current.selectionCapture,
+                        applications: current.selectionCapture.applications.map((candidate, candidateIndex) =>
+                          candidateIndex === index
+                            ? { ...candidate, strategy: event.target.value as typeof candidate.strategy }
+                            : candidate
+                        )
+                      }
+                    }))}
+                  >
+                    <option value="selection-hook">Selection Hook</option>
+                    <option value="auto">自动回退</option>
+                    <option value="clipboard">受控 Ctrl+C</option>
+                  </select>
+                  <button
+                    className="icon-button action-delete"
+                    type="button"
+                    title="移除程序规则"
+                    aria-label={`移除 ${rule.application || '程序'} 规则`}
+                    onClick={() => changeDraft((current) => ({
+                      ...current,
+                      selectionCapture: {
+                        ...current.selectionCapture,
+                        applications: current.selectionCapture.applications.filter((_, candidateIndex) => candidateIndex !== index)
+                      }
+                    }))}
+                  ><Trash2 size={16} /></button>
+                </div>
+              ))}
+            </div>
+            <div className="setting-row__end">
+              <button
+                className="button button--quiet"
+                type="button"
+                onClick={() => changeDraft((current) => ({
+                  ...current,
+                  selectionCapture: {
+                    ...current.selectionCapture,
+                    applications: [...current.selectionCapture.applications, {
+                      application: '',
+                      strategy: 'clipboard'
+                    }]
+                  }
+                }))}
+              ><Plus size={15} />添加程序</button>
+            </div>
+          </div>
         </div>
       </section>
           )}

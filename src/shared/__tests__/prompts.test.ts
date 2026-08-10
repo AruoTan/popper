@@ -51,7 +51,7 @@ Rules:
       '用 {{language}} 概括以下内容的核心观点、关键事实、结论与必要限定；不编造原文没有的信息。内容复杂时可用简洁 Markdown。直接输出摘要。\n\n{{text}}'
     )
     expect(DEFAULT_ACTION_PROMPTS.explain).toBe(
-      '用 {{language}} 对所选内容做**整体解释**：说清楚它在讲什么、核心含义与必要上下文即可。不要逐词逐句拆解，也不要对每个术语做百科式展开；仅当文中出现对理解整体至关重要的常见术语时，用一两句补充。信息不足时说明，勿臆测。表述简洁，可用 Markdown。直接输出解释。\n\n{{text}}'
+      '请解释下面的内容。要求：使用 {{language}} 语言进行回复；请不要包含对本提示词的任何解释，直接给出回复： \n\n{{text}}'
     )
     expect(DEFAULT_ACTION_PROMPTS.refine).toBe(
       '请对用XML标签<INPUT>包裹的用户输入内容进行优化或润色，并保持原内容的含义和完整性。要求：你的输出应当与用户输入内容的语言相同；请不要包含对本提示词的任何解释，直接给出回复；请不要输出XML标签，直接输出优化后的内容: \n\n<INPUT>{{text}}</INPUT>'
@@ -168,7 +168,7 @@ Rules:
       sourceBoundarySeed: 'explain-test'
     })
     expect(explainResult.userPrompt).toBe(
-      `用 en-US 对所选内容做**整体解释**：说清楚它在讲什么、核心含义与必要上下文即可。不要逐词逐句拆解，也不要对每个术语做百科式展开；仅当文中出现对理解整体至关重要的常见术语时，用一两句补充。信息不足时说明，勿臆测。表述简洁，可用 Markdown。直接输出解释。\n\n${explainResult.sourceBoundary!.begin}\nsource\n${explainResult.sourceBoundary!.end}`
+      `请解释下面的内容。要求：使用 en-US 语言进行回复；请不要包含对本提示词的任何解释，直接给出回复： \n\n${explainResult.sourceBoundary!.begin}\nsource\n${explainResult.sourceBoundary!.end}`
     )
     expect(summaryResult.userPrompt).not.toContain(
       OUTPUT_LANGUAGE_PLACEHOLDER

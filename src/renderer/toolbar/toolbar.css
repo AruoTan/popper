@@ -13,10 +13,15 @@ body {
 
 .toolbar-shell {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   width: max-content;
-  max-width: 760px;
-  padding: 0;
+  max-width: none;
+  overflow: visible;
+  /* Keep a transparent native margin for the pill shadow. WebView2 can clip
+     shadows at the window edge, which makes the rightmost action look cut off
+     on some DPI/GPU combinations. */
+  padding: 5px 8px;
+  contain: layout;
   -webkit-app-region: no-drag;
 }
 
@@ -25,15 +30,17 @@ body {
   gap: 2px;
   align-items: center;
   width: max-content;
-  min-height: 38px;
-  max-width: 100%;
-  padding: 3px;
+  min-width: max-content;
+  min-height: 34px;
+  padding: 3px 5px;
   overflow: visible;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: none;
-  backdrop-filter: blur(22px) saturate(160%);
+  /* Keep the surface and shadow inside the native WebView bounds. A solid
+     color also avoids the older WebView2 color-mix fallback mismatch that can
+     make the pill disappear on some GPU/driver combinations. */
+  background-color: color-mix(in srgb, var(--surface-solid) 42%, var(--surface-muted));
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: 9px;
+  box-shadow: var(--shadow-sm);
 }
 
 .toolbar-action {
@@ -44,30 +51,34 @@ body {
   gap: 5px;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
-  height: 32px;
-  padding: 0 8px;
+  min-width: 68px;
+  height: 28px;
+  padding: 0 10px;
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 570;
   white-space: nowrap;
   background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-radius: 7px;
   box-shadow: none;
   outline: none;
-  transition: none;
+  transition:
+    background-color 100ms ease-out,
+    color 100ms ease-out,
+    box-shadow 100ms ease-out;
   -webkit-tap-highlight-color: transparent;
 }
 
-.toolbar-action {
-  max-width: 106px;
+.toolbar-action--muted {
+  pointer-events: none;
+  opacity: 0.45;
 }
 
 .toolbar-action--icon-only {
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
   padding: 0;
 }
 
@@ -82,14 +93,15 @@ body {
 }
 
 .toolbar-action span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 .toolbar-action[data-hovered='true']:not(:disabled) {
-  color: var(--text);
-  background: var(--surface-muted);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 82%, var(--surface-solid));
+  box-shadow: none;
 }
 
 .toolbar-action:focus,
@@ -115,11 +127,11 @@ body {
   padding: 7px 9px;
   color: var(--danger);
   font-size: 12px;
-  background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--danger) 22%, var(--border));
-  border-radius: 9px;
-  box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(18px);
+  background: var(--surface-solid);
+  background: color-mix(in srgb, var(--danger-soft) 60%, var(--surface-solid));
+  border: 0;
+  border-radius: 8px;
+  box-shadow: none;
 }
 
 .toolbar-message__icon {
@@ -158,7 +170,7 @@ body {
   font-weight: 600;
   white-space: nowrap;
   background: var(--surface-muted);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 6px;
 }
 
@@ -196,5 +208,14 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .spin {
     animation-duration: 1.6s;
+  }
+
+  .toolbar-action,
+  .toolbar-message__action {
+    transition: none;
+  }
+
+  .toolbar-copy-success {
+    animation: none;
   }
 }

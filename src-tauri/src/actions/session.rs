@@ -490,8 +490,7 @@ impl SessionTable {
             ),
             ReservationKind::Continue => {
                 state.snapshot.status == ActionSnapshotStatus::Completed
-                    && (!state.snapshot.content.is_empty()
-                        || state.allow_continue_without_content)
+                    && (!state.snapshot.content.is_empty() || state.allow_continue_without_content)
             }
             ReservationKind::Initial => false,
         };

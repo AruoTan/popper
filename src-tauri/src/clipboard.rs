@@ -7,11 +7,28 @@ use objc2_foundation::NSString;
 const WINDOWS_CLIPBOARD_ATTEMPTS: usize = 8;
 #[cfg(any(target_os = "windows", test))]
 const WINDOWS_CLIPBOARD_TEXT_LIMIT: usize = 1_000_000;
+#[cfg(target_os = "windows")]
+const WINDOWS_CLIPBOARD_SNAPSHOT_LIMIT: usize = 64 * 1024 * 1024;
 
 #[cfg(target_os = "windows")]
 pub(crate) struct WindowsClipboardSnapshot {
-    data_object: Option<windows::Win32::System::Com::IDataObject>,
+    formats: Vec<WindowsClipboardFormatSnapshot>,
+    was_empty: bool,
     sequence: u32,
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsClipboardFormatSnapshot {
+    format: u32,
+    data: Vec<u8>,
+    kind: WindowsClipboardFormatKind,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy)]
+enum WindowsClipboardFormatKind {
+    GlobalMemory,
+    EnhancedMetafile,
 }
 
 #[cfg(target_os = "windows")]
@@ -21,13 +38,14 @@ impl WindowsClipboardSnapshot {
     }
 
     /// Restores the complete OLE data object only while the synthetic copy is
-    /// still the newest clipboard write. This deliberately does not flush the
-    /// OLE clipboard, so delayed formats remain owned by their original source.
+    /// still the newest clipboard write. The snapshot owns materialized bytes
+    /// rather than a third-party IDataObject proxy, so repeatedly restoring a
+    /// PDF renderer's delayed formats cannot build a recursive OLE proxy chain.
     pub(crate) fn restore_if_unchanged(&self, expected_sequence: u32) -> bool {
         if !windows_clipboard_sequence_matches(expected_sequence) {
             return false;
         }
-        unsafe { windows::Win32::System::Ole::OleSetClipboard(self.data_object.as_ref()) }.is_ok()
+        restore_windows_clipboard_snapshot(self, expected_sequence)
     }
 }
 
@@ -42,52 +60,24 @@ pub(crate) fn write_text(text: &str) -> Result<(), String> {
     write_to_windows_clipboard(text)
 }
 
-/// Captures the current Windows OLE clipboard object, including an explicitly
-/// empty clipboard. Callers must run in an OLE-initialized STA.
+/// Materializes the current Windows clipboard, including an explicitly empty
+/// clipboard. Keeping third-party IDataObject proxies across copy/restore
+/// cycles can recurse through delayed OLE renderers and overflow the helper's
+/// stack, so only self-contained formats are retained here.
 #[cfg(target_os = "windows")]
 pub(crate) fn snapshot_windows_clipboard() -> Option<WindowsClipboardSnapshot> {
-    use windows::Win32::{
-        Foundation::{GetLastError, SetLastError, WIN32_ERROR},
-        System::{DataExchange::CountClipboardFormats, Ole::OleGetClipboard},
-    };
-
-    let sequence = unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() };
-    unsafe { SetLastError(WIN32_ERROR(0)) };
-    let format_count = unsafe { CountClipboardFormats() };
-    if format_count == 0 {
-        if unsafe { GetLastError() }.0 != 0 {
-            return None;
-        }
-        return Some(WindowsClipboardSnapshot {
-            data_object: None,
-            sequence,
-        });
-    }
-
-    let data_object = unsafe { OleGetClipboard() }.ok()?;
-    windows_clipboard_sequence_matches(sequence).then_some(WindowsClipboardSnapshot {
-        data_object: Some(data_object),
-        sequence,
-    })
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn windows_clipboard_sequence() -> u32 {
-    unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() }
-}
-
-#[cfg(target_os = "windows")]
-pub(crate) fn read_windows_clipboard_text(expected_sequence: u32) -> Option<String> {
     use std::{slice, thread, time::Duration};
 
     use windows::Win32::{
-        Foundation::HGLOBAL,
+        Foundation::{GetLastError, SetLastError, HGLOBAL, WIN32_ERROR},
+        Graphics::Gdi::{GetEnhMetaFileBits, HENHMETAFILE},
         System::{
             DataExchange::{
-                CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+                CloseClipboard, CountClipboardFormats, EnumClipboardFormats, GetClipboardData,
+                OpenClipboard,
             },
             Memory::{GlobalLock, GlobalSize, GlobalUnlock},
-            Ole::CF_UNICODETEXT,
+            Ole::CF_ENHMETAFILE,
         },
     };
 
@@ -105,44 +95,648 @@ pub(crate) fn read_windows_clipboard_text(expected_sequence: u32) -> Option<Stri
         }
     }
 
-    if !windows_clipboard_sequence_matches(expected_sequence)
-        || unsafe { IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)) }.is_err()
-    {
-        return None;
-    }
-
+    let sequence = unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() };
     retry_operation(
         WINDOWS_CLIPBOARD_ATTEMPTS,
         || unsafe { OpenClipboard(None) },
         |retry_index| {
-            let delay_ms = 4_u64.saturating_mul((retry_index as u64) + 1).min(20);
+            let delay_ms = 2_u64.saturating_mul((retry_index as u64) + 1).min(12);
             thread::sleep(Duration::from_millis(delay_ms));
         },
     )
     .ok()?;
     let _clipboard = ClipboardGuard;
-    if !windows_clipboard_sequence_matches(expected_sequence) {
+    if !windows_clipboard_sequence_matches(sequence) {
         return None;
     }
 
-    let handle = unsafe { GetClipboardData(u32::from(CF_UNICODETEXT.0)) }.ok()?;
-    let global = HGLOBAL(handle.0);
-    let byte_length = unsafe { GlobalSize(global) };
-    if byte_length < std::mem::size_of::<u16>() || byte_length % std::mem::size_of::<u16>() != 0 {
+    unsafe { SetLastError(WIN32_ERROR(0)) };
+    let format_count = unsafe { CountClipboardFormats() };
+    if format_count == 0 {
+        if unsafe { GetLastError() }.0 != 0 {
+            return None;
+        }
+        return Some(WindowsClipboardSnapshot {
+            formats: Vec::new(),
+            was_empty: true,
+            sequence,
+        });
+    }
+
+    let mut formats = Vec::with_capacity(format_count as usize);
+    let mut total_bytes = 0usize;
+    let mut format = 0u32;
+    loop {
+        format = unsafe { EnumClipboardFormats(format) };
+        if format == 0 {
+            break;
+        }
+        if windows_clipboard_format_is_skipped(format) {
+            continue;
+        }
+
+        let handle = unsafe { GetClipboardData(format) }.ok()?;
+        let (data, kind) = if format == u32::from(CF_ENHMETAFILE.0) {
+            let metafile = HENHMETAFILE(handle.0);
+            let size = unsafe { GetEnhMetaFileBits(metafile, None) } as usize;
+            if size == 0 {
+                continue;
+            }
+            let mut data = vec![0u8; size];
+            if unsafe { GetEnhMetaFileBits(metafile, Some(&mut data)) } as usize != size {
+                return None;
+            }
+            (data, WindowsClipboardFormatKind::EnhancedMetafile)
+        } else {
+            let global = HGLOBAL(handle.0);
+            let size = unsafe { GlobalSize(global) };
+            if size == 0 {
+                continue;
+            }
+            let pointer = unsafe { GlobalLock(global) }.cast::<u8>();
+            if pointer.is_null() {
+                return None;
+            }
+            let _lock = GlobalLockGuard(global);
+            (
+                unsafe { slice::from_raw_parts(pointer, size) }.to_vec(),
+                WindowsClipboardFormatKind::GlobalMemory,
+            )
+        };
+        total_bytes = total_bytes.checked_add(data.len())?;
+        if total_bytes > WINDOWS_CLIPBOARD_SNAPSHOT_LIMIT {
+            return None;
+        }
+        formats.push(WindowsClipboardFormatSnapshot { format, data, kind });
+    }
+
+    if formats.is_empty() || !windows_clipboard_sequence_matches(sequence) {
         return None;
     }
-    let pointer = unsafe { GlobalLock(global) }.cast::<u16>();
+    windows_clipboard_sequence_matches(sequence).then_some(WindowsClipboardSnapshot {
+        formats,
+        was_empty: false,
+        sequence,
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn windows_clipboard_format_is_skipped(format: u32) -> bool {
+    use windows::Win32::System::Ole::{
+        CF_BITMAP, CF_DSPBITMAP, CF_DSPENHMETAFILE, CF_DSPMETAFILEPICT, CF_DSPTEXT, CF_GDIOBJFIRST,
+        CF_GDIOBJLAST, CF_LOCALE, CF_METAFILEPICT, CF_OEMTEXT, CF_OWNERDISPLAY, CF_PALETTE,
+        CF_PRIVATEFIRST, CF_PRIVATELAST, CF_TEXT,
+    };
+
+    let synthesized_or_unsupported = [
+        CF_TEXT,
+        CF_OEMTEXT,
+        CF_LOCALE,
+        CF_BITMAP,
+        CF_PALETTE,
+        CF_METAFILEPICT,
+        CF_OWNERDISPLAY,
+        CF_DSPTEXT,
+        CF_DSPBITMAP,
+        CF_DSPMETAFILEPICT,
+        CF_DSPENHMETAFILE,
+    ]
+    .into_iter()
+    .any(|candidate| format == u32::from(candidate.0));
+    synthesized_or_unsupported
+        || (u32::from(CF_PRIVATEFIRST.0)..=u32::from(CF_PRIVATELAST.0)).contains(&format)
+        || (u32::from(CF_GDIOBJFIRST.0)..=u32::from(CF_GDIOBJLAST.0)).contains(&format)
+}
+
+#[cfg(target_os = "windows")]
+enum PreparedWindowsClipboardHandle {
+    Global(Option<windows::Win32::Foundation::HGLOBAL>),
+    EnhancedMetafile(Option<windows::Win32::Graphics::Gdi::HENHMETAFILE>),
+}
+
+#[cfg(target_os = "windows")]
+impl PreparedWindowsClipboardHandle {
+    fn raw(&self) -> windows::Win32::Foundation::HANDLE {
+        use windows::Win32::Foundation::HANDLE;
+
+        match self {
+            Self::Global(Some(handle)) => HANDLE(handle.0),
+            Self::EnhancedMetafile(Some(handle)) => HANDLE(handle.0),
+            Self::Global(None) | Self::EnhancedMetafile(None) => HANDLE::default(),
+        }
+    }
+
+    fn relinquish(&mut self) {
+        match self {
+            Self::Global(handle) => *handle = None,
+            Self::EnhancedMetafile(handle) => *handle = None,
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for PreparedWindowsClipboardHandle {
+    fn drop(&mut self) {
+        use windows::{core::Free, Win32::Graphics::Gdi::DeleteEnhMetaFile};
+
+        match self {
+            Self::Global(handle) => {
+                if let Some(mut handle) = handle.take() {
+                    unsafe { handle.free() };
+                }
+            }
+            Self::EnhancedMetafile(handle) => {
+                if let Some(handle) = handle.take() {
+                    let _ = unsafe { DeleteEnhMetaFile(Some(handle)) };
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_windows_clipboard_format(
+    snapshot: &WindowsClipboardFormatSnapshot,
+) -> Option<PreparedWindowsClipboardHandle> {
+    use std::ptr;
+
+    use windows::Win32::{
+        Graphics::Gdi::SetEnhMetaFileBits,
+        System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+    };
+
+    match snapshot.kind {
+        WindowsClipboardFormatKind::GlobalMemory => {
+            let global = unsafe { GlobalAlloc(GMEM_MOVEABLE, snapshot.data.len()) }.ok()?;
+            let pointer = unsafe { GlobalLock(global) }.cast::<u8>();
+            if pointer.is_null() {
+                let mut global = global;
+                use windows::core::Free;
+                unsafe { global.free() };
+                return None;
+            }
+            unsafe {
+                ptr::copy_nonoverlapping(snapshot.data.as_ptr(), pointer, snapshot.data.len())
+            };
+            let _ = unsafe { GlobalUnlock(global) };
+            Some(PreparedWindowsClipboardHandle::Global(Some(global)))
+        }
+        WindowsClipboardFormatKind::EnhancedMetafile => {
+            let metafile = unsafe { SetEnhMetaFileBits(&snapshot.data) };
+            (!metafile.is_invalid()).then_some(PreparedWindowsClipboardHandle::EnhancedMetafile(
+                Some(metafile),
+            ))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn restore_windows_clipboard_snapshot(
+    snapshot: &WindowsClipboardSnapshot,
+    expected_sequence: u32,
+) -> bool {
+    use std::{thread, time::Duration};
+
+    use windows::{
+        core::w,
+        Win32::{
+            Foundation::HWND,
+            System::DataExchange::{
+                CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+            },
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
+            },
+        },
+    };
+
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseClipboard() };
+        }
+    }
+
+    struct ClipboardOwnerWindow(HWND);
+    impl Drop for ClipboardOwnerWindow {
+        fn drop(&mut self) {
+            let _ = unsafe { DestroyWindow(self.0) };
+        }
+    }
+
+    let mut prepared = if snapshot.was_empty {
+        Vec::new()
+    } else {
+        let Some(prepared) = snapshot
+            .formats
+            .iter()
+            .map(|format| prepare_windows_clipboard_format(format).map(|handle| (format, handle)))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        prepared
+    };
+
+    let owner = unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("TextLens Clipboard Restore Owner"),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+    .map(ClipboardOwnerWindow);
+    let Ok(owner) = owner else {
+        return false;
+    };
+    if retry_operation(
+        WINDOWS_CLIPBOARD_ATTEMPTS,
+        || unsafe { OpenClipboard(Some(owner.0)) },
+        |retry_index| {
+            let delay_ms = 2_u64.saturating_mul((retry_index as u64) + 1).min(12);
+            thread::sleep(Duration::from_millis(delay_ms));
+        },
+    )
+    .is_err()
+    {
+        return false;
+    }
+    let _clipboard = ClipboardGuard;
+    if !windows_clipboard_sequence_matches(expected_sequence)
+        || unsafe { EmptyClipboard() }.is_err()
+    {
+        return false;
+    }
+
+    for (format, handle) in &mut prepared {
+        if unsafe { SetClipboardData(format.format, Some(handle.raw())) }.is_err() {
+            return false;
+        }
+        handle.relinquish();
+    }
+    true
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_clipboard_sequence() -> u32 {
+    unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn read_windows_clipboard_text(
+    expected_sequence: u32,
+    allow_ole_delayed_rendering: bool,
+) -> Option<String> {
+    match read_windows_clipboard_text_win32(expected_sequence) {
+        Ok(text) => Some(text),
+        Err(status)
+            if allow_ole_delayed_rendering && clipboard_read_can_fallback_to_ole(status) =>
+        {
+            match read_windows_clipboard_text_ole(expected_sequence) {
+                Ok(text) => {
+                    trace_windows_clipboard_text_status(expected_sequence, "ole-read-success");
+                    Some(text)
+                }
+                Err(ole_status) => trace_windows_clipboard_text_miss(expected_sequence, ole_status),
+            }
+        }
+        Err(status) => trace_windows_clipboard_text_miss(expected_sequence, status),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_read_can_fallback_to_ole(status: &str) -> bool {
+    matches!(
+        status,
+        "no-text-format"
+            | "open-busy"
+            | "data-unavailable"
+            | "invalid-size"
+            | "lock-failed"
+            | "unicode-decode-failed"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_clipboard_text_win32(expected_sequence: u32) -> Result<String, &'static str> {
+    use std::slice;
+
+    use windows::Win32::{
+        Foundation::HGLOBAL,
+        System::{
+            DataExchange::{
+                CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+            },
+            Memory::{GlobalLock, GlobalSize, GlobalUnlock},
+            Ole::{CF_OEMTEXT, CF_TEXT, CF_UNICODETEXT},
+        },
+    };
+
+    struct ClipboardGuard;
+    impl Drop for ClipboardGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { CloseClipboard() };
+        }
+    }
+
+    struct GlobalLockGuard(HGLOBAL);
+    impl Drop for GlobalLockGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { GlobalUnlock(self.0) };
+        }
+    }
+
+    if !windows_clipboard_sequence_matches(expected_sequence) {
+        return Err("sequence-changed");
+    }
+    let format = if unsafe { IsClipboardFormatAvailable(u32::from(CF_UNICODETEXT.0)) }.is_ok() {
+        CF_UNICODETEXT
+    } else if unsafe { IsClipboardFormatAvailable(u32::from(CF_TEXT.0)) }.is_ok() {
+        CF_TEXT
+    } else if unsafe { IsClipboardFormatAvailable(u32::from(CF_OEMTEXT.0)) }.is_ok() {
+        CF_OEMTEXT
+    } else {
+        return Err("no-text-format");
+    };
+
+    // Selection capture owns the outer retry loop. Do not block one probe for
+    // over 100 ms while a PDF renderer temporarily owns the clipboard: a
+    // short failed probe lets that loop re-check cancellation, source focus,
+    // and a newer clipboard sequence before trying again.
+    if unsafe { OpenClipboard(None) }.is_err() {
+        return Err("open-busy");
+    }
+    let _clipboard = ClipboardGuard;
+    if !windows_clipboard_sequence_matches(expected_sequence) {
+        return Err("sequence-raced-open");
+    }
+
+    let handle =
+        unsafe { GetClipboardData(u32::from(format.0)) }.map_err(|_| "data-unavailable")?;
+    let global = HGLOBAL(handle.0);
+    if format == CF_UNICODETEXT {
+        let (text, nonstandard_layout) =
+            read_windows_unicode_hglobal(global).map_err(|error| match error {
+                UnicodeHGlobalReadError::LockFailed => "lock-failed",
+                UnicodeHGlobalReadError::RegionUnreadable
+                | UnicodeHGlobalReadError::RegionInvalid
+                | UnicodeHGlobalReadError::InvalidSize => "invalid-size",
+                UnicodeHGlobalReadError::DecodeFailed => "unicode-decode-failed",
+            })?;
+        if nonstandard_layout {
+            trace_windows_clipboard_text_status(
+                expected_sequence,
+                "win32-nonstandard-layout-bounded",
+            );
+        }
+        if !windows_clipboard_sequence_matches(expected_sequence) {
+            return Err("sequence-raced-read");
+        }
+        if text.chars().count() > WINDOWS_CLIPBOARD_TEXT_LIMIT {
+            return Err("text-over-limit");
+        }
+        return Ok(text);
+    }
+    let byte_length = unsafe { GlobalSize(global) };
+    if byte_length == 0 {
+        return Err("invalid-size");
+    }
+    let pointer = unsafe { GlobalLock(global) }.cast::<u8>();
     if pointer.is_null() {
-        return None;
+        return Err("lock-failed");
     }
     let _lock = GlobalLockGuard(global);
-    let available_units = byte_length / std::mem::size_of::<u16>();
-    let inspected_units = available_units.min(WINDOWS_CLIPBOARD_TEXT_LIMIT.saturating_add(1));
-    let units = unsafe { slice::from_raw_parts(pointer, inspected_units) };
-    let text = decode_windows_clipboard_text(units, WINDOWS_CLIPBOARD_TEXT_LIMIT)?;
-    (windows_clipboard_sequence_matches(expected_sequence)
-        && text.chars().count() <= WINDOWS_CLIPBOARD_TEXT_LIMIT)
-        .then_some(text)
+    let inspected_bytes = byte_length.min(WINDOWS_CLIPBOARD_TEXT_LIMIT.saturating_mul(4));
+    let bytes = unsafe { slice::from_raw_parts(pointer, inspected_bytes) };
+    let codepage = if format == CF_TEXT {
+        windows::Win32::Globalization::CP_ACP
+    } else {
+        windows::Win32::Globalization::CP_OEMCP
+    };
+    let text = decode_windows_clipboard_ansi(bytes, codepage).ok_or("ansi-decode-failed")?;
+    if !windows_clipboard_sequence_matches(expected_sequence) {
+        return Err("sequence-raced-read");
+    }
+    if text.chars().count() > WINDOWS_CLIPBOARD_TEXT_LIMIT {
+        return Err("text-over-limit");
+    }
+    Ok(text)
+}
+
+/// Acrobat can expose CF_UNICODETEXT through an OLE IDataObject whose
+/// GetClipboardData handle reports a zero GlobalSize. Request one materialized
+/// STGMEDIUM and release it immediately; retaining the proxy would recreate
+/// the recursive delayed-rendering chain that clipboard snapshots avoid.
+#[cfg(target_os = "windows")]
+fn read_windows_clipboard_text_ole(expected_sequence: u32) -> Result<String, &'static str> {
+    use windows::Win32::System::{
+        Com::{DVASPECT_CONTENT, FORMATETC, STGMEDIUM, TYMED_HGLOBAL},
+        Ole::{OleGetClipboard, ReleaseStgMedium, CF_UNICODETEXT},
+    };
+
+    struct StgMediumGuard(STGMEDIUM);
+    impl Drop for StgMediumGuard {
+        fn drop(&mut self) {
+            unsafe { ReleaseStgMedium(&mut self.0) };
+        }
+    }
+
+    if !windows_clipboard_sequence_matches(expected_sequence) {
+        return Err("ole-sequence-changed");
+    }
+    let data_object = unsafe { OleGetClipboard() }.map_err(|_| "ole-get-clipboard-failed")?;
+    if !windows_clipboard_sequence_matches(expected_sequence) {
+        return Err("ole-sequence-raced-object");
+    }
+    let format = FORMATETC {
+        cfFormat: CF_UNICODETEXT.0,
+        ptd: std::ptr::null_mut(),
+        dwAspect: DVASPECT_CONTENT.0,
+        lindex: -1,
+        tymed: TYMED_HGLOBAL.0 as u32,
+    };
+    let medium = unsafe { data_object.GetData(&format) }.map_err(|_| "ole-get-data-failed")?;
+    let medium = StgMediumGuard(medium);
+    if medium.0.tymed != TYMED_HGLOBAL.0 as u32 {
+        return Err("ole-invalid-medium");
+    }
+    let global = unsafe { medium.0.u.hGlobal };
+    let (text, nonstandard_layout) =
+        read_windows_unicode_hglobal(global).map_err(|error| match error {
+            UnicodeHGlobalReadError::LockFailed => "ole-lock-failed",
+            UnicodeHGlobalReadError::RegionUnreadable => "ole-region-unreadable",
+            UnicodeHGlobalReadError::RegionInvalid => "ole-region-invalid",
+            UnicodeHGlobalReadError::InvalidSize => "ole-invalid-size",
+            UnicodeHGlobalReadError::DecodeFailed => "ole-unicode-decode-failed",
+        })?;
+    if nonstandard_layout {
+        trace_windows_clipboard_text_status(expected_sequence, "ole-nonstandard-layout-bounded");
+    }
+    if !windows_clipboard_sequence_matches(expected_sequence) {
+        return Err("ole-sequence-raced-read");
+    }
+    if text.chars().count() > WINDOWS_CLIPBOARD_TEXT_LIMIT {
+        return Err("ole-text-over-limit");
+    }
+    Ok(text)
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnicodeHGlobalReadError {
+    LockFailed,
+    RegionUnreadable,
+    RegionInvalid,
+    InvalidSize,
+    DecodeFailed,
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_unicode_hglobal(
+    global: windows::Win32::Foundation::HGLOBAL,
+) -> Result<(String, bool), UnicodeHGlobalReadError> {
+    use std::slice;
+
+    use windows::Win32::System::Memory::{
+        GlobalLock, GlobalSize, GlobalUnlock, VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT,
+        PAGE_GUARD, PAGE_NOACCESS,
+    };
+
+    struct GlobalLockGuard(windows::Win32::Foundation::HGLOBAL);
+    impl Drop for GlobalLockGuard {
+        fn drop(&mut self) {
+            let _ = unsafe { GlobalUnlock(self.0) };
+        }
+    }
+
+    let pointer = unsafe { GlobalLock(global) }.cast::<u8>();
+    if pointer.is_null() {
+        return Err(UnicodeHGlobalReadError::LockFailed);
+    }
+    let _lock = GlobalLockGuard(global);
+    let maximum_bytes = WINDOWS_CLIPBOARD_TEXT_LIMIT
+        .saturating_add(1)
+        .saturating_mul(std::mem::size_of::<u16>());
+    let mut region = MEMORY_BASIC_INFORMATION::default();
+    let queried = unsafe {
+        VirtualQuery(
+            Some(pointer.cast()),
+            &mut region,
+            std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
+        )
+    };
+    if queried < std::mem::size_of::<MEMORY_BASIC_INFORMATION>()
+        || region.State != MEM_COMMIT
+        || region.Protect.0 & (PAGE_GUARD.0 | PAGE_NOACCESS.0) != 0
+    {
+        return Err(UnicodeHGlobalReadError::RegionUnreadable);
+    }
+    let Some(region_byte_length) = bounded_readable_region_length(
+        region.BaseAddress as usize,
+        region.RegionSize,
+        pointer as usize,
+        maximum_bytes,
+    ) else {
+        return Err(UnicodeHGlobalReadError::RegionInvalid);
+    };
+    let reported_byte_length = unsafe { GlobalSize(global) };
+    let nonstandard_layout = reported_byte_length < std::mem::size_of::<u16>()
+        || reported_byte_length % std::mem::size_of::<u16>() != 0
+        || pointer as usize % std::mem::align_of::<u16>() != 0;
+    let reported_boundary = if reported_byte_length < std::mem::size_of::<u16>() {
+        region_byte_length
+    } else {
+        reported_byte_length.saturating_add(reported_byte_length % 2)
+    };
+    let byte_length = region_byte_length.min(reported_boundary).min(maximum_bytes);
+    if byte_length < std::mem::size_of::<u16>() {
+        return Err(UnicodeHGlobalReadError::InvalidSize);
+    }
+    let bytes = unsafe { slice::from_raw_parts(pointer, byte_length) };
+    let text = decode_windows_clipboard_unicode_bytes(bytes, WINDOWS_CLIPBOARD_TEXT_LIMIT)
+        .ok_or(UnicodeHGlobalReadError::DecodeFailed)?;
+    Ok((text, nonstandard_layout))
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn bounded_readable_region_length(
+    region_base: usize,
+    region_size: usize,
+    pointer: usize,
+    maximum: usize,
+) -> Option<usize> {
+    let offset = pointer.checked_sub(region_base)?;
+    let available = region_size.checked_sub(offset)?;
+    (available > 0 && maximum > 0).then_some(available.min(maximum))
+}
+
+#[cfg(target_os = "windows")]
+fn trace_windows_clipboard_text_miss(sequence: u32, status: &'static str) -> Option<String> {
+    trace_windows_clipboard_text_status(sequence, status);
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn trace_windows_clipboard_text_status(sequence: u32, status: &'static str) {
+    use std::{
+        cell::RefCell,
+        io::Write,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    let trace_directory = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map(|directory| directory.join("TextLens"));
+    let environment_enabled = std::env::var_os("TEXTLENS_SELECTION_TRACE").is_some_and(|value| {
+        let value = value.to_string_lossy();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    });
+    if !environment_enabled
+        && !trace_directory
+            .as_ref()
+            .is_some_and(|directory| directory.join("selection-trace.enabled").is_file())
+    {
+        return;
+    }
+    thread_local! {
+        static LAST_STATUS: RefCell<Option<(u32, &'static str)>> = const { RefCell::new(None) };
+    }
+    LAST_STATUS.with(|last| {
+        let current = Some((sequence, status));
+        if *last.borrow() != current {
+            let line = format!("[selection-clipboard] sequence={sequence} status={status}");
+            eprintln!("{line}");
+            if let Some(path) = trace_directory
+                .as_ref()
+                .map(|directory| directory.join("selection-diagnostic.log"))
+            {
+                if let Ok(mut output) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    let timestamp = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis();
+                    let process_id =
+                        unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
+                    let _ = writeln!(output, "{timestamp} process={process_id} {line}");
+                }
+            }
+            *last.borrow_mut() = current;
+        }
+    });
 }
 
 #[cfg(target_os = "windows")]
@@ -321,7 +915,7 @@ fn encode_windows_clipboard_text(text: &str) -> Result<Vec<u16>, String> {
     Ok(encoded)
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn decode_windows_clipboard_text(units: &[u16], limit: usize) -> Option<String> {
     let inspected = units.len().min(limit.saturating_add(1));
     let end = units[..inspected].iter().position(|unit| *unit == 0)?;
@@ -330,6 +924,64 @@ fn decode_windows_clipboard_text(units: &[u16], limit: usize) -> Option<String> 
     }
     let text = String::from_utf16(&units[..end]).ok()?;
     (text.chars().count() <= limit).then_some(text)
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn decode_windows_clipboard_unicode_bytes(bytes: &[u8], limit: usize) -> Option<String> {
+    let mut units = Vec::with_capacity((bytes.len() / 2).min(limit.saturating_add(1)));
+    let mut terminated = false;
+    for pair in bytes.chunks_exact(2).take(limit.saturating_add(1)) {
+        let unit = u16::from_le_bytes([pair[0], pair[1]]);
+        if unit == 0 {
+            terminated = true;
+            break;
+        }
+        units.push(unit);
+    }
+    if !terminated || units.len() > limit {
+        return None;
+    }
+    let text = String::from_utf16(&units).ok()?;
+    (text.chars().count() <= limit).then_some(text)
+}
+
+#[cfg(target_os = "windows")]
+fn decode_windows_clipboard_ansi(bytes: &[u8], codepage: u32) -> Option<String> {
+    use windows::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
+
+    let end = bytes.iter().position(|byte| *byte == 0)?;
+    let bytes = &bytes[..end];
+    if bytes.is_empty() {
+        return Some(String::new());
+    }
+
+    // CF_TEXT is documented as an ANSI code-page format, but several PDF and
+    // canvas renderers publish UTF-8 bytes there when CF_UNICODETEXT is not
+    // ready yet. Treat a complete UTF-8 value as authoritative before asking
+    // Windows to decode it with the active ANSI code page. On a Chinese ACP,
+    // decoding UTF-8 as GBK produces the familiar garbled text even though the
+    // original clipboard bytes are perfectly valid.
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Some(text.to_owned());
+    }
+
+    let mut flags = MB_ERR_INVALID_CHARS;
+    let required = unsafe { MultiByteToWideChar(codepage, flags, bytes, None) };
+    if required <= 0 {
+        // Some older readers emit a byte sequence which is valid for the
+        // system code page but is rejected by the strict conversion flag.
+        flags = Default::default();
+    }
+    let required = unsafe { MultiByteToWideChar(codepage, flags, bytes, None) };
+    if required <= 0 {
+        return None;
+    }
+    let mut wide = vec![0u16; usize::try_from(required).ok()?];
+    let written = unsafe { MultiByteToWideChar(codepage, flags, bytes, Some(&mut wide)) };
+    if written <= 0 || written != required {
+        return None;
+    }
+    String::from_utf16(&wide).ok()
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -394,6 +1046,76 @@ mod tests {
         assert!(decode_windows_clipboard_text(&[b'a' as u16, b'b' as u16], 2).is_none());
         assert!(decode_windows_clipboard_text(&[b'a' as u16, b'b' as u16, 0], 1).is_none());
         assert!(decode_windows_clipboard_text(&[0xD800, 0], 2).is_none());
+    }
+
+    #[test]
+    fn unicode_byte_reader_accepts_unaligned_data_and_odd_tail_padding() {
+        let encoded = "A中"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        let mut unaligned = vec![0xFF];
+        unaligned.extend_from_slice(&encoded);
+        unaligned.push(0x7F);
+
+        assert_eq!(
+            decode_windows_clipboard_unicode_bytes(&unaligned[1..], 16).as_deref(),
+            Some("A中")
+        );
+        assert!(decode_windows_clipboard_unicode_bytes(&encoded[..4], 16).is_none());
+        assert!(decode_windows_clipboard_unicode_bytes(&encoded, 1).is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ansi_clipboard_reader_preserves_nonstandard_utf8_pdf_text() {
+        let mut bytes = "PDF \u{4e2d}\u{6587}".as_bytes().to_vec();
+        bytes.push(0);
+
+        assert_eq!(
+            decode_windows_clipboard_ansi(&bytes, windows::Win32::Globalization::CP_ACP).as_deref(),
+            Some("PDF \u{4e2d}\u{6587}")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ole_fallback_is_limited_to_delayed_rendering_failures() {
+        for status in [
+            "no-text-format",
+            "open-busy",
+            "data-unavailable",
+            "invalid-size",
+            "lock-failed",
+            "unicode-decode-failed",
+        ] {
+            assert!(clipboard_read_can_fallback_to_ole(status));
+        }
+        for status in [
+            "sequence-changed",
+            "sequence-raced-open",
+            "sequence-raced-read",
+            "ansi-decode-failed",
+            "text-over-limit",
+        ] {
+            assert!(!clipboard_read_can_fallback_to_ole(status));
+        }
+    }
+
+    #[test]
+    fn zero_size_ole_reads_stay_inside_the_committed_region_and_text_limit() {
+        assert_eq!(
+            bounded_readable_region_length(1_000, 200, 1_040, 80),
+            Some(80)
+        );
+        assert_eq!(
+            bounded_readable_region_length(1_000, 200, 1_040, 500),
+            Some(160)
+        );
+        assert_eq!(bounded_readable_region_length(1_000, 200, 999, 80), None);
+        assert_eq!(bounded_readable_region_length(1_000, 200, 1_201, 80), None);
+        assert_eq!(bounded_readable_region_length(1_000, 200, 1_040, 0), None);
     }
 
     #[test]

@@ -19,3 +19,7 @@ portable-dev-sources/
 .tmp-textlens-start-diagnostic/
 .superpowers/
 .worktrees/
+.claude/
+.agents
+.codex
+docs/

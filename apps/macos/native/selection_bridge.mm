@@ -1,9 +1,8 @@
 /**
  * Native macOS selection bridge for TextLens.
  *
- * The Accessibility traversal, text-range bounds helpers, input detection, and
- * complete pasteboard snapshot approach in this file are adapted from
- * selection-hook 2.0.2:
+ * The Accessibility traversal, text-range bounds helpers, and input detection
+ * in this file are adapted from selection-hook 2.0.2:
  *
  * Copyright (c) 2025 0xfullex (https://github.com/0xfullex/selection-hook)
  * Licensed under the MIT License. See LICENSE.selection-hook.
@@ -26,6 +25,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -33,6 +33,7 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -44,8 +45,25 @@ constexpr double kMinimumDragDistance = 4.0;
 constexpr uint64_t kMaximumDragDurationMs = 15'000;
 constexpr uint64_t kDoubleClickDurationMs = 500;
 constexpr double kDoubleClickDistance = 4.0;
-constexpr int64_t kSyntheticEventMarker = 0x544c4d41434f534cLL; // "TLMACOSL"
 constexpr size_t kMaximumQueuedTasks = 64;
+// Bounds every AX round-trip to a single app so one slow/hung process can't
+// stall the shared single-threaded capture worker for every other app.
+constexpr float kAXMessagingTimeoutSeconds = 0.08f;
+// Geometry is optional because the mouse-up point is always a placement
+// fallback. Give range-bound queries a smaller budget so a correct text read
+// is never held behind a slow PDF/Office layout calculation.
+constexpr float kAXGeometryMessagingTimeoutSeconds = 0.03f;
+// Selection capture stays below a perceptible delay even when a provider
+// responds to individual AX requests but exposes a deep, sparse tree.
+constexpr uint64_t kAXCaptureBudgetMs = 260;
+constexpr uint64_t kDocumentAXCaptureBudgetMs = 300;
+constexpr uint64_t kAXCompatibilityRetryDelayMs = 28;
+constexpr uint64_t kAXLateSelectionRetryDelayMs = 24;
+// Proactive self-healing check for the event tap, mirroring Windows' hook
+// health-check cadence; the reactive re-enable in eventTapCallback only
+// fires on the next incoming event, which never arrives if the tap was
+// disabled during a quiet period.
+constexpr CFTimeInterval kEventTapHealthCheckIntervalSeconds = 5.0;
 
 enum class Trigger {
     Drag,
@@ -57,13 +75,15 @@ enum class Trigger {
 
 enum class SelectionMethod {
     Accessibility,
-    Clipboard,
 };
 
 struct SelectionInfo {
     std::string text;
     std::string bundleId;
     std::string appName;
+    // Kept private to the native bridge. Some AX providers report this value
+    // as selected text when the actual range is unavailable.
+    std::string windowTitle;
     SelectionMethod method = SelectionMethod::Accessibility;
     Trigger trigger = Trigger::Manual;
     bool fullscreen = false;
@@ -103,27 +123,55 @@ struct Task {
     bool hasMouseEnd = false;
     int64_t targetPid = 0;
     uint64_t generation = 0;
-};
-
-struct PasteboardRepresentation {
-    std::string type;
-    std::vector<uint8_t> bytes;
-};
-
-struct PasteboardItemSnapshot {
-    std::vector<PasteboardRepresentation> representations;
-};
-
-struct PasteboardSnapshot {
-    // `valid` also represents an originally empty pasteboard. This distinction
-    // is required to restore an empty clipboard after a synthetic Cmd+C.
-    bool valid = false;
-    std::vector<PasteboardItemSnapshot> items;
+    uint64_t enqueuedAtMs = 0;
 };
 
 static uint64_t MonotonicMilliseconds() {
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         Clock::now().time_since_epoch()).count());
+}
+
+// Every AX request is tied to the originating input generation and a single
+// wall-clock budget. AX providers can block independently even after their
+// application element was configured with a messaging timeout, so checking at
+// traversal boundaries is what keeps a stale PDF/Office read from delaying the
+// next selection.
+struct AccessibilityReadContext {
+    const std::atomic<uint64_t> *generation = nullptr;
+    uint64_t expectedGeneration = 0;
+    uint64_t deadlineMs = 0;
+
+    bool IsCurrent() const {
+        return (generation == nullptr ||
+                generation->load(std::memory_order_acquire) == expectedGeneration) &&
+            MonotonicMilliseconds() < deadlineMs;
+    }
+};
+
+static void ConfigureAccessibilityElement(AXUIElementRef element) {
+    if (element != nullptr) {
+        AXUIElementSetMessagingTimeout(element, kAXMessagingTimeoutSeconds);
+    }
+}
+
+static bool SelectionTimingEnabled() {
+    static const bool enabled = [] {
+        const char *value = std::getenv("TEXTLENS_SELECTION_TRACE");
+        return value != nullptr &&
+            (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
+             std::strcmp(value, "TRUE") == 0);
+    }();
+    return enabled;
+}
+
+static void TraceSelectionTiming(const char *stage, uint64_t durationMs) {
+    if (SelectionTimingEnabled()) {
+        std::fprintf(
+            stderr,
+            "[selection-timing] stage=%s duration_ms=%llu\n",
+            stage,
+            static_cast<unsigned long long>(durationMs));
+    }
 }
 
 static uint64_t TimestampMilliseconds() {
@@ -196,11 +244,12 @@ static bool IsExcludedApplication(
     if (application == nil || application.processIdentifier == getpid()) {
         return true;
     }
+    // A missing bundle id (some CLI-launched GUI processes, Wine/JVM-hosted
+    // apps) no longer disqualifies an app outright; identity for matching
+    // falls back to appName (localizedName) elsewhere in the pipeline.
     NSString *bundle = application.bundleIdentifier;
-    if (bundle == nil || bundle.length == 0) {
-        return true;
-    }
-    if (!excludedBundleId.empty() && StringFromNSString(bundle) == excludedBundleId) {
+    if (bundle != nil && bundle.length > 0 && !excludedBundleId.empty() &&
+        StringFromNSString(bundle) == excludedBundleId) {
         return true;
     }
     return false;
@@ -212,24 +261,6 @@ static bool IsReasonableRect(CGRect rect) {
         rect.size.width > 0.0 && rect.size.height > 0.0 &&
         rect.size.width < 200'000.0 && rect.size.height < 200'000.0 &&
         std::abs(rect.origin.x) < 500'000.0 && std::abs(rect.origin.y) < 500'000.0;
-}
-
-static void StoreDetailedBounds(SelectionInfo &info, CGRect first, CGRect last) {
-    info.hasStartTop = true;
-    info.hasStartBottom = true;
-    info.hasEndTop = true;
-    info.hasEndBottom = true;
-    info.startTop = CGPointMake(CGRectGetMinX(first), CGRectGetMinY(first));
-    info.startBottom = CGPointMake(CGRectGetMinX(first), CGRectGetMaxY(first));
-    info.endTop = CGPointMake(CGRectGetMaxX(last), CGRectGetMinY(last));
-    info.endBottom = CGPointMake(CGRectGetMaxX(last), CGRectGetMaxY(last));
-
-    CGFloat minimumX = std::min(CGRectGetMinX(first), CGRectGetMinX(last));
-    CGFloat minimumY = std::min(CGRectGetMinY(first), CGRectGetMinY(last));
-    CGFloat maximumX = std::max(CGRectGetMaxX(first), CGRectGetMaxX(last));
-    CGFloat maximumY = std::max(CGRectGetMaxY(first), CGRectGetMaxY(last));
-    info.bounds = CGRectMake(minimumX, minimumY, maximumX - minimumX, maximumY - minimumY);
-    info.hasBounds = IsReasonableRect(info.bounds);
 }
 
 static void StoreAggregateBounds(SelectionInfo &info, CGRect rect) {
@@ -245,10 +276,18 @@ static void StoreAggregateBounds(SelectionInfo &info, CGRect rect) {
     info.endBottom = CGPointMake(CGRectGetMaxX(rect), CGRectGetMaxY(rect));
 }
 
-static bool ReadSelectionBounds(AXUIElementRef element, SelectionInfo &info) {
-    if (element == nullptr) {
+static bool ReadSelectionBounds(
+    AXUIElementRef element,
+    SelectionInfo &info,
+    const AccessibilityReadContext &context) {
+    if (element == nullptr || !context.IsCurrent()) {
         return false;
     }
+
+    // The selection text is already validated at this point. Bounds only
+    // improve placement, so cap this optional work much more aggressively
+    // than the text read itself.
+    AXUIElementSetMessagingTimeout(element, kAXGeometryMessagingTimeoutSeconds);
 
     AXValueRef selectedRangeValue = nullptr;
     AXError error = AXUIElementCopyAttributeValue(
@@ -268,73 +307,35 @@ static bool ReadSelectionBounds(AXUIElementRef element, SelectionInfo &info) {
         return false;
     }
 
-    CFRange firstRange = CFRangeMake(range.location, 1);
-    CFRange lastRange = CFRangeMake(range.location + range.length - 1, 1);
-    AXValueRef firstRangeValue = AXValueCreate(kAXValueTypeCFRange, &firstRange);
-    AXValueRef lastRangeValue = AXValueCreate(kAXValueTypeCFRange, &lastRange);
-    AXValueRef firstBoundsValue = nullptr;
-    AXValueRef lastBoundsValue = nullptr;
-
-    bool detailed = false;
-    if (firstRangeValue != nullptr && lastRangeValue != nullptr) {
-        AXError firstError = AXUIElementCopyParameterizedAttributeValue(
-            element,
-            kAXBoundsForRangeParameterizedAttribute,
-            firstRangeValue,
-            reinterpret_cast<CFTypeRef *>(&firstBoundsValue));
-        AXError lastError = AXUIElementCopyParameterizedAttributeValue(
-            element,
-            kAXBoundsForRangeParameterizedAttribute,
-            lastRangeValue,
-            reinterpret_cast<CFTypeRef *>(&lastBoundsValue));
-
-        CGRect firstRect = CGRectZero;
-        CGRect lastRect = CGRectZero;
-        if (firstError == kAXErrorSuccess && lastError == kAXErrorSuccess &&
-            firstBoundsValue != nullptr && lastBoundsValue != nullptr &&
-            AXValueGetValue(firstBoundsValue, kAXValueTypeCGRect, &firstRect) &&
-            AXValueGetValue(lastBoundsValue, kAXValueTypeCGRect, &lastRect) &&
-            IsReasonableRect(firstRect) && IsReasonableRect(lastRect)) {
-            StoreDetailedBounds(info, firstRect, lastRect);
-            detailed = true;
-        }
-    }
-
-    if (firstBoundsValue != nullptr) CFRelease(firstBoundsValue);
-    if (lastBoundsValue != nullptr) CFRelease(lastBoundsValue);
-    if (firstRangeValue != nullptr) CFRelease(firstRangeValue);
-    if (lastRangeValue != nullptr) CFRelease(lastRangeValue);
-
     AXValueRef aggregateBoundsValue = nullptr;
-    AXError aggregateError = AXUIElementCopyParameterizedAttributeValue(
-        element,
-        kAXBoundsForRangeParameterizedAttribute,
-        selectedRangeValue,
-        reinterpret_cast<CFTypeRef *>(&aggregateBoundsValue));
+    AXError aggregateError = context.IsCurrent()
+        ? AXUIElementCopyParameterizedAttributeValue(
+              element,
+              kAXBoundsForRangeParameterizedAttribute,
+              selectedRangeValue,
+              reinterpret_cast<CFTypeRef *>(&aggregateBoundsValue))
+        : kAXErrorFailure;
     CGRect aggregateRect = CGRectZero;
     if (aggregateError == kAXErrorSuccess && aggregateBoundsValue != nullptr &&
         AXValueGetValue(aggregateBoundsValue, kAXValueTypeCGRect, &aggregateRect) &&
         IsReasonableRect(aggregateRect)) {
-        if (detailed) {
-            // Preserve precise first/last glyph corners, but expose the full
-            // range rectangle for multiline selections.
-            info.bounds = aggregateRect;
-            info.hasBounds = true;
-        } else {
-            StoreAggregateBounds(info, aggregateRect);
-        }
-        detailed = true;
+        StoreAggregateBounds(info, aggregateRect);
     }
     if (aggregateBoundsValue != nullptr) CFRelease(aggregateBoundsValue);
 
     CFRelease(selectedRangeValue);
-    return detailed;
+    return info.hasBounds;
 }
 
-static bool ReadSelectedText(AXUIElementRef element, std::string &text) {
-    if (element == nullptr) {
+static bool ReadSelectedText(
+    AXUIElementRef element,
+    std::string &text,
+    const AccessibilityReadContext &context) {
+    if (element == nullptr || !context.IsCurrent()) {
         return false;
     }
+
+    ConfigureAccessibilityElement(element);
 
     CFTypeRef selectedValue = nullptr;
     AXError error = AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute, &selectedValue);
@@ -347,12 +348,21 @@ static bool ReadSelectedText(AXUIElementRef element, std::string &text) {
         }
     }
 
+    if (!context.IsCurrent()) {
+        return false;
+    }
+
     CFTypeRef value = nullptr;
     error = AXUIElementCopyAttributeValue(element, kAXValueAttribute, &value);
     if (error != kAXErrorSuccess || value == nullptr) {
         return false;
     }
     if (CFGetTypeID(value) != CFStringGetTypeID()) {
+        CFRelease(value);
+        return false;
+    }
+
+    if (!context.IsCurrent()) {
         CFRelease(value);
         return false;
     }
@@ -392,20 +402,147 @@ static bool ReadSelectedText(AXUIElementRef element, std::string &text) {
     return success;
 }
 
+// Forward declaration because the application routing table is declared with
+// the other capture policy helpers below.
+static bool IsDocumentOrOfficeSelectionApplication(
+    const std::string &bundleId,
+    const std::string &appName);
+
+static void ClearSelectionGeometry(SelectionInfo &info) {
+    info.hasBounds = false;
+    info.bounds = CGRectZero;
+    info.hasStartTop = false;
+    info.hasStartBottom = false;
+    info.hasEndTop = false;
+    info.hasEndBottom = false;
+    info.startTop = CGPointZero;
+    info.startBottom = CGPointZero;
+    info.endTop = CGPointZero;
+    info.endBottom = CGPointZero;
+}
+
+static std::string NormalizeSelectionIdentity(const std::string &value) {
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (unsigned char character : value) {
+        if (std::isspace(character) != 0) {
+            continue;
+        }
+        normalized.push_back(static_cast<char>(std::tolower(character)));
+    }
+    return normalized;
+}
+
+static bool WindowTitleComponentMatches(
+    const std::string &title,
+    const std::string &normalizedText) {
+    const std::string normalizedTitle = NormalizeSelectionIdentity(title);
+    if (normalizedTitle == normalizedText) {
+        return true;
+    }
+    static const char *const separators[] = {" - ", " | ", " -- "};
+    for (const char *separator : separators) {
+        size_t start = 0;
+        const std::string delimiter(separator);
+        while (start <= title.size()) {
+            size_t end = title.find(delimiter, start);
+            std::string component = title.substr(start, end == std::string::npos ? end : end - start);
+            if (!component.empty() && NormalizeSelectionIdentity(component) == normalizedText) {
+                return true;
+            }
+            if (end == std::string::npos) {
+                break;
+            }
+            start = end + delimiter.size();
+        }
+    }
+    return false;
+}
+
+static bool SelectionTextMatchesSourceIdentity(const SelectionInfo &info) {
+    if (info.text.empty() || info.text.size() > 2048) {
+        return false;
+    }
+    const std::string normalizedText = NormalizeSelectionIdentity(info.text);
+    if (normalizedText.empty()) {
+        return false;
+    }
+
+    for (const std::string &candidate : {info.appName, info.bundleId}) {
+        if (!candidate.empty() && NormalizeSelectionIdentity(candidate) == normalizedText) {
+            return true;
+        }
+        const size_t separator = candidate.find_last_of("./");
+        if (separator != std::string::npos &&
+            NormalizeSelectionIdentity(candidate.substr(separator + 1)) == normalizedText) {
+            return true;
+        }
+    }
+    return !info.windowTitle.empty() &&
+        WindowTitleComponentMatches(info.windowTitle, normalizedText);
+}
+
+static bool PointNearSelectionBounds(CGPoint point, CGRect bounds) {
+    constexpr CGFloat tolerance = 56.0;
+    return point.x >= CGRectGetMinX(bounds) - tolerance &&
+        point.x <= CGRectGetMaxX(bounds) + tolerance &&
+        point.y >= CGRectGetMinY(bounds) - tolerance &&
+        point.y <= CGRectGetMaxY(bounds) + tolerance;
+}
+
+static bool SelectionCandidateMatchesInput(const SelectionInfo &candidate) {
+    if (SelectionTextMatchesSourceIdentity(candidate)) {
+        return false;
+    }
+    if (candidate.trigger == Trigger::Keyboard || candidate.trigger == Trigger::Manual) {
+        return true;
+    }
+    if (!candidate.hasBounds) {
+        // Some PDF and Office providers expose a real AXSelectedText range
+        // but do not implement AXBoundsForRange. The text was read from an
+        // explicit selection attribute and host/window-title values have
+        // already been filtered above, so keep it rather than falling back to
+        // a destructive fallback.
+        return true;
+    }
+    return PointNearSelectionBounds(candidate.mouseCurrent, candidate.bounds) ||
+        (candidate.hasMouseEnd && PointNearSelectionBounds(candidate.mouseEnd, candidate.bounds));
+}
+
+static bool ReadValidatedSelectedText(
+    AXUIElementRef element,
+    SelectionInfo &info,
+    const AccessibilityReadContext &context) {
+    std::string text;
+    if (!ReadSelectedText(element, text, context)) {
+        return false;
+    }
+
+    SelectionInfo candidate = info;
+    ClearSelectionGeometry(candidate);
+    candidate.text = std::move(text);
+    ReadSelectionBounds(element, candidate, context);
+    if (!SelectionCandidateMatchesInput(candidate)) {
+        return false;
+    }
+    info = std::move(candidate);
+    return true;
+}
+
 static bool FindSelectionInTree(
     AXUIElementRef element,
     SelectionInfo &info,
     int depth,
-    size_t &remainingElements) {
-    if (element == nullptr || depth < 0 || remainingElements == 0) {
+    size_t &remainingElements,
+    const AccessibilityReadContext &context) {
+    if (element == nullptr || depth < 0 || remainingElements == 0 || !context.IsCurrent()) {
         return false;
     }
     --remainingElements;
 
-    std::string text;
-    if (ReadSelectedText(element, text)) {
-        info.text = std::move(text);
-        ReadSelectionBounds(element, info);
+    ConfigureAccessibilityElement(element);
+
+    if (ReadValidatedSelectedText(element, info, context)) {
         return true;
     }
 
@@ -423,10 +560,45 @@ static bool FindSelectionInTree(
 
     bool found = false;
     CFIndex count = std::min<CFIndex>(CFArrayGetCount(children), 64);
-    for (CFIndex index = 0; index < count && !found && remainingElements > 0; ++index) {
+    for (CFIndex index = 0;
+         index < count && !found && remainingElements > 0 && context.IsCurrent();
+         ++index) {
         AXUIElementRef child = static_cast<AXUIElementRef>(
             const_cast<void *>(CFArrayGetValueAtIndex(children, index)));
-        found = FindSelectionInTree(child, info, depth - 1, remainingElements);
+        found = FindSelectionInTree(child, info, depth - 1, remainingElements, context);
+    }
+    CFRelease(children);
+    return found;
+}
+
+static bool FindSelectionInChildren(
+    AXUIElementRef element,
+    SelectionInfo &info,
+    int depth,
+    size_t &remainingElements,
+    const AccessibilityReadContext &context) {
+    if (element == nullptr || depth <= 0 || remainingElements == 0 || !context.IsCurrent()) {
+        return false;
+    }
+
+    ConfigureAccessibilityElement(element);
+    CFArrayRef children = nullptr;
+    AXError error = AXUIElementCopyAttributeValue(
+        element,
+        kAXChildrenAttribute,
+        reinterpret_cast<CFTypeRef *>(&children));
+    if (error != kAXErrorSuccess || children == nullptr) {
+        return false;
+    }
+
+    bool found = false;
+    CFIndex count = std::min<CFIndex>(CFArrayGetCount(children), 64);
+    for (CFIndex index = 0;
+         index < count && !found && remainingElements > 0 && context.IsCurrent();
+         ++index) {
+        AXUIElementRef child = static_cast<AXUIElementRef>(
+            const_cast<void *>(CFArrayGetValueAtIndex(children, index)));
+        found = FindSelectionInTree(child, info, depth - 1, remainingElements, context);
     }
     CFRelease(children);
     return found;
@@ -454,20 +626,46 @@ static AXUIElementRef CopyFocusedWindow(AXUIElementRef applicationElement) {
     return window;
 }
 
-static bool FindSelectionFromFocusedContext(AXUIElementRef element, SelectionInfo &info) {
-    if (element == nullptr) {
+static void ReadWindowTitle(
+    AXUIElementRef window,
+    std::string &title,
+    const AccessibilityReadContext &context) {
+    if (window == nullptr || !context.IsCurrent()) {
+        return;
+    }
+    AXUIElementSetMessagingTimeout(window, kAXGeometryMessagingTimeoutSeconds);
+    CFTypeRef value = nullptr;
+    if (AXUIElementCopyAttributeValue(window, kAXTitleAttribute, &value) != kAXErrorSuccess ||
+        value == nullptr) {
+        return;
+    }
+    if (context.IsCurrent() && CFGetTypeID(value) == CFStringGetTypeID()) {
+        std::string candidate;
+        if (StringFromCFString(static_cast<CFStringRef>(value), candidate) &&
+            !IsBlank(candidate)) {
+            title = std::move(candidate);
+        }
+    }
+    CFRelease(value);
+}
+
+static bool FindSelectionFromFocusedContext(
+    AXUIElementRef element,
+    SelectionInfo &info,
+    const AccessibilityReadContext &context) {
+    if (element == nullptr || !context.IsCurrent()) {
         return false;
     }
 
-    size_t remaining = 192;
-    bool found = FindSelectionInTree(element, info, 4, remaining);
-    if (found) {
+    if (ReadValidatedSelectedText(element, info, context)) {
         return true;
     }
 
     AXUIElementRef current = element;
     CFRetain(current);
-    for (int level = 0; level < 10 && !found; ++level) {
+    bool found = false;
+    for (int level = 0; level < 10 && !found && context.IsCurrent(); ++level) {
+        ConfigureAccessibilityElement(current);
         AXUIElementRef parent = nullptr;
         AXError error = AXUIElementCopyAttributeValue(
             current,
@@ -479,25 +677,36 @@ static bool FindSelectionFromFocusedContext(AXUIElementRef element, SelectionInf
             break;
         }
         current = parent;
-        std::string text;
-        if (ReadSelectedText(current, text)) {
-            info.text = std::move(text);
-            ReadSelectionBounds(current, info);
+        if (ReadValidatedSelectedText(current, info, context)) {
             found = true;
         }
     }
     if (current != nullptr) CFRelease(current);
-    return found;
+    if (found || !context.IsCurrent()) {
+        return found;
+    }
+
+    // Direct focused/parent reads cover native editors and most Office/PDF
+    // applications. Only then descend into a bounded child tree for WebKit,
+    // Chromium, and custom canvas accessibility hierarchies.
+    size_t remaining = 96;
+    return FindSelectionInChildren(element, info, 4, remaining, context);
 }
 
-static bool ReadFullscreen(AXUIElementRef applicationElement) {
+static bool ReadFullscreen(
+    AXUIElementRef applicationElement,
+    const AccessibilityReadContext &context) {
+    if (applicationElement == nullptr || !context.IsCurrent()) {
+        return false;
+    }
     AXUIElementRef window = CopyFocusedWindow(applicationElement);
     if (window == nullptr) {
         return false;
     }
+    AXUIElementSetMessagingTimeout(window, kAXGeometryMessagingTimeoutSeconds);
     CFTypeRef value = nullptr;
     AXError error = AXUIElementCopyAttributeValue(window, CFSTR("AXFullScreen"), &value);
-    bool fullscreen = error == kAXErrorSuccess && value != nullptr &&
+    bool fullscreen = context.IsCurrent() && error == kAXErrorSuccess && value != nullptr &&
         CFGetTypeID(value) == CFBooleanGetTypeID() &&
         CFBooleanGetValue(static_cast<CFBooleanRef>(value));
     if (value != nullptr) CFRelease(value);
@@ -505,160 +714,17 @@ static bool ReadFullscreen(AXUIElementRef applicationElement) {
     return fullscreen;
 }
 
-static bool ReadViaAccessibility(NSRunningApplication *application, SelectionInfo &info) {
-    AXUIElementRef applicationElement = AXUIElementCreateApplication(application.processIdentifier);
-    if (applicationElement == nullptr) {
-        return false;
-    }
-    info.fullscreen = ReadFullscreen(applicationElement);
-
-    AXUIElementRef focused = CopyFocusedElement(applicationElement);
-    if (focused == nullptr) {
-        focused = CopyFocusedWindow(applicationElement);
-    }
-    AXUIElementRef focusedWindow = CopyFocusedWindow(applicationElement);
-
-    bool found = false;
-    if (focused != nullptr) {
-        found = FindSelectionFromFocusedContext(focused, info);
-    }
-    if (!found && focusedWindow != nullptr && (focused == nullptr || !CFEqual(focusedWindow, focused))) {
-        size_t remaining = 256;
-        found = FindSelectionInTree(focusedWindow, info, 5, remaining);
-    }
-
-    if (!found) {
-        // Chromium/Electron often does not expose its AX tree until one of
-        // these attributes is enabled. This is a best-effort, documented
-        // compatibility step inherited from selection-hook.
-        AXUIElementSetAttributeValue(applicationElement, CFSTR("AXEnhancedUserInterface"), kCFBooleanTrue);
-        AXUIElementSetAttributeValue(applicationElement, CFSTR("AXManualAccessibility"), kCFBooleanTrue);
-    }
-
-    if (focused != nullptr) CFRelease(focused);
-    if (focusedWindow != nullptr) CFRelease(focusedWindow);
-    CFRelease(applicationElement);
-    if (found) info.method = SelectionMethod::Accessibility;
-    return found;
-}
-
-static PasteboardSnapshot SnapshotPasteboard(NSPasteboard *pasteboard) {
-    PasteboardSnapshot snapshot;
-    if (pasteboard == nil) {
-        return snapshot;
-    }
-    snapshot.valid = true;
-    NSArray<NSPasteboardItem *> *items = pasteboard.pasteboardItems;
-    for (NSPasteboardItem *item in items) {
-        PasteboardItemSnapshot itemSnapshot;
-        for (NSPasteboardType type in item.types) {
-            NSData *data = [item dataForType:type];
-            if (data == nil) {
-                // A promised/lazy representation cannot be reconstructed after
-                // clearContents. Abort fallback instead of risking data loss.
-                snapshot.valid = false;
-                snapshot.items.clear();
-                return snapshot;
-            }
-            PasteboardRepresentation representation;
-            representation.type = StringFromNSString(type);
-            const auto *bytes = static_cast<const uint8_t *>(data.bytes);
-            if (data.length > 0 && bytes != nullptr) {
-                representation.bytes.assign(bytes, bytes + data.length);
-            }
-            itemSnapshot.representations.push_back(std::move(representation));
-        }
-        if (item.types.count > 0 && itemSnapshot.representations.empty()) {
-            snapshot.valid = false;
-            snapshot.items.clear();
-            return snapshot;
-        }
-        snapshot.items.push_back(std::move(itemSnapshot));
-    }
-    return snapshot;
-}
-
-static bool RestorePasteboard(
-    NSPasteboard *pasteboard,
-    const PasteboardSnapshot &snapshot,
-    NSInteger expectedChangeCount) {
-    if (pasteboard == nil || !snapshot.valid) {
-        return false;
-    }
-    // Fail closed: another writer already changed the pasteboard.
-    if (pasteboard.changeCount != expectedChangeCount) {
-        return false;
-    }
-    [pasteboard prepareForNewContentsWithOptions:NSPasteboardContentsCurrentHostOnly];
-    if (snapshot.items.empty()) {
+static bool ElementIsProtected(
+    AXUIElementRef element,
+    const AccessibilityReadContext &context) {
+    if (element == nullptr || !context.IsCurrent()) {
         return true;
     }
-
-    NSMutableArray<NSPasteboardItem *> *items = [NSMutableArray arrayWithCapacity:snapshot.items.size()];
-    for (const PasteboardItemSnapshot &itemSnapshot : snapshot.items) {
-        NSPasteboardItem *item = [[NSPasteboardItem alloc] init];
-        for (const PasteboardRepresentation &representation : itemSnapshot.representations) {
-            NSString *type = NSStringFromString(representation.type);
-            if (type == nil) {
-                continue;
-            }
-            NSData *data = [NSData dataWithBytes:representation.bytes.data()
-                                          length:representation.bytes.size()];
-            [item setData:data forType:type];
-        }
-        if (item.types.count > 0) {
-            [items addObject:item];
-        }
-    }
-    BOOL wrote = items.count == 0 || [pasteboard writeObjects:items];
-    return wrote == YES;
-}
-
-static bool PostCopyShortcut(pid_t processIdentifier) {
-    CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
-    CGEventRef keyDown = CGEventCreateKeyboardEvent(source, kVK_ANSI_C, true);
-    CGEventRef keyUp = CGEventCreateKeyboardEvent(source, kVK_ANSI_C, false);
-    if (source != nullptr) CFRelease(source);
-    if (keyDown == nullptr || keyUp == nullptr) {
-        if (keyDown != nullptr) CFRelease(keyDown);
-        if (keyUp != nullptr) CFRelease(keyUp);
-        return false;
-    }
-    CGEventSetFlags(keyDown, kCGEventFlagMaskCommand);
-    CGEventSetFlags(keyUp, kCGEventFlagMaskCommand);
-    CGEventSetIntegerValueField(keyDown, kCGEventSourceUserData, kSyntheticEventMarker);
-    CGEventSetIntegerValueField(keyUp, kCGEventSourceUserData, kSyntheticEventMarker);
-    CGEventPostToPid(processIdentifier, keyDown);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    CGEventPostToPid(processIdentifier, keyUp);
-    CFRelease(keyDown);
-    CFRelease(keyUp);
-    return true;
-}
-
-static bool FocusedElementIsProtected(NSRunningApplication *application) {
-    if (application == nil) {
-        return true;
-    }
-    AXUIElementRef applicationElement =
-        AXUIElementCreateApplication(application.processIdentifier);
-    if (applicationElement == nullptr) {
-        return false;
-    }
-
-    AXUIElementRef focused = nullptr;
-    AXError focusedError = AXUIElementCopyAttributeValue(
-        applicationElement,
-        kAXFocusedUIElementAttribute,
-        reinterpret_cast<CFTypeRef *>(&focused));
-    CFRelease(applicationElement);
-    if (focusedError != kAXErrorSuccess || focused == nullptr) {
-        return false;
-    }
+    ConfigureAccessibilityElement(element);
 
     bool isProtected = false;
     CFTypeRef subrole = nullptr;
-    if (AXUIElementCopyAttributeValue(focused, kAXSubroleAttribute, &subrole) == kAXErrorSuccess &&
+    if (AXUIElementCopyAttributeValue(element, kAXSubroleAttribute, &subrole) == kAXErrorSuccess &&
         subrole != nullptr) {
         isProtected = CFGetTypeID(subrole) == CFStringGetTypeID() &&
             CFStringCompare(
@@ -667,22 +733,157 @@ static bool FocusedElementIsProtected(NSRunningApplication *application) {
                 0) == kCFCompareEqualTo;
         CFRelease(subrole);
     }
+    if (isProtected || !context.IsCurrent()) {
+        return true;
+    }
 
-    if (!isProtected) {
-        CFTypeRef protectedContent = nullptr;
-        if (AXUIElementCopyAttributeValue(
-                focused,
-                CFSTR("AXProtectedContent"),
-                &protectedContent) == kAXErrorSuccess &&
-            protectedContent != nullptr) {
-            isProtected = CFGetTypeID(protectedContent) == CFBooleanGetTypeID() &&
-                CFBooleanGetValue(static_cast<CFBooleanRef>(protectedContent));
-            CFRelease(protectedContent);
+    CFTypeRef protectedContent = nullptr;
+    if (AXUIElementCopyAttributeValue(element, CFSTR("AXProtectedContent"), &protectedContent) ==
+            kAXErrorSuccess &&
+        protectedContent != nullptr) {
+        isProtected = CFGetTypeID(protectedContent) == CFBooleanGetTypeID() &&
+            CFBooleanGetValue(static_cast<CFBooleanRef>(protectedContent));
+        CFRelease(protectedContent);
+    }
+    return isProtected || !context.IsCurrent();
+}
+
+constexpr uint8_t kAXEnhancedUserInterfaceApplied = 1u << 0;
+constexpr uint8_t kAXManualAccessibilityApplied = 1u << 1;
+constexpr uint8_t kAXCompatibilityAttributesApplied =
+    kAXEnhancedUserInterfaceApplied | kAXManualAccessibilityApplied;
+
+static uint64_t ProcessLaunchToken(NSRunningApplication *application) {
+    if (application == nil || application.launchDate == nil) {
+        return 0;
+    }
+    NSTimeInterval seconds = application.launchDate.timeIntervalSince1970;
+    if (!std::isfinite(seconds) || seconds <= 0.0) {
+        return 0;
+    }
+    return static_cast<uint64_t>(std::llround(seconds * 1'000'000.0));
+}
+
+// Tracks which AX compatibility attributes were successfully written. The
+// launch token prevents a recycled PID from inheriting another app's state,
+// and each attribute is retried independently when its write fails.
+class EnhancedUiCache {
+public:
+    uint8_t Attributes(pid_t pid, uint64_t launchToken) {
+        // Without a launch identity, a PID-only hit is unsafe because macOS
+        // can recycle PIDs. Retry the compatibility writes for such apps
+        // instead of carrying state across process lifetimes.
+        if (launchToken == 0) {
+            return 0;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = appliedPids_.find(pid);
+        if (it == appliedPids_.end() || it->second.launchToken != launchToken) {
+            if (it != appliedPids_.end()) {
+                appliedPids_.erase(it);
+            }
+            return 0;
+        }
+        return it->second.attributes;
+    }
+
+    void MarkApplied(pid_t pid, uint64_t launchToken, uint8_t attributes) {
+        if (attributes == 0 || launchToken == 0) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        auto it = appliedPids_.find(pid);
+        if (it == appliedPids_.end() || it->second.launchToken != launchToken) {
+            if (appliedPids_.size() >= kMaxEntries) {
+                appliedPids_.clear();
+            }
+            appliedPids_[pid] = CachedProcessState{launchToken, attributes};
+            return;
+        }
+        it->second.attributes |= attributes;
+    }
+
+private:
+    struct CachedProcessState {
+        uint64_t launchToken;
+        uint8_t attributes;
+    };
+
+    static constexpr size_t kMaxEntries = 256;
+    std::mutex mutex_;
+    std::unordered_map<pid_t, CachedProcessState> appliedPids_;
+};
+
+static bool ReadViaAccessibility(
+    NSRunningApplication *application,
+    SelectionInfo &info,
+    uint8_t appliedAttributes,
+    uint8_t &compatibilityAttributesJustApplied,
+    const AccessibilityReadContext &context) {
+    compatibilityAttributesJustApplied = 0;
+    if (application == nil || !context.IsCurrent()) {
+        return false;
+    }
+    AXUIElementRef applicationElement = AXUIElementCreateApplication(application.processIdentifier);
+    if (applicationElement == nullptr) {
+        return false;
+    }
+    ConfigureAccessibilityElement(applicationElement);
+
+    AXUIElementRef focused = CopyFocusedElement(applicationElement);
+    if (focused == nullptr) {
+        focused = CopyFocusedWindow(applicationElement);
+    }
+    AXUIElementRef focusedWindow = CopyFocusedWindow(applicationElement);
+    ReadWindowTitle(focusedWindow, info.windowTitle, context);
+
+    const bool protectedFocus = focused != nullptr && ElementIsProtected(focused, context);
+    bool found = false;
+    if (focused != nullptr && !protectedFocus) {
+        found = FindSelectionFromFocusedContext(focused, info, context);
+    }
+    if (!found && !protectedFocus && context.IsCurrent() && focusedWindow != nullptr &&
+        (focused == nullptr || !CFEqual(focusedWindow, focused))) {
+        size_t remaining = 256;
+        found = FindSelectionInTree(focusedWindow, info, 5, remaining, context);
+    }
+
+    if (!protectedFocus && !found && context.IsCurrent() &&
+        appliedAttributes != kAXCompatibilityAttributesApplied) {
+        // Chromium/Electron often does not expose its AX tree until one of
+        // these attributes is enabled. Cache only successful writes so a
+        // transient AX timeout does not permanently suppress compatibility
+        // setup for that process.
+        if ((appliedAttributes & kAXEnhancedUserInterfaceApplied) == 0 &&
+            AXUIElementSetAttributeValue(
+                applicationElement,
+                CFSTR("AXEnhancedUserInterface"),
+                kCFBooleanTrue) == kAXErrorSuccess) {
+            compatibilityAttributesJustApplied |= kAXEnhancedUserInterfaceApplied;
+        }
+        if ((appliedAttributes & kAXManualAccessibilityApplied) == 0 &&
+            AXUIElementSetAttributeValue(
+                applicationElement,
+                CFSTR("AXManualAccessibility"),
+                kCFBooleanTrue) == kAXErrorSuccess) {
+            compatibilityAttributesJustApplied |= kAXManualAccessibilityApplied;
         }
     }
 
-    CFRelease(focused);
-    return isProtected;
+    if (found && context.IsCurrent()) {
+        info.fullscreen = ReadFullscreen(applicationElement, context);
+        if (context.IsCurrent()) {
+            info.method = SelectionMethod::Accessibility;
+        } else {
+            found = false;
+        }
+    } else if (!context.IsCurrent()) {
+        found = false;
+    }
+    if (focused != nullptr) CFRelease(focused);
+    if (focusedWindow != nullptr) CFRelease(focusedWindow);
+    CFRelease(applicationElement);
+    return found;
 }
 
 static std::string LowercaseAscii(std::string value) {
@@ -690,45 +891,6 @@ static std::string LowercaseAscii(std::string value) {
         return static_cast<char>(std::tolower(character));
     });
     return value;
-}
-
-static bool MatchesBundleFamily(
-    const std::string &bundleId,
-    const std::string &family) {
-    return bundleId == family ||
-        (bundleId.size() > family.size() &&
-         bundleId.compare(0, family.size(), family) == 0 &&
-         bundleId[family.size()] == '.');
-}
-
-static bool IsOpenAISelectionApplication(
-    const std::string &bundleId,
-    const std::string &appName) {
-    const std::string normalizedBundleId = LowercaseAscii(bundleId);
-    if (MatchesBundleFamily(normalizedBundleId, "com.openai.codex") ||
-        MatchesBundleFamily(normalizedBundleId, "com.openai.chatgpt") ||
-        MatchesBundleFamily(normalizedBundleId, "com.openai.chat")) {
-        return true;
-    }
-
-    const std::string normalizedAppName = LowercaseAscii(appName);
-    return normalizedBundleId.rfind("com.openai.", 0) == 0 &&
-        (normalizedAppName == "codex" || normalizedAppName == "chatgpt");
-}
-
-// CodeG: native AppKit shell + WebKit content panes. Input fields usually expose
-// AXSelectedText; document/chat content panes often do not, so AX read fails and
-// clipboard fallback is required (root cause of toolbar not appearing).
-static bool IsCodeGSelectionApplication(
-    const std::string &bundleId,
-    const std::string &appName) {
-    const std::string normalizedBundleId = LowercaseAscii(bundleId);
-    if (MatchesBundleFamily(normalizedBundleId, "app.codeg") ||
-        normalizedBundleId == "app.codeg") {
-        return true;
-    }
-    const std::string normalizedAppName = LowercaseAscii(appName);
-    return normalizedAppName == "codeg";
 }
 
 static bool IsWpsSelectionApplication(
@@ -749,120 +911,37 @@ static bool IsWpsSelectionApplication(
         normalizedAppName.find("kingsoft") != std::string::npos;
 }
 
-static bool ShouldUseClipboardFallback(
+static bool IsDocumentOrOfficeSelectionApplication(
     const std::string &bundleId,
     const std::string &appName) {
-    // Always compare in lowercase: bundle identifiers are usually lowercase
-    // but channel builds and sideloaded packages occasionally differ in case.
-    // Prefix list stays ASCII-lowercase so we avoid allocating on every entry.
-    static const char *const compatibleApplicationPrefixes[] = {
-        "com.apple.preview",
-        "com.apple.safari",
-        "com.google.chrome",
-        "com.microsoft.edgemac",
-        "org.mozilla.firefox",
-        "com.adobe.reader",
-        "com.adobe.acrobat.pro",
+    const std::string normalizedBundleId = LowercaseAscii(bundleId);
+    const std::string normalizedAppName = LowercaseAscii(appName);
+    if (IsWpsSelectionApplication(normalizedBundleId, normalizedAppName)) {
+        return true;
+    }
+    static const char *const prefixes[] = {
+        "com.adobe.",
         "com.microsoft.word",
         "com.microsoft.excel",
         "com.microsoft.powerpoint",
+        "com.apple.preview",
         "com.apple.iwork.pages",
         "com.apple.iwork.numbers",
         "com.apple.iwork.keynote",
-        "org.libreoffice.script",
-        // Custom-rendered Chinese office and communication applications.
-        "com.tencent.xinwechat",
-        "com.tencent.qq",
-        "com.tencent.tencentmeeting",
-        "com.kingsoft.wpsoffice",
-        "com.kingsoft.",
-        "cn.wps.",
-        "com.wps.",
-        "com.alibaba.dingtalk",
-        "com.bytedance.feishu",
-        "com.larksuite.",
-        // Other common custom-rendered communication and note applications.
-        "com.microsoft.teams",
-        "com.tinyspeck.slackmacgap",
-        "com.hnc.discord",
-        "ru.keepcoder.telegram",
-        "notion.id",
-        "md.obsidian",
-        // Native shell + WebKit content (selection often missing from AX in
-        // document panes; input fields still work via AX).
-        "app.codeg",
+        "org.libreoffice.",
+        "org.openoffice.",
     };
-    const std::string normalizedBundleId = LowercaseAscii(bundleId);
-    const std::string normalizedAppName = LowercaseAscii(appName);
-    for (const char *prefix : compatibleApplicationPrefixes) {
+    for (const char *prefix : prefixes) {
         if (normalizedBundleId.rfind(prefix, 0) == 0) {
             return true;
         }
     }
-    if (IsWpsSelectionApplication(normalizedBundleId, normalizedAppName)) {
-        return true;
-    }
-    return IsOpenAISelectionApplication(bundleId, appName) ||
-        IsCodeGSelectionApplication(bundleId, appName);
-}
-
-static std::mutex gPasteboardFallbackMutex;
-
-static bool ReadViaClipboard(NSRunningApplication *application, SelectionInfo &info) {
-    if (application == nil || application.processIdentifier == getpid() ||
-        !application.active || FocusedElementIsProtected(application)) {
-        return false;
-    }
-
-    std::lock_guard<std::mutex> processGuard(gPasteboardFallbackMutex);
-    @autoreleasepool {
-        NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
-        if (pasteboard == nil) {
-            return false;
-        }
-        NSInteger originalChangeCount = pasteboard.changeCount;
-        PasteboardSnapshot snapshot = SnapshotPasteboard(pasteboard);
-        if (!snapshot.valid || !PostCopyShortcut(application.processIdentifier)) {
-            return false;
-        }
-
-        NSInteger copiedChangeCount = originalChangeCount;
-        bool changed = false;
-        // WPS and some Electron/custom-rendered applications publish copied
-        // text asynchronously. Wait up to 500 ms, while still returning as
-        // soon as the pasteboard changes.
-        for (int attempt = 0; attempt < 50; ++attempt) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            copiedChangeCount = pasteboard.changeCount;
-            if (copiedChangeCount != originalChangeCount) {
-                changed = true;
-                break;
-            }
-        }
-
-        std::string copiedText;
-        bool copiedValueStable = changed && pasteboard.changeCount == copiedChangeCount;
-        if (copiedValueStable) {
-            NSString *string = [pasteboard stringForType:NSPasteboardTypeString];
-            copiedText = StringFromNSString(string);
-            copiedValueStable = pasteboard.changeCount == copiedChangeCount;
-        }
-
-        // Do not overwrite a clipboard change that occurred after our Cmd+C.
-        // Otherwise restore every item and every captured representation,
-        // including the originally-empty state.
-        // expectedChangeCount = changeCount after our synthetic Cmd+C.
-        if (copiedValueStable) {
-            RestorePasteboard(pasteboard, snapshot, copiedChangeCount);
-        }
-
-        if (!copiedValueStable || IsBlank(copiedText)) {
-            return false;
-        }
-        info.text = std::move(copiedText);
-        info.method = SelectionMethod::Clipboard;
-        return true;
-    }
+    return normalizedAppName.find("acrobat") != std::string::npos ||
+        normalizedAppName.find("preview") != std::string::npos ||
+        normalizedAppName == "word" ||
+        normalizedAppName == "excel" ||
+        normalizedAppName == "powerpoint" ||
+        normalizedAppName.find("libreoffice") != std::string::npos;
 }
 
 static bool CaptureSelection(
@@ -873,7 +952,10 @@ static bool CaptureSelection(
     CGPoint mouseEnd,
     bool hasMouseEnd,
     CGPoint currentMouse,
-    SelectionInfo &info) {
+    SelectionInfo &info,
+    EnhancedUiCache &enhancedUiCache,
+    const std::atomic<uint64_t> *captureGeneration = nullptr,
+    uint64_t expectedGeneration = 0) {
     @autoreleasepool {
         if (!AXIsProcessTrusted()) {
             return false;
@@ -892,30 +974,60 @@ static bool CaptureSelection(
         info.hasMouseStart = hasMouseStart;
         info.hasMouseEnd = hasMouseEnd;
 
-        bool found = ReadViaAccessibility(application, info);
-        if (!found) {
-            // Give Chromium/Electron a brief chance to expose the AX tree after
-            // the compatibility attributes were enabled above.
-            std::this_thread::sleep_for(std::chrono::milliseconds(12));
-            found = ReadViaAccessibility(application, info);
-        }
-        if (!found && ShouldUseClipboardFallback(info.bundleId, info.appName)) {
-            found = ReadViaClipboard(application, info);
-        }
-        if (!found || IsBlank(info.text)) {
-            return false;
-        }
+        pid_t pid = application.processIdentifier;
+        uint64_t launchToken = ProcessLaunchToken(application);
+        uint8_t appliedAttributes = enhancedUiCache.Attributes(pid, launchToken);
+        uint8_t compatibilityAttributesJustApplied = 0;
+        const bool documentOrOffice = IsDocumentOrOfficeSelectionApplication(
+            info.bundleId,
+            info.appName);
+        const uint64_t budgetMs = documentOrOffice
+            ? kDocumentAXCaptureBudgetMs
+            : kAXCaptureBudgetMs;
+        const AccessibilityReadContext context{
+            captureGeneration,
+            expectedGeneration,
+            MonotonicMilliseconds() + budgetMs,
+        };
+        if (!context.IsCurrent()) return false;
 
-        // Clipboard-only captures still report fullscreen state when AX can
-        // expose the front window even if it cannot expose selected text.
-        if (info.method == SelectionMethod::Clipboard) {
-            AXUIElementRef appElement = AXUIElementCreateApplication(application.processIdentifier);
-            if (appElement != nullptr) {
-                info.fullscreen = ReadFullscreen(appElement);
-                CFRelease(appElement);
+        bool found = ReadViaAccessibility(
+            application,
+            info,
+            appliedAttributes,
+            compatibilityAttributesJustApplied,
+            context);
+        const bool shouldRetry = !found && context.IsCurrent() &&
+            (compatibilityAttributesJustApplied != 0 || documentOrOffice);
+        if (shouldRetry) {
+            // Chromium/Electron needs a short turn after compatibility
+            // attributes are set. Document canvases likewise commonly publish
+            // their selection a frame after mouse-up. Keep the retry
+            // cancellable and inside this request's existing AX budget.
+            const uint64_t retryDelay = compatibilityAttributesJustApplied != 0
+                ? kAXCompatibilityRetryDelayMs
+                : kAXLateSelectionRetryDelayMs;
+            const uint64_t retryAt = std::min(
+                context.deadlineMs,
+                MonotonicMilliseconds() + retryDelay);
+            while (context.IsCurrent() && MonotonicMilliseconds() < retryAt) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(4));
+            }
+            if (context.IsCurrent()) {
+                uint8_t retryJustApplied = 0;
+                found = ReadViaAccessibility(
+                    application,
+                    info,
+                    static_cast<uint8_t>(appliedAttributes | compatibilityAttributesJustApplied),
+                    retryJustApplied,
+                    context);
+                compatibilityAttributesJustApplied |= retryJustApplied;
             }
         }
-        return true;
+        if (compatibilityAttributesJustApplied != 0) {
+            enhancedUiCache.MarkApplied(pid, launchToken, compatibilityAttributesJustApplied);
+        }
+        return found && context.IsCurrent() && !IsBlank(info.text);
     }
 }
 
@@ -998,7 +1110,7 @@ static std::string SelectionJSON(const SelectionInfo &info) {
         },
         @"direction": SelectionDirection(info),
         @"isFullscreen": @(info.fullscreen),
-        @"method": info.method == SelectionMethod::Accessibility ? @"accessibility" : @"clipboard",
+        @"method": @"accessibility",
         @"trigger": TriggerName(info.trigger),
         @"timestampMs": @(TimestampMilliseconds()),
     };
@@ -1079,6 +1191,7 @@ static uint8_t ClearMatchingTextOnMainThread(
         if (applicationElement == nullptr) {
             return 0;
         }
+        AXUIElementSetMessagingTimeout(applicationElement, kAXMessagingTimeoutSeconds);
 
         AXUIElementRef focused = CopyFocusedElement(applicationElement);
         CFRelease(applicationElement);
@@ -1086,8 +1199,14 @@ static uint8_t ClearMatchingTextOnMainThread(
             return 0;
         }
 
+        const AccessibilityReadContext context{
+            nullptr,
+            0,
+            MonotonicMilliseconds() +
+                static_cast<uint64_t>(kAXMessagingTimeoutSeconds * 1'000.0f),
+        };
         std::string current;
-        if (!ReadSelectedText(focused, current) || current != expectedText) {
+        if (!ReadSelectedText(focused, current, context) || current != expectedText) {
             CFRelease(focused);
             return 0;
         }
@@ -1171,16 +1290,23 @@ struct TextLensSelectionMonitor {
             std::lock_guard<std::mutex> taskLock(taskMutex);
             tasks.clear();
         }
+        {
+            std::lock_guard<std::mutex> dismissLock(dismissMutex);
+            dismissTasks.clear();
+        }
         keyboardSelectionPending = false;
         running.store(true, std::memory_order_release);
 
         try {
             workerThread = std::thread(&TextLensSelectionMonitor::workerMain, this);
+            dismissThread = std::thread(&TextLensSelectionMonitor::dismissMain, this);
             eventThread = std::thread(&TextLensSelectionMonitor::eventMain, this);
         } catch (...) {
             running.store(false, std::memory_order_release);
             taskCondition.notify_all();
+            dismissCondition.notify_all();
             if (eventThread.joinable()) eventThread.join();
+            if (dismissThread.joinable()) dismissThread.join();
             if (workerThread.joinable()) workerThread.join();
             return TEXTLENS_SELECTION_INTERNAL_ERROR;
         }
@@ -1194,7 +1320,9 @@ struct TextLensSelectionMonitor {
         if (status != TEXTLENS_SELECTION_OK) {
             running.store(false, std::memory_order_release);
             taskCondition.notify_all();
+            dismissCondition.notify_all();
             if (eventThread.joinable()) eventThread.join();
+            if (dismissThread.joinable()) dismissThread.join();
             if (workerThread.joinable()) workerThread.join();
         }
         return status;
@@ -1211,11 +1339,17 @@ struct TextLensSelectionMonitor {
             }
         }
         taskCondition.notify_all();
+        dismissCondition.notify_all();
         if (eventThread.joinable()) eventThread.join();
+        if (dismissThread.joinable()) dismissThread.join();
         if (workerThread.joinable()) workerThread.join();
         {
             std::lock_guard<std::mutex> taskLock(taskMutex);
             tasks.clear();
+        }
+        {
+            std::lock_guard<std::mutex> dismissLock(dismissMutex);
+            dismissTasks.clear();
         }
         return wasRunning ? TEXTLENS_SELECTION_OK : TEXTLENS_SELECTION_NOT_RUNNING;
     }
@@ -1231,7 +1365,8 @@ struct TextLensSelectionMonitor {
             mouse,
             false,
             mouse,
-            info);
+            info,
+            enhancedUiCache);
     }
 
     static CGEventRef eventTapCallback(
@@ -1249,11 +1384,23 @@ struct TextLensSelectionMonitor {
             }
             return event;
         }
-        if (CGEventGetIntegerValueField(event, kCGEventSourceUserData) == kSyntheticEventMarker) {
-            return event;
-        }
         monitor->handleEvent(type, event);
         return event;
+    }
+
+    // Reactive re-enable in eventTapCallback only fires on the next incoming
+    // event; if the tap is disabled with no further events arriving (e.g. a
+    // sustained high event-rate burst tripped the OS-side rate limit),
+    // capture would otherwise stay silent until app restart. This periodic
+    // check gives the same self-healing Windows already has for its hook.
+    static void HealthCheckTimerCallback(CFRunLoopTimerRef, void *context) {
+        auto *monitor = static_cast<TextLensSelectionMonitor *>(context);
+        if (monitor == nullptr || !monitor->running.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (monitor->eventTap != nullptr && !CGEventTapIsEnabled(monitor->eventTap)) {
+            CGEventTapEnable(monitor->eventTap, true);
+        }
     }
 
     void handleEvent(CGEventType type, CGEventRef event) {
@@ -1383,6 +1530,7 @@ struct TextLensSelectionMonitor {
         task.hasMouseStart = hasStart;
         task.hasMouseEnd = hasEnd;
         task.generation = captureGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+        task.enqueuedAtMs = MonotonicMilliseconds();
         enqueueTask(std::move(task));
     }
 
@@ -1392,32 +1540,35 @@ struct TextLensSelectionMonitor {
         task.dismissReason = reason;
         task.mouseCurrent = point;
         task.targetPid = targetPid;
-        enqueueTask(std::move(task));
-    }
-
-    void enqueueTask(Task task) {
         if (!running.load(std::memory_order_acquire)) {
             return;
         }
         {
-            std::lock_guard<std::mutex> lock(taskMutex);
-            if (tasks.size() >= kMaximumQueuedTasks) {
-                auto dismiss = std::find_if(tasks.begin(), tasks.end(), [](const Task &queued) {
-                    return queued.kind == TaskKind::Dismiss;
-                });
-                if (dismiss != tasks.end()) {
-                    tasks.erase(dismiss);
-                } else {
-                    tasks.pop_front();
-                }
+            std::lock_guard<std::mutex> lock(dismissMutex);
+            if (dismissTasks.size() >= kMaximumQueuedTasks) {
+                dismissTasks.pop_front();
             }
-            if (task.kind == TaskKind::Dismiss && !tasks.empty() &&
-                tasks.back().kind == TaskKind::Dismiss &&
-                tasks.back().dismissReason == task.dismissReason) {
-                tasks.back() = std::move(task);
+            if (!dismissTasks.empty() &&
+                dismissTasks.back().dismissReason == task.dismissReason) {
+                dismissTasks.back() = std::move(task);
             } else {
-                tasks.push_back(std::move(task));
+                dismissTasks.push_back(std::move(task));
             }
+        }
+        dismissCondition.notify_one();
+    }
+
+    void enqueueTask(Task task) {
+        if (!running.load(std::memory_order_acquire) || task.kind != TaskKind::Capture) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(taskMutex);
+            // Capture is latest-wins. A task already executing may finish its
+            // bounded AX transaction, but queued stale captures must never
+            // delay the newest mouse-up or keyboard selection.
+            tasks.clear();
+            tasks.push_back(std::move(task));
         }
         taskCondition.notify_one();
     }
@@ -1449,14 +1600,17 @@ struct TextLensSelectionMonitor {
             }
 
             @autoreleasepool {
-                if (task.kind == TaskKind::Dismiss) {
-                    emit(DismissJSON(task));
+                if (task.generation != captureGeneration.load(std::memory_order_acquire)) {
                     continue;
                 }
 
                 // Let the target application commit its selection after the
                 // input event without ever blocking the event-tap callback.
                 std::this_thread::sleep_for(std::chrono::milliseconds(12));
+                if (task.generation != captureGeneration.load(std::memory_order_acquire)) {
+                    continue;
+                }
+                const uint64_t captureStartedAt = MonotonicMilliseconds();
                 SelectionInfo info;
                 bool captured = false;
                 {
@@ -1469,12 +1623,39 @@ struct TextLensSelectionMonitor {
                         task.mouseEnd,
                         task.hasMouseEnd,
                         task.mouseCurrent,
-                        info);
+                        info,
+                        enhancedUiCache,
+                        &captureGeneration,
+                        task.generation);
                 }
+                const uint64_t completedAt = MonotonicMilliseconds();
+                TraceSelectionTiming("capture", completedAt - captureStartedAt);
+                TraceSelectionTiming(
+                    "mouse-up-to-capture-complete",
+                    completedAt - task.enqueuedAtMs);
                 if (captured && task.generation == captureGeneration.load(std::memory_order_acquire)) {
                     emit(SelectionJSON(info));
                 }
             }
+        }
+    }
+
+    void dismissMain() {
+        while (true) {
+            Task task;
+            {
+                std::unique_lock<std::mutex> lock(dismissMutex);
+                dismissCondition.wait(lock, [this] {
+                    return !running.load(std::memory_order_acquire) || !dismissTasks.empty();
+                });
+                if (!running.load(std::memory_order_acquire)) {
+                    dismissTasks.clear();
+                    return;
+                }
+                task = std::move(dismissTasks.front());
+                dismissTasks.pop_front();
+            }
+            emit(DismissJSON(task));
         }
     }
 
@@ -1511,6 +1692,19 @@ struct TextLensSelectionMonitor {
                 }
                 CFRunLoopAddSource(runLoop, runLoopSource, kCFRunLoopDefaultMode);
                 CGEventTapEnable(eventTap, true);
+
+                CFRunLoopTimerContext timerContext = {0, this, nullptr, nullptr, nullptr};
+                healthTimer = CFRunLoopTimerCreate(
+                    kCFAllocatorDefault,
+                    CFAbsoluteTimeGetCurrent() + kEventTapHealthCheckIntervalSeconds,
+                    kEventTapHealthCheckIntervalSeconds,
+                    0,
+                    0,
+                    &TextLensSelectionMonitor::HealthCheckTimerCallback,
+                    &timerContext);
+                if (healthTimer != nullptr) {
+                    CFRunLoopAddTimer(runLoop, healthTimer, kCFRunLoopDefaultMode);
+                }
             }
             {
                 std::lock_guard<std::mutex> lock(startupMutex);
@@ -1525,6 +1719,11 @@ struct TextLensSelectionMonitor {
 
             if (eventTap != nullptr) {
                 CGEventTapEnable(eventTap, false);
+            }
+            if (healthTimer != nullptr) {
+                CFRunLoopRemoveTimer(runLoop, healthTimer, kCFRunLoopDefaultMode);
+                CFRelease(healthTimer);
+                healthTimer = nullptr;
             }
             if (runLoopSource != nullptr) {
                 CFRunLoopRemoveSource(runLoop, runLoopSource, kCFRunLoopDefaultMode);
@@ -1546,6 +1745,7 @@ struct TextLensSelectionMonitor {
     TextLensSelectionEventCallback callback = nullptr;
     void *callbackContext = nullptr;
     std::mutex callbackMutex;
+    EnhancedUiCache enhancedUiCache;
 
     std::atomic<bool> running{false};
     std::atomic<uint64_t> captureGeneration{0};
@@ -1554,8 +1754,10 @@ struct TextLensSelectionMonitor {
 
     std::thread eventThread;
     std::thread workerThread;
+    std::thread dismissThread;
     CFMachPortRef eventTap = nullptr;
     CFRunLoopSourceRef runLoopSource = nullptr;
+    CFRunLoopTimerRef healthTimer = nullptr;
     CFRunLoopRef eventRunLoop = nullptr;
     std::mutex runLoopMutex;
 
@@ -1567,6 +1769,9 @@ struct TextLensSelectionMonitor {
     std::mutex taskMutex;
     std::condition_variable taskCondition;
     std::deque<Task> tasks;
+    std::mutex dismissMutex;
+    std::condition_variable dismissCondition;
+    std::deque<Task> dismissTasks;
 
     CGPoint mouseDown = CGPointZero;
     CGPoint lastMouseUp = CGPointZero;

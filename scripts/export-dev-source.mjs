@@ -12,10 +12,18 @@ import { fileURLToPath } from 'node:url'
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const root = resolve(scriptDirectory, '..')
 const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-const version = packageJson.version
+const args = process.argv.slice(2)
+let version = packageJson.version
 
-if (typeof version !== 'string' || !/^\d+\.\d+\.\d+$/u.test(version)) {
-  throw new Error(`package.json version is invalid: ${String(version)}`)
+if (args.length > 0) {
+  if (args.length !== 2 || args[0] !== '--version') {
+    throw new Error('Usage: node scripts/export-dev-source.mjs [--version <source-package-version>]')
+  }
+  version = args[1]
+}
+
+if (typeof version !== 'string' || !/^(?:\d+\.){2,3}\d+$/u.test(version)) {
+  throw new Error(`source package version is invalid: ${String(version)}`)
 }
 
 const exportRoot = join(root, 'portable-dev-sources')

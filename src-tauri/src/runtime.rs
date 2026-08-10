@@ -7,6 +7,7 @@ use std::{
         mpsc::{Receiver, RecvTimeoutError},
         Arc,
     },
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +18,7 @@ use tauri::{
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutEvent, ShortcutState};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 use tokio::sync::oneshot;
 use url::{Host, Url};
 use uuid::Uuid;
@@ -42,7 +43,7 @@ use crate::{
     settings::SettingsRepository,
     windows::{
         restore_source_app_activation, result_label, DismissMode, Point as WindowPoint,
-        ResultWindowOptions, WindowCoordinator, WindowSize,
+        ResultWindowOptions, ToolbarPlacement, WindowCoordinator, WindowSize,
     },
 };
 
@@ -226,12 +227,13 @@ struct DismissHidePlan {
     force_hide: bool,
 }
 
-fn dismiss_hide_plan(cleared_id: Option<String>, _scoped_hide_succeeded: bool) -> DismissHidePlan {
+fn dismiss_hide_plan(cleared_id: Option<String>, scoped_hide_succeeded: bool) -> DismissHidePlan {
     DismissHidePlan {
         cleared_selection_id: cleared_id,
-        // Always force-hide: scoped path may no-op when toolbar_selection_id diverges
-        // (e.g. after copy keeps the toolbar while selection ids drift).
-        force_hide: true,
+        // A successful selection-scoped hide already performed the native
+        // mutation. A second unconditional hide used to add another synchronous
+        // UI-thread hop to every consecutive drag.
+        force_hide: !scoped_hide_succeeded,
     }
 }
 
@@ -508,11 +510,18 @@ pub struct RuntimeState {
     /// Generation token for deferred host selection clear after result close.
     /// Bumped on cancel or when a newer clear is scheduled so in-flight tasks no-op.
     pending_host_clear_token: AtomicU64,
+    /// At most one Windows UIA clear may be in flight. A provider can block
+    /// indefinitely, so later clears are dropped instead of accumulating
+    /// blocking runtime tasks.
+    host_clear_in_flight: AtomicBool,
     result_creation: Mutex<()>,
     result_sessions: Mutex<HashMap<String, ResultSessionMeta>>,
     result_reveals: Mutex<HashMap<String, ResultRevealHandshake>>,
+    /// Generation for shortcut-triggered captures. A capture may outlive the
+    /// plugin callback, so only the newest request may publish or hide UI.
+    shortcut_capture_generation: AtomicU64,
     shortcut_switch: Mutex<()>,
-    registered_shortcut: Mutex<String>,
+    registered_shortcut: Mutex<Option<Shortcut>>,
     runtime_diagnostics: Mutex<RuntimeDiagnostics>,
     pending_result_sizes: Mutex<HashMap<String, PendingResultSize>>,
     resize_revision: AtomicU64,
@@ -538,11 +547,13 @@ impl RuntimeState {
             consuming_selection_ids: Mutex::new(HashSet::new()),
             same_text_selection_suppress: Mutex::new(None),
             pending_host_clear_token: AtomicU64::new(0),
+            host_clear_in_flight: AtomicBool::new(false),
             result_creation: Mutex::new(()),
             result_sessions: Mutex::new(HashMap::new()),
             result_reveals: Mutex::new(HashMap::new()),
+            shortcut_capture_generation: AtomicU64::new(0),
             shortcut_switch: Mutex::new(()),
-            registered_shortcut: Mutex::new(String::new()),
+            registered_shortcut: Mutex::new(None),
             runtime_diagnostics: Mutex::new(RuntimeDiagnostics::default()),
             pending_result_sizes: Mutex::new(HashMap::new()),
             resize_revision: AtomicU64::new(0),
@@ -586,9 +597,7 @@ impl RuntimeState {
     /// intentional re-drag of the same phrase can show the toolbar (~200ms after
     /// result close instead of waiting the full 2s echo window).
     fn schedule_host_selection_clear(&self, app: AppHandle, clear: HostSelectionClear) {
-        let previous = self
-            .pending_host_clear_token
-            .fetch_add(1, Ordering::AcqRel);
+        let previous = self.pending_host_clear_token.fetch_add(1, Ordering::AcqRel);
         let token = next_host_clear_token(previous);
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(Duration::from_millis(HOST_SELECTION_CLEAR_DELAY_MS)).await;
@@ -599,9 +608,37 @@ impl RuntimeState {
             ) {
                 return;
             }
-            let _ = SelectionMonitor::clear_matching_text(clear.bundle_id.as_deref(), &clear.text);
-            // Dismiss mouse-up echo is past; allow intentional same-text reselect.
-            state.release_same_text_selection_suppress_for(&clear.text);
+            if state
+                .host_clear_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+            let clear_text = clear.text;
+            let clear_bundle_id = clear.bundle_id;
+            let clear_app = app.clone();
+            let spawned = thread::Builder::new()
+                .name("textlens-host-selection-clear".to_owned())
+                .spawn(move || {
+                    let _ = SelectionMonitor::clear_matching_text(
+                        clear_bundle_id.as_deref(),
+                        &clear_text,
+                    );
+                    let state = clear_app.state::<RuntimeState>();
+                    state.host_clear_in_flight.store(false, Ordering::Release);
+                    // Dismiss mouse-up echo is past; allow intentional same-text
+                    // reselect only if this clear was not superseded meanwhile.
+                    if should_fire_pending_host_clear(
+                        token,
+                        state.pending_host_clear_token.load(Ordering::Acquire),
+                    ) {
+                        state.release_same_text_selection_suppress_for(&clear_text);
+                    }
+                });
+            if spawned.is_err() {
+                state.host_clear_in_flight.store(false, Ordering::Release);
+            }
         });
     }
 
@@ -612,6 +649,24 @@ impl RuntimeState {
         match event {
             SelectionEvent::Selection(selection) => self.handle_selection(app, selection, false),
             SelectionEvent::Dismiss(dismiss) => {
+                let result_selection_origin = self
+                    .current_selection
+                    .lock()
+                    .as_ref()
+                    .and_then(|selection| selection.source_result_session_id.as_deref())
+                    .map(str::to_owned);
+                if result_selection_dismiss_is_internal(
+                    result_selection_origin.as_deref(),
+                    &dismiss.reason,
+                    dismiss.target_pid,
+                    std::process::id(),
+                ) {
+                    // A result webview explicitly dismisses its own selection
+                    // on pointer-down. The toolbar is another TextLens window;
+                    // its mouse-down must keep the current selection alive
+                    // long enough for the action IPC to consume it.
+                    return;
+                }
                 let point = WindowPoint {
                     x: dismiss.mouse.x,
                     y: dismiss.mouse.y,
@@ -641,17 +696,16 @@ impl RuntimeState {
                     self.arm_same_text_selection_suppress(text);
                 }
 
-                // 1) Try selection-scoped hide first (clears matching toolbar_selection_id).
-                let scoped_hide_ok = if let Some(ref id) = selection_id {
-                    self.windows.hide_toolbar_if_selection(app, id)
+                // Hide off the selection event thread. The native callback still
+                // checks the expected id, so a newer selection cannot be hidden
+                // by this older dismiss request.
+                let scoped_hide_requested = selection_id.is_some();
+                if let Some(ref id) = selection_id {
+                    self.windows.hide_toolbar_if_selection_async(app, id);
                 } else {
-                    false
-                };
-                let plan = dismiss_hide_plan(selection_id.clone(), scoped_hide_ok);
-                // 2) Always force-hide any still-visible toolbar (fixes double outside-click).
-                if plan.force_hide {
-                    self.windows.hide_toolbar(app);
+                    self.windows.hide_toolbar_async(app);
                 }
+                let plan = dismiss_hide_plan(selection_id.clone(), scoped_hide_requested);
 
                 // 3) Notify the toolbar renderer even when no selection was held, so
                 // copy-success / React selection state cannot outlive the native window.
@@ -682,6 +736,11 @@ impl RuntimeState {
             .lock()
             .as_ref()
             .is_some_and(|selection| selection.id == selection_id)
+    }
+
+    fn invalidate_shortcut_capture(&self) {
+        self.shortcut_capture_generation
+            .fetch_add(1, Ordering::AcqRel);
     }
 
     #[cfg(target_os = "windows")]
@@ -763,12 +822,9 @@ impl RuntimeState {
         // Selection accepted for toolbar presentation: do not collapse the host
         // highlight that the user is actively dragging / has just captured.
         self.cancel_pending_host_selection_clear();
+        let runtime_started = Instant::now();
 
-        // A genuine new selection in another application starts a new
-        // transient workflow. Sticky/pinned results remain available, while
-        // every unpinned result is closed and its in-memory session released.
-        self.close_unpinned_results(app);
-        let anchor = selection_toolbar_anchor(&selection);
+        let (anchor, placement) = selection_toolbar_anchor(&selection);
         let current = CurrentSelection {
             id: Uuid::new_v4().to_string(),
             payload: selection,
@@ -783,14 +839,38 @@ impl RuntimeState {
         self.windows.begin_toolbar_selection(&toolbar_selection_id);
         *self.current_selection.lock() = Some(current);
         #[cfg(target_os = "windows")]
-        let stage_failed = self
-            .windows
-            .stage_toolbar(app, &toolbar_selection_id, anchor)
-            .is_err();
-        #[cfg(not(target_os = "windows"))]
-        if let Err(error) = self
-            .windows
-            .show_toolbar(app, &toolbar_selection_id, anchor)
+        let stage_failed = match self.windows.stage_toolbar_with_placement(
+            app,
+            &toolbar_selection_id,
+            anchor,
+            placement,
+        ) {
+            Ok(()) => false,
+            Err(error) => {
+                // Keep the old frame hidden when native staging fails. Showing
+                // it here lets a stale renderer receive clicks before the new
+                // selection event has committed; the bounded renderer recovery
+                // below is the only retry path.
+                eprintln!("[toolbar] native stage failed; keeping toolbar hidden: {error}");
+                true
+            }
+        };
+        // macOS has no WebView2-style renderer-crash recovery path, so a
+        // stage failure here is handled the same way show_toolbar's failure
+        // always was: fail fast and clear the selection instead of retrying.
+        #[cfg(target_os = "macos")]
+        if let Err(error) =
+            self.windows
+                .stage_toolbar_with_placement(app, &toolbar_selection_id, anchor, placement)
+        {
+            self.clear_and_hide_current_selection_if(app, &toolbar_selection_id);
+            eprintln!("[window] 无法显示划词工具栏：{error}");
+            return;
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        if let Err(error) =
+            self.windows
+                .show_toolbar_with_placement(app, &toolbar_selection_id, anchor, placement)
         {
             self.clear_and_hide_current_selection_if(app, &toolbar_selection_id);
             eprintln!("[window] 无法显示划词工具栏：{error}");
@@ -805,10 +885,15 @@ impl RuntimeState {
                 "[toolbar] stage=selection-stage selection_id={} error_class=window",
                 toolbar_selection_id
             );
+            // Keep publishing below. `recover_toolbar_delivery` may have
+            // replaced the WebView, and the replacement's `toolbar_ready`
+            // command replays the in-memory selection. Returning here loses
+            // the only event for this mouse-up when the new renderer starts.
             self.recover_toolbar_delivery(app, &toolbar_selection_id);
-            return;
         }
-        if app.emit_to(TOOLBAR_LABEL, SELECTION_EVENT, public).is_err() {
+        let emitted = app.emit_to(TOOLBAR_LABEL, SELECTION_EVENT, public).is_ok();
+        trace_selection_timing("runtime", runtime_started);
+        if !emitted {
             #[cfg(target_os = "windows")]
             {
                 eprintln!(
@@ -819,25 +904,87 @@ impl RuntimeState {
             }
             #[cfg(not(target_os = "windows"))]
             self.clear_and_hide_current_selection_if(app, &toolbar_selection_id);
+            return;
         }
+
+        if self.current_selection_matches(&toolbar_selection_id) {
+            // Closing result windows can wait on the Windows UI thread. Give
+            // the renderer one frame to issue its measured visible commit,
+            // then close old unpinned results off the selection event path.
+            // Invalidate any older deferred host-clear task before scheduling.
+            self.cancel_pending_host_selection_clear();
+            self.schedule_close_unpinned_results(app);
+        }
+    }
+
+    fn schedule_close_unpinned_results(&self, app: &AppHandle) {
+        let session_ids = self.unpinned_result_session_ids();
+        if session_ids.is_empty() {
+            return;
+        }
+        let app = app.clone();
+        let _ = thread::Builder::new()
+            .name("textlens-close-selection-results".to_owned())
+            .spawn(move || {
+                // Let ToolbarApp's layout effect enqueue the native visible
+                // commit before closing result windows on the same UI thread.
+                thread::sleep(Duration::from_millis(16));
+                let state = app.state::<RuntimeState>();
+                if !state.shutting_down.load(Ordering::Acquire) {
+                    state.close_unpinned_result_sessions(&app, session_ids);
+                }
+            });
     }
 
     pub fn capture_current(&self, app: &AppHandle) {
         if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
-        let captured = self.selection_monitor.lock().capture_current();
-        match captured {
-            Ok(Some(selection)) => self.handle_selection(app, selection, true),
-            Ok(None) => {
-                self.windows.hide_toolbar(app);
-                *self.current_selection.lock() = None;
-            }
-            Err(_) => {
-                self.windows.hide_toolbar(app);
-                *self.current_selection.lock() = None;
-            }
-        }
+        let generation = self
+            .shortcut_capture_generation
+            .fetch_add(1, Ordering::AcqRel)
+            .wrapping_add(1);
+        let app = app.clone();
+        let _ = thread::Builder::new()
+            .name("textlens-shortcut-capture".to_owned())
+            .spawn(move || {
+                let state = app.state::<RuntimeState>();
+                let current = || {
+                    !state.shutting_down.load(Ordering::Acquire)
+                        && state.shortcut_capture_generation.load(Ordering::Acquire) == generation
+                };
+                if !current() {
+                    return;
+                }
+
+                // Windows manual capture is enqueue-only here. Releasing the
+                // facade lock before waiting lets another shortcut request
+                // reach the native latest-wins coordinator and cancel a slow
+                // provider probe instead of queueing behind it.
+                #[cfg(target_os = "windows")]
+                let captured = {
+                    let reply = state.selection_monitor.lock().capture_current_async();
+                    match reply {
+                        Ok(reply) => reply.recv_timeout(Duration::from_secs(5)).map_or_else(
+                            |_| Err(crate::selection::SelectionError::Internal),
+                            |result| result,
+                        ),
+                        Err(error) => Err(error),
+                    }
+                };
+                #[cfg(not(target_os = "windows"))]
+                let captured = state.selection_monitor.lock().capture_current();
+                if !current() {
+                    return;
+                }
+                match captured {
+                    Ok(Some(selection)) => state.handle_selection(&app, selection, true),
+                    Ok(None) | Err(_) => {
+                        state.windows.hide_toolbar(&app);
+                        *state.current_selection.lock() = None;
+                    }
+                }
+            });
     }
 
     pub fn reconcile_capture(&self, app: &AppHandle) {
@@ -851,10 +998,24 @@ impl RuntimeState {
         // shortcut-invoked toolbar is shown. Auto-selection is filtered in
         // handle_selection when mode is Shortcut.
         let should_listen = settings.enabled && trusted;
+        if !should_listen {
+            self.invalidate_shortcut_capture();
+        }
         let start_failed = {
             let monitor = self.selection_monitor.lock();
+            #[cfg(target_os = "windows")]
+            let settings_applied = monitor
+                .update_capture_settings(settings.selection_capture.clone())
+                .is_ok();
             if should_listen {
-                monitor.start().is_err()
+                #[cfg(target_os = "windows")]
+                {
+                    !settings_applied || monitor.start().is_err()
+                }
+                #[cfg(not(target_os = "windows"))]
+                {
+                    monitor.start().is_err()
+                }
             } else {
                 let _ = monitor.stop();
                 self.windows.hide_toolbar(app);
@@ -875,8 +1036,11 @@ impl RuntimeState {
             return;
         }
         let settings = self.settings.get_settings();
-        let requested =
-            shortcut_registration_target(settings.trigger.mode, settings.capture_shortcut.as_str());
+        let requested = shortcut_registration_target(
+            settings.enabled,
+            settings.trigger.mode,
+            settings.capture_shortcut.as_str(),
+        );
         if let Err(error) = self.switch_shortcut(app, &requested) {
             // Keep the saved value so the settings page can show exactly what
             // needs editing. The event is only a prompt; RuntimeDiagnostics is
@@ -889,23 +1053,68 @@ impl RuntimeState {
         let _transaction = self.shortcut_switch.lock();
         let requested = requested.trim();
         let outcome = (|| {
-            let current = self.registered_shortcut.lock().clone();
+            let requested = if requested.is_empty() {
+                None
+            } else {
+                Some(
+                    requested
+                        .parse::<Shortcut>()
+                        .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?,
+                )
+            };
+            let current = *self.registered_shortcut.lock();
             if current == requested {
-                return Ok(current);
+                if let Some(shortcut) = requested {
+                    if !app.global_shortcut().is_registered(shortcut) {
+                        app.global_shortcut()
+                            .register(shortcut)
+                            .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?;
+                    }
+                    if !app.global_shortcut().is_registered(shortcut) {
+                        return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
+                    }
+                }
+                return Ok(current
+                    .map(|shortcut| shortcut.to_string())
+                    .unwrap_or_default());
             }
-            if !requested.is_empty() {
-                app.global_shortcut()
-                    .register(requested)
-                    .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?;
+
+            if let Some(shortcut) = requested {
+                // A previous failed rollback may have left this shortcut in the
+                // plugin registry. Adopt it instead of treating our own stale
+                // registration as a system-wide conflict.
+                if !app.global_shortcut().is_registered(shortcut) {
+                    app.global_shortcut()
+                        .register(shortcut)
+                        .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?;
+                }
             }
-            if !current.is_empty() && app.global_shortcut().unregister(current.as_str()).is_err() {
-                if !requested.is_empty() {
+
+            if let Some(shortcut) = current {
+                if app.global_shortcut().is_registered(shortcut)
+                    && app.global_shortcut().unregister(shortcut).is_err()
+                {
+                    if let Some(requested) = requested {
+                        let _ = app.global_shortcut().unregister(requested);
+                    }
+                    return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
+                }
+            }
+
+            if current.is_some_and(|shortcut| app.global_shortcut().is_registered(shortcut)) {
+                if let Some(requested) = requested {
                     let _ = app.global_shortcut().unregister(requested);
                 }
                 return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
             }
-            *self.registered_shortcut.lock() = requested.to_owned();
-            Ok(current)
+            if requested.is_some_and(|shortcut| !app.global_shortcut().is_registered(shortcut)) {
+                return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
+            }
+
+            *self.registered_shortcut.lock() = requested;
+            Ok(current
+                .map(|shortcut| shortcut.to_string())
+                .unwrap_or_default())
         })();
         self.set_shortcut_error(shortcut_registration_diagnostic(outcome.is_err()));
         outcome
@@ -921,26 +1130,38 @@ impl RuntimeState {
     }
 
     fn handle_selection_receiver_disconnected(&self, app: &AppHandle) {
-        let diagnostic =
-            selection_monitor_disconnect_diagnostic(self.shutting_down.load(Ordering::Acquire));
-        let Some(diagnostic) = diagnostic else {
+        if self.shutting_down.load(Ordering::Acquire) {
             return;
-        };
+        }
 
         // A disconnected receiver means no producer can deliver another event.
-        // Stop the native side as a best effort and clear any stale toolbar.
-        // Native error details are deliberately not logged because providers
-        // may include selected text in their error messages.
-        let diagnostic_changed = self.set_selection_monitor_error(Some(diagnostic));
+        // Clear stale UI first, then rebuild the Windows producer and receiver
+        // as one lifecycle. Native error details are deliberately not logged
+        // because providers may include selected text in their error messages.
+        self.invalidate_shortcut_capture();
         *self.current_selection.lock() = None;
         self.windows.hide_toolbar(app);
         self.selection_monitor.lock().shutdown();
-        if diagnostic_changed {
+
+        #[cfg(target_os = "windows")]
+        let recovered_receiver = self.selection_monitor.lock().rebuild_event_receiver().ok();
+        #[cfg(not(target_os = "windows"))]
+        let recovered_receiver: Option<SelectionEventReceiver> = None;
+
+        let recovered = recovered_receiver
+            .is_some_and(|receiver| spawn_selection_loop(app.clone(), receiver).is_ok());
+        let diagnostic = (!recovered).then(|| SELECTION_MONITOR_DISCONNECTED_ERROR.to_owned());
+        if self.set_selection_monitor_error(diagnostic) {
             if let Ok(public) = self.settings.get_public_settings() {
                 refresh_tray(app, &public);
             }
         }
-        eprintln!("[selection] event channel disconnected; selection listening stopped");
+        if recovered {
+            self.reconcile_capture(app);
+            eprintln!("[selection] event channel disconnected; native monitor rebuilt");
+        } else {
+            eprintln!("[selection] event channel disconnected; monitor recovery failed");
+        }
     }
 
     fn set_shortcut_error(&self, error: Option<String>) -> bool {
@@ -966,6 +1187,7 @@ impl RuntimeState {
     }
 
     pub fn after_settings_changed(&self, app: &AppHandle, settings: &PublicSettings) {
+        self.invalidate_shortcut_capture();
         self.reconcile_capture(app);
         self.reconcile_shortcut(app);
         refresh_tray(app, settings);
@@ -1012,6 +1234,7 @@ impl RuntimeState {
 
         // Reject new capture/action work before cancelling anything already in
         // flight. Every exit entry point funnels through this idempotent path.
+        self.invalidate_shortcut_capture();
         self.consuming_selection_ids.lock().clear();
         self.windows.hide_toolbar(app);
         *self.current_selection.lock() = None;
@@ -1026,9 +1249,9 @@ impl RuntimeState {
             let _ = self.actions.cancel(app, session_id);
         }
 
-        let shortcut = std::mem::take(&mut *self.registered_shortcut.lock());
-        if !shortcut.is_empty() {
-            let _ = app.global_shortcut().unregister(shortcut.as_str());
+        let shortcut = self.registered_shortcut.lock().take();
+        if let Some(shortcut) = shortcut {
+            let _ = app.global_shortcut().unregister(shortcut);
         }
 
         // On Windows this sends Shutdown to the UIA/OLE STA worker and only
@@ -1224,15 +1447,31 @@ impl RuntimeState {
     }
 
     fn close_unpinned_results(&self, app: &AppHandle) {
-        let sessions = self
-            .result_sessions
+        self.close_unpinned_result_sessions(app, self.unpinned_result_session_ids());
+    }
+
+    fn unpinned_result_session_ids(&self) -> Vec<String> {
+        self.result_sessions
             .lock()
             .iter()
             .filter_map(|(session_id, meta)| {
                 should_close_for_external_selection(meta.pinned).then(|| session_id.clone())
             })
-            .collect::<Vec<_>>();
+            .collect()
+    }
+
+    fn close_unpinned_result_sessions(&self, app: &AppHandle, sessions: Vec<String>) {
         for session_id in sessions {
+            // A result may have become pinned, closed, or replaced while the
+            // delayed selection cleanup was waiting for the UI thread.
+            let still_unpinned = self
+                .result_sessions
+                .lock()
+                .get(&session_id)
+                .is_some_and(|meta| should_close_for_external_selection(meta.pinned));
+            if !still_unpinned {
+                continue;
+            }
             let label = result_label(&session_id);
             self.persist_result_size_now(app, &label);
             if self.windows.close_result(app, &label).is_ok() {
@@ -1593,16 +1832,28 @@ pub fn start_permission_poll(app: AppHandle) {
     });
 }
 
-pub fn handle_global_shortcut(app: &AppHandle, event: ShortcutEvent) {
-    if event.state == ShortcutState::Pressed {
-        let state = app.state::<RuntimeState>();
-        if state.shutting_down.load(Ordering::Acquire) {
-            return;
-        }
-        let settings = state.settings.get_settings();
-        if settings.enabled && settings.trigger.mode == TriggerMode::Shortcut {
-            state.capture_current(app);
-        }
+pub fn handle_global_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
+    if event.state != ShortcutState::Pressed || event.id != shortcut.id() {
+        return;
+    }
+    let state = app.state::<RuntimeState>();
+    if state.shutting_down.load(Ordering::Acquire) {
+        return;
+    }
+    let registered = *state.registered_shortcut.lock();
+    if registered != Some(*shortcut) {
+        return;
+    }
+    let settings = state.settings.get_settings();
+    if shortcut_event_is_current(
+        *shortcut,
+        event,
+        registered,
+        settings.enabled,
+        settings.trigger.mode,
+        settings.capture_shortcut.as_str(),
+    ) {
+        state.capture_current(app);
     }
 }
 
@@ -1746,7 +1997,10 @@ pub fn open_settings(
     window: WebviewWindow,
     options: Option<OpenSettingsOptions>,
 ) -> Result<(), String> {
-    ensure_toolbar_caller(&window)?;
+    // Settings is a shared, long-lived workspace. Result windows, the
+    // toolbar, and the settings window itself may all bring it forward; an
+    // unknown WebView must still be rejected.
+    ensure_known_caller(&window)?;
     open_settings_window_with_options(&app, options);
     Ok(())
 }
@@ -1790,6 +2044,19 @@ fn selection_monitor_diagnostic(should_listen: bool, start_failed: bool) -> Opti
     (should_listen && start_failed).then(|| SELECTION_MONITOR_START_ERROR.to_owned())
 }
 
+fn trace_selection_timing(stage: &str, started: Instant) {
+    let enabled = std::env::var_os("TEXTLENS_SELECTION_TRACE").is_some_and(|value| {
+        let value = value.to_string_lossy();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    });
+    if enabled {
+        eprintln!(
+            "[selection-timing] stage={stage} duration_ms={:.1}",
+            started.elapsed().as_secs_f64() * 1_000.0
+        );
+    }
+}
+
 fn selection_monitor_disconnect_diagnostic(shutting_down: bool) -> Option<String> {
     (!shutting_down).then(|| SELECTION_MONITOR_DISCONNECTED_ERROR.to_owned())
 }
@@ -1798,12 +2065,32 @@ fn shortcut_registration_diagnostic(registration_failed: bool) -> Option<String>
     registration_failed.then(|| GLOBAL_SHORTCUT_ERROR.to_owned())
 }
 
-fn shortcut_registration_target(mode: TriggerMode, configured: &str) -> String {
-    if mode == TriggerMode::Shortcut {
+fn shortcut_registration_target(enabled: bool, mode: TriggerMode, configured: &str) -> String {
+    if enabled && mode == TriggerMode::Shortcut {
         configured.trim().to_owned()
     } else {
         String::new()
     }
+}
+
+fn shortcut_event_is_current(
+    reported: Shortcut,
+    event: ShortcutEvent,
+    registered: Option<Shortcut>,
+    enabled: bool,
+    mode: TriggerMode,
+    configured: &str,
+) -> bool {
+    if event.state != ShortcutState::Pressed
+        || event.id != reported.id()
+        || registered != Some(reported)
+    {
+        return false;
+    }
+
+    enabled
+        && mode == TriggerMode::Shortcut
+        && configured.trim().parse::<Shortcut>().ok() == Some(reported)
 }
 
 /// Automatic selection events only show the toolbar in "selected" trigger mode.
@@ -1862,9 +2149,11 @@ pub fn update_settings(
     update: SettingsUpdate,
 ) -> Result<PublicSettings, String> {
     ensure_settings_caller(&window)?;
-    let shortcut_change_requested = update.capture_shortcut.is_some() || update.trigger.is_some();
+    let shortcut_change_requested =
+        update.enabled.is_some() || update.capture_shortcut.is_some() || update.trigger.is_some();
     let previous_shortcut = if shortcut_change_requested {
         let current = state.settings.get_settings();
+        let enabled = update.enabled.unwrap_or(current.enabled);
         let configured = update
             .capture_shortcut
             .as_deref()
@@ -1873,7 +2162,7 @@ pub fn update_settings(
             .trigger
             .as_ref()
             .map_or(current.trigger.mode, |trigger| trigger.mode);
-        let requested = shortcut_registration_target(mode, configured);
+        let requested = shortcut_registration_target(enabled, mode, configured);
         Some(state.switch_shortcut(&app, &requested)?)
     } else {
         None
@@ -2069,19 +2358,25 @@ pub fn quit_app(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
 
 #[tauri::command]
 pub fn toolbar_ready(
-    // Used on Windows to restage the toolbar when the renderer reconnects.
-    #[cfg_attr(not(target_os = "windows"), allow(unused_variables))] app: AppHandle,
+    // Used on macOS/Windows to restage the toolbar when the renderer
+    // reconnects (e.g. after a WebView2 rebuild on Windows, or a rare WKWebView
+    // reload on macOS).
+    #[cfg_attr(
+        not(any(target_os = "windows", target_os = "macos")),
+        allow(unused_variables)
+    )]
+    app: AppHandle,
     window: WebviewWindow,
     state: State<'_, RuntimeState>,
 ) -> Result<Option<RendererSelectionPayload>, String> {
     ensure_toolbar_caller(&window)?;
     let current = state.current_selection.lock().clone();
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     if let Some(selection) = &current {
-        let anchor = selection_toolbar_anchor(&selection.payload);
+        let (anchor, placement) = selection_toolbar_anchor(&selection.payload);
         if state
             .windows
-            .stage_toolbar(&app, &selection.id, anchor)
+            .stage_toolbar_with_placement(&app, &selection.id, anchor, placement)
             .is_err()
         {
             // Do not discard the replay payload: the renderer can still use
@@ -2167,7 +2462,7 @@ pub fn present_toolbar(
         return Ok(false);
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let presented = state
         .windows
         .present_toolbar(
@@ -2179,7 +2474,7 @@ pub fn present_toolbar(
             },
         )
         .map_err(|error| error.to_string())?;
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let presented = state
         .windows
         .update_toolbar_size(
@@ -2298,13 +2593,8 @@ pub async fn run_action(
         _ if action.kind.opens_result_without_generation() => {
             let cursor = action_result_cursor(&app, cursor, &selection.payload);
             let selected_text = selection.payload.text.clone();
-            match state.create_ask_result_session(
-                &app,
-                &action.id,
-                &action.name,
-                selection,
-                cursor,
-            ) {
+            match state.create_ask_result_session(&app, &action.id, &action.name, selection, cursor)
+            {
                 Ok((session_id, request_id, reveal_receiver)) => {
                     match wait_for_result_reveal_with_timeout(
                         reveal_receiver,
@@ -2642,19 +2932,40 @@ pub fn show_result_selection(
         x: cursor.x,
         y: cursor.y,
     };
+    let toolbar_placement = ToolbarPlacement::BottomMiddle;
     #[cfg(target_os = "windows")]
     state.windows.begin_toolbar_selection(&current.id);
     *state.current_selection.lock() = Some(current.clone());
     #[cfg(target_os = "windows")]
-    let stage_failed = state
-        .windows
-        .stage_toolbar(&app, &current.id, toolbar_anchor)
-        .is_err();
-    #[cfg(not(target_os = "windows"))]
-    if let Err(error) = state
-        .windows
-        .show_toolbar(&app, &current.id, toolbar_anchor)
-    {
+    let stage_failed = match state.windows.stage_toolbar_with_placement(
+        &app,
+        &current.id,
+        toolbar_anchor,
+        toolbar_placement,
+    ) {
+        Ok(()) => false,
+        Err(error) => {
+            eprintln!("[toolbar] native result stage failed; keeping toolbar hidden: {error}");
+            true
+        }
+    };
+    #[cfg(target_os = "macos")]
+    if let Err(error) = state.windows.stage_toolbar_with_placement(
+        &app,
+        &current.id,
+        toolbar_anchor,
+        toolbar_placement,
+    ) {
+        state.clear_and_hide_current_selection_if(&app, &current.id);
+        return Err(format!("无法显示划词工具栏：{error}"));
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    if let Err(error) = state.windows.show_toolbar_with_placement(
+        &app,
+        &current.id,
+        toolbar_anchor,
+        toolbar_placement,
+    ) {
         state.clear_and_hide_current_selection_if(&app, &current.id);
         return Err(format!("无法显示划词工具栏：{error}"));
     }
@@ -2668,7 +2979,6 @@ pub fn show_result_selection(
             current.id
         );
         state.recover_toolbar_delivery(&app, &current.id);
-        return Ok(());
     }
     if app.emit_to(TOOLBAR_LABEL, SELECTION_EVENT, public).is_err() {
         #[cfg(target_os = "windows")]
@@ -2706,9 +3016,7 @@ pub fn hide_result_selection(
     let Some(selection_id) = state.clear_current_selection_from_result(&session_id) else {
         return Ok(());
     };
-    let _ = state
-        .windows
-        .hide_toolbar_if_selection(&app, &selection_id);
+    let _ = state.windows.hide_toolbar_if_selection(&app, &selection_id);
     // Force-hide matches the native dismiss path when scoped hide is a no-op.
     state.windows.hide_toolbar(&app);
     let _ = app.emit_to(
@@ -2884,15 +3192,18 @@ fn dismiss_mode(mode: ResultDismissMode) -> DismissMode {
     }
 }
 
-fn selection_toolbar_anchor(selection: &SelectionPayload) -> WindowPoint {
-    // The native monitor reports the release point independently from text
-    // direction. Backward selections therefore still anchor at `mouse.end`,
-    // not at the logical start of the selected string.
-    let point = selection.mouse.end.unwrap_or(selection.mouse.current);
-    WindowPoint {
-        x: point.x,
-        y: point.y,
-    }
+fn selection_toolbar_anchor(selection: &SelectionPayload) -> (WindowPoint, ToolbarPlacement) {
+    let cursor = selection.mouse.end.unwrap_or(selection.mouse.current);
+    // The release point is the only coordinate shared reliably by UIA, MSAA,
+    // COM and clipboard fallback paths. Treat it as the toolbar's top edge;
+    // the window coordinator performs screen-edge clamping afterward.
+    (
+        WindowPoint {
+            x: cursor.x,
+            y: cursor.y,
+        },
+        ToolbarPlacement::BottomMiddle,
+    )
 }
 
 fn should_hide_toolbar_for_selection(
@@ -3037,6 +3348,17 @@ fn selection_source_matches_result(
     result_session_id: &str,
 ) -> bool {
     source_result_session_id == Some(result_session_id)
+}
+
+fn result_selection_dismiss_is_internal(
+    source_result_session_id: Option<&str>,
+    reason: &str,
+    target_pid: i64,
+    own_process_id: u32,
+) -> bool {
+    source_result_session_id.is_some()
+        && reason == "mouseDown"
+        && target_pid == i64::from(own_process_id)
 }
 
 fn safe_http_url(value: &str) -> Option<Url> {
@@ -3210,6 +3532,30 @@ mod tests {
             action_id: "translate".to_owned(),
             pinned: false,
         }
+    }
+
+    #[test]
+    fn selection_toolbar_uses_release_point_as_top_edge() {
+        let mut selection = result_meta().selection.payload;
+        selection.mouse.end = Some(SelectionPoint { x: 240.0, y: 360.0 });
+        selection.mouse.current = SelectionPoint { x: 210.0, y: 330.0 };
+        selection.start_top = Some(SelectionPoint { x: 5.0, y: 5.0 });
+        selection.end_bottom = Some(SelectionPoint { x: 900.0, y: 900.0 });
+
+        let (anchor, placement) = selection_toolbar_anchor(&selection);
+        assert_eq!(anchor, WindowPoint { x: 240.0, y: 360.0 });
+        assert_eq!(placement, ToolbarPlacement::BottomMiddle);
+    }
+
+    #[test]
+    fn selection_toolbar_falls_back_to_current_point_without_release_point() {
+        let mut selection = result_meta().selection.payload;
+        selection.mouse.end = None;
+        selection.mouse.current = SelectionPoint { x: 72.0, y: 88.0 };
+
+        let (anchor, placement) = selection_toolbar_anchor(&selection);
+        assert_eq!(anchor, WindowPoint { x: 72.0, y: 88.0 });
+        assert_eq!(placement, ToolbarPlacement::BottomMiddle);
     }
 
     fn initial_preparing_begin() -> ActionBeginReady {
@@ -3411,19 +3757,75 @@ mod tests {
     }
 
     #[test]
-    fn global_shortcut_is_registered_only_in_shortcut_mode() {
+    fn global_shortcut_is_registered_only_while_enabled_in_shortcut_mode() {
         let configured = "CommandOrControl+Shift+S";
         assert_eq!(
-            shortcut_registration_target(TriggerMode::Shortcut, configured),
+            shortcut_registration_target(true, TriggerMode::Shortcut, configured),
             configured
         );
         assert_eq!(
-            shortcut_registration_target(TriggerMode::Selected, configured),
+            shortcut_registration_target(true, TriggerMode::Selected, configured),
+            ""
+        );
+        assert_eq!(
+            shortcut_registration_target(false, TriggerMode::Shortcut, configured),
             ""
         );
         // Only the effective registration changes; the saved configuration is
         // retained for a later switch back to shortcut mode.
         assert_eq!(configured, "CommandOrControl+Shift+S");
+    }
+
+    #[test]
+    fn global_shortcut_events_match_structural_identity_and_saved_settings() {
+        let registered = "Ctrl+Shift+S".parse::<Shortcut>().unwrap();
+        let alias = "Control+Shift+S".parse::<Shortcut>().unwrap();
+        assert_eq!(registered, alias);
+
+        let pressed = ShortcutEvent {
+            id: alias.id(),
+            state: ShortcutState::Pressed,
+        };
+        assert!(shortcut_event_is_current(
+            alias,
+            pressed,
+            Some(registered),
+            true,
+            TriggerMode::Shortcut,
+            "Control+Shift+S",
+        ));
+        assert!(!shortcut_event_is_current(
+            alias,
+            pressed,
+            Some(registered),
+            false,
+            TriggerMode::Shortcut,
+            "Control+Shift+S",
+        ));
+        assert!(!shortcut_event_is_current(
+            alias,
+            ShortcutEvent {
+                id: alias.id(),
+                state: ShortcutState::Released,
+            },
+            Some(registered),
+            true,
+            TriggerMode::Shortcut,
+            "Control+Shift+S",
+        ));
+
+        let stale = "Alt+Shift+S".parse::<Shortcut>().unwrap();
+        assert!(!shortcut_event_is_current(
+            stale,
+            ShortcutEvent {
+                id: stale.id(),
+                state: ShortcutState::Pressed,
+            },
+            Some(registered),
+            true,
+            TriggerMode::Shortcut,
+            "Control+Shift+S",
+        ));
     }
 
     #[test]
@@ -3569,6 +3971,34 @@ mod tests {
     }
 
     #[test]
+    fn result_selection_keeps_toolbar_action_clicks_alive() {
+        assert!(result_selection_dismiss_is_internal(
+            Some("result-a"),
+            "mouseDown",
+            42,
+            42,
+        ));
+        assert!(!result_selection_dismiss_is_internal(
+            Some("result-a"),
+            "mouseDown",
+            7,
+            42,
+        ));
+        assert!(!result_selection_dismiss_is_internal(
+            Some("result-a"),
+            "scroll",
+            42,
+            42,
+        ));
+        assert!(!result_selection_dismiss_is_internal(
+            None,
+            "mouseDown",
+            42,
+            42,
+        ));
+    }
+
+    #[test]
     fn result_reveal_commit_is_idempotent_and_failed_sessions_cannot_restart() {
         let mut phase = ResultRevealHandshakePhase::Pending;
         assert_eq!(phase.begin_commit(), Ok(true));
@@ -3620,7 +4050,7 @@ mod tests {
     }
 
     #[test]
-    fn dismiss_should_force_hide_even_if_selection_scoped_hide_returns_false() {
+    fn dismiss_should_force_hide_when_selection_scoped_hide_returns_false() {
         let plan = dismiss_hide_plan(Some("selection-1".to_owned()), false);
         assert_eq!(plan.cleared_selection_id.as_deref(), Some("selection-1"));
         assert!(plan.force_hide);
@@ -3634,9 +4064,9 @@ mod tests {
     }
 
     #[test]
-    fn dismiss_force_hides_even_when_scoped_hide_succeeds() {
+    fn dismiss_does_not_repeat_a_successful_scoped_hide() {
         let plan = dismiss_hide_plan(Some("selection-1".to_owned()), true);
-        assert!(plan.force_hide);
+        assert!(!plan.force_hide);
     }
 
     #[test]
@@ -3667,8 +4097,7 @@ mod tests {
         // only once per close so Destroyed + cleanup do not extend the 2s window.
         let now = Instant::now();
         let first = same_text_selection_suppress("hello", now);
-        let rearmed =
-            same_text_selection_suppress("hello", now + Duration::from_millis(500));
+        let rearmed = same_text_selection_suppress("hello", now + Duration::from_millis(500));
         let after_first_deadline =
             now + Duration::from_millis(SAME_TEXT_SELECTION_SUPPRESS_MS + 100);
         assert!(!should_suppress_same_text_selection(
@@ -3695,7 +4124,11 @@ mod tests {
         let mut guard = Some(same_text_selection_suppress("hello", now));
         release_same_text_suppress_after_host_clear(&mut guard, "hello");
         assert!(guard.is_none());
-        assert!(!should_suppress_same_text_selection(guard.as_ref(), "hello", now));
+        assert!(!should_suppress_same_text_selection(
+            guard.as_ref(),
+            "hello",
+            now
+        ));
     }
 
     #[test]

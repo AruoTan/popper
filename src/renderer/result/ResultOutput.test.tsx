@@ -26,7 +26,6 @@ function deferred<T>(): {
 class DeterministicScheduler implements MarkdownTaskScheduler {
   private nextHandle = 1
   readonly frames = new Map<number, FrameRequestCallback>()
-  readonly idleTasks = new Map<number, () => void>()
 
   requestFrame = (callback: FrameRequestCallback): number => {
     const handle = this.nextHandle++
@@ -38,28 +37,11 @@ class DeterministicScheduler implements MarkdownTaskScheduler {
     this.frames.delete(handle)
   }
 
-  requestIdle = (callback: () => void): number => {
-    const handle = this.nextHandle++
-    this.idleTasks.set(handle, callback)
-    return handle
-  }
-
-  cancelIdle = (handle: number): void => {
-    this.idleTasks.delete(handle)
-  }
-
   runNextFrame(): void {
     const next = this.frames.entries().next().value as [number, FrameRequestCallback] | undefined
     if (!next) throw new Error('No queued frame')
     this.frames.delete(next[0])
     next[1](performance.now())
-  }
-
-  runNextIdle(): void {
-    const next = this.idleTasks.entries().next().value as [number, () => void] | undefined
-    if (!next) throw new Error('No queued idle task')
-    this.idleTasks.delete(next[0])
-    next[1]()
   }
 }
 
@@ -80,7 +62,7 @@ function outputProps(overrides: Partial<React.ComponentProps<typeof ResultOutput
 }
 
 describe('ResultOutput', () => {
-  it('commits plain content before presentation and a later Markdown task', async () => {
+  it('commits plain content before presentation and starts Markdown on the next frame', async () => {
     const scheduler = new DeterministicScheduler()
     const markdownImport = deferred<{ SafeMarkdown: (props: SafeMarkdownProps) => JSX.Element }>()
     const importer = vi.fn(() => markdownImport.promise) as unknown as SafeMarkdownImporter
@@ -112,12 +94,7 @@ describe('ResultOutput', () => {
 
     act(() => scheduler.runNextFrame())
     expect(screen.getByText('# Deferred heading')).toHaveClass('stream-plain-text')
-    expect(importer).not.toHaveBeenCalled()
-    expect(scheduler.idleTasks.size).toBe(1)
-
-    act(() => scheduler.runNextIdle())
     expect(importer).toHaveBeenCalledOnce()
-    expect(screen.getByText('# Deferred heading')).toHaveClass('stream-plain-text')
 
     await act(async () => {
       markdownImport.resolve({
@@ -135,7 +112,7 @@ describe('ResultOutput', () => {
     ])
   })
 
-  it.each(['streaming', 'cancelled', 'error'] as const)(
+  it.each(['cancelled', 'error'] as const)(
     'keeps %s content plain after all scheduler work',
     (status) => {
       const scheduler = new DeterministicScheduler()
@@ -152,10 +129,50 @@ describe('ResultOutput', () => {
 
       expect(screen.getByText('# Never rich')).toHaveClass('stream-plain-text')
       expect(scheduler.frames.size).toBe(0)
-      expect(scheduler.idleTasks.size).toBe(0)
       expect(importer).not.toHaveBeenCalled()
     }
   )
+
+  it('keeps the same rich renderer when streaming completes', async () => {
+    const scheduler = new DeterministicScheduler()
+    const parser = vi.fn(({ content }: SafeMarkdownProps) => (
+      <h1>{content.replace(/^# /u, '')}</h1>
+    ))
+    const loader = createRetryableMarkdownLoader(async () => ({ SafeMarkdown: memo(parser) }))
+    const view = render(
+      <ResultOutput
+        {...outputProps({
+          status: 'streaming',
+          content: '# Streaming heading',
+          revealCommitted: true
+        })}
+        loader={loader}
+        scheduler={scheduler}
+      />
+    )
+
+    await act(async () => {
+      scheduler.runNextFrame()
+      await Promise.resolve()
+    })
+    const heading = await screen.findByRole('heading', { name: 'Streaming heading' })
+
+    view.rerender(
+      <ResultOutput
+        {...outputProps({
+          status: 'completed',
+          content: '# Streaming heading',
+          revealCommitted: true
+        })}
+        loader={loader}
+        scheduler={scheduler}
+      />
+    )
+
+    expect(screen.getByRole('heading', { name: 'Streaming heading' })).toBe(heading)
+    expect(scheduler.frames.size).toBe(0)
+    expect(parser).toHaveBeenCalledOnce()
+  })
 
   it.each([
     { name: 'plain text', content: 'ordinary plain text', contentScalarCount: 19 },
@@ -193,9 +210,8 @@ describe('ResultOutput', () => {
       />
     )
 
-    act(() => scheduler.runNextFrame())
     await act(async () => {
-      scheduler.runNextIdle()
+      scheduler.runNextFrame()
       await Promise.resolve()
     })
 
@@ -203,9 +219,8 @@ describe('ResultOutput', () => {
     const retry = await screen.findByRole('button', { name: '重试富文本渲染' })
     fireEvent.click(retry)
     expect(scheduler.frames.size).toBe(1)
-    act(() => scheduler.runNextFrame())
     await act(async () => {
-      scheduler.runNextIdle()
+      scheduler.runNextFrame()
       await Promise.resolve()
     })
 
@@ -238,9 +253,8 @@ describe('ResultOutput', () => {
     }
 
     render(<Parent />)
-    act(() => scheduler.runNextFrame())
     await act(async () => {
-      scheduler.runNextIdle()
+      scheduler.runNextFrame()
       await Promise.resolve()
     })
     expect(await screen.findByRole('heading', { name: 'Deferred heading' })).toBeInTheDocument()

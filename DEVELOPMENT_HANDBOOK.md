@@ -199,6 +199,7 @@ TextLens 以 macOS 0.3.16 为功能基线，逐步完成 Windows 10/11 x64 版�
 | 0.3.54 | Windows 划词：allowlist 应用在 `IsPassword` 未知时允许剪贴板回退；WPS/微信/QQ 等进程族 UIA 关联；UIA 无目标时前台 Ctrl+C 路径；短时重试后及时 break。macOS：剪贴板 allowlist 大小写不敏感，拓宽金山/WPS 识别。结果 Markdown：句末单换行段落、中文列表标记与块边界规范化；思考区字号约为结果设置的 0.82 倍。 |
 | 0.3.55 | 服务商 `enabled` 启停；动作模型选择改为按服务商分组的统一 optgroup 列表，并按模型名自动推断思考档位（含「关闭思考」）；翻译目标语言扩展为 zh/en/ja/ko/ru/de/fr，结果标题栏短码切换；默认其他语种→中文、中文→英文；收紧翻译与解释默认提示词。 |
 | 0.3.56 | 修复 macOS 主线程死锁（持 WindowState 锁等待 orderFront 导致托盘无响应）；结果窗关闭前 blur 原生 select；文档改为 DEVELOPMENT_HANDBOOK 开发手册并精简 README。 |
+| 0.4.0 | 双端划词兼容拓宽、AX/UIA 有界捕获、Windows 跨段与长划词回退、工具栏 stage-present 与悬停交互、Markdown 稳定渲染、解释提示词和快捷键注册加固。 |
 
 跨版本累计完成的其他能力包括：多服务商多模型、自定义动作、HTTP 服务地址、URL/IP 直达、结果窗拖动与尺寸记忆、置顶与多种自动关闭方式、结果正文再次划词、安全 Markdown、模型重试与临时切换。
 
@@ -883,3 +884,15 @@ Windows 安装包使用 current-user 模式，不要求管理员权限；禁止�
 - **文档：** `DEVELOPMENT_HISTORY.md` 重命名为 `DEVELOPMENT_HANDBOOK.md`（开发手册），并入本地开发（Windows / macOS）、可迁移源码导出与版本演进；README 去掉版本号简介与上述开发小节，改为指向手册；「设计灵感与第三方来源」标题不再出现第三方产品名；安装小节改为「安装 - Windows / 安装 - macOS」。
 - **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf 统一为 0.3.56；`pnpm export:dev-source` 导出可迁移源码包。
 - 产品版本升至 0.3.56。
+
+### 0.4.0：划词响应、Markdown 稳定渲染与快捷键注册加固
+
+（整理日期：2026-08-10）
+
+- **双端划词兼容：** macOS 从 allowlist 扩展为 denylist 与安全输入判断，增加 AX 调用限时、按进程兼容属性缓存和事件监听自愈；Windows 增加 UIA 硬预算、按应用历史自适应路由、前台无障碍树预热，以及 PDF/Office 跨段长划词的 settle、UIA、WM_COPY、Ctrl+C 和空结果重试链路。
+- **捕获稳定性：** 将可能被第三方 UIA/OLE provider 阻塞的 Windows 捕获隔离到 helper 进程，限制超时、重建失效 helper，并处理滚轮、generation、前台窗口和应用族关联，降低长时间运行后划词失效。
+- **工具栏：** 双端采用 stage/present 展示事务，改善首次展示延迟、透明等待、窗口复活和悬停高亮；工具栏动作加入忙态单飞和指针采样反馈。
+- **结果 Markdown：** 流式输出提前复用稳定的 Markdown 渲染路径，统一段落、列表、代码块与公式间距，降低纯文本到 Markdown 切换时的视觉跳变。
+- **快捷键：** 保存设置时按解析后的快捷键身份切换注册，支持失败回滚与残留注册恢复；启用状态、事件 ID、当前注册项和持久化设置保持一致，录制组合键保留全部修饰键。
+- **版本与源码包：** `package.json`、`Cargo.toml`、`tauri.conf.json`、Windows conf、`Cargo.lock` 统一为 0.4.0；`pnpm export:dev-source` 导出可迁移源码包。
+- 产品版本升至 0.4.0。
