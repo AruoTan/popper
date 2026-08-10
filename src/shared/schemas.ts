@@ -514,6 +514,46 @@ export const filterSettingsSchema = z
   .strict()
 export type FilterSettings = z.infer<typeof filterSettingsSchema>
 
+export const selectionCaptureStrategySchema = z.enum(['selection-hook', 'clipboard', 'auto'])
+export type SelectionCaptureStrategy = z.infer<typeof selectionCaptureStrategySchema>
+
+const DEFAULT_SELECTION_CAPTURE_RULES = [
+  { application: 'acrobat.exe', strategy: 'clipboard' as const },
+  { application: 'acrord32.exe', strategy: 'clipboard' as const },
+  { application: 'acrocef.exe', strategy: 'clipboard' as const },
+  { application: 'rdrcef.exe', strategy: 'clipboard' as const },
+  { application: 'docbox.exe', strategy: 'clipboard' as const },
+  { application: 'docboxrenderer.exe', strategy: 'clipboard' as const },
+  { application: 'emeditor.exe', strategy: 'clipboard' as const }
+]
+
+export const selectionCaptureRuleSchema = z
+  .object({
+    application: z.string().trim().min(1).max(512),
+    strategy: selectionCaptureStrategySchema
+  })
+  .strict()
+
+export type SelectionCaptureRule = z.infer<typeof selectionCaptureRuleSchema>
+
+export const selectionCaptureSettingsSchema = z
+  .object({
+    defaultStrategy: selectionCaptureStrategySchema.default('selection-hook'),
+    applications: z.array(selectionCaptureRuleSchema).max(64).default(DEFAULT_SELECTION_CAPTURE_RULES)
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const seen = new Set<string>()
+    for (const rule of value.applications) {
+      const application = rule.application.trim().replaceAll('/', '\\').toLowerCase()
+      if (seen.has(application)) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: '划词获取应用规则不能重复' })
+      }
+      seen.add(application)
+    }
+  })
+export type SelectionCaptureSettings = z.infer<typeof selectionCaptureSettingsSchema>
+
 const commonSettingsShape = {
   version: z.literal(SETTINGS_VERSION),
   enabled: z.boolean(),
@@ -525,6 +565,10 @@ const commonSettingsShape = {
   trigger: triggerSettingsSchema,
   application: applicationSettingsSchema,
   filter: filterSettingsSchema,
+  selectionCapture: selectionCaptureSettingsSchema.default({
+    defaultStrategy: 'selection-hook',
+    applications: DEFAULT_SELECTION_CAPTURE_RULES
+  }),
   actions: actionsSchema
 } as const
 
@@ -582,8 +626,9 @@ export const settingsUpdateSchema = z
     toolbar: toolbarSettingsSchema.optional(),
     result: resultSettingsSchema.optional(),
     trigger: triggerSettingsSchema.optional(),
-    application: applicationSettingsSchema.optional(),
-    filter: filterSettingsSchema.optional(),
+  application: applicationSettingsSchema.optional(),
+  filter: filterSettingsSchema.optional(),
+  selectionCapture: selectionCaptureSettingsSchema.optional(),
     providers: providersArraySchema(providerMetadataSchema).optional(),
     actions: actionsSchema.optional()
   })

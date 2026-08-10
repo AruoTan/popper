@@ -349,9 +349,7 @@ where
                         // Thinking/reasoning is stream activity: credit first-content
                         // and idle timers so long CoT does not look hung, but never
                         // merge into answer content or answer scalar limits.
-                        if let Some(thinking) =
-                            data.reasoning.filter(|delta| !delta.is_empty())
-                        {
+                        if let Some(thinking) = data.reasoning.filter(|delta| !delta.is_empty()) {
                             let scalar_count = thinking.chars().count();
                             if thinking_scalars.saturating_add(scalar_count)
                                 <= config.output_scalars

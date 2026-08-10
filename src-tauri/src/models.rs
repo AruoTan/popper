@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub const SETTINGS_VERSION: u8 = 11;
+pub const SETTINGS_VERSION: u8 = 12;
 pub const TEXT_PLACEHOLDER: &str = "{{text}}";
 pub const OUTPUT_LANGUAGE_PLACEHOLDER: &str = "{{language}}";
 pub const TARGET_LANGUAGE_PLACEHOLDER: &str = "{{target_language}}";
@@ -38,7 +38,9 @@ Rules:
 {{text}}
 </translate_input>"#;
 pub const DEFAULT_SUMMARY_PROMPT: &str = "用 {{language}} 概括以下内容的核心观点、关键事实、结论与必要限定；不编造原文没有的信息。内容复杂时可用简洁 Markdown。直接输出摘要。\n\n{{text}}";
-pub const DEFAULT_EXPLAIN_PROMPT: &str = "用 {{language}} 对所选内容做**整体解释**：说清楚它在讲什么、核心含义与必要上下文即可。不要逐词逐句拆解，也不要对每个术语做百科式展开；仅当文中出现对理解整体至关重要的常见术语时，用一两句补充。信息不足时说明，勿臆测。表述简洁，可用 Markdown。直接输出解释。\n\n{{text}}";
+pub const DEFAULT_EXPLAIN_PROMPT: &str = "用 {{language}} 对所选内容做**整体解释**：用通俗语言说明这段话在讲什么、核心意思是什么。不要逐词逐句拆解，也不要对每个术语做百科式展开；仅当文中出现对理解整体至关重要的术语时，用一两句补充。信息不足时说明，勿臆测。表述简洁，可用 Markdown。直接输出解释。\n\n{{text}}";
+/// Previous tight default that mentioned vague “必要上下文”.
+pub const LEGACY_V11_TIGHT_EXPLAIN_PROMPT: &str = "用 {{language}} 对所选内容做**整体解释**：说清楚它在讲什么、核心含义与必要上下文即可。不要逐词逐句拆解，也不要对每个术语做百科式展开；仅当文中出现对理解整体至关重要的常见术语时，用一两句补充。信息不足时说明，勿臆测。表述简洁，可用 Markdown。直接输出解释。\n\n{{text}}";
 /// Concise mid-v11 defaults before multilingual translate / tighter explain.
 pub const LEGACY_V11_CONCISE_TRANSLATE_PROMPT: &str = r#"You are a professional translator. Translate only the content inside `<translate_input>` into `{{target_language}}`.
 
@@ -315,6 +317,66 @@ impl Default for ApplicationFilterSettings {
     }
 }
 
+/// Controls how TextLens reads a selection after a verified user gesture.
+/// `SelectionHook` is the non-destructive default. Clipboard routes are
+/// limited to a short, guarded Ctrl+C transaction and always restore the
+/// previous clipboard state when no user clipboard operation intervenes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SelectionCaptureStrategy {
+    SelectionHook,
+    Clipboard,
+    Auto,
+}
+
+impl Default for SelectionCaptureStrategy {
+    fn default() -> Self {
+        Self::SelectionHook
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionCaptureRule {
+    pub application: String,
+    pub strategy: SelectionCaptureStrategy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectionCaptureSettings {
+    #[serde(default)]
+    pub default_strategy: SelectionCaptureStrategy,
+    #[serde(default)]
+    pub applications: Vec<SelectionCaptureRule>,
+}
+
+impl Default for SelectionCaptureSettings {
+    fn default() -> Self {
+        Self {
+            default_strategy: SelectionCaptureStrategy::SelectionHook,
+            // These document/canvas applications do not reliably expose their
+            // live ranges through UIA/MSAA. The rules remain visible and fully
+            // editable in Settings rather than being hidden native behavior.
+            applications: [
+                "acrobat.exe",
+                "acrord32.exe",
+                "acrocef.exe",
+                "rdrcef.exe",
+                "docbox.exe",
+                "docboxrenderer.exe",
+                "emeditor.exe",
+            ]
+            .into_iter()
+            .map(|application| SelectionCaptureRule {
+                application: application.to_owned(),
+                strategy: SelectionCaptureStrategy::Clipboard,
+            })
+            .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationSettings {
@@ -585,6 +647,8 @@ pub struct AppSettings {
     pub application: ApplicationSettings,
     pub filter: ApplicationFilterSettings,
     #[serde(default)]
+    pub selection_capture: SelectionCaptureSettings,
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     pub actions: Vec<ActionDefinition>,
 }
@@ -602,6 +666,8 @@ pub struct PublicSettings {
     pub trigger: TriggerSettings,
     pub application: ApplicationSettings,
     pub filter: ApplicationFilterSettings,
+    #[serde(default)]
+    pub selection_capture: SelectionCaptureSettings,
     pub providers: Vec<PublicProviderConfig>,
     pub actions: Vec<ActionDefinition>,
 }
@@ -622,6 +688,7 @@ impl PublicSettings {
             trigger: settings.trigger.clone(),
             application: settings.application.clone(),
             filter: settings.filter.clone(),
+            selection_capture: settings.selection_capture.clone(),
             providers: settings
                 .providers
                 .iter()
@@ -649,6 +716,7 @@ pub struct SettingsUpdate {
     pub trigger: Option<TriggerSettings>,
     pub application: Option<ApplicationSettings>,
     pub filter: Option<ApplicationFilterSettings>,
+    pub selection_capture: Option<SelectionCaptureSettings>,
     pub providers: Option<Vec<ProviderConfig>>,
     pub actions: Option<Vec<ActionDefinition>>,
 }
@@ -914,6 +982,7 @@ impl Default for AppSettings {
             trigger: TriggerSettings::default(),
             application: ApplicationSettings::default(),
             filter: ApplicationFilterSettings::default(),
+            selection_capture: SelectionCaptureSettings::default(),
             providers: vec![provider],
             actions: vec![
                 ai(
@@ -1023,6 +1092,22 @@ impl AppSettings {
             }
         }
         self.filter.applications = applications;
+
+        if self.selection_capture.applications.len() > 64 {
+            return Err("划词获取应用规则最多包含 64 项".to_owned());
+        }
+        let mut capture_rules = Vec::with_capacity(self.selection_capture.applications.len());
+        let mut capture_rule_set = HashSet::new();
+        for mut rule in self.selection_capture.applications {
+            rule.application = rule.application.trim().replace('/', "\\").to_lowercase();
+            if rule.application.is_empty() || rule.application.len() > 512 {
+                return Err("划词获取应用规则包含无效程序名".to_owned());
+            }
+            if capture_rule_set.insert(rule.application.clone()) {
+                capture_rules.push(rule);
+            }
+        }
+        self.selection_capture.applications = capture_rules;
 
         if self.providers.len() > MAX_PROVIDERS {
             return Err(format!("最多只能配置 {MAX_PROVIDERS} 个 AI 服务商"));
@@ -1442,8 +1527,42 @@ mod tests {
         assert_eq!(public.actions.len(), 7);
         assert!(!public.providers[0].key_configured);
         assert_eq!(
+            settings.selection_capture.default_strategy,
+            SelectionCaptureStrategy::SelectionHook
+        );
+        assert!(settings.selection_capture.applications.iter().any(|rule| {
+            rule.application == "acrobat.exe"
+                && rule.strategy == SelectionCaptureStrategy::Clipboard
+        }));
+        assert_eq!(
             public.application.close_behavior,
             ApplicationCloseBehavior::HideToTray
+        );
+    }
+
+    #[test]
+    fn selection_capture_rules_are_normalized_and_deduplicated() {
+        let mut settings = AppSettings::default();
+        settings.selection_capture.applications = vec![
+            SelectionCaptureRule {
+                application: " C:/Tools/EmEditor.exe ".to_owned(),
+                strategy: SelectionCaptureStrategy::Clipboard,
+            },
+            SelectionCaptureRule {
+                application: "c:\\tools\\emeditor.exe".to_owned(),
+                strategy: SelectionCaptureStrategy::SelectionHook,
+            },
+        ];
+
+        let normalized = settings.normalize_and_validate().unwrap();
+        assert_eq!(normalized.selection_capture.applications.len(), 1);
+        assert_eq!(
+            normalized.selection_capture.applications[0].application,
+            "c:\\tools\\emeditor.exe"
+        );
+        assert_eq!(
+            normalized.selection_capture.applications[0].strategy,
+            SelectionCaptureStrategy::Clipboard
         );
     }
 

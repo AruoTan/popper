@@ -1,7 +1,7 @@
 export const APP_NAME = 'TextLens'
 export const APP_ID = 'com.local.textlens'
 
-export const SETTINGS_VERSION = 11 as const
+export const SETTINGS_VERSION = 12 as const
 export const AI_TEXT_LIMIT = 20_000
 export const AI_PROMPT_LIMIT = 50_000
 export const AI_OUTPUT_LIMIT = 1_000_000
@@ -85,12 +85,19 @@ export const DEFAULT_FILTER_SETTINGS = {
   applications: []
 } as const
 
-export const DEFAULT_TOOLBAR_SIZE = {
-  // Start wide enough for first paint; ResizeObserver immediately shrinks the
-  // native window to the rendered pill's real dimensions.
-  width: 720,
-  height: 64
+export const DEFAULT_SELECTION_CAPTURE_SETTINGS = {
+  defaultStrategy: 'selection-hook',
+  applications: [
+    { application: 'acrobat.exe', strategy: 'clipboard' },
+    { application: 'acrord32.exe', strategy: 'clipboard' },
+    { application: 'acrocef.exe', strategy: 'clipboard' },
+    { application: 'rdrcef.exe', strategy: 'clipboard' },
+    { application: 'docbox.exe', strategy: 'clipboard' },
+    { application: 'docboxrenderer.exe', strategy: 'clipboard' },
+    { application: 'emeditor.exe', strategy: 'clipboard' }
+  ]
 } as const
+
 export const TOOLBAR_SCREEN_GAP = 8
 export const TOOLBAR_SCREEN_MARGIN = 8
 

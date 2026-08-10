@@ -102,11 +102,10 @@ export function formatKeyboardEventToTauriShortcut(event: ShortcutKeyLike): stri
 
   if (mac) {
     if (event.metaKey) parts.push('CommandOrControl')
-    else if (event.ctrlKey) parts.push('Control')
-  } else if (event.ctrlKey) {
-    parts.push('CommandOrControl')
-  } else if (event.metaKey) {
-    parts.push('Super')
+    if (event.ctrlKey) parts.push('Control')
+  } else {
+    if (event.ctrlKey) parts.push('CommandOrControl')
+    if (event.metaKey) parts.push('Super')
   }
 
   if (event.altKey) parts.push('Alt')

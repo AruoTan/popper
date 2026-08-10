@@ -19,12 +19,12 @@ use crate::models::{
     ProviderModel, PublicSettings, ResultDismissMode, SettingsUpdate, TranslationSettings,
     UpdateProviderInput, WindowSize, DEFAULT_ASK_PROMPT, DEFAULT_EXPLAIN_PROMPT,
     DEFAULT_PROVIDER_ID, DEFAULT_REFINE_PROMPT, DEFAULT_SUMMARY_PROMPT, DEFAULT_TRANSLATE_PROMPT,
-    LEGACY_V3_EXPLAIN_PROMPT, LEGACY_V3_REFINE_PROMPT, LEGACY_V3_SUMMARY_PROMPT,
-    LEGACY_V3_TRANSLATE_PROMPT, LEGACY_V4_EXPLAIN_PROMPT, LEGACY_V4_REFINE_PROMPT,
-    LEGACY_V4_SUMMARY_PROMPT, LEGACY_V4_TRANSLATE_PROMPT, LEGACY_V5_TRANSLATE_PROMPT,
     LEGACY_V11_CONCISE_EXPLAIN_PROMPT, LEGACY_V11_CONCISE_TRANSLATE_PROMPT,
-    LEGACY_V11_EXPLAIN_PROMPT, LEGACY_V11_SUMMARY_PROMPT, LEGACY_V11_TRANSLATE_PROMPT,
-    SETTINGS_VERSION,
+    LEGACY_V11_EXPLAIN_PROMPT, LEGACY_V11_SUMMARY_PROMPT, LEGACY_V11_TIGHT_EXPLAIN_PROMPT,
+    LEGACY_V11_TRANSLATE_PROMPT, LEGACY_V3_EXPLAIN_PROMPT, LEGACY_V3_REFINE_PROMPT,
+    LEGACY_V3_SUMMARY_PROMPT, LEGACY_V3_TRANSLATE_PROMPT, LEGACY_V4_EXPLAIN_PROMPT,
+    LEGACY_V4_REFINE_PROMPT, LEGACY_V4_SUMMARY_PROMPT, LEGACY_V4_TRANSLATE_PROMPT,
+    LEGACY_V5_TRANSLATE_PROMPT, SETTINGS_VERSION,
 };
 
 const SECRET_ACCOUNT_PREFIX: &str = "provider-api-key:";
@@ -208,6 +208,9 @@ impl SettingsRepository {
             if let Some(value) = update.filter {
                 settings.filter = value;
             }
+            if let Some(value) = update.selection_capture {
+                settings.selection_capture = value;
+            }
             if let Some(value) = update.providers {
                 settings.providers = value;
             }
@@ -234,6 +237,7 @@ impl SettingsRepository {
                 trigger: public.trigger,
                 application: public.application,
                 filter: public.filter,
+                selection_capture: public.selection_capture,
                 providers: public
                     .providers
                     .into_iter()
@@ -681,6 +685,21 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
             must_persist,
         });
     }
+    if version == Some(11) {
+        migrate_v10_search_actions_value(&mut value);
+        migrate_quote_to_ask_value(&mut value);
+        let mut settings: AppSettings = serde_json::from_value(value)?;
+        migrate_default_action_prompts(&mut settings);
+        migrate_search_actions(&mut settings);
+        let settings = settings
+            .normalize_and_validate()
+            .map_err(SettingsError::Validation)?;
+        return Ok(LoadedSettings {
+            settings,
+            legacy_api_key: None,
+            must_persist: true,
+        });
+    }
     if version == Some(10) {
         migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
@@ -828,6 +847,7 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
                             | LEGACY_V4_EXPLAIN_PROMPT
                             | LEGACY_V11_EXPLAIN_PROMPT
                             | LEGACY_V11_CONCISE_EXPLAIN_PROMPT
+                            | LEGACY_V11_TIGHT_EXPLAIN_PROMPT
                     )
                 ) =>
             {
@@ -997,6 +1017,7 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
         trigger: Default::default(),
         application: Default::default(),
         filter: Default::default(),
+        selection_capture: Default::default(),
         providers: vec![provider],
         actions,
     };
@@ -1101,9 +1122,7 @@ fn migrate_quote_to_ask_value(value: &mut serde_json::Value) {
             .get("kind")
             .or_else(|| action_object.get("type"))
             .and_then(serde_json::Value::as_str);
-        let id = action_object
-            .get("id")
-            .and_then(serde_json::Value::as_str);
+        let id = action_object.get("id").and_then(serde_json::Value::as_str);
         let is_quote = kind == Some("quote") || id == Some("quote");
         let is_ask = kind == Some("ask") || id == Some("ask-ai");
         if is_quote || is_ask {
@@ -2082,10 +2101,7 @@ mod tests {
             }
         }
         if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "version".to_owned(),
-                serde_json::Value::Number(10.into()),
-            );
+            object.insert("version".to_owned(), serde_json::Value::Number(10.into()));
         }
         fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
 
@@ -2242,6 +2258,35 @@ mod tests {
             Some(LEGACY_V11_EXPLAIN_PROMPT)
         );
         assert!(DEFAULT_EXPLAIN_PROMPT.contains("整体解释"));
+        assert!(DEFAULT_EXPLAIN_PROMPT.contains("核心意思"));
+        assert!(!DEFAULT_EXPLAIN_PROMPT.contains("必要上下文"));
+    }
+
+    #[test]
+    fn migrates_tight_explain_default_that_mentioned_necessary_context() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut current = AppSettings::default();
+        current
+            .actions
+            .iter_mut()
+            .find(|action| action.id == "explain")
+            .unwrap()
+            .prompt = Some(LEGACY_V11_TIGHT_EXPLAIN_PROMPT.to_owned());
+        fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+
+        let repository =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        let migrated = repository.get_settings();
+        assert_eq!(
+            migrated
+                .actions
+                .iter()
+                .find(|action| action.id == "explain")
+                .and_then(|action| action.prompt.as_deref()),
+            Some(DEFAULT_EXPLAIN_PROMPT)
+        );
     }
 
     #[test]

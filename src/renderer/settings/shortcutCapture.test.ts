@@ -56,6 +56,30 @@ describe('formatKeyboardEventToTauriShortcut', () => {
     ).toBe('CommandOrControl+Shift+S')
   })
 
+  it('keeps every pressed primary modifier in multi-modifier chords', () => {
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+    })
+    expect(
+      formatKeyboardEventToTauriShortcut(
+        event({ key: 'k', code: 'KeyK', metaKey: true, ctrlKey: true })
+      )
+    ).toBe('CommandOrControl+Control+K')
+
+    Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Win32' })
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+    })
+    expect(
+      formatKeyboardEventToTauriShortcut(
+        event({ key: 'k', code: 'KeyK', metaKey: true, ctrlKey: true })
+      )
+    ).toBe('CommandOrControl+Super+K')
+  })
+
   it('maps arrow and function keys', () => {
     Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' })
     expect(

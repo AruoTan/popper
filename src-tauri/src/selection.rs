@@ -16,6 +16,8 @@ use std::sync::mpsc::{self, Receiver};
 
 #[cfg(target_os = "macos")]
 use std::sync::mpsc::Sender;
+#[cfg(target_os = "windows")]
+use std::sync::{Arc, Mutex};
 
 #[cfg(target_os = "macos")]
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -313,6 +315,8 @@ extern "C" fn native_event_callback(json: *const c_char, context: *mut c_void) {
 /// the monitor, then consume that receiver off the Tauri main thread.
 pub struct SelectionMonitor {
     receiver: Option<SelectionEventReceiver>,
+    #[cfg(target_os = "windows")]
+    excluded_identifier: String,
     #[cfg(target_os = "macos")]
     native: NonNull<NativeSelectionMonitor>,
     #[cfg(target_os = "macos")]
@@ -372,9 +376,11 @@ impl SelectionMonitor {
     #[cfg(target_os = "windows")]
     pub fn new(excluded_bundle_id: &str) -> Result<Self, SelectionError> {
         let (sender, receiver) = mpsc::channel();
-        let windows = WindowsSelectionMonitor::new(excluded_bundle_id, sender)?;
+        let windows =
+            WindowsSelectionMonitor::new(excluded_bundle_id, Arc::new(Mutex::new(sender)))?;
         Ok(Self {
             receiver: Some(receiver),
+            excluded_identifier: excluded_bundle_id.to_owned(),
             windows,
         })
     }
@@ -387,6 +393,21 @@ impl SelectionMonitor {
     /// Returns the sole event receiver. Subsequent calls return `None`.
     pub fn take_event_receiver(&mut self) -> Option<SelectionEventReceiver> {
         self.receiver.take()
+    }
+
+    /// Rebuilds the Windows native producer and returns a fresh event receiver
+    /// after the previous event channel has disconnected. The replacement has
+    /// no hooks started yet; the old producer is stopped before the caller's
+    /// next reconcile starts the new lifecycle.
+    #[cfg(target_os = "windows")]
+    pub fn rebuild_event_receiver(&mut self) -> Result<SelectionEventReceiver, SelectionError> {
+        let (sender, receiver) = mpsc::channel();
+        let replacement =
+            WindowsSelectionMonitor::new(&self.excluded_identifier, Arc::new(Mutex::new(sender)))?;
+        let old = std::mem::replace(&mut self.windows, replacement);
+        old.shutdown();
+        self.receiver = Some(receiver);
+        self.take_event_receiver().ok_or(SelectionError::Internal)
     }
 
     #[cfg(target_os = "macos")]
@@ -402,6 +423,17 @@ impl SelectionMonitor {
     #[cfg(target_os = "windows")]
     pub fn start(&self) -> Result<(), SelectionError> {
         self.windows.start()
+    }
+
+    /// Updates Windows-only capture routing without restarting the global hook.
+    /// The worker snapshots this setting onto each gesture before forwarding it
+    /// to the isolated UIA/OLE helper process.
+    #[cfg(target_os = "windows")]
+    pub fn update_capture_settings(
+        &self,
+        settings: crate::models::SelectionCaptureSettings,
+    ) -> Result<(), SelectionError> {
+        self.windows.update_capture_settings(settings)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -484,6 +516,17 @@ impl SelectionMonitor {
     #[cfg(target_os = "windows")]
     pub fn capture_current(&self) -> Result<Option<SelectionPayload>, SelectionError> {
         self.windows.capture_current()
+    }
+
+    /// Enqueues a Windows manual capture without holding the Rust facade lock
+    /// until the accessibility provider replies. The runtime uses this for
+    /// global-shortcut captures so a second key press can reach the native
+    /// latest-wins coordinator and supersede a slow first probe.
+    #[cfg(target_os = "windows")]
+    pub fn capture_current_async(
+        &self,
+    ) -> Result<Receiver<Result<Option<SelectionPayload>, SelectionError>>, SelectionError> {
+        self.windows.capture_current_async()
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]

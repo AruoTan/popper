@@ -143,6 +143,13 @@ export function buildSettingsUpdate(settings: PublicSettings):
     trigger: settings.trigger,
     application: settings.application,
     filter: settings.filter,
+    selectionCapture: {
+      defaultStrategy: settings.selectionCapture.defaultStrategy,
+      applications: settings.selectionCapture.applications.map((rule) => ({
+        application: rule.application.trim(),
+        strategy: rule.strategy
+      }))
+    },
     providers: settings.providers.map(({ keyConfigured: _keyConfigured, ...provider }) => ({
       ...provider,
       baseUrl: provider.baseUrl.trim(),

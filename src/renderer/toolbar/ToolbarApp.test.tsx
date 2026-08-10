@@ -643,12 +643,17 @@ describe('ToolbarApp', () => {
         'selection-1'
       )
       expect(translate).toBeDisabled()
-      expect(copy).toBeDisabled()
+      expect(copy).not.toBeDisabled()
+      expect(copy).toHaveAttribute('aria-disabled', 'true')
+      expect(copy).toHaveClass('toolbar-action--muted')
     })
     expect(translate.querySelector('.spin')).not.toBeNull()
     expect(presentToolbar).toHaveBeenCalledTimes(presentationsBeforeAction)
 
     fireEvent.click(translate, { detail: 1, screenX: 420, screenY: 300 })
+    expect(runAction).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(copy)
     expect(runAction).toHaveBeenCalledTimes(1)
 
     await act(async () => pending.resolve({ accepted: true }))
@@ -826,24 +831,26 @@ describe('ToolbarApp', () => {
 
   it('keeps focus and active states visually neutral and reserves feedback for hover', () => {
     expect(toolbarCss).not.toMatch(/outline:\s*2px/)
-    expect(toolbarCss).not.toMatch(/transform:\s*translateY/)
     expect(toolbarCss).toContain('background: var(--surface-muted)')
-    expect(toolbarCss).toContain('transition: none')
+    expect(toolbarCss).toMatch(
+      /\.toolbar-action\s*\{[^}]*transition:\s*background-color\s+\d+ms[^,;]*,\s*color\s+\d+ms/s
+    )
 
     const stateRules = toolbarCss.matchAll(
       /[^{}]*:(?:focus|focus-visible|active)[^{}]*\{([^}]*)\}/g
     )
     for (const [, declarations] of stateRules) {
       expect(declarations).not.toMatch(/background\s*:/)
+      expect(declarations).not.toMatch(/transform\s*:/)
       expect(declarations).toMatch(/box-shadow:\s*none/)
       expect(declarations).toMatch(/outline:\s*none/)
     }
   })
 
   it('uses the compact action sizes and has no close-control styling', () => {
-    expect(toolbarCss).toMatch(/\.toolbar-pill\s*\{[^}]*min-height:\s*38px/s)
-    expect(toolbarCss).toMatch(/\.toolbar-action\s*\{[^}]*height:\s*32px/s)
-    expect(toolbarCss).toMatch(/\.toolbar-action--icon-only\s*\{[^}]*width:\s*30px/s)
+    expect(toolbarCss).toMatch(/\.toolbar-pill\s*\{[^}]*min-height:\s*34px/s)
+    expect(toolbarCss).toMatch(/\.toolbar-action\s*\{[^}]*height:\s*28px/s)
+    expect(toolbarCss).toMatch(/\.toolbar-action--icon-only\s*\{[^}]*width:\s*28px/s)
     expect(toolbarCss).not.toContain('.toolbar-close')
     expect(toolbarCss).not.toContain('.toolbar-divider')
   })

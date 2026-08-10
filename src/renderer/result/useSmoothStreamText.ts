@@ -40,9 +40,8 @@ export function useSmoothStreamText(
   const controller = controllerRef.current
 
   const targetRef = useRef(target)
-  const streamingRef = useRef(streaming)
+  const animationRef = useRef(streaming)
   targetRef.current = target
-  streamingRef.current = streaming
 
   const [displayed, setDisplayed] = useState('')
   const resetKeyRef = useRef(resetKey)
@@ -53,6 +52,7 @@ export function useSmoothStreamText(
       controller.reset()
     }
 
+    animationRef.current = streaming
     if (!streaming) {
       const snapped = controller.setTarget(target, false, now())
       setDisplayed((current) => (current === snapped ? current : snapped))
@@ -69,12 +69,14 @@ export function useSmoothStreamText(
 
     const pump = (frameTime: number): void => {
       handle = null
-      if (cancelled || !streamingRef.current) return
+      if (cancelled || !animationRef.current) return
 
       // Pull latest target so mid-pump IPC growth is absorbed without waiting
       // for a React commit (store updates still re-run this effect too).
       controller.setTarget(targetRef.current, true, frameTime)
-      if (!controller.needsTick()) return
+      if (!controller.needsTick()) {
+        return
+      }
 
       const advanced = controller.tick(frameTime)
       setDisplayed((current) => (current === advanced ? current : advanced))
@@ -90,6 +92,5 @@ export function useSmoothStreamText(
     }
   }, [cancelFrame, controller, now, requestFrame, resetKey, streaming, target])
 
-  if (!streaming) return target
-  return displayed
+  return streaming ? displayed : target
 }

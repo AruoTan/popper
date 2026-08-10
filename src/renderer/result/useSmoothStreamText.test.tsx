@@ -19,7 +19,7 @@ function Harness({
   cancelFrame: (id: number) => void
   now: () => number
 }): ReactElement {
-  const text = useSmoothStreamText(
+  const displayed = useSmoothStreamText(
     target,
     streaming,
     resetKey,
@@ -28,7 +28,7 @@ function Harness({
     cancelFrame,
     now
   )
-  return <div data-testid="out">{text}</div>
+  return <div data-testid="out">{displayed}</div>
 }
 
 describe('useSmoothStreamText', () => {
@@ -107,7 +107,7 @@ describe('useSmoothStreamText', () => {
     expect(screen.getByTestId('out')).toHaveTextContent(long)
   })
 
-  it('snaps to full text when streaming ends mid-drain', () => {
+  it('returns the complete result immediately when streaming ends mid-drain', () => {
     let clock = 0
     const frames: FrameRequestCallback[] = []
     const requestFrame: SmoothStreamFrameScheduler = (cb) => {

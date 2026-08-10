@@ -26,14 +26,19 @@ import {
 } from '..'
 
 describe('settings schemas and defaults', () => {
-  it('provides v11 defaults with search engine bound to the search action', () => {
+  it('provides v12 defaults with search engine bound to the search action', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
-    expect(DEFAULT_APP_SETTINGS.version).toBe(11)
+    expect(DEFAULT_APP_SETTINGS.version).toBe(12)
     expect(DEFAULT_APP_SETTINGS.enabled).toBe(true)
     expect(DEFAULT_APP_SETTINGS.actions.find((action) => action.kind === 'search')).toMatchObject({
       searchEngineId: 'google'
     })
     expect(DEFAULT_APP_SETTINGS.application).toEqual({ closeBehavior: 'hide-to-tray' })
+    expect(DEFAULT_APP_SETTINGS.selectionCapture.defaultStrategy).toBe('selection-hook')
+    expect(DEFAULT_APP_SETTINGS.selectionCapture.applications).toContainEqual({
+      application: 'acrobat.exe',
+      strategy: 'clipboard'
+    })
     expect(DEFAULT_APP_SETTINGS.providers[0]).toMatchObject({
       id: DEFAULT_PROVIDER_ID,
       enabled: true,
@@ -76,6 +81,16 @@ describe('settings schemas and defaults', () => {
     }
   })
 
+  it('migrates v11 settings to visible capture compatibility rules', () => {
+    const { selectionCapture: _selectionCapture, ...v11 } = DEFAULT_APP_SETTINGS
+    const migrated = migrateAppSettings({ ...v11, version: 11 })
+    expect(migrated.version).toBe(12)
+    expect(migrated.selectionCapture.applications).toContainEqual({
+      application: 'emeditor.exe',
+      strategy: 'clipboard'
+    })
+  })
+
   it('accepts ask AI actions and rejects quote local actions', () => {
     expect(() => actionDefinitionSchema.parse({
       id: 'ask-ai',
@@ -111,7 +126,7 @@ describe('settings schemas and defaults', () => {
     const ask = migrated.actions.find((action) => action.id === 'ask-ai' || action.kind === 'ask')
     expect(ask?.kind).toBe('ask')
     expect(ask?.name).toBe('问AI')
-    expect(migrated.version).toBe(11)
+    expect(migrated.version).toBe(12)
     expect(migrated.actions.filter((action) => action.kind === 'ask')).toHaveLength(1)
   })
 
@@ -307,7 +322,7 @@ describe('settings schemas and defaults', () => {
       ]
     }
     const migrated = migrateAppSettings(legacy)
-    expect(migrated.version).toBe(11)
+    expect(migrated.version).toBe(12)
     expect(migrated.providers[0]).toMatchObject({
       baseUrl: 'https://example.com/v1',
       apiKey: 'secret',
@@ -424,7 +439,7 @@ describe('settings schemas and defaults', () => {
       actions: [...DEFAULT_APP_SETTINGS.actions, secondTranslate]
     })
 
-    expect(migrated.version).toBe(11)
+    expect(migrated.version).toBe(12)
     expect(migrated.providers[1]).toEqual({
       ...secondProvider,
       enabled: true,
@@ -469,7 +484,7 @@ describe('settings schemas and defaults', () => {
       ]
     })
 
-    expect(migrated.version).toBe(11)
+    expect(migrated.version).toBe(12)
     expect(migrated.actions.find((action) => action.id === 'translate')).toMatchObject({
       prompt: DEFAULT_ACTION_PROMPTS.translate
     })
@@ -527,7 +542,7 @@ describe('settings schemas and defaults', () => {
     const migratedPublic = migratePublicSettings(withV4Prompts(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(11)
+      expect(settings.version).toBe(12)
       expect(settings.actions.find((action) => action.id === 'summary')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.summary
       })
@@ -604,7 +619,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
     const migratedPublic = migratePublicSettings(withLegacyV11(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(11)
+      expect(settings.version).toBe(12)
       expect(settings.actions.find((action) => action.id === 'translate')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.translate
       })
@@ -618,6 +633,37 @@ Return only the translated content. Do not include explanations, labels, tags, o
         prompt: DEFAULT_ACTION_PROMPTS.refine
       })
     }
+  })
+
+  it('migrates the tight explain default that mentioned necessary context', () => {
+    const legacyTightExplain =
+      '用 {{language}} 对所选内容做**整体解释**：说清楚它在讲什么、核心含义与必要上下文即可。不要逐词逐句拆解，也不要对每个术语做百科式展开；仅当文中出现对理解整体至关重要的常见术语时，用一两句补充。信息不足时说明，勿臆测。表述简洁，可用 Markdown。直接输出解释。\n\n{{text}}'
+    const customExplain = '保留我自己的解释：{{text}}'
+    const migrated = migrateAppSettings({
+      ...DEFAULT_APP_SETTINGS,
+      version: 11,
+      actions: DEFAULT_APP_SETTINGS.actions.map((action) => {
+        if (action.id === 'explain') return { ...action, prompt: legacyTightExplain }
+        return action
+      })
+    })
+    const migratedCustom = migrateAppSettings({
+      ...DEFAULT_APP_SETTINGS,
+      version: 11,
+      actions: DEFAULT_APP_SETTINGS.actions.map((action) => {
+        if (action.id === 'explain') return { ...action, prompt: customExplain }
+        return action
+      })
+    })
+
+    expect(migrated.actions.find((action) => action.id === 'explain')).toMatchObject({
+      prompt: DEFAULT_ACTION_PROMPTS.explain
+    })
+    expect(DEFAULT_ACTION_PROMPTS.explain).toContain('请解释下面的内容')
+    expect(DEFAULT_ACTION_PROMPTS.explain).toContain('{{language}}')
+    expect(migratedCustom.actions.find((action) => action.id === 'explain')).toMatchObject({
+      prompt: customExplain
+    })
   })
 
   it('migrates v5 settings to the default close behavior and preserves a current choice', () => {
@@ -661,7 +707,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
         return rest
       })
     })
-    expect(fromV8.version).toBe(11)
+    expect(fromV8.version).toBe(12)
     expect(fromV8.actions.find((action) => action.kind === 'search')).toMatchObject({
       searchEngineId: 'baidu'
     })
@@ -681,7 +727,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
       ]
     })
 
-    expect(migrated.version).toBe(11)
+    expect(migrated.version).toBe(12)
     expect(migrated.actions.filter((action) => action.kind === 'search')).toMatchObject([
       { id: 'search', icon: 'search', searchEngineId: 'google' }
     ])

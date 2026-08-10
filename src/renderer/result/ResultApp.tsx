@@ -21,6 +21,7 @@ import {
   Minimize2,
   Pin,
   RefreshCw,
+  Settings2,
   Square,
   X
 } from 'lucide-react'
@@ -34,6 +35,7 @@ import {
   countUnicodeScalars,
   defaultTranslationTarget,
   detectTranslationLanguage,
+  isAiActionDefinition,
   type ActionRetryOptions,
   type PublicSettings,
   type ResultSessionSnapshot,
@@ -198,7 +200,7 @@ function ResultStreamBody({
   const requestGeneration = useResultField((state) => state.requestGeneration)
   const requestId = useResultField((state) => state.requestId)
   const requestKey = `${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`
-  const displayContent = useSmoothStreamText(
+  const streamContent = useSmoothStreamText(
     content,
     status === 'streaming',
     requestKey
@@ -209,9 +211,11 @@ function ResultStreamBody({
       <ResultOutput
         requestKey={requestKey}
         status={status}
-        content={displayContent}
+        content={streamContent}
         contentScalarCount={
-          status === 'streaming' ? countUnicodeScalars(displayContent) : contentScalarCount
+          status === 'streaming'
+            ? countUnicodeScalars(streamContent)
+            : contentScalarCount
         }
         contentRevision={contentRevision}
         revealCommitted={revealCommitted}
@@ -309,14 +313,14 @@ function AskStreamBridge({
   const requestGeneration = useResultField((state) => state.requestGeneration)
   const requestId = useResultField((state) => state.requestId)
   const requestKey = `${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`
-  const displayContent = useSmoothStreamText(
+  const streamContent = useSmoothStreamText(
     content,
     status === 'streaming',
     requestKey
   )
   // Terminal states use store content so a lagging typewriter frame cannot
   // seal the assistant turn with a truncated string.
-  const streamPatch = status === 'streaming' ? displayContent : content
+  const streamPatch = status === 'streaming' ? streamContent : content
 
   useEffect(() => {
     if (!enabled) return
@@ -360,8 +364,6 @@ function ResultSessionApp({
   const status = useResultField((state) => state.status)
   const requestId = useResultField((state) => state.requestId)
   const actionId = useResultField((state) => state.actionId)
-  const sessionGeneration = useResultField((state) => state.sessionGeneration)
-  const requestGeneration = useResultField((state) => state.requestGeneration)
   const errorMessage = useResultField((state) => state.errorMessage)
   const generationNotice = useResultField((state) => state.generationNotice)
   const retryable = useResultField((state) => state.retryable)
@@ -375,6 +377,7 @@ function ResultSessionApp({
   const [turns, setTurns] = useState<TranscriptTurn[]>([])
   const [translationTarget, setTranslationTarget] = useState<TranslationLanguage | null>(null)
   const [activeModelRoute, setActiveModelRoute] = useState<ModelRoute | null>(null)
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
   const [routeSwitching, setRouteSwitching] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [commandMessage, setCommandMessage] = useState('')
@@ -387,6 +390,8 @@ function ResultSessionApp({
   const [bootstrapRetrying, setBootstrapRetrying] = useState(false)
   const contentRef = useRef<HTMLDivElement>(null)
   const contentInnerRef = useRef<HTMLDivElement>(null)
+  const modelSwitchRef = useRef<HTMLDivElement>(null)
+  const modelToggleRef = useRef<HTMLButtonElement>(null)
   const copyResetTimer = useRef<number | null>(null)
   const selectionFrame = useRef<number | null>(null)
   const retryInFlight = useRef(false)
@@ -410,6 +415,11 @@ function ResultSessionApp({
     [session?.actionId, settings, actionId]
   )
   const isAsk = isAskAction(action?.kind)
+  // Every AI result is a resumable session. Keep the follow-up control for
+  // translate/explain/summary/custom actions too; only hide it while a new
+  // response is actively streaming.
+  const isAiAction = action !== undefined && isAiActionDefinition(action)
+  const showFollowUp = isAiAction && status !== 'streaming'
   const followUpDisabled =
     followUpSubmitting ||
     status === 'streaming' ||
@@ -453,6 +463,7 @@ function ResultSessionApp({
   const modelSummary = selectedModel
     ? `${selectedModel.providerName} · ${selectedModel.modelName}`
     : '未选择模型'
+  const modelSwitchDisabled = status === 'streaming' || routeSwitching || retrying
 
   const reconcilePendingFollowUp = useCallback(
     (pending: { question: string; requestId: string | null }): void => {
@@ -546,6 +557,11 @@ function ResultSessionApp({
     if (!accepted) setActiveModelRoute(previous)
     setRouteSwitching(false)
   }, [activeModelRoute, effectiveModelRoute, modelChoices, retry, routeSwitching, status])
+
+  const chooseModel = useCallback((value: string): void => {
+    setModelMenuOpen(false)
+    void switchModel(value)
+  }, [switchModel])
 
   const copy = useCallback(async (): Promise<void> => {
     const content = getActionEventSnapshot().content
@@ -744,6 +760,37 @@ function ResultSessionApp({
     }
   }, [])
 
+  useEffect(() => {
+    if (!modelMenuOpen) return
+    const close = (restoreFocus: boolean): void => {
+      setModelMenuOpen(false)
+      if (restoreFocus) {
+        window.requestAnimationFrame(() => modelToggleRef.current?.focus())
+      }
+    }
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Node && modelSwitchRef.current?.contains(target)) return
+      close(false)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      close(true)
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      window.removeEventListener('keydown', onKeyDown, true)
+    }
+  }, [modelMenuOpen])
+
+  useEffect(() => {
+    if (modelMenuOpen && modelSwitchDisabled) setModelMenuOpen(false)
+  }, [modelMenuOpen, modelSwitchDisabled])
+
   const keyboardState = useRef({ status, hasContent, cancel, closeWindow, retry, copy })
   keyboardState.current = { status, hasContent, cancel, closeWindow, retry, copy }
   useEffect(() => {
@@ -792,6 +839,18 @@ function ResultSessionApp({
       setCommandMessage(getErrorMessage(error, '无法打开外部链接'))
     }
   }, [])
+
+  const openSettings = async (): Promise<void> => {
+    if (!window.textLens.openSettings) return
+    setCommandMessage('')
+    try {
+      // Deliberately omit guidance so a hidden settings window resumes the
+      // section and draft the user was already configuring.
+      await window.textLens.openSettings()
+    } catch (error) {
+      setCommandMessage(getErrorMessage(error, '无法打开设置'))
+    }
+  }
 
   const togglePin = async (): Promise<void> => {
     const next = !pinned
@@ -909,7 +968,7 @@ function ResultSessionApp({
   return (
     <main
       className={`result-window ${windowsRenderer ? 'result-window--windows' : ''} ${
-        followUpExpanded ? 'result-window--followup-expanded' : ''
+        showFollowUp && followUpExpanded ? 'result-window--followup-expanded' : ''
       }`}
       style={style}
       onPointerEnter={pointerEnter}
@@ -989,33 +1048,79 @@ function ResultSessionApp({
               </div>
             ) : null}
             {effectiveModelRoute && modelChoices.length > 0 ? (
-              <label className="result-model-switch" title={modelSummary} data-no-drag>
-                <select
+              <div
+                ref={modelSwitchRef}
+                className={`result-model-switch ${modelMenuOpen ? 'result-model-switch--open' : ''}`}
+                title={modelSummary}
+                data-no-drag
+              >
+                <button
+                  ref={modelToggleRef}
+                  className="result-model-switch__trigger"
+                  type="button"
                   aria-label="切换模型"
-                  value={modelRouteValue(effectiveModelRoute)}
-                  disabled={status === 'streaming' || routeSwitching || retrying}
-                  onChange={(event) => void switchModel(event.target.value)}
+                  aria-haspopup="listbox"
+                  aria-expanded={modelMenuOpen}
+                  disabled={modelSwitchDisabled}
+                  onClick={() => setModelMenuOpen((current) => !current)}
                 >
-                  {!selectedModel && <option value={modelRouteValue(effectiveModelRoute)}>未选择模型</option>}
-                  {modelGroups.map((provider) => (
-                    <optgroup
-                      key={provider.id}
-                      label={provider.keyConfigured ? provider.name : `${provider.name}（未配置密钥）`}
-                      disabled={!provider.keyConfigured}
-                    >
-                      {provider.choices.map((choice) => (
-                        <option key={choice.value} value={choice.value}>{choice.modelName}</option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </label>
+                  <span>{selectedModel?.modelName ?? '未选择模型'}</span>
+                  <ChevronDown size={13} aria-hidden="true" />
+                </button>
+                {modelMenuOpen && (
+                  <div className="result-model-menu" role="listbox" aria-label="可用模型">
+                    {modelGroups.map((provider) => (
+                      <div
+                        key={provider.id}
+                        className="result-model-menu__group"
+                        role="group"
+                        aria-label={provider.keyConfigured ? provider.name : `${provider.name}（未配置密钥）`}
+                      >
+                        <div className="result-model-menu__provider">
+                          <span>{provider.name}</span>
+                          {!provider.keyConfigured && <span>未配置密钥</span>}
+                        </div>
+                        <div className="result-model-menu__options">
+                          {provider.choices.map((choice) => {
+                            const selected = choice.value === modelRouteValue(effectiveModelRoute)
+                            return (
+                              <button
+                                key={choice.value}
+                                className={`result-model-menu__option ${selected ? 'is-selected' : ''}`}
+                                type="button"
+                                role="option"
+                                aria-selected={selected}
+                                disabled={!provider.keyConfigured || modelSwitchDisabled}
+                                onClick={() => chooseModel(choice.value)}
+                              >
+                                <span>{choice.modelName}</span>
+                                {selected && <Check size={13} aria-hidden="true" />}
+                              </button>
+                            )
+                          })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             ) : (
               <span className="result-model-summary" title={modelSummary}>{modelSummary}</span>
             )}
           </div>
         </div>
         <div className="result-window-actions" data-no-drag>
+          {window.textLens.openSettings && (
+            <button
+              className="icon-button result-settings"
+              type="button"
+              aria-label="打开设置"
+              title="打开设置"
+              onClick={() => void openSettings()}
+            >
+              <Settings2 size={15} aria-hidden="true" />
+            </button>
+          )}
           <button className={`icon-button result-pin ${pinned ? 'result-pin--active' : ''}`} type="button"
             aria-label={pinned ? '取消置顶' : '置顶结果窗口'} aria-pressed={pinned}
             title={pinned ? '取消置顶' : '置顶'} onClick={() => void togglePin()}>
@@ -1073,33 +1178,24 @@ function ResultSessionApp({
                       <>
                         {/* CoT attaches to the latest assistant bubble (Cherry-style). */}
                         {isLatestAssistant && <ThinkingPanel />}
-                        {turn.streaming || !turn.content ? (
-                          turn.content ? (
-                            <div className="result-turn__content stream-plain-text">
-                              {turn.content}
-                              {turn.streaming ? (
-                                <span className="stream-caret" aria-hidden="true" />
-                              ) : null}
-                            </div>
-                          ) : !hasThinking ? (
-                            <div className="result-turn__waiting">
-                              <LoaderCircle className="result-spin" size={16} />
-                              <span>正在等待模型响应…</span>
-                            </div>
-                          ) : null
-                        ) : (
+                        {turn.content ? (
                           <article className="markdown-body result-turn__content">
                             <ResultOutput
-                              requestKey={`${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${turn.id}`}
-                              status="completed"
+                              requestKey={`${sessionId}:${turn.id}`}
+                              status={turn.streaming ? 'streaming' : 'completed'}
                               content={turn.content}
-                              contentScalarCount={turn.content.length}
-                              contentRevision={1}
+                              contentScalarCount={countUnicodeScalars(turn.content)}
+                              contentRevision={turn.content.length}
                               revealCommitted={revealCommitted}
                               onOpenExternal={openExternal}
                             />
                           </article>
-                        )}
+                        ) : !hasThinking ? (
+                          <div className="result-turn__waiting">
+                            <LoaderCircle className="result-spin" size={16} />
+                            <span>正在等待模型响应…</span>
+                          </div>
+                        ) : null}
                       </>
                     )}
                   </div>
@@ -1156,8 +1252,8 @@ function ResultSessionApp({
       )}
       {commandMessage && <div className="result-command-error" role="alert">{commandMessage}</div>}
 
-      <footer className="result-footer">
-        <div className={`result-followup ${followUpExpanded ? 'result-followup--expanded' : ''}`}>
+      <footer className={`result-footer ${showFollowUp ? '' : 'result-footer--actions-only'}`}>
+        {showFollowUp && <div className={`result-followup ${followUpExpanded ? 'result-followup--expanded' : ''}`}>
           <textarea
             aria-label="继续提问"
             placeholder={isAsk ? '输入问题，基于选中文本提问' : '输入继续提问'}
@@ -1191,7 +1287,7 @@ function ResultSessionApp({
           >
             {followUpExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
-        </div>
+        </div>}
         <div className="result-actions">
           {!windowsRenderer && settings?.result.dismissMode === 'manual' && (
             <button className="result-footer-button" type="button" onClick={() => runDetached(closeWindow(), {

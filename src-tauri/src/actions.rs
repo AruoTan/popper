@@ -718,9 +718,7 @@ impl ActionService {
         let provider_id = action
             .provider_id()
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                ActionServiceError::Validation("请先为动作选择 AI 服务商".to_owned())
-            })?;
+            .ok_or_else(|| ActionServiceError::Validation("请先为动作选择 AI 服务商".to_owned()))?;
         let model_id = action
             .model_id()
             .filter(|value| !value.is_empty())
@@ -731,9 +729,7 @@ impl ActionService {
             .settings
             .get_api_key(&route.provider.id)?
             .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| {
-                ActionServiceError::Validation("请先为服务商保存 API Key".to_owned())
-            })?;
+            .ok_or_else(|| ActionServiceError::Validation("请先为服务商保存 API Key".to_owned()))?;
         let ask_system = build_ask_seed_system(action, &request.text, &settings)?;
         let request_id = Uuid::new_v4().to_string();
         let mut state = self.inner.state.lock();
@@ -1051,11 +1047,7 @@ impl ActionService {
         })
     }
 
-    fn start_flusher_if_needed<R: Runtime + 'static>(
-        &self,
-        app: &AppHandle<R>,
-        session_id: &str,
-    ) {
+    fn start_flusher_if_needed<R: Runtime + 'static>(&self, app: &AppHandle<R>, session_id: &str) {
         let lease = self.inner.state.lock().sessions.acquire_flusher(session_id);
         if let Some(lease) = lease {
             // Run the flusher off the SSE consumer task so emit_to IPC cannot
@@ -1967,10 +1959,7 @@ fn build_prompt(
     let mut template = prompt.to_owned();
     if action.kind == ActionKind::Translate {
         let target = target_language.unwrap_or_else(|| {
-            default_translation_target(
-                detect_translation_language(text),
-                &settings.translate,
-            )
+            default_translation_target(detect_translation_language(text), &settings.translate)
         });
         template = template.replace(TARGET_LANGUAGE_PLACEHOLDER, target.english_name());
     } else if matches!(action.kind, ActionKind::Summary | ActionKind::Explain) {
@@ -3151,8 +3140,7 @@ mod tests {
     #[test]
     fn ask_first_continue_includes_selection_context_in_messages() {
         let seed = "你是助手。\n\n<selection>\n选中的句子\n</selection>";
-        let messages =
-            build_ask_continue_messages(seed, &[], "这句话什么意思？").unwrap();
+        let messages = build_ask_continue_messages(seed, &[], "这句话什么意思？").unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, ChatRole::System);
         assert!(messages[0].content.contains("选中的句子"));
@@ -3164,8 +3152,7 @@ mod tests {
             ChatMessage::user("这句话什么意思？".to_owned()),
             ChatMessage::assistant("这是一句示例。".to_owned()),
         ];
-        let second =
-            build_ask_continue_messages(seed, &after_first, "能再详细点吗？").unwrap();
+        let second = build_ask_continue_messages(seed, &after_first, "能再详细点吗？").unwrap();
         assert_eq!(second.len(), 4);
         assert_eq!(second[0].role, ChatRole::System);
         assert!(second[0].content.contains("选中的句子"));

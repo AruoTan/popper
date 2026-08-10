@@ -9,6 +9,7 @@
   --surface: rgba(255, 255, 255, 0.94);
   --surface-solid: #ffffff;
   --surface-muted: #f0f2f5;
+  --surface-inset: #e9edf2;
   --text: #17191d;
   --text-secondary: #626874;
   --text-tertiary: #8c929d;
@@ -24,7 +25,9 @@
   --warning: #9b6415;
   --warning-soft: rgba(155, 100, 21, 0.12);
   --shadow-sm: 0 2px 10px rgba(20, 25, 35, 0.09);
+  --shadow-md: 0 8px 24px rgba(20, 25, 35, 0.12);
   --shadow-lg: 0 18px 50px rgba(20, 25, 35, 0.16);
+  --focus-ring: 0 0 0 3px var(--accent-soft);
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -36,6 +39,7 @@
     --surface: rgba(34, 37, 43, 0.94);
     --surface-solid: #22252b;
     --surface-muted: #2a2e35;
+    --surface-inset: #1b1f25;
     --text: #f2f3f5;
     --text-secondary: #b0b5bf;
     --text-tertiary: #858b96;
@@ -51,6 +55,7 @@
     --warning: #efbd6d;
     --warning-soft: rgba(239, 189, 109, 0.14);
     --shadow-sm: 0 2px 12px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 8px 26px rgba(0, 0, 0, 0.3);
     --shadow-lg: 0 18px 54px rgba(0, 0, 0, 0.38);
   }
 }
@@ -71,6 +76,7 @@ body {
   background: var(--bg);
   font-size: 14px;
   line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
@@ -84,6 +90,7 @@ textarea {
 button,
 select {
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 button:disabled,
@@ -132,6 +139,11 @@ textarea:disabled {
 .icon-button:hover:not(:disabled) {
   color: var(--text);
   background: var(--surface-muted);
+}
+
+.icon-button:not(:disabled):active,
+.button:not(:disabled):active {
+  transform: translateY(1px);
 }
 
 .button {
@@ -211,7 +223,7 @@ textarea:disabled {
 
 .control:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow: var(--focus-ring);
 }
 
 textarea.control {
