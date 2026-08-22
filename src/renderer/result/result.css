@@ -1109,10 +1109,6 @@ body,
   right: 12px;
   bottom: 10px;
   left: 12px;
-  /* Expand the hover hit-area upward so controls appear only near the footer,
-     not when the pointer is anywhere on the result window. */
-  padding-top: 52px;
-  margin-top: -52px;
   display: flex;
   gap: 8px;
   align-items: flex-end;
@@ -1120,7 +1116,8 @@ body,
   background: transparent;
   border: 0;
   box-shadow: none;
-  /* Keep the expanded hit strip hoverable while the chrome stays invisible. */
+  /* The invisible footer remains hoverable only across the controls' actual
+     height, so moving through result content cannot reveal the chrome early. */
   pointer-events: auto;
   visibility: visible;
   opacity: 0;
@@ -1130,7 +1127,7 @@ body,
     transform 150ms ease;
 }
 
-/* Only reveal when the pointer is over the bottom footer zone (or focus is
+/* Only reveal when the pointer is over the controls themselves (or focus is
    inside follow-up / buttons). Whole-window hover must NOT show the chrome. */
 .result-footer:hover,
 .result-footer:focus-within {
@@ -1146,8 +1143,7 @@ body,
   justify-content: flex-end;
 }
 
-/* While hidden, still allow hit-testing on the expanded padding strip, but
-   keep child controls from intercepting clicks until revealed. */
+/* While hidden, keep child controls from intercepting clicks until revealed. */
 .result-footer:not(:hover):not(:focus-within) > * {
   pointer-events: none;
 }

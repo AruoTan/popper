@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
 import { StrictMode } from 'react'
 
 import {
@@ -9,6 +10,8 @@ import {
   type WindowTextLensApi
 } from '../../shared'
 import type { ResultSessionBootstrap } from './resultSessionBootstrap'
+
+const resultCss = readFileSync('src/renderer/result/result.css', 'utf8')
 
 const { startDragging, startResizeDragging } = vi.hoisted(() => ({
   startDragging: vi.fn(),
@@ -225,6 +228,14 @@ describe('ResultApp sessionId query', () => {
 })
 
 describe('ResultApp window interactions', () => {
+  it('limits the hidden footer hit area to the rendered controls height', () => {
+    const footerRule = resultCss.match(/\.result-footer\s*\{(?<body>[\s\S]*?)\}/)?.groups?.body
+
+    expect(footerRule).toBeDefined()
+    expect(footerRule).not.toMatch(/padding-top\s*:/)
+    expect(footerRule).not.toMatch(/margin-top\s*:/)
+  })
+
   it('hydrates and reveals while getSettings remains pending', async () => {
     const settings = deferred<PublicSettings>()
     const { prepareResultReveal } = await renderResult(
