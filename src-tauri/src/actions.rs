@@ -93,7 +93,7 @@ struct ActionServiceState {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-enum ChatRole {
+pub(crate) enum ChatRole {
     System,
     User,
     Assistant,
@@ -103,6 +103,13 @@ enum ChatRole {
 struct ChatMessage {
     role: ChatRole,
     content: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConversationTurn {
+    pub(crate) role: ChatRole,
+    pub(crate) content: String,
 }
 
 impl ChatMessage {
@@ -213,6 +220,7 @@ pub(crate) struct ActionBeginReady {
     pub snapshot: ActionSnapshot,
     pub ack: ResultReadyAck,
     pub route: Option<SessionRouteIdentity>,
+    pub conversation: Vec<ConversationTurn>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -625,22 +633,39 @@ impl ActionServiceState {
         window_label: &str,
     ) -> Result<ActionBeginReady, SessionError> {
         let begin = self.sessions.begin_ready(session_id, window_label)?;
-        let route = self
-            .contexts
-            .get(session_id)
-            .filter(|context| {
-                context.session_generation == begin.snapshot.session_generation
-                    && context.request_generation == begin.snapshot.request_generation
+        let context = self.contexts.get(session_id).filter(|context| {
+            context.session_generation == begin.snapshot.session_generation
+                && context.request_generation == begin.snapshot.request_generation
+        });
+        let route = context.map(|context| SessionRouteIdentity {
+            provider_id: context.route.provider.id.clone(),
+            model_id: context.route.model.clone(),
+            thinking_mode: context.route.thinking.mode,
+        });
+        let messages = context.map_or(&[][..], |context| {
+            if begin.snapshot.status == ActionSnapshotStatus::Completed
+                && !context.committed_messages.is_empty()
+            {
+                context.committed_messages.as_slice()
+            } else {
+                context.last_messages.as_slice()
+            }
+        });
+        let conversation = messages
+            .iter()
+            .filter_map(|message| match message.role {
+                ChatRole::System => None,
+                ChatRole::User | ChatRole::Assistant => Some(ConversationTurn {
+                    role: message.role,
+                    content: message.content.clone(),
+                }),
             })
-            .map(|context| SessionRouteIdentity {
-                provider_id: context.route.provider.id.clone(),
-                model_id: context.route.model.clone(),
-                thinking_mode: context.route.thinking.mode,
-            });
+            .collect();
         Ok(ActionBeginReady {
             snapshot: begin.snapshot,
             ack: begin.ack,
             route,
+            conversation,
         })
     }
 }

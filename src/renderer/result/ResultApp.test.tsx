@@ -41,6 +41,7 @@ function resultSnapshot(
       direction: 'unknown',
       isFullscreen: false
     },
+    conversation: [],
     status: 'completed',
     content,
     thinkingContent: '',
@@ -744,6 +745,48 @@ describe('ResultApp window interactions', () => {
     await waitFor(() => {
       expect(screen.getByText('这是解释。')).toBeInTheDocument()
     })
+    expect(screen.queryByText('已载入选中文本。请在下方输入问题。')).not.toBeInTheDocument()
+  })
+
+  it('keeps the toolbar-submitted initial question and answer after streaming completes', async () => {
+    const askSession = resultSnapshot({
+      actionId: 'ask-ai',
+      status: 'completed',
+      content: '',
+      contentScalarCount: 0,
+      conversation: [{ role: 'user', content: '什么是 title？' }]
+    })
+    await renderResult(askSession)
+
+    expect(screen.getByText('什么是 title？')).toBeInTheDocument()
+    expect(screen.queryByText('已载入选中文本。请在下方输入问题。')).not.toBeInTheDocument()
+
+    const store = await import('./actionEventStore')
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askSession,
+        requestId: 'request-initial-question',
+        requestGeneration: 2,
+        status: 'streaming',
+        content: 'Title 是',
+        contentScalarCount: countUnicodeScalars('Title 是')
+      })
+    })
+    expect(screen.getByText('Title 是')).toBeInTheDocument()
+
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askSession,
+        requestId: 'request-initial-question',
+        requestGeneration: 2,
+        status: 'completed',
+        content: 'Title 是标题。',
+        contentScalarCount: countUnicodeScalars('Title 是标题。')
+      })
+    })
+
+    await waitFor(() => expect(screen.getByText('Title 是标题。')).toBeInTheDocument())
+    expect(screen.getByText('什么是 title？')).toBeInTheDocument()
     expect(screen.queryByText('已载入选中文本。请在下方输入问题。')).not.toBeInTheDocument()
   })
 

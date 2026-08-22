@@ -26,7 +26,7 @@ use uuid::Uuid;
 #[cfg(target_os = "windows")]
 use crate::models::ApplicationCloseBehavior;
 use crate::{
-    actions::{ActionBeginReady, ActionService, ActionServiceError},
+    actions::{ActionBeginReady, ActionService, ActionServiceError, ConversationTurn},
     clipboard,
     models::{
         ActionKind, ActionNotice, ActionSnapshotStatus, ConnectionTestResult, CreateProviderInput,
@@ -374,6 +374,7 @@ pub struct ResultSessionSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     model_id: Option<String>,
     selection: RendererSelectionPayload,
+    conversation: Vec<ConversationTurn>,
     status: &'static str,
     content: String,
     #[serde(default)]
@@ -393,6 +394,7 @@ pub struct ResultSessionSnapshot {
 struct ResultSessionMeta {
     selection: CurrentSelection,
     action_id: String,
+    initial_question: Option<String>,
     pinned: bool,
 }
 
@@ -412,7 +414,22 @@ fn compose_result_ready_snapshot(
         snapshot,
         ack,
         route,
+        mut conversation,
     } = begin;
+    if conversation.is_empty() {
+        if let Some(question) = meta.initial_question.as_deref() {
+            conversation.push(ConversationTurn {
+                role: crate::actions::ChatRole::User,
+                content: question.to_owned(),
+            });
+            if !snapshot.content.is_empty() && snapshot.status == ActionSnapshotStatus::Completed {
+                conversation.push(ConversationTurn {
+                    role: crate::actions::ChatRole::Assistant,
+                    content: snapshot.content.clone(),
+                });
+            }
+        }
+    }
     let status = match snapshot.status {
         ActionSnapshotStatus::Running => "streaming",
         ActionSnapshotStatus::Completed => "completed",
@@ -433,6 +450,7 @@ fn compose_result_ready_snapshot(
         provider_id,
         model_id,
         selection: RendererSelectionPayload::new(&meta.selection.id, &meta.selection.payload),
+        conversation,
         status,
         content: snapshot.content,
         thinking_content: snapshot.thinking_content,
@@ -1352,6 +1370,7 @@ impl RuntimeState {
             selection,
             cursor,
             ResultSessionStart::Execute,
+            None,
         )
     }
 
@@ -1362,6 +1381,7 @@ impl RuntimeState {
         action_name: &str,
         selection: CurrentSelection,
         cursor: WindowPoint,
+        initial_question: Option<String>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         self.create_result_session_with(
             app,
@@ -1370,6 +1390,7 @@ impl RuntimeState {
             selection,
             cursor,
             ResultSessionStart::OpenAsk,
+            initial_question,
         )
     }
 
@@ -1381,6 +1402,7 @@ impl RuntimeState {
         selection: CurrentSelection,
         cursor: WindowPoint,
         start: ResultSessionStart,
+        initial_question: Option<String>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("TextLens 正在退出".to_owned());
@@ -1480,6 +1502,7 @@ impl RuntimeState {
             ResultSessionMeta {
                 selection,
                 action_id: action_id.to_owned(),
+                initial_question,
                 pinned: result.default_pinned,
             },
         );
@@ -2747,8 +2770,14 @@ pub async fn run_action(
             }
             let cursor = action_result_cursor(&app, cursor, &selection.payload);
             let selected_text = selection.payload.text.clone();
-            match state.create_ask_result_session(&app, &action.id, &action.name, selection, cursor)
-            {
+            match state.create_ask_result_session(
+                &app,
+                &action.id,
+                &action.name,
+                selection,
+                cursor,
+                initial_question.map(str::to_owned),
+            ) {
                 Ok((session_id, open_request_id, reveal_receiver)) => {
                     let request_id = if let Some(question) = initial_question {
                         match state
@@ -3709,6 +3738,7 @@ mod tests {
                 source_result_session_id: Some("s".to_owned()),
             },
             action_id: "translate".to_owned(),
+            initial_question: None,
             pinned: false,
         }
     }
@@ -3764,6 +3794,7 @@ mod tests {
                 handshake_generation: HandshakeGeneration(1),
             },
             route: None,
+            conversation: Vec::new(),
         }
     }
 
@@ -3802,6 +3833,7 @@ mod tests {
                 model_id: "m".into(),
                 thinking_mode: crate::models::ThinkingMode::Off,
             }),
+            conversation: Vec::new(),
         };
         let result = compose_result_ready_snapshot(result_meta(), begin);
         assert_eq!(result.last_sequence, EventSequence(12));
@@ -3823,6 +3855,22 @@ mod tests {
         let result = compose_result_ready_snapshot(result_meta(), initial_preparing_begin());
         assert_eq!(result.provider_id, None);
         assert_eq!(result.model_id, None);
+    }
+
+    #[test]
+    fn ask_snapshot_keeps_toolbar_question_when_ready_handshake_wins_prepare_race() {
+        let mut meta = result_meta();
+        meta.action_id = "ask-ai".to_owned();
+        meta.initial_question = Some("什么是 title？".to_owned());
+        let mut begin = initial_preparing_begin();
+        begin.snapshot.action_id = "ask-ai".to_owned();
+        begin.snapshot.status = ActionSnapshotStatus::Completed;
+
+        let result = compose_result_ready_snapshot(meta, begin);
+
+        assert_eq!(result.conversation.len(), 1);
+        assert_eq!(result.conversation[0].role, crate::actions::ChatRole::User);
+        assert_eq!(result.conversation[0].content, "什么是 title？");
     }
 
     #[test]

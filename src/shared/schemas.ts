@@ -732,6 +732,10 @@ export const resultSessionSnapshotSchema = z
     providerId: providerMetadataShape.id.optional(),
     modelId: z.string().trim().min(1).max(256).optional(),
     selection: selectionPayloadSchema,
+    conversation: z.array(z.object({
+      role: z.enum(['user', 'assistant']),
+      content: outputStringSchema
+    }).strict()).optional(),
     status: resultStatusSchema,
     content: outputStringSchema,
     /** Live CoT for the current request; not part of answer integrity counters. */

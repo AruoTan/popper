@@ -55,6 +55,7 @@ import {
   beginAssistantTurn,
   isAskAction,
   patchStreamingAssistant,
+  transcriptFromSnapshot,
   type TranscriptTurn
 } from './conversationTranscript'
 import { ResultOutput } from './ResultOutput'
@@ -483,16 +484,26 @@ function ResultSessionApp({
   const handleAskStream = useCallback((streamStatus: ResultState['status'], content: string): void => {
     if (streamStatus === 'streaming') {
       askSawStreaming.current = true
-      setTurns((current) => patchStreamingAssistant(current, content, true))
+      setTurns((current) => {
+        const withAssistant = current.at(-1)?.role === 'assistant'
+          ? current
+          : beginAssistantTurn(current, `assistant-${Date.now()}`)
+        return patchStreamingAssistant(withAssistant, content, true)
+      })
       return
     }
     if (
-      askSawStreaming.current &&
+      (askSawStreaming.current || content.length > 0) &&
       (streamStatus === 'completed' ||
         streamStatus === 'cancelled' ||
         streamStatus === 'error')
     ) {
-      setTurns((current) => patchStreamingAssistant(current, content, false))
+      setTurns((current) => {
+        const withAssistant = content && current.at(-1)?.role !== 'assistant'
+          ? beginAssistantTurn(current, `assistant-${Date.now()}`)
+          : current
+        return patchStreamingAssistant(withAssistant, content, false)
+      })
       askSawStreaming.current = false
     }
   }, [])
@@ -660,6 +671,13 @@ function ResultSessionApp({
       setSession(snapshot)
       setPinned(snapshot.pinned)
       setActiveModelRoute(modelRouteFromSnapshot(snapshot))
+      if (snapshot.actionId === 'ask-ai') {
+        setTurns(transcriptFromSnapshot(
+          snapshot.sessionId,
+          snapshot.conversation ?? [],
+          snapshot.status === 'streaming'
+        ))
+      }
       setBootstrapMessage('')
     } catch {
       if (!isDisposed()) {
