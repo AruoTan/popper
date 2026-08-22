@@ -1,11 +1,11 @@
+#[cfg(target_os = "windows")]
+use std::sync::atomic::AtomicBool;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
-#[cfg(target_os = "windows")]
-use std::sync::atomic::AtomicBool;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -822,7 +822,7 @@ impl WindowCoordinator {
             return Ok(());
         };
         let _toolbar_operation = self.toolbar_operation.lock();
-        show_toolbar_input_window(&window)
+        restore_toolbar_input_visibility(&window)
     }
 
     pub fn hide_toolbar(&self, app: &AppHandle) {
@@ -2063,6 +2063,42 @@ fn show_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<()> {
     })
 }
 
+/// Restores an unexpectedly hidden input toolbar without changing its place
+/// among other topmost windows. External clicks reach the global dismiss hook
+/// while the inline composer is active; promoting the window here would undo
+/// the user's most recent interaction with another always-on-top window.
+#[cfg(target_os = "windows")]
+type SetWindowPosFlags = windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS;
+
+#[cfg(target_os = "windows")]
+fn toolbar_visibility_recovery_flags() -> SetWindowPosFlags {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW,
+    };
+
+    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW
+}
+
+#[cfg(target_os = "windows")]
+fn restore_toolbar_input_visibility(window: &WebviewWindow) -> tauri::Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{IsWindowVisible, SetWindowPos};
+
+    run_windows_window_operation(window, |window| {
+        let hwnd = window.hwnd()?;
+        let was_visible = unsafe { IsWindowVisible(hwnd).as_bool() };
+        if !was_visible {
+            unsafe {
+                SetWindowPos(hwnd, None, 0, 0, 0, 0, toolbar_visibility_recovery_flags())
+                    .map_err(windows_error)?;
+            }
+        }
+        if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+            eprintln!("[toolbar-interaction] input visibility preserved was_visible={was_visible}");
+        }
+        Ok(())
+    })
+}
+
 /// Activates the keyboard-enabled toolbar and verifies the native foreground
 /// result. `WebviewWindow::set_focus` alone is not sufficient here: the compact
 /// toolbar was created with WS_EX_NOACTIVATE, and on Windows that call may
@@ -2115,6 +2151,14 @@ fn activate_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<bool> 
 #[cfg(not(target_os = "windows"))]
 fn show_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<()> {
     window.show()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn restore_toolbar_input_visibility(window: &WebviewWindow) -> tauri::Result<()> {
+    if !window.is_visible()? {
+        window.show()?;
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -3380,6 +3424,19 @@ mod tests {
         assert_eq!(opacity_alpha(0.0), 51);
         assert_eq!(opacity_alpha(0.5), 128);
         assert_eq!(opacity_alpha(1.5), 255);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn toolbar_visibility_recovery_does_not_change_topmost_z_order() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+        };
+
+        let flags = toolbar_visibility_recovery_flags();
+        assert_eq!(flags & SWP_NOZORDER, SWP_NOZORDER);
+        assert_eq!(flags & SWP_NOACTIVATE, SWP_NOACTIVATE);
+        assert_eq!(flags & SWP_SHOWWINDOW, SWP_SHOWWINDOW);
     }
 
     #[test]
