@@ -2654,12 +2654,12 @@ pub fn focus_toolbar_input(
     {
         return Ok(false);
     }
-    state
+    let focused = state
         .windows
         .focus_toolbar_input(&app)
         .map_err(|error| error.to_string())?;
-    trace_toolbar_interaction("focus committed");
-    Ok(true)
+    trace_toolbar_interaction(format_args!("focus committed focused={focused}"));
+    Ok(focused)
 }
 
 fn toolbar_input_mode_preserves_dismiss(active: bool) -> bool {

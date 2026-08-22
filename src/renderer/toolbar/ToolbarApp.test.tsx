@@ -638,7 +638,9 @@ describe('ToolbarApp', () => {
     const setToolbarInputMode = vi.fn()
       .mockImplementationOnce(() => activation.promise)
       .mockResolvedValue(true)
-    const focusToolbarInput = vi.fn().mockResolvedValue(true)
+    const focusToolbarInput = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValue(true)
     const hideToolbar = vi.fn().mockResolvedValue(undefined)
     const reportToolbarSize = vi.fn().mockResolvedValue(undefined)
     const api = {
@@ -682,6 +684,8 @@ describe('ToolbarApp', () => {
       expect(setToolbarInputMode.mock.invocationCallOrder[0]!).toBeLessThan(
         focusToolbarInput.mock.invocationCallOrder[0]!
       )
+      expect(focusToolbarInput).toHaveBeenCalledTimes(2)
+      expect(screen.getByRole('textbox', { name: '向 AI 提问' })).toHaveFocus()
     })
 
     fireEvent.click(screen.getByRole('button', { name: '返回划词工具栏' }))
@@ -695,7 +699,7 @@ describe('ToolbarApp', () => {
     })
     fireEvent.click(reopenedAsk, { detail: 1, screenX: 420, screenY: 300 })
     const reopenedInput = await screen.findByRole('textbox', { name: '向 AI 提问' })
-    await waitFor(() => expect(focusToolbarInput).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(focusToolbarInput).toHaveBeenCalledTimes(3))
 
     fireEvent.change(reopenedInput, { target: { value: '这段话是什么意思？' } })
     fireEvent.keyDown(reopenedInput, { key: 'Enter' })

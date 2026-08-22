@@ -389,7 +389,13 @@ export function ToolbarApp(): JSX.Element {
             focused = await (window.textLens.focusToolbarInput?.(selectionId)
               ?? Promise.resolve(true))
             focusError = undefined
-            break
+            // Native focus can legitimately be rejected for one event-loop
+            // turn while Windows removes WS_EX_NOACTIVATE. Only stop retrying
+            // once the backend has verified that our HWND is foreground.
+            if (focused) break
+            if (attempt < 2) {
+              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            }
           } catch (error) {
             focusError = error
             if (attempt < 2) {

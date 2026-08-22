@@ -4,6 +4,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
+#[cfg(target_os = "windows")]
+use std::sync::atomic::AtomicBool;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -803,7 +805,7 @@ impl WindowCoordinator {
         Ok(())
     }
 
-    pub fn focus_toolbar_input(&self, app: &AppHandle) -> tauri::Result<()> {
+    pub fn focus_toolbar_input(&self, app: &AppHandle) -> tauri::Result<bool> {
         let window = self.ensure_toolbar(app)?;
         let _toolbar_operation = self.toolbar_operation.lock();
         // `set_focusable(true)` is applied through Tao's event loop. During
@@ -812,8 +814,7 @@ impl WindowCoordinator {
         // show/topmost commit so the interactive composer cannot become a
         // logically-active but invisible HWND.
         show_toolbar_input_window(&window)?;
-        window.set_focus()?;
-        show_toolbar_input_window(&window)
+        activate_toolbar_input_window(&window)
     }
 
     pub fn keep_toolbar_input_visible(&self, app: &AppHandle) -> tauri::Result<()> {
@@ -2062,9 +2063,64 @@ fn show_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<()> {
     })
 }
 
+/// Activates the keyboard-enabled toolbar and verifies the native foreground
+/// result. `WebviewWindow::set_focus` alone is not sufficient here: the compact
+/// toolbar was created with WS_EX_NOACTIVATE, and on Windows that call may
+/// return success while focus remains in the application underneath it.
+#[cfg(target_os = "windows")]
+fn activate_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<bool> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetForegroundWindow, IsChild, SetForegroundWindow, SetWindowPos, GA_ROOT,
+        HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+    };
+
+    let activation_verified = Arc::new(AtomicBool::new(false));
+    let callback_verified = Arc::clone(&activation_verified);
+    run_windows_window_operation(window, move |window| {
+        let hwnd = window.hwnd()?;
+        unsafe {
+            // Omitting SWP_NOACTIVATE is intentional. The initiating toolbar
+            // click is the user gesture that authorizes this transition from
+            // a passive overlay to a keyboard input window.
+            SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+            .map_err(windows_error)?;
+            let _ = SetForegroundWindow(hwnd);
+        }
+        // Let WRY direct keyboard focus to its WebView child after the native
+        // top-level window has been activated.
+        window.set_focus()?;
+
+        let foreground = unsafe { GetForegroundWindow() };
+        let focused = !foreground.0.is_null()
+            && (foreground == hwnd
+                || unsafe { IsChild(hwnd, foreground).as_bool() }
+                || unsafe { GetAncestor(foreground, GA_ROOT) } == hwnd);
+        if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+            eprintln!("[toolbar-interaction] foreground activation committed focused={focused}");
+        }
+        callback_verified.store(focused, Ordering::Release);
+        Ok(())
+    })?;
+    Ok(activation_verified.load(Ordering::Acquire))
+}
+
 #[cfg(not(target_os = "windows"))]
 fn show_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<()> {
     window.show()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn activate_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<bool> {
+    window.set_focus()?;
+    Ok(true)
 }
 
 #[cfg(target_os = "windows")]
