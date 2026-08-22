@@ -688,21 +688,9 @@ describe('ToolbarApp', () => {
       expect(screen.getByRole('textbox', { name: '向 AI 提问' })).toHaveFocus()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: '返回划词工具栏' }))
-    const reopenedAsk = await screen.findByRole('button', { name: '问 AI' })
-    await waitFor(() => {
-      expect(setToolbarInputMode).toHaveBeenCalledWith(false, 'selection-1')
-      expect(reportToolbarSize).toHaveBeenCalledWith(
-        { width: 220, height: 44 },
-        'selection-1'
-      )
-    })
-    fireEvent.click(reopenedAsk, { detail: 1, screenX: 420, screenY: 300 })
-    const reopenedInput = await screen.findByRole('textbox', { name: '向 AI 提问' })
-    await waitFor(() => expect(focusToolbarInput).toHaveBeenCalledTimes(3))
-
-    fireEvent.change(reopenedInput, { target: { value: '这段话是什么意思？' } })
-    fireEvent.keyDown(reopenedInput, { key: 'Enter' })
+    const askInput = screen.getByRole('textbox', { name: '向 AI 提问' })
+    fireEvent.change(askInput, { target: { value: '这段话是什么意思？' } })
+    fireEvent.keyDown(askInput, { key: 'Enter' })
 
     await waitFor(() => {
       expect(runAction).toHaveBeenCalledWith(
@@ -714,6 +702,45 @@ describe('ToolbarApp', () => {
       )
     })
     await waitFor(() => expect(hideToolbar).toHaveBeenCalledWith('selection-1'))
+  })
+
+  it('closes the expanded Ask window without degrading to the compact toolbar', async () => {
+    const pendingHide = deferred<void>()
+    const hideToolbar = vi.fn().mockReturnValue(pendingHide.promise)
+    const presentToolbar = vi.fn().mockResolvedValue(true)
+    const api = {
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
+      getCurrentSelection: vi.fn().mockResolvedValue(selection),
+      runAction: vi.fn(),
+      hideToolbar,
+      reportToolbarSize: vi.fn().mockResolvedValue(undefined),
+      presentToolbar,
+      setToolbarInputMode: vi.fn().mockResolvedValue(true),
+      focusToolbarInput: vi.fn().mockResolvedValue(true),
+      onSelection: vi.fn().mockReturnValue(() => undefined),
+      onSettingsChanged: vi.fn().mockReturnValue(() => undefined)
+    } as unknown as WindowTextLensApi
+
+    Object.defineProperty(window, 'textLens', { configurable: true, value: api })
+    render(<ToolbarApp />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '问 AI' }))
+    const askInput = await screen.findByRole('textbox', { name: '向 AI 提问' })
+    await waitFor(() => expect(presentToolbar).toHaveBeenCalled())
+    const presentationsBeforeClose = presentToolbar.mock.calls.length
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭问 AI 窗口' }))
+
+    expect(hideToolbar).toHaveBeenCalledWith('selection-1')
+    // The compact toolbar must not render while the native close is pending.
+    expect(askInput).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '问 AI' })).not.toBeInTheDocument()
+
+    await act(async () => pendingHide.resolve())
+    await waitFor(() => {
+      expect(screen.getByRole('toolbar', { name: '划词动作' })).toBeInTheDocument()
+    })
+    expect(presentToolbar).toHaveBeenCalledTimes(presentationsBeforeClose)
   })
 
   it('keeps the Ask composer visible when native focus transiently fails', async () => {
@@ -1008,6 +1035,10 @@ describe('ToolbarApp', () => {
     expect(toolbarCss).toMatch(/\.toolbar-action--icon-only\s*\{[^}]*width:\s*28px/s)
     expect(toolbarCss).not.toContain('.toolbar-close')
     expect(toolbarCss).not.toContain('.toolbar-divider')
+  })
+
+  it('renders the expanded ask view without an outer shadow', () => {
+    expect(toolbarCss).toMatch(/\.toolbar-pill--ask\s*\{[^}]*box-shadow:\s*none/s)
   })
 
   it('keeps disabled toolbar controls on a neutral cursor', () => {

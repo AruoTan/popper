@@ -51,7 +51,7 @@ body {
   background: var(--surface-solid);
   border-color: color-mix(in srgb, var(--border-strong) 58%, transparent);
   border-radius: 12px;
-  box-shadow: 0 8px 26px rgb(20 24 40 / 16%);
+  box-shadow: none;
 }
 
 .toolbar-ask {

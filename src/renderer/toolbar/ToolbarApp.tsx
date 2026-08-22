@@ -662,6 +662,31 @@ export function ToolbarApp(): JSX.Element {
     setAskExpanded(true)
   }
 
+  const closeAsk = async (): Promise<void> => {
+    const actedSelectionId = selection?.selectionId
+    if (!actedSelectionId) return
+
+    try {
+      // Keep the expanded renderer mounted until the native window is hidden.
+      // Collapsing first exposes the compact toolbar for at least one frame,
+      // which makes a close action behave like a back action on Windows.
+      await window.textLens.hideToolbar(actedSelectionId)
+      selectionGenerationRef.current += 1
+      operationGenerationRef.current += 1
+      resetCopySuccess()
+      clearRetainedToolbarFocus()
+      setSelection((current) =>
+        current?.selectionId === actedSelectionId ? null : current
+      )
+      setBusyActionId(null)
+      setMessage('')
+      setAskExpanded(false)
+      setAskQuestion('')
+    } catch (error) {
+      setMessage(getErrorMessage(error, '无法关闭问 AI 窗口'))
+    }
+  }
+
   const submitAsk = (): void => {
     const question = askQuestion.trim()
     if (!question || busyActionId) return
@@ -721,11 +746,8 @@ export function ToolbarApp(): JSX.Element {
                 type="button"
                 className="toolbar-ask__close"
                 data-toolbar-control="ask-close"
-                aria-label="返回划词工具栏"
-                onClick={() => {
-                  setAskExpanded(false)
-                  setAskQuestion('')
-                }}
+                aria-label="关闭问 AI 窗口"
+                onClick={() => void closeAsk()}
               >
                 <X size={14} />
               </button>
