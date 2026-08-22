@@ -45,7 +45,9 @@ body {
 
 .toolbar-pill--ask {
   display: block;
-  width: 430px;
+  width: 450px;
+  min-width: 450px;
+  max-width: 450px;
   padding: 0;
   overflow: hidden;
   background: var(--surface-solid);
@@ -60,9 +62,10 @@ body {
 }
 
 .toolbar-ask__header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  column-gap: 8px;
   align-items: center;
-  justify-content: space-between;
   height: 38px;
   padding: 0 10px 0 14px;
   color: var(--text-secondary);
@@ -73,6 +76,7 @@ body {
 
 .toolbar-ask__selection {
   min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -95,6 +99,8 @@ body {
 .toolbar-ask__close {
   width: 24px;
   height: 24px;
+  position: relative;
+  z-index: 1;
 }
 
 .toolbar-ask__close[data-hovered='true'] {

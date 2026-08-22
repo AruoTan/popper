@@ -1041,6 +1041,24 @@ describe('ToolbarApp', () => {
     expect(toolbarCss).toMatch(/\.toolbar-pill--ask\s*\{[^}]*box-shadow:\s*none/s)
   })
 
+  it('limits the expanded Ask view width to 450px', () => {
+    expect(toolbarCss).toMatch(
+      /\.toolbar-pill--ask\s*\{[^}]*width:\s*450px;[^}]*min-width:\s*450px;[^}]*max-width:\s*450px/s
+    )
+  })
+
+  it('keeps the Ask close button visible beside long selected text', () => {
+    expect(toolbarCss).toMatch(
+      /\.toolbar-ask__header\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 24px;[^}]*column-gap:\s*8px/s
+    )
+    expect(toolbarCss).toMatch(
+      /\.toolbar-ask__selection\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*text-overflow:\s*ellipsis/s
+    )
+    expect(toolbarCss).toMatch(
+      /\.toolbar-ask__close\s*\{[^}]*width:\s*24px;[^}]*height:\s*24px;[^}]*z-index:\s*1/s
+    )
+  })
+
   it('keeps disabled toolbar controls on a neutral cursor', () => {
     const disabledRule = toolbarCss.match(
       /\.toolbar-shell button:disabled,\s*\.toolbar-shell input:disabled,\s*\.toolbar-shell select:disabled,\s*\.toolbar-shell textarea:disabled\s*\{([^}]*)\}/s
