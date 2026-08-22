@@ -995,9 +995,12 @@ impl RuntimeState {
         let trusted = SelectionMonitor::is_accessibility_trusted();
         // Keep the native monitor running in both trigger modes while enabled:
         // shortcut mode still needs dismiss events (outside click) after a
-        // shortcut-invoked toolbar is shown. Auto-selection is filtered in
-        // handle_selection when mode is Shortcut.
+        // shortcut-invoked toolbar is shown. The Windows worker receives a
+        // separate capture gate so those hooks cannot start UIA/clipboard work.
         let should_listen = settings.enabled && trusted;
+        #[cfg(target_os = "windows")]
+        let automatic_capture_enabled =
+            should_listen && settings.trigger.mode == TriggerMode::Selected;
         if !should_listen {
             self.invalidate_shortcut_capture();
         }
@@ -1005,7 +1008,10 @@ impl RuntimeState {
             let monitor = self.selection_monitor.lock();
             #[cfg(target_os = "windows")]
             let settings_applied = monitor
-                .update_capture_settings(settings.selection_capture.clone())
+                .update_capture_settings(
+                    settings.selection_capture.clone(),
+                    automatic_capture_enabled,
+                )
                 .is_ok();
             if should_listen {
                 #[cfg(target_os = "windows")]

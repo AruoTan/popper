@@ -425,15 +425,17 @@ impl SelectionMonitor {
         self.windows.start()
     }
 
-    /// Updates Windows-only capture routing without restarting the global hook.
-    /// The worker snapshots this setting onto each gesture before forwarding it
-    /// to the isolated UIA/OLE helper process.
+    /// Updates Windows-only capture routing and the automatic-capture gate
+    /// without restarting the global hook. The worker snapshots routing onto
+    /// each allowed gesture before forwarding it to the isolated UIA/OLE helper.
     #[cfg(target_os = "windows")]
     pub fn update_capture_settings(
         &self,
         settings: crate::models::SelectionCaptureSettings,
+        automatic_capture_enabled: bool,
     ) -> Result<(), SelectionError> {
-        self.windows.update_capture_settings(settings)
+        self.windows
+            .update_capture_settings(settings, automatic_capture_enabled)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
