@@ -664,6 +664,8 @@ describe('ToolbarApp', () => {
     fireEvent.click(buttons[0]!, { detail: 1, screenX: 420, screenY: 300 })
     // The visible composer must not be gated on a native IPC round trip.
     expect(screen.getByRole('textbox', { name: '向 AI 提问' })).toBeInTheDocument()
+    expect(screen.getByText(selection.text)).toHaveAttribute('title', selection.text)
+    expect(screen.queryByText('随时准备')).not.toBeInTheDocument()
     expect(focusToolbarInput).not.toHaveBeenCalled()
     activation.resolve(true)
     await waitFor(() => {

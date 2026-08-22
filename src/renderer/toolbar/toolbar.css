@@ -71,6 +71,13 @@ body {
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
+.toolbar-ask__selection {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .toolbar-ask__close,
 .toolbar-ask__send {
   appearance: none;

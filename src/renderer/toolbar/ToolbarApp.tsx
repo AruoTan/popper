@@ -708,7 +708,9 @@ export function ToolbarApp(): JSX.Element {
         {askExpanded ? (
           <div className="toolbar-ask">
             <div className="toolbar-ask__header">
-              <span>随时准备</span>
+              <span className="toolbar-ask__selection" title={selection?.text}>
+                {selection?.text}
+              </span>
               <button
                 type="button"
                 className="toolbar-ask__close"
