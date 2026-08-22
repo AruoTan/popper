@@ -136,8 +136,7 @@ describe('settings form helpers', () => {
       'explain',
       'summary',
       'search',
-      'copy',
-      'ask-ai'
+      'copy'
     ])
     expect(moved.find((action) => action.id === 'refine')?.enabled).toBe(true)
   })

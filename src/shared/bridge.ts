@@ -97,8 +97,13 @@ export interface WindowTextLensApi {
     actionId: string,
     cursor?: Point,
     selectionId?: string,
-    searchEngineId?: string
+    searchEngineId?: string,
+    initialQuestion?: string
   ): Promise<RunActionResult>
+  /** Temporarily lets the selection toolbar accept keyboard input. */
+  setToolbarInputMode?(active: boolean, selectionId?: string): Promise<boolean>
+  /** Activates the toolbar after its inline input layout has been committed. */
+  focusToolbarInput?(selectionId?: string): Promise<boolean>
   hideToolbar(selectionId?: string): Promise<void>
   reportToolbarSize(size: ToolbarSize, selectionId?: string): Promise<void>
   beginResultReady(sessionId: string): Promise<ResultSessionSnapshot>

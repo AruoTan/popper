@@ -163,6 +163,17 @@ describe('Tauri renderer bridge', () => {
     await expect(window.textLens.recoverToolbar?.('selection-1')).resolves.toBe(true)
     expect(invokeMock).toHaveBeenCalledWith('recover_toolbar', { selectionId: 'selection-1' })
 
+    await window.textLens.setToolbarInputMode?.(true, 'selection-1')
+    expect(invokeMock).toHaveBeenCalledWith('set_toolbar_input_mode', {
+      active: true,
+      selectionId: 'selection-1'
+    })
+
+    await window.textLens.focusToolbarInput?.('selection-1')
+    expect(invokeMock).toHaveBeenCalledWith('focus_toolbar_input', {
+      selectionId: 'selection-1'
+    })
+
     const toolbarPointerListener = vi.fn()
     const unsubscribeToolbarPointer = window.textLens.onToolbarPointer?.(
       toolbarPointerListener
@@ -328,14 +339,16 @@ describe('Tauri renderer bridge', () => {
       actionId: 'search',
       cursor: null,
       selectionId: 'selection-1',
-      searchEngineId: null
+      searchEngineId: null,
+      initialQuestion: null
     })
     await window.textLens.runAction('search', undefined, 'selection-1', 'bing-china')
     expect(invokeMock).toHaveBeenCalledWith('run_action', {
       actionId: 'search',
       cursor: null,
       selectionId: 'selection-1',
-      searchEngineId: 'bing-china'
+      searchEngineId: 'bing-china',
+      initialQuestion: null
     })
 
 

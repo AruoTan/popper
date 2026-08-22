@@ -3182,6 +3182,15 @@ mod tests {
         ask.provider_id = Some(provider_id.clone());
         ask.model_id = Some(model_id);
         ask.enabled = true;
+        let ask_provider_id = ask.provider_id.clone();
+        let ask_model_id = ask.model_id.clone();
+        let visible_ai = settings
+            .actions
+            .iter_mut()
+            .find(|action| action.kind.is_ai() && action.kind != ActionKind::Ask)
+            .expect("default editable AI action");
+        visible_ai.provider_id = ask_provider_id;
+        visible_ai.model_id = ask_model_id;
         repository
             .update(crate::models::SettingsUpdate {
                 providers: Some(settings.providers.clone()),

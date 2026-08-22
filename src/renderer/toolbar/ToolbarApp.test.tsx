@@ -611,6 +611,155 @@ describe('ToolbarApp', () => {
     expect(runAction).toHaveBeenCalledWith('translate', undefined, 'selection-1')
   })
 
+  it('keeps Ask first and expands it into an inline composer before starting the session', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      const expanded = this.classList.contains('toolbar-shell')
+        && this.querySelector('.toolbar-pill--ask') !== null
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: expanded ? 446 : 220,
+        bottom: expanded ? 100 : 44,
+        width: expanded ? 446 : 220,
+        height: expanded ? 100 : 44,
+        toJSON: () => ({})
+      } as DOMRect
+    })
+    const runAction = vi.fn().mockResolvedValue({
+      accepted: true,
+      sessionId: 'ask-session',
+      requestId: 'ask-request'
+    })
+    const activation = deferred<boolean>()
+    const setToolbarInputMode = vi.fn()
+      .mockImplementationOnce(() => activation.promise)
+      .mockResolvedValue(true)
+    const focusToolbarInput = vi.fn().mockResolvedValue(true)
+    const hideToolbar = vi.fn().mockResolvedValue(undefined)
+    const reportToolbarSize = vi.fn().mockResolvedValue(undefined)
+    const api = {
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
+      getCurrentSelection: vi.fn().mockResolvedValue(selection),
+      runAction,
+      setToolbarInputMode,
+      focusToolbarInput,
+      hideToolbar,
+      reportToolbarSize,
+      presentToolbar: vi.fn().mockResolvedValue(true),
+      onSelection: vi.fn().mockReturnValue(() => undefined),
+      onSettingsChanged: vi.fn().mockReturnValue(() => undefined)
+    } as unknown as WindowTextLensApi
+
+    Object.defineProperty(window, 'textLens', { configurable: true, value: api })
+    render(<ToolbarApp />)
+
+    const toolbar = await screen.findByRole('toolbar')
+    const buttons = toolbar.querySelectorAll<HTMLButtonElement>('.toolbar-action')
+    expect(buttons[0]).toHaveAccessibleName('问 AI')
+
+    fireEvent.click(buttons[0]!, { detail: 1, screenX: 420, screenY: 300 })
+    // The visible composer must not be gated on a native IPC round trip.
+    expect(screen.getByRole('textbox', { name: '向 AI 提问' })).toBeInTheDocument()
+    expect(focusToolbarInput).not.toHaveBeenCalled()
+    activation.resolve(true)
+    await waitFor(() => {
+      expect(reportToolbarSize).toHaveBeenCalledWith(
+        { width: 446, height: 100 },
+        'selection-1'
+      )
+      expect(setToolbarInputMode).toHaveBeenCalledWith(true, 'selection-1')
+      expect(focusToolbarInput).toHaveBeenCalledWith('selection-1')
+      const expandedSizeOrder = reportToolbarSize.mock.invocationCallOrder[0]!
+      expect(expandedSizeOrder).toBeLessThan(
+        setToolbarInputMode.mock.invocationCallOrder[0]!
+      )
+      expect(setToolbarInputMode.mock.invocationCallOrder[0]!).toBeLessThan(
+        focusToolbarInput.mock.invocationCallOrder[0]!
+      )
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '返回划词工具栏' }))
+    const reopenedAsk = await screen.findByRole('button', { name: '问 AI' })
+    await waitFor(() => {
+      expect(setToolbarInputMode).toHaveBeenCalledWith(false, 'selection-1')
+      expect(reportToolbarSize).toHaveBeenCalledWith(
+        { width: 220, height: 44 },
+        'selection-1'
+      )
+    })
+    fireEvent.click(reopenedAsk, { detail: 1, screenX: 420, screenY: 300 })
+    const reopenedInput = await screen.findByRole('textbox', { name: '向 AI 提问' })
+    await waitFor(() => expect(focusToolbarInput).toHaveBeenCalledTimes(2))
+
+    fireEvent.change(reopenedInput, { target: { value: '这段话是什么意思？' } })
+    fireEvent.keyDown(reopenedInput, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(runAction).toHaveBeenCalledWith(
+        'ask-ai',
+        { x: 420, y: 300 },
+        'selection-1',
+        undefined,
+        '这段话是什么意思？'
+      )
+    })
+    await waitFor(() => expect(hideToolbar).toHaveBeenCalledWith('selection-1'))
+  })
+
+  it('keeps the Ask composer visible when native focus transiently fails', async () => {
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      const expanded = this.classList.contains('toolbar-shell')
+        && this.querySelector('.toolbar-pill--ask') !== null
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: expanded ? 446 : 220,
+        bottom: expanded ? 100 : 44,
+        width: expanded ? 446 : 220,
+        height: expanded ? 100 : 44,
+        toJSON: () => ({})
+      } as DOMRect
+    })
+    const setToolbarInputMode = vi.fn().mockResolvedValue(true)
+    const reportToolbarSize = vi.fn().mockResolvedValue(undefined)
+    const api = {
+      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
+      getCurrentSelection: vi.fn().mockResolvedValue(selection),
+      runAction: vi.fn(),
+      setToolbarInputMode,
+      focusToolbarInput: vi.fn().mockRejectedValue(new Error('focus failed')),
+      hideToolbar: vi.fn().mockResolvedValue(undefined),
+      reportToolbarSize,
+      presentToolbar: vi.fn().mockResolvedValue(true),
+      onSelection: vi.fn().mockReturnValue(() => undefined),
+      onSettingsChanged: vi.fn().mockReturnValue(() => undefined)
+    } as unknown as WindowTextLensApi
+
+    Object.defineProperty(window, 'textLens', { configurable: true, value: api })
+    render(<ToolbarApp />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '问 AI' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('focus failed')
+    expect(screen.getByRole('textbox', { name: '向 AI 提问' })).toBeInTheDocument()
+    await waitFor(() => {
+      expect(reportToolbarSize).toHaveBeenCalledWith(
+        { width: 446, height: 100 },
+        'selection-1'
+      )
+      expect(setToolbarInputMode).toHaveBeenLastCalledWith(true, 'selection-1')
+      expect(api.focusToolbarInput).toHaveBeenCalledTimes(3)
+    })
+  })
+
   it('keeps a single AI action in flight while showing the busy spinner', async () => {
     const pending = deferred<{ accepted: true }>()
     const runAction = vi.fn().mockReturnValue(pending.promise)

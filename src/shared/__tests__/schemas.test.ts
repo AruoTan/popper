@@ -65,14 +65,9 @@ describe('settings schemas and defaults', () => {
       'summary',
       'search',
       'copy',
-      'refine',
-      'ask'
+      'refine'
     ])
-    expect(DEFAULT_ACTIONS.find((action) => action.kind === 'ask')).toMatchObject({
-      id: 'ask-ai',
-      name: '问AI',
-      enabled: true
-    })
+    expect(DEFAULT_ACTIONS.some((action) => action.kind === 'ask')).toBe(false)
     expect(DEFAULT_ACTIONS.filter((action) => action.kind === 'search')).toMatchObject([
       { id: 'search', searchEngineId: 'google' }
     ])
@@ -115,7 +110,7 @@ describe('settings schemas and defaults', () => {
     })).toThrow()
   })
 
-  it('migrates legacy quote actions to ask-ai', () => {
+  it('removes legacy quote and ask entries from editable actions', () => {
     const migrated = migrateAppSettings({
       ...DEFAULT_APP_SETTINGS,
       version: 10,
@@ -123,11 +118,9 @@ describe('settings schemas and defaults', () => {
         { id: 'quote', name: '引用', icon: 'quote', kind: 'quote', enabled: true, order: 6 }
       ]
     })
-    const ask = migrated.actions.find((action) => action.id === 'ask-ai' || action.kind === 'ask')
-    expect(ask?.kind).toBe('ask')
-    expect(ask?.name).toBe('问AI')
     expect(migrated.version).toBe(12)
-    expect(migrated.actions.filter((action) => action.kind === 'ask')).toHaveLength(1)
+    expect(migrated.actions.filter((action) => action.kind === 'ask')).toHaveLength(0)
+    expect(migrated.actions.some((action) => action.id === 'ask-ai')).toBe(false)
   })
 
   it('never includes provider API keys in public settings', () => {

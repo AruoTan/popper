@@ -414,11 +414,12 @@ function ResultSessionApp({
     () => settings?.actions.find((item) => item.id === (actionId ?? session?.actionId)),
     [session?.actionId, settings, actionId]
   )
-  const isAsk = isAskAction(action?.kind)
+  const resolvedActionId = actionId ?? session?.actionId
+  const isAsk = resolvedActionId === 'ask-ai' || isAskAction(action?.kind)
   // Every AI result is a resumable session. Keep the follow-up control for
   // translate/explain/summary/custom actions too; only hide it while a new
   // response is actively streaming.
-  const isAiAction = action !== undefined && isAiActionDefinition(action)
+  const isAiAction = isAsk || (action !== undefined && isAiActionDefinition(action))
   const showFollowUp = isAiAction && status !== 'streaming'
   const followUpDisabled =
     followUpSubmitting ||

@@ -341,17 +341,30 @@ export function installTauriBridge(): void {
     async recoverToolbar(selectionId: string) {
       return await invoke<boolean>(TAURI_COMMANDS.recoverToolbar, { selectionId })
     },
+    async setToolbarInputMode(active: boolean, selectionId?: string) {
+      return await invoke<boolean>(TAURI_COMMANDS.setToolbarInputMode, {
+        active,
+        selectionId: selectionId ?? null
+      })
+    },
+    async focusToolbarInput(selectionId?: string) {
+      return await invoke<boolean>(TAURI_COMMANDS.focusToolbarInput, {
+        selectionId: selectionId ?? null
+      })
+    },
     async runAction(
       actionId: string,
       cursor?: Point,
       selectionId?: string,
-      searchEngineId?: string
+      searchEngineId?: string,
+      initialQuestion?: string
     ) {
       return parseRunActionResult(await invoke(TAURI_COMMANDS.runAction, {
         actionId,
         cursor: cursor ?? null,
         selectionId: selectionId ?? null,
-        searchEngineId: searchEngineId ?? null
+        searchEngineId: searchEngineId ?? null,
+        initialQuestion: initialQuestion ?? null
       }))
     },
     async hideToolbar(selectionId?: string) {

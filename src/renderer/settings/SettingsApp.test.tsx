@@ -609,8 +609,7 @@ describe('SettingsApp provider deletion', () => {
         'explain',
         'summary',
         'copy',
-        'search',
-        'ask-ai'
+        'search'
       ])
     })
 
@@ -623,8 +622,7 @@ describe('SettingsApp provider deletion', () => {
         { id: 'summary', order: 2 },
         { id: 'copy', order: 3 },
         { id: 'search', order: 4 },
-        { id: 'ask-ai', order: 5 },
-        { id: 'refine', order: 6 }
+        { id: 'refine', order: 5 }
       ])
   })
 

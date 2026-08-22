@@ -783,6 +783,47 @@ impl WindowCoordinator {
         Ok(true)
     }
 
+    /// Switches the singleton selection toolbar between its usual
+    /// non-activating action mode and the keyboard-enabled Ask input mode.
+    /// Activation is deliberately separate so the renderer can commit the
+    /// expanded native frame before focus generates foreground notifications.
+    pub fn set_toolbar_input_mode(&self, app: &AppHandle, active: bool) -> tauri::Result<()> {
+        let window = self.ensure_toolbar(app)?;
+        let _toolbar_operation = self.toolbar_operation.lock();
+        window.set_focusable(active)?;
+        // Tao updates its internal focusable flag through the event loop. On
+        // Windows also commit WS_EX_NOACTIVATE synchronously, otherwise the
+        // immediately following focus request can run against the old style.
+        #[cfg(target_os = "windows")]
+        configure_toolbar_input_native(&window, active)?;
+        #[cfg(not(target_os = "windows"))]
+        if !active {
+            configure_toolbar_native(&window)?;
+        }
+        Ok(())
+    }
+
+    pub fn focus_toolbar_input(&self, app: &AppHandle) -> tauri::Result<()> {
+        let window = self.ensure_toolbar(app)?;
+        let _toolbar_operation = self.toolbar_operation.lock();
+        // `set_focusable(true)` is applied through Tao's event loop. During
+        // that style transition WebView2 can briefly remove WS_VISIBLE even
+        // though `set_focus()` succeeds. Bracket focus with an explicit native
+        // show/topmost commit so the interactive composer cannot become a
+        // logically-active but invisible HWND.
+        show_toolbar_input_window(&window)?;
+        window.set_focus()?;
+        show_toolbar_input_window(&window)
+    }
+
+    pub fn keep_toolbar_input_visible(&self, app: &AppHandle) -> tauri::Result<()> {
+        let Some(window) = app.get_webview_window(TOOLBAR_LABEL) else {
+            return Ok(());
+        };
+        let _toolbar_operation = self.toolbar_operation.lock();
+        show_toolbar_input_window(&window)
+    }
+
     pub fn hide_toolbar(&self, app: &AppHandle) {
         let selection_id = self.state.lock().toolbar_selection_id.clone();
         if let Some(selection_id) = selection_id {
@@ -1991,6 +2032,42 @@ fn hide_toolbar_window_raw(window: &WebviewWindow) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+fn show_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        IsWindowVisible, SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW,
+    };
+
+    run_windows_window_operation(window, |window| {
+        let hwnd = window.hwnd()?;
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            )
+            .map_err(windows_error)?;
+        }
+        if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+            eprintln!(
+                "[toolbar-interaction] input visibility committed visible={}",
+                unsafe { IsWindowVisible(hwnd).as_bool() }
+            );
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn show_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<()> {
+    window.show()
+}
+
+#[cfg(target_os = "windows")]
 fn stage_windows_toolbar(
     window: &WebviewWindow,
     state: Arc<Mutex<WindowState>>,
@@ -2362,10 +2439,23 @@ fn windows_point_inside_window(window: &WebviewWindow, point: Point) -> bool {
         return false;
     }
     let tolerance = WINDOWS_TOOLBAR_HIT_TOLERANCE;
-    point.x >= f64::from(rectangle.left) - tolerance
+    let inside = point.x >= f64::from(rectangle.left) - tolerance
         && point.x <= f64::from(rectangle.right) + tolerance
         && point.y >= f64::from(rectangle.top) - tolerance
-        && point.y <= f64::from(rectangle.bottom) + tolerance
+        && point.y <= f64::from(rectangle.bottom) + tolerance;
+    if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+        eprintln!(
+            "[toolbar-interaction] hit-test point=({:.0},{:.0}) rect=({},{})-({},{}) visible=true inside={}",
+            point.x,
+            point.y,
+            rectangle.left,
+            rectangle.top,
+            rectangle.right,
+            rectangle.bottom,
+            inside
+        );
+    }
+    inside
 }
 
 #[cfg(target_os = "windows")]
@@ -2750,6 +2840,40 @@ fn configure_toolbar_native_raw(window: &WebviewWindow) -> tauri::Result<()> {
         .map_err(windows_error)?;
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn configure_toolbar_input_native(window: &WebviewWindow, active: bool) -> tauri::Result<()> {
+    run_windows_window_operation(window, move |window| {
+        if !active {
+            return configure_toolbar_native_raw(window);
+        }
+
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        };
+
+        let hwnd = window.hwnd()?;
+        set_windows_extended_style(
+            hwnd,
+            WS_EX_TOOLWINDOW.0,
+            WS_EX_APPWINDOW.0 | WS_EX_NOACTIVATE.0,
+        )?;
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+            .map_err(windows_error)?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

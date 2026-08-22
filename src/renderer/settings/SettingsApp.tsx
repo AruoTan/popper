@@ -1388,7 +1388,7 @@ export function SettingsApp(): JSX.Element {
             {enabledActions.map((action) => <span className="toolbar-preview__action" key={action.id} title={action.name}>
               <ActionIcon name={action.icon} size={14} />{draft.toolbar.displayMode !== 'icon-only' && <span>{action.name}</span>}</span>)}
           </div>
-          <p className="search-behavior-note">搜索动作：选中 HTTP(S) URL、域名或 IP 时直接打开；其他文字使用该动作所选的搜索引擎。</p>
+          <p className="search-behavior-note">问 AI 是固定在工具栏最前方的内置功能，不计入动作数量；搜索动作遇到 HTTP(S) URL、域名或 IP 时会直接打开。</p>
         </div>
         <DndContext
           sensors={dragSensors}

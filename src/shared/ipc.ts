@@ -18,6 +18,8 @@ export const TAURI_COMMANDS = {
   toolbarReady: 'toolbar_ready',
   presentToolbar: 'present_toolbar',
   recoverToolbar: 'recover_toolbar',
+  setToolbarInputMode: 'set_toolbar_input_mode',
+  focusToolbarInput: 'focus_toolbar_input',
   runAction: 'run_action',
   hideToolbar: 'hide_toolbar',
   reportToolbarSize: 'report_toolbar_size',
