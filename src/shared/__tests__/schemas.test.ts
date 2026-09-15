@@ -47,6 +47,7 @@ describe('settings schemas and defaults', () => {
       models: []
     })
     expect(DEFAULT_APP_SETTINGS.translate).toEqual({
+      dictionaryEnabled: true,
       primaryLanguage: 'zh-CN',
       alternateLanguage: 'en-US'
     })

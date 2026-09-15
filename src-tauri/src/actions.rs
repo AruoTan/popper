@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 mod session;
+mod dictionary_session;
 
 use session::{
     CancelTransition, DeadlineGeneration, DeltaTransition, EmitOutcome, FlusherLease,
@@ -89,6 +90,7 @@ struct ActionServiceInner {
 struct ActionServiceState {
     sessions: SessionTable,
     contexts: HashMap<String, ActionSessionContext>,
+    dictionaries: HashMap<String, dictionary_session::DictionarySession>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -703,6 +705,13 @@ impl ActionService {
     ) -> Result<String, ActionServiceError> {
         let action_started = tokio::time::Instant::now();
         validate_request_shape(&request)?;
+        let dictionary_settings = self.inner.settings.get_settings();
+        if request.action_id == "translate" && dictionary_settings.translate.dictionary_enabled
+            && dictionary_settings.actions.iter().any(|a| a.id == request.action_id && a.kind == ActionKind::Translate) {
+            if let Some(query) = crate::dictionary::normalize_query(&request.text) {
+                return self.open_dictionary(app, request, query);
+            }
+        }
         let action_reservation = {
             let mut state = self.inner.state.lock();
             let reservation = state.sessions.reserve_initial(InitialReservationInput {
@@ -806,6 +815,14 @@ impl ActionService {
         provider_id: Option<String>,
         model_id: Option<String>,
     ) -> Result<String, ActionServiceError> {
+        self.retry_with_options_if_current(app, session_id, target_language, provider_id, model_id, None)
+    }
+
+    fn retry_with_options_if_current<R: Runtime + 'static>(
+        &self, app: &AppHandle<R>, session_id: &str,
+        target_language: Option<TranslationLanguage>, provider_id: Option<String>, model_id: Option<String>,
+        expected_request: Option<&str>,
+    ) -> Result<String, ActionServiceError> {
         let action_started = tokio::time::Instant::now();
         match (&provider_id, &model_id) {
             (Some(provider_id), Some(model_id))
@@ -820,16 +837,17 @@ impl ActionService {
         if !valid_routing_id(session_id, 128) {
             return Err(ActionServiceError::SessionEnded);
         }
-        let action_reservation = self.inner.state.lock().reserve_retry(
-            session_id,
-            Uuid::new_v4().to_string(),
-            RetryPreparationOptions {
-                target_language,
-                provider_id,
-                model_id,
-            },
-            action_started,
-        )?;
+        let settings = self.inner.settings.get_settings();
+        let action_reservation = {
+            let mut state = self.inner.state.lock();
+            if expected_request.is_some_and(|expected| state.sessions.authoritative_snapshot(session_id)
+                .is_none_or(|snapshot| snapshot.request_id != expected)) { return Err(ActionServiceError::SessionEnded); }
+            self.prepare_dictionary_ai(&mut state, &settings, session_id, provider_id.as_deref(), model_id.as_deref())?;
+            state.reserve_retry(session_id, Uuid::new_v4().to_string(), RetryPreparationOptions {
+                target_language, provider_id, model_id,
+            }, action_started)?
+        };
+        self.emit_dictionary(app, session_id);
         let request_id = action_reservation.reservation.ticket.request_id.clone();
         self.spawn_preparation(app.clone(), action_reservation);
         Ok(request_id)
@@ -859,12 +877,13 @@ impl ActionService {
             return Err(ActionServiceError::SessionEnded);
         }
         validate_follow_up_question(question)?;
-        let action_reservation = self.inner.state.lock().reserve_continue(
-            session_id,
-            Uuid::new_v4().to_string(),
-            question.to_owned(),
-            action_started,
-        )?;
+        let settings = self.inner.settings.get_settings();
+        let action_reservation = {
+            let mut state = self.inner.state.lock();
+            self.prepare_dictionary_ai(&mut state, &settings, session_id, None, None)?;
+            state.reserve_continue(session_id, Uuid::new_v4().to_string(), question.to_owned(), action_started)?
+        };
+        self.emit_dictionary(app, session_id);
         let request_id = action_reservation.reservation.ticket.request_id.clone();
         self.spawn_preparation(app.clone(), action_reservation);
         Ok(request_id)
@@ -888,6 +907,15 @@ impl ActionService {
         if let Some(cancellation) = cancellation {
             cancellation.cancel();
         }
+        let dictionary_cancelled = {
+            let mut state = self.inner.state.lock();
+            if let Some(d) = state.dictionaries.get_mut(session_id) {
+                if d.snapshot.status == "loading" {
+                    d.cancellation.cancel(); d.snapshot.status = "cancelled".into(); d.snapshot.revision += 1; true
+                } else { false }
+            } else { false }
+        };
+        if dictionary_cancelled { self.emit_dictionary(app, session_id); }
         Ok(true)
     }
 
@@ -907,6 +935,9 @@ impl ActionService {
                 || state.contexts.contains_key(session_id);
             let transition = state.sessions.close(session_id);
             state.contexts.remove(session_id);
+            if let Some(d) = state.dictionaries.remove(session_id) {
+                d.cancellation.cancel(); d.suggest_cancellation.cancel();
+            }
             (existed, transition)
         };
         if let Some(cancellation) = transition.cancellation {

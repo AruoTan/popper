@@ -365,6 +365,7 @@ struct CurrentSelection {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResultSessionSnapshot {
+    dictionary: Option<crate::dictionary::DictionarySnapshot>,
     session_id: String,
     session_generation: SessionGeneration,
     request_id: String,
@@ -443,6 +444,7 @@ fn compose_result_ready_snapshot(
     });
 
     ResultSessionSnapshot {
+        dictionary: None,
         session_id: snapshot.session_id,
         session_generation: snapshot.session_generation,
         request_id: snapshot.request_id,
@@ -2966,7 +2968,9 @@ pub fn begin_result_ready(
         .actions
         .begin_ready(&session_id, window.label())
         .map_err(|error| error.to_string())?;
-    Ok(compose_result_ready_snapshot(meta, begin))
+    let mut snapshot = compose_result_ready_snapshot(meta, begin);
+    snapshot.dictionary = state.actions.dictionary_snapshot(&session_id);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -3324,6 +3328,60 @@ pub fn continue_action(
 }
 
 #[tauri::command]
+pub fn dictionary_state(window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String) -> Result<Option<crate::dictionary::DictionarySnapshot>, String> {
+    ensure_result_caller(&window, &session_id)?;
+    Ok(state.actions.dictionary_snapshot(&session_id))
+}
+
+#[tauri::command]
+pub fn dictionary_query(app: AppHandle, window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, query: String) -> Result<String, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.query_dictionary(&app, &session_id, &query).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn dictionary_cancel_input(app: AppHandle, window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, query_generation: u64) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.cancel_dictionary_input(&app, &session_id, query_generation).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn dictionary_suggest(window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, query: String, query_generation: u64) -> Result<Vec<crate::dictionary::Suggestion>, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.dictionary_suggestions(&session_id, &query, query_generation).await
+}
+
+#[tauri::command]
+pub async fn dictionary_audio(window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, accent: u8) -> Result<String, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.dictionary_audio(&session_id, accent).await
+}
+
+#[tauri::command]
+pub async fn eudic_books(window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String) -> Result<Vec<crate::eudic::StudyBook>, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.eudic_books(&session_id).await
+}
+
+#[tauri::command]
+pub async fn eudic_add(window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, query_generation: u64, category_id: String) -> Result<(), String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.eudic_add(&session_id, query_generation, &category_id).await
+}
+
+#[tauri::command]
+pub fn eudic_configured(window: WebviewWindow, state: State<'_, RuntimeState>) -> Result<bool, String> {
+    ensure_settings_caller(&window)?;
+    Ok(state.settings.eudic_authorization().map_err(|e| e.to_string())?.is_some_and(|v| !v.is_empty()))
+}
+
+#[tauri::command]
+pub fn set_eudic_authorization(window: WebviewWindow, state: State<'_, RuntimeState>, authorization: String) -> Result<(), String> {
+    ensure_settings_caller(&window)?;
+    state.settings.set_eudic_authorization(&authorization)
+}
+
+#[tauri::command]
 pub fn copy_text(window: WebviewWindow, text: String) -> Result<(), String> {
     ensure_result_window(&window)?;
     if text.chars().count() > 1_000_000 {
@@ -3334,7 +3392,9 @@ pub fn copy_text(window: WebviewWindow, text: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_external(window: WebviewWindow, url: String) -> Result<(), String> {
-    ensure_result_window(&window)?;
+    if !(window.label() == SETTINGS_LABEL && url == "https://my.eudic.net/OpenAPI/Authorization") {
+        ensure_result_window(&window)?;
+    }
     if url.len() > 2_048 {
         return Err("外部链接过长".to_owned());
     }

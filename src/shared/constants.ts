@@ -53,6 +53,7 @@ export const DEFAULT_CAPTURE_SHORTCUT = ''
 
 export const DEFAULT_LOCALE = 'zh-CN' as const
 export const DEFAULT_TRANSLATION_PAIR = {
+  dictionaryEnabled: true,
   primaryLanguage: 'zh-CN',
   alternateLanguage: 'en-US'
 } as const

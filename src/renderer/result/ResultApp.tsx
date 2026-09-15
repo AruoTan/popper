@@ -1,3 +1,4 @@
+import { DictionaryPanel, useDictionarySession } from './DictionaryPanel'
 import {
   useCallback,
   useEffect,
@@ -374,6 +375,7 @@ function ResultSessionApp({
   sessionId: string
   bootstrap: ResultSessionBootstrap
 }): JSX.Element {
+  const dictionary = useDictionarySession(sessionId)
   const windowsRenderer = useMemo(() => isWindowsResultRenderer(), [])
   // Field-level subscriptions: content growth must not re-render chrome/footer.
   const status = useResultField((state) => state.status)
@@ -431,12 +433,12 @@ function ResultSessionApp({
     [session?.actionId, settings, actionId]
   )
   const resolvedActionId = actionId ?? session?.actionId
-  const isAsk = resolvedActionId === 'ask-ai' || isAskAction(action?.kind)
+  const isAsk = resolvedActionId === 'ask-ai' || isAskAction(action?.kind) || dictionary?.mode === 'ai'
   // Every AI result is a resumable session. Keep the follow-up control for
   // translate/explain/summary/custom actions too; only hide it while a new
   // response is actively streaming.
   const isAiAction = isAsk || (action !== undefined && isAiActionDefinition(action))
-  const showFollowUp = isAiAction && status !== 'streaming'
+  const showFollowUp = isAiAction && status !== 'streaming' && dictionary?.status !== 'loading'
   const followUpDisabled =
     followUpSubmitting ||
     status === 'streaming' ||
@@ -537,12 +539,18 @@ function ResultSessionApp({
     }
   }, [sessionId])
 
-  const retry = useCallback(async (options?: ActionRetryOptions): Promise<boolean> => {
+  const retry = useCallback(async (options?: ActionRetryOptions, forceAi = false): Promise<boolean> => {
     if (retryInFlight.current) return false
     retryInFlight.current = true
     setRetrying(true)
     setCommandMessage('')
     try {
+      if (dictionary?.mode === 'dictionary' && !options && !forceAi && window.textLens.queryDictionary) {
+        await window.textLens.queryDictionary(sessionId, dictionary.query)
+        setTurns([]); setFollowUpQuestion(''); pendingFollowUp.current = null
+        return true
+      }
+      if (dictionary) { setTurns([]); askSawStreaming.current = false }
       const result = await window.textLens.retryAction(sessionId, options)
       if (!result.accepted) {
         setCommandMessage(result.message)
@@ -567,7 +575,7 @@ function ResultSessionApp({
       retryInFlight.current = false
       setRetrying(false)
     }
-  }, [reconcilePendingFollowUp, sessionId])
+  }, [dictionary, reconcilePendingFollowUp, sessionId])
 
   const switchModel = useCallback(async (value: string): Promise<void> => {
     const next = modelChoices.find((choice) => choice.value === value)
@@ -591,7 +599,10 @@ function ResultSessionApp({
   }, [switchModel])
 
   const copy = useCallback(async (): Promise<void> => {
-    const content = getActionEventSnapshot().content
+    const entry = dictionary?.entry
+    const content = getActionEventSnapshot().content || (entry ? [entry.word, ...entry.definitions,
+      ...entry.forms.map((form) => `${form.name}：${form.value}`),
+      ...entry.examples.flatMap((example) => [example.text, example.translation])].join('\n') : '')
     if (!content) return
     setCommandMessage('')
     try {
@@ -605,7 +616,7 @@ function ResultSessionApp({
     } catch (error) {
       setCommandMessage(getErrorMessage(error, '复制失败'))
     }
-  }, [])
+  }, [dictionary?.entry])
 
   const submitFollowUp = useCallback(async (): Promise<void> => {
     const question = followUpQuestion.trim()
@@ -620,7 +631,7 @@ function ResultSessionApp({
       if (!window.textLens.continueAction) {
         throw new Error('当前版本不支持继续提问')
       }
-      if (isAsk) {
+      if (isAsk || dictionary) {
         const turnId =
           typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
             ? crypto.randomUUID()
@@ -631,7 +642,7 @@ function ResultSessionApp({
       const result = await window.textLens.continueAction(sessionId, question)
       if (!result.accepted) {
         setCommandMessage(result.message)
-        if (isAsk) {
+        if (isAsk || dictionary) {
           askSawStreaming.current = false
           setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
         }
@@ -643,14 +654,14 @@ function ResultSessionApp({
       reconcilePendingFollowUp(pending)
     } catch (error) {
       setCommandMessage(getErrorMessage(error, '无法继续提问'))
-      if (isAsk) {
+      if (isAsk || dictionary) {
         askSawStreaming.current = false
         setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
       }
     } finally {
       setFollowUpSubmitting(false)
     }
-  }, [followUpQuestion, followUpSubmitting, isAsk, reconcilePendingFollowUp, sessionId, status])
+  }, [followUpQuestion, followUpSubmitting, isAsk, dictionary, reconcilePendingFollowUp, sessionId, status])
 
   useEffect(() => {
     let disposed = false
@@ -686,7 +697,7 @@ function ResultSessionApp({
       setSession(snapshot)
       setPinned(snapshot.pinned)
       setActiveModelRoute(modelRouteFromSnapshot(snapshot))
-      if (snapshot.actionId === 'ask-ai') {
+      if (snapshot.actionId === 'ask-ai' || snapshot.dictionary?.mode === 'ai') {
         setTurns(transcriptFromSnapshot(
           snapshot.sessionId,
           snapshot.conversation ?? [],
@@ -862,8 +873,8 @@ function ResultSessionApp({
       return
     }
     const detected = detectTranslationLanguage(session.selection.text)
-    setTranslationTarget(defaultTranslationTarget(detected, settings.translate))
-  }, [action?.kind, session?.sessionId, session?.selection, settings?.translate])
+    setTranslationTarget(dictionary?.mode === 'dictionary' ? 'zh-CN' : defaultTranslationTarget(detected, settings.translate))
+  }, [action?.kind, session?.sessionId, session?.selection, settings?.translate, dictionary?.queryGeneration])
 
   const openExternal = useCallback(async (url: string): Promise<void> => {
     setCommandMessage('')
@@ -1218,7 +1229,13 @@ function ResultSessionApp({
             </section>
           )}
 
-          {isAsk ? (
+          {dictionary && <DictionaryPanel snapshot={dictionary} onAi={() => retry(undefined, true)} onAsk={() => {
+            setFollowUpExpanded(true)
+            window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus())
+          }} onQuery={() => {
+            setTurns([]); setFollowUpQuestion(''); pendingFollowUp.current = null; askSawStreaming.current = false
+          }} />}
+          {dictionary?.mode === 'dictionary' ? null : isAsk ? (
             <>
               <AskStreamBridge enabled={isAsk} onStream={handleAskStream} />
               {turns.length === 0 && status !== 'streaming' && status !== 'error' && (
@@ -1387,9 +1404,9 @@ function ResultSessionApp({
           <button
             className={`result-footer-button ${copyComplete ? 'result-footer-button--done' : ''}`}
             type="button"
-            disabled={!hasContent}
+            disabled={!hasContent && !dictionary?.entry}
             onClick={() => void copy()}
-            title={hasContent ? '复制结果到剪贴板' : '生成完成后可复制'}
+            title={hasContent || dictionary?.entry ? '复制结果到剪贴板' : '生成完成后可复制'}
           >
             {copyComplete ? <Check size={14} /> : <Copy size={14} />}
             {copyComplete ? '已复制' : '复制'}

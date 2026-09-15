@@ -47,7 +47,17 @@ Enhancements beyond a basic selection assistant:
 - **Ask AI sessions:** Open a result window with selection as context; you can wait before the first model call, then chat multi-turn in that window only.
 - **Thinking & streaming:** Streaming thinking / reasoning display; thinking levels inferred from model names (including “off”); low-latency streaming.
 - **Provider enable/disable:** Disabled providers are hidden from action binding and result model lists (already-bound actions still run).
-- **Lightweight & private:** Standalone Tauri tool; API keys encrypted locally; no selection history; text is sent only when you click an AI action.
+- **Lightweight & private:** Standalone Tauri tool; API keys encrypted locally; no selection history; content is sent for user-triggered dictionary, AI and vocabulary-book operations.
+
+## Youdao dictionary and Eudic vocabulary books
+
+- Built-in Translate looks up 1–5 English words using Youdao suggestions and definitions by default. It works without an AI model or a Youdao API key. Disable it in language/translation settings to keep AI-only translation.
+- Surrounding quotes, whitespace and trailing punctuation are normalized; internal apostrophes and hyphens are supported. Longer text, other languages and custom actions keep their AI behavior. Short sentences may also match dictionary entries.
+- The result shows available phonetics, definitions, word forms and up to three bilingual examples. Editing the query requests suggestions after 250 ms; Enter or a candidate click submits a lookup. Pronunciation plays only on click.
+- Missing definitions fall back to configured AI translation. Network errors offer retry and manual AI translation. Follow-up questions can use the dictionary entry as reference while keeping the card visible.
+- Save the complete [Eudic OpenAPI authorization](https://my.eudic.net/OpenAPI/Authorization) in language/translation settings. Click Add to Eudic, select a book and confirm each addition. Phrases are saved whole; duplicate entries are deduplicated by Eudic.
+- Youdao uses the community-documented HTTPS `suggest` and `jsonapi` endpoints, with a 10-second total request timeout. These are separate from the commercial cloud API and may change.
+- Lookups and suggestions send the current query to Youdao. Confirming an addition sends only the current entry and destination book to Eudic, without the original selection or examples. Authorization is encrypted locally and excluded from public settings and logs. No lookup history is persisted.
 
 ## Tech stack
 
@@ -105,7 +115,7 @@ These projects also pull transitive dependencies. Before a formal public release
 2. On Windows, UIA/OLE capture that may block on third-party providers runs in a separate helper process started from the same executable; timeouts, crashes, or protocol errors isolate and rebuild the helper without saturating the main capture thread.
 3. When standard APIs cannot read allowed custom-drawn apps, the backend briefly uses copy; original clipboard content is restored only if it was not modified again.
 4. The Rust runtime validates the selection and positions the toolbar.
-5. On action click, local actions run on device; AI actions create a request session and send text.
+5. Translate routes eligible text to Youdao or AI; both share result sessions. Other actions retain their existing behavior.
 6. reqwest receives OpenAI-compatible Chat Completions SSE; after the first token, each content delta is forwarded immediately to the result window (no extra TTFB batching).
 7. The result window shows stream deltas synchronously, then switches to safe Markdown and KaTeX when complete.
 8. Settings and provider metadata live in local JSON; API keys are encrypted on disk. Normal settings payloads only expose `keyConfigured`. The settings window can reveal or edit plaintext via settings-only IPC when the user clicks show; toolbar and result windows cannot read keys.
@@ -125,7 +135,7 @@ Main directories:
 
 ## Privacy and security
 
-- Selected text is sent only after the user clicks an AI action; no chat history store; no selection history.
+- User-triggered lookups send queries to Youdao; AI translation and follow-ups send content to the configured model. Missing entries automatically try AI. Eudic writes happen only after confirmation. No chat or selection history is persisted.
 - AI text defaults to a 20,000 character limit with an explicit error—no silent truncation.
 - Normal settings (`get_settings` / `PublicSettings`) include only `keyConfigured`, not plaintext API keys; on-disk settings JSON also stores no plaintext keys.
 - The settings window can load a saved API key via settings-only IPC (`get_provider_api_key`) when the user **clicks show**; toolbar and result windows cannot call that command.

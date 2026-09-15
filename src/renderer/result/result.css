@@ -1435,3 +1435,29 @@ body,
     border-top-color: color-mix(in srgb, var(--border) 80%, var(--text) 12%);
   }
 }
+/* Dictionary entries stay selectable; controls remain inside the result window. */
+.dictionary-panel { padding: 4px 0 18px; line-height: 1.65; overflow-wrap: anywhere; }
+.dictionary-search { display: flex; gap: 8px; }
+.dictionary-search input { min-width: 0; flex: 1; }
+.dictionary-panel input, .dictionary-panel select { padding: 8px 10px; border: 1px solid #8885; border-radius: 8px; color: inherit; background: transparent; font: inherit; }
+.dictionary-panel button { border: 1px solid #8884; border-radius: 7px; background: transparent; color: inherit; padding: 5px 9px; cursor: pointer; font: inherit; }
+.dictionary-panel button:hover { background: #8881; }
+.dictionary-panel button:disabled { opacity: .5; cursor: default; }
+.dictionary-suggestions { list-style: none; padding: 0; margin: 10px 0; display: grid; gap: 4px; }
+.dictionary-suggestions button { display: flex; width: 100%; text-align: left; gap: 10px; align-items: baseline; }
+.dictionary-suggestions strong { flex-shrink: 0; }
+.dictionary-suggestions span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .7; font-size: .85em; }
+.dictionary-source, .dictionary-hint { font-size: .8em; opacity: .65; margin-top: 12px; }
+.dictionary-entry h2 { margin: 8px 0; font-size: 1.5em; }
+.dictionary-entry h3 { margin: 16px 0 5px; font-size: 1em; }
+.dictionary-phones, .dictionary-actions, .dictionary-forms { display: flex; flex-wrap: wrap; gap: 8px; }
+.dictionary-phones { font-size: .85em; }
+.dictionary-definitions { padding-left: 20px; }
+.dictionary-definitions li { margin: 8px 0; }
+.dictionary-forms { font-size: .85em; opacity: .8; }
+.dictionary-examples { padding-left: 22px; }
+.dictionary-examples p { margin: 4px 0; }
+.dictionary-examples p + p { opacity: .7; }
+.dictionary-actions { margin-top: 16px; font-size: .85em; }
+.dictionary-books { margin-top: 12px; padding: 12px; border: 1px solid #8884; border-radius: 10px; }
+.dictionary-books button, .dictionary-books select { margin: 4px; }

@@ -2,6 +2,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type Event } from '@tauri-apps/api/event'
 
 import {
+  dictionarySnapshotSchema,
+  dictionarySuggestionSchema,
+  studyBookSchema,
   actionStreamEventSchema,
   providerModelSchema,
   publicSettingsSchema,
@@ -276,7 +279,24 @@ export function installTauriBridge(): void {
     () => undefined
   )
 
+  const dictionaryEvents = new EventHub(EVENTS.dictionary, (payload) => dictionarySnapshotSchema.parse(payload))
+
   const api: WindowTextLensApi = {
+    async getDictionaryState(sessionId) {
+      await dictionaryEvents.ready()
+      return dictionarySnapshotSchema.nullable().parse(await invoke(TAURI_COMMANDS.dictionaryState, { sessionId }))
+    },
+    async queryDictionary(sessionId, query) { return invoke<string>(TAURI_COMMANDS.dictionaryQuery, { sessionId, query }) },
+    async suggestDictionary(sessionId, query, queryGeneration) {
+      return dictionarySuggestionSchema.array().parse(await invoke(TAURI_COMMANDS.dictionarySuggest, { sessionId, query, queryGeneration }))
+    },
+    async cancelDictionaryInput(sessionId, queryGeneration) { await invoke(TAURI_COMMANDS.dictionaryCancelInput, { sessionId, queryGeneration }) },
+    async dictionaryAudio(sessionId, accent) { return invoke<string>(TAURI_COMMANDS.dictionaryAudio, { sessionId, accent }) },
+    async getEudicBooks(sessionId) { return studyBookSchema.array().parse(await invoke(TAURI_COMMANDS.eudicBooks, { sessionId })) },
+    async addEudicWord(sessionId, queryGeneration, categoryId) { await invoke(TAURI_COMMANDS.eudicAdd, { sessionId, queryGeneration, categoryId }) },
+    async eudicConfigured() { return invoke<boolean>(TAURI_COMMANDS.eudicConfigured) },
+    async setEudicAuthorization(authorization) { await invoke(TAURI_COMMANDS.setEudicAuthorization, { authorization }) },
+    onDictionaryChanged(listener) { return dictionaryEvents.subscribe(listener) },
     async getSettings() {
       return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.getSettings))
     },

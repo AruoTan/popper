@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { dictionarySnapshotSchema } from './dictionary'
 
 import {
   AI_OUTPUT_LIMIT,
@@ -381,6 +382,7 @@ export const actionsSchema = z
 
 export const translationSettingsSchema = z
   .object({
+    dictionaryEnabled: z.boolean().default(true),
     primaryLanguage: translationLanguageSchema,
     alternateLanguage: translationLanguageSchema
   })
@@ -724,6 +726,7 @@ export type ActionStreamEvent = z.infer<typeof actionStreamEventSchema>
 
 export const resultSessionSnapshotSchema = z
   .object({
+    dictionary: dictionarySnapshotSchema.nullable().optional(),
     sessionId: z.string().trim().min(1).max(128),
     sessionGeneration: wireCounterSchema,
     requestId: z.string().trim().min(1).max(128),

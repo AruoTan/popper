@@ -6,6 +6,7 @@ import {
   countUnicodeScalars,
   DEFAULT_PUBLIC_SETTINGS,
   type PublicSettings,
+  type DictionarySnapshot,
   type ResultSessionSnapshot,
   type WindowTextLensApi
 } from '../../shared'
@@ -61,6 +62,12 @@ function resultSnapshot(
 
 const completedSession = resultSnapshot()
 const askCompletedSession = resultSnapshot({ actionId: 'ask-ai' })
+
+function dictionaryFixture(): DictionarySnapshot {
+  return { sessionId: 'session-1', revision: 2, queryGeneration: 1, query: 'hello', mode: 'dictionary', status: 'found',
+    entry: { word: 'hello', ukPhone: null, usPhone: null, definitions: ['你好'], forms: [], examples: [] },
+    suggestions: [], error: null, suggestionError: null }
+}
 
 function settingsWithFontSize(fontSize = 18): PublicSettings {
   return {
@@ -236,6 +243,43 @@ describe('ResultApp sessionId query', () => {
 })
 
 describe('ResultApp window interactions', () => {
+  it('shows and copies dictionary results without a model and routes retry to lookup', async () => {
+    const dictionary = dictionaryFixture()
+    const queryDictionary = vi.fn().mockResolvedValue('lookup-next')
+    const result = await renderResult(resultSnapshot({ dictionary, content: '', contentScalarCount: 0, lastContentSequence: 0 }, false), DEFAULT_PUBLIC_SETTINGS, {
+      getDictionaryState: vi.fn().mockResolvedValue(dictionary), queryDictionary
+    })
+    expect(await screen.findByRole('heading', { name: 'hello' })).toBeInTheDocument()
+    expect(screen.queryByText('正在等待模型响应…')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '复制' }))
+    await waitFor(() => expect(result.api.copyText).toHaveBeenCalledWith('hello\n你好'))
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(queryDictionary).toHaveBeenCalledWith('session-1', 'hello'))
+    expect(result.retryAction).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '改用 AI 翻译' }))
+    await waitFor(() => expect(result.retryAction).toHaveBeenCalled())
+  })
+
+  it('keeps the dictionary card and the first user question when entering AI conversation', async () => {
+    const dictionary = dictionaryFixture()
+    let listener: ((next: DictionarySnapshot) => void) | undefined
+    const continueAction = vi.fn().mockImplementation(async () => {
+      listener?.({ ...dictionary, revision: 3, mode: 'ai' })
+      return { accepted: true, requestId: 'followup' }
+    })
+    await renderResult(resultSnapshot({ dictionary, content: '', contentScalarCount: 0, lastContentSequence: 0 }), settingsWithFontSize(), {
+      getDictionaryState: vi.fn().mockResolvedValue(dictionary),
+      onDictionaryChanged: (fn) => { listener = fn; return () => {} }, continueAction
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'AI 追问' }))
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    fireEvent.change(input, { target: { value: 'How do I use this word?' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(continueAction).toHaveBeenCalledWith('session-1', 'How do I use this word?'))
+    expect(screen.getByRole('heading', { name: 'hello' })).toBeInTheDocument()
+    expect(screen.getByText('How do I use this word?')).toBeInTheDocument()
+  })
+
   it('limits the hidden footer hit area to the rendered controls height', () => {
     const footerRule = resultCss.match(/\.result-footer\s*\{(?<body>[\s\S]*?)\}/)?.groups?.body
 
