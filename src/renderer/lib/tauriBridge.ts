@@ -271,6 +271,10 @@ export function installTauriBridge(): void {
     EVENTS.toolbarDismissed,
     (payload) => toolbarDismissedEventSchema.parse(payload)
   )
+  const resultSelectionShortcutEvents = new EventHub<void>(
+    EVENTS.resultSelectionShortcut,
+    () => undefined
+  )
 
   const api: WindowTextLensApi = {
     async getSettings() {
@@ -414,8 +418,18 @@ export function installTauriBridge(): void {
     async setResultPointerInside(sessionId: string, inside: boolean) {
       await invoke(TAURI_COMMANDS.setResultPointerInside, { sessionId, inside })
     },
-    async showResultSelection(sessionId: string, text: string, cursor: Point) {
-      await invoke(TAURI_COMMANDS.showResultSelection, { sessionId, text, cursor })
+    async showResultSelection(
+      sessionId: string,
+      text: string,
+      cursor: Point,
+      forceCapture = false
+    ) {
+      await invoke(TAURI_COMMANDS.showResultSelection, {
+        sessionId,
+        text,
+        cursor,
+        forceCapture
+      })
     },
     async hideResultSelection(sessionId: string) {
       await invoke(TAURI_COMMANDS.hideResultSelection, {
@@ -479,6 +493,9 @@ export function installTauriBridge(): void {
     },
     onSettingsGuidance(listener) {
       return settingsGuidanceEvents.subscribe(listener)
+    },
+    onResultSelectionShortcut(listener) {
+      return resultSelectionShortcutEvents.subscribe(listener)
     },
     onToolbarPointer(listener) {
       return toolbarPointerEvents.subscribe(listener)

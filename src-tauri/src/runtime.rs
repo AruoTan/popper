@@ -53,6 +53,7 @@ pub const SHORTCUT_ERROR_EVENT: &str = "textlens:shortcut-error";
 pub const SETTINGS_CLOSE_REQUEST_EVENT: &str = "textlens:settings-close-requested";
 pub const SETTINGS_GUIDANCE_EVENT: &str = "textlens:settings-guidance";
 pub const TOOLBAR_DISMISSED_EVENT: &str = "textlens:toolbar-dismissed";
+pub const RESULT_SELECTION_SHORTCUT_EVENT: &str = "textlens:result-selection-shortcut";
 
 fn trace_toolbar_interaction(message: impl std::fmt::Display) {
     if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
@@ -1936,6 +1937,14 @@ pub fn handle_global_shortcut(app: &AppHandle, shortcut: &Shortcut, event: Short
         settings.trigger.mode,
         settings.capture_shortcut.as_str(),
     ) {
+        if let Some(label) = state.windows.foreground_result_label(app) {
+            if app
+                .emit_to(&label, RESULT_SELECTION_SHORTCUT_EVENT, ())
+                .is_ok()
+            {
+                return;
+            }
+        }
         state.capture_current(app);
     }
 }
@@ -3084,10 +3093,21 @@ pub fn show_result_selection(
     session_id: String,
     text: String,
     cursor: CursorPoint,
+    force_capture: Option<bool>,
 ) -> Result<(), String> {
     ensure_result_caller(&window, &session_id)?;
     if !state.result_sessions.lock().contains_key(&session_id) {
         return Err("结果会话已结束".to_owned());
+    }
+    // Result webviews submit their own selections because native monitors
+    // intentionally ignore TextLens-owned windows. This is still an automatic
+    // pointer-up trigger, so it must obey the same policy as native selection
+    // events instead of bypassing shortcut-only mode.
+    if !should_present_selection_for_trigger(
+        force_capture.unwrap_or(false),
+        state.settings.get_settings().trigger.mode,
+    ) {
+        return Ok(());
     }
     if text.trim().is_empty() {
         return Err("所选文字为空".to_owned());

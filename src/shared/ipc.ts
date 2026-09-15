@@ -53,7 +53,8 @@ export const TAURI_EVENTS = {
   settingsCloseRequested: 'textlens:settings-close-requested',
   settingsGuidance: 'textlens:settings-guidance',
   toolbarPointer: 'textlens:toolbar-pointer',
-  toolbarDismissed: 'textlens:toolbar-dismissed'
+  toolbarDismissed: 'textlens:toolbar-dismissed',
+  resultSelectionShortcut: 'textlens:result-selection-shortcut'
 } as const
 
 export type TauriCommand = (typeof TAURI_COMMANDS)[keyof typeof TAURI_COMMANDS]

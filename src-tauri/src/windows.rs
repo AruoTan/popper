@@ -1509,6 +1509,33 @@ impl WindowCoordinator {
             .map(|runtime| runtime.session_id.clone())
     }
 
+    /// Returns the result webview that currently owns foreground interaction.
+    /// Global shortcut capture cannot read TextLens-owned WebView selections
+    /// through the external accessibility monitor, so the renderer must handle
+    /// those selections directly.
+    pub fn foreground_result_label(&self, app: &AppHandle) -> Option<String> {
+        let labels = self
+            .state
+            .lock()
+            .results
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        labels.into_iter().find(|label| {
+            let Some(window) = app.get_webview_window(label) else {
+                return false;
+            };
+            #[cfg(target_os = "windows")]
+            {
+                result_foreground_scope(app, &window) == ResultForegroundScope::Internal
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                window.is_focused().unwrap_or(false)
+            }
+        })
+    }
+
     pub fn note_result_resize(&self, label: &str) -> bool {
         let mut state = self.state.lock();
         let Some(runtime) = state.results.get_mut(label) else {

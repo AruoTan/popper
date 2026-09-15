@@ -37,6 +37,7 @@ import {
   detectTranslationLanguage,
   isAiActionDefinition,
   type ActionRetryOptions,
+  type Point,
   type PublicSettings,
   type ResultSessionSnapshot,
   type TranslationLanguage
@@ -149,6 +150,19 @@ export function selectedTextWithin(
   }
   const text = selection.toString()
   return text.trim() ? text : null
+}
+
+function selectedTextScreenPoint(selection: Selection | null): Point {
+  if (selection && selection.rangeCount > 0) {
+    const rectangle = selection.getRangeAt(0).getBoundingClientRect()
+    const x = window.screenX + rectangle.left + rectangle.width / 2
+    const y = window.screenY + rectangle.bottom
+    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y }
+  }
+  return {
+    x: window.screenX + window.innerWidth / 2,
+    y: window.screenY + window.innerHeight / 2
+  }
 }
 
 export function resultFontSize(settings: PublicSettings | null): number {
@@ -395,6 +409,7 @@ function ResultSessionApp({
   const modelToggleRef = useRef<HTMLButtonElement>(null)
   const copyResetTimer = useRef<number | null>(null)
   const selectionFrame = useRef<number | null>(null)
+  const selectionCursor = useRef<Point | null>(null)
   const retryInFlight = useRef(false)
   const bootstrapRetryInFlight = useRef(false)
   const disposedRef = useRef(false)
@@ -930,6 +945,14 @@ function ResultSessionApp({
   const showSelectionToolbar = (event: ReactPointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return
     const cursor = { x: event.screenX, y: event.screenY }
+    selectionCursor.current = cursor
+    // Result-window selections use a renderer-owned path because native hooks
+    // filter TextLens's own webviews. Keep that path aligned with the global
+    // trigger policy: shortcut mode must never auto-present on pointer-up.
+    if (settings.trigger.mode !== 'selected') {
+      dismissResultSelectionToolbar()
+      return
+    }
     if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current)
     selectionFrame.current = window.requestAnimationFrame(() => {
       selectionFrame.current = null
@@ -942,12 +965,34 @@ function ResultSessionApp({
         return
       }
       void window.textLens
-        .showResultSelection(sessionId, text, cursor)
+        .showResultSelection(sessionId, text, cursor, false)
         .catch((error: unknown) => {
           setCommandMessage(getErrorMessage(error, '无法处理所选文字'))
         })
     })
   }
+
+  useEffect(() => {
+    if (!window.textLens.onResultSelectionShortcut) return
+    return window.textLens.onResultSelectionShortcut(() => {
+      if (settings.trigger.mode !== 'shortcut') return
+      const browserSelection = window.getSelection()
+      const text = selectedTextWithin(contentRef.current, browserSelection)
+      if (!text || !window.textLens.showResultSelection) {
+        dismissResultSelectionToolbar()
+        return
+      }
+      const cursor = selectionCursor.current ?? selectedTextScreenPoint(browserSelection)
+      runDetached(
+        window.textLens.showResultSelection(sessionId, text, cursor, true),
+        {
+          scope: 'result',
+          operation: 'show-shortcut-selection',
+          onError: (error) => setCommandMessage(getErrorMessage(error, '无法处理所选文字'))
+        }
+      )
+    })
+  }, [dismissResultSelectionToolbar, sessionId, settings.trigger.mode])
 
   const selection = session?.selection
   const translationRoute = useMemo(() => {

@@ -114,6 +114,7 @@ async function renderResult(
   const failResultReveal = vi.fn().mockResolvedValue(undefined)
   const ackResultReady = vi.fn().mockResolvedValue(true)
   let settingsListener: ((next: PublicSettings) => void) | null = null
+  let resultSelectionShortcutListener: (() => void) | null = null
   const api = {
     getSettings: vi.fn().mockResolvedValue(settings),
     beginResultReady: vi.fn().mockResolvedValue(snapshot),
@@ -135,6 +136,12 @@ async function renderResult(
       settingsListener = listener
       return () => {
         if (settingsListener === listener) settingsListener = null
+      }
+    }),
+    onResultSelectionShortcut: vi.fn((listener: () => void) => {
+      resultSelectionShortcutListener = listener
+      return () => {
+        if (resultSelectionShortcutListener === listener) resultSelectionShortcutListener = null
       }
     }),
     ...apiOverrides
@@ -169,7 +176,8 @@ async function renderResult(
     commitResultReveal,
     failResultReveal,
     bootstrap,
-    emitSettings: (next: PublicSettings) => settingsListener?.(next)
+    emitSettings: (next: PublicSettings) => settingsListener?.(next),
+    emitResultSelectionShortcut: () => resultSelectionShortcutListener?.()
   }
 }
 
@@ -885,7 +893,8 @@ describe('ResultApp window interactions', () => {
       expect(showResultSelection).toHaveBeenCalledWith(
         'session-1',
         '可选择的结果',
-        { x: 320, y: 240 }
+        { x: 320, y: 240 },
+        false
       )
     })
 
@@ -910,6 +919,44 @@ describe('ResultApp window interactions', () => {
     // The deferred Markdown chunk may replace its initial plain-text node, so
     // assert against the live result container instead of the stale span.
     expect(container.querySelector('.result-content')).toHaveTextContent(completedSession.content)
+  })
+
+  it('does not auto-show the toolbar for result selections in shortcut mode', async () => {
+    const shortcutSettings: PublicSettings = {
+      ...settingsWithFontSize(),
+      trigger: { mode: 'shortcut' }
+    }
+    const { showResultSelection, hideResultSelection, emitResultSelectionShortcut } = await renderResult(
+      completedSession,
+      shortcutSettings
+    )
+    const selected = screen.getByText('可选择的结果')
+    const range = document.createRange()
+    range.selectNodeContents(selected)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    fireEvent.pointerUp(selected, {
+      button: 0,
+      isPrimary: true,
+      screenX: 320,
+      screenY: 240
+    })
+    await waitForAnimationFrame()
+
+    expect(showResultSelection).not.toHaveBeenCalled()
+    expect(hideResultSelection).toHaveBeenCalledWith('session-1')
+
+    emitResultSelectionShortcut()
+    await waitFor(() => {
+      expect(showResultSelection).toHaveBeenCalledWith(
+        'session-1',
+        '可选择的结果',
+        { x: 320, y: 240 },
+        true
+      )
+    })
   })
 
   it('dismisses the in-result selection toolbar when clicking elsewhere inside the result window', async () => {
