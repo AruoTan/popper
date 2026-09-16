@@ -196,18 +196,6 @@ export const DEFAULT_ACTIONS: readonly ActionDefinition[] = Object.freeze([
     providerId: DEFAULT_PROVIDER_ID,
     modelId: DEFAULT_MODEL_ID,
     thinkingMode: 'off'
-  },
-  {
-    id: 'ask-ai',
-    name: '问AI',
-    icon: 'message-circle-question',
-    kind: 'ask',
-    enabled: true,
-    order: 6,
-    prompt: DEFAULT_ACTION_PROMPTS.ask,
-    providerId: DEFAULT_PROVIDER_ID,
-    modelId: DEFAULT_MODEL_ID,
-    thinkingMode: 'off'
   }
 ])
 
@@ -473,11 +461,23 @@ function migratePromptDefaultsCandidate(candidate: UnknownRecord): UnknownRecord
       return rawAction
     })
     : candidate.actions
-  return migrateSearchEnginesCandidate(
+  const migrated = migrateSearchEnginesCandidate(
     migrateBuiltinSearchActionsCandidate(
       migrateQuoteToAskActions({ ...candidate, version: SETTINGS_VERSION, actions })
     )
   )
+  const editableActions = Array.isArray(migrated.actions)
+    ? migrated.actions
+        .map(asRecord)
+        .filter((action) => action.kind !== 'ask' && action.id !== 'ask-ai')
+    : []
+  const normalizedActions = editableActions.length > 0
+    ? editableActions
+    : DEFAULT_ACTIONS.map((action) => ({ ...action }))
+  return {
+    ...migrated,
+    actions: normalizedActions.map((action, order) => ({ ...action, order }))
+  }
 }
 
 function legacyModel(ai: UnknownRecord): ProviderModel[] {
@@ -570,14 +570,16 @@ function migrateLegacyActions(value: unknown, modelId: string): ActionDefinition
 
   const existingIds = new Set(migrated.map((action) => action.id))
   for (const defaultAction of DEFAULT_ACTIONS) {
-    if (!existingIds.has(defaultAction.id) && ['refine', 'ask-ai'].includes(defaultAction.id)) {
+    if (!existingIds.has(defaultAction.id) && defaultAction.id === 'refine') {
       migrated.push({ ...defaultAction, order: migrated.length })
     }
   }
 
   const normalized = migrated.length ? migrated : DEFAULT_ACTIONS.map((action) => ({ ...action }))
   if (!normalized.some((action) => action.enabled)) normalized[0] = { ...normalized[0]!, enabled: true }
-  const actions = normalized.map((action, order) => ({ ...action, order }))
+  const actions = normalized
+    .filter((action) => action.kind !== 'ask' && action.id !== 'ask-ai')
+    .map((action, order) => ({ ...action, order }))
   return migrateBuiltinSearchActionsCandidate(
     migrateQuoteToAskActions({ actions })
   ).actions as ActionDefinition[]

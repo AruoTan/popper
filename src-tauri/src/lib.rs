@@ -135,6 +135,8 @@ pub fn run() {
             runtime::toolbar_ready,
             runtime::present_toolbar,
             runtime::recover_toolbar,
+            runtime::set_toolbar_input_mode,
+            runtime::focus_toolbar_input,
             runtime::run_action,
             runtime::hide_toolbar,
             runtime::report_toolbar_size,

@@ -214,7 +214,17 @@ impl SettingsRepository {
             if let Some(value) = update.providers {
                 settings.providers = value;
             }
-            if let Some(value) = update.actions {
+            if let Some(mut value) = update.actions {
+                let mut fixed_ask = settings
+                    .actions
+                    .iter()
+                    .find(|action| action.kind == ActionKind::Ask)
+                    .cloned();
+                value.retain(|action| action.kind != ActionKind::Ask);
+                reconcile_fixed_ask_route(&mut fixed_ask, &value, &settings.providers);
+                if let Some(fixed_ask) = fixed_ask {
+                    value.push(fixed_ask);
+                }
                 settings.actions = value;
             }
             Ok(())
@@ -226,6 +236,29 @@ impl SettingsRepository {
     /// `keyConfigured` values are intentionally ignored.
     pub fn replace_public(&self, public: PublicSettings) -> Result<PublicSettings, SettingsError> {
         self.transact_with_provider_cleanup(|settings| {
+            let fixed_ask = settings
+                .actions
+                .iter()
+                .find(|action| action.kind == ActionKind::Ask)
+                .cloned();
+            let mut actions = public.actions;
+            actions.retain(|action| action.kind != ActionKind::Ask);
+            let providers = public
+                .providers
+                .into_iter()
+                .map(|provider| ProviderConfig {
+                    id: provider.id,
+                    name: provider.name,
+                    enabled: provider.enabled,
+                    base_url: provider.base_url,
+                    models: provider.models,
+                })
+                .collect::<Vec<_>>();
+            let mut fixed_ask = fixed_ask;
+            reconcile_fixed_ask_route(&mut fixed_ask, &actions, &providers);
+            if let Some(fixed_ask) = fixed_ask {
+                actions.push(fixed_ask);
+            }
             *settings = AppSettings {
                 version: SETTINGS_VERSION,
                 enabled: public.enabled,
@@ -238,18 +271,8 @@ impl SettingsRepository {
                 application: public.application,
                 filter: public.filter,
                 selection_capture: public.selection_capture,
-                providers: public
-                    .providers
-                    .into_iter()
-                    .map(|provider| ProviderConfig {
-                        id: provider.id,
-                        name: provider.name,
-                        enabled: provider.enabled,
-                        base_url: provider.base_url,
-                        models: provider.models,
-                    })
-                    .collect(),
-                actions: public.actions,
+                providers,
+                actions,
             };
             Ok(())
         })?;
@@ -599,6 +622,44 @@ impl SettingsRepository {
         }
         write_result.map_err(SettingsError::Io)
     }
+}
+
+/// The fixed Ask entry is intentionally absent from public settings. Keep its
+/// execution route aligned with the first valid editable AI action so users do
+/// not need a second, hidden model configuration surface.
+fn reconcile_fixed_ask_route(
+    fixed_ask: &mut Option<ActionDefinition>,
+    editable_actions: &[ActionDefinition],
+    providers: &[ProviderConfig],
+) {
+    let Some(fixed_ask) = fixed_ask.as_mut() else {
+        return;
+    };
+    let route = editable_actions.iter().find_map(|action| {
+        if !action.kind.is_ai() || action.kind == ActionKind::Ask {
+            return None;
+        }
+        let provider_id = action.provider_id.as_deref()?.trim();
+        let model_id = action.model_id.as_deref()?.trim();
+        let valid = !provider_id.is_empty()
+            && !model_id.is_empty()
+            && providers.iter().any(|provider| {
+                provider.id == provider_id
+                    && provider.models.iter().any(|model| model.id == model_id)
+            });
+        valid.then_some((provider_id, model_id, action.thinking_mode))
+    });
+
+    if let Some((provider_id, model_id, thinking_mode)) = route {
+        fixed_ask.provider_id = Some(provider_id.to_owned());
+        fixed_ask.model_id = Some(model_id.to_owned());
+        fixed_ask.thinking_mode = thinking_mode;
+    } else {
+        fixed_ask.provider_id = Some(String::new());
+        fixed_ask.model_id = Some(String::new());
+        fixed_ask.thinking_mode = crate::models::ThinkingMode::Off;
+    }
+    fixed_ask.enabled = true;
 }
 
 fn secret_account(provider_id: &str) -> String {

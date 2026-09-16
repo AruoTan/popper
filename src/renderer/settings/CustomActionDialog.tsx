@@ -317,9 +317,11 @@ export function CustomActionDialog({
                 value={kind}
                 onChange={(event) => changeKind(event.target.value as ActionKind)}
               >
-                {Object.entries(ACTION_KIND_NAMES).map(([value, label]) => (
+                {Object.entries(ACTION_KIND_NAMES)
+                  .filter(([value]) => value !== 'ask')
+                  .map(([value, label]) => (
                   <option value={value} key={value}>{label}</option>
-                ))}
+                  ))}
               </select>
             </label>
           </div>

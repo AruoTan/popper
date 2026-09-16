@@ -19,6 +19,7 @@ describe('Tauri renderer bridge', () => {
     expect(TAURI_EVENTS.selection).toBe('textlens:selection')
     expect(TAURI_EVENTS.actionStream).toBe('textlens:action-stream')
     expect(TAURI_EVENTS.toolbarDismissed).toBe('textlens:toolbar-dismissed')
+    expect(TAURI_EVENTS.resultSelectionShortcut).toBe('textlens:result-selection-shortcut')
   })
 
   it('waits for the stream listener and forwards command arguments in Tauri form', async () => {
@@ -28,6 +29,7 @@ describe('Tauri renderer bridge', () => {
     let forwardActionEvent: ((event: { payload: unknown }) => void) | undefined
     let forwardToolbarPointer: ((event: { payload: unknown }) => void) | undefined
     let forwardToolbarDismissed: ((event: { payload: unknown }) => void) | undefined
+    let forwardResultSelectionShortcut: ((event: { payload: unknown }) => void) | undefined
     let forwardSettingsCloseRequest: ((event: { payload: unknown }) => void) | undefined
     let selectionListenAttempts = 0
     listenMock.mockImplementation((
@@ -51,6 +53,9 @@ describe('Tauri renderer bridge', () => {
       }
       if (eventName === 'textlens:toolbar-dismissed') {
         forwardToolbarDismissed = listener
+      }
+      if (eventName === 'textlens:result-selection-shortcut') {
+        forwardResultSelectionShortcut = listener
       }
       if (eventName === 'textlens:settings-close-requested') {
         forwardSettingsCloseRequest = listener
@@ -163,6 +168,17 @@ describe('Tauri renderer bridge', () => {
     await expect(window.textLens.recoverToolbar?.('selection-1')).resolves.toBe(true)
     expect(invokeMock).toHaveBeenCalledWith('recover_toolbar', { selectionId: 'selection-1' })
 
+    await window.textLens.setToolbarInputMode?.(true, 'selection-1')
+    expect(invokeMock).toHaveBeenCalledWith('set_toolbar_input_mode', {
+      active: true,
+      selectionId: 'selection-1'
+    })
+
+    await window.textLens.focusToolbarInput?.('selection-1')
+    expect(invokeMock).toHaveBeenCalledWith('focus_toolbar_input', {
+      selectionId: 'selection-1'
+    })
+
     const toolbarPointerListener = vi.fn()
     const unsubscribeToolbarPointer = window.textLens.onToolbarPointer?.(
       toolbarPointerListener
@@ -217,6 +233,14 @@ describe('Tauri renderer bridge', () => {
     unsubscribeToolbarDismissed?.()
     forwardToolbarDismissed?.({ payload: { reason: 'mouseDown' } })
     expect(toolbarDismissedListener).toHaveBeenCalledTimes(2)
+
+    const resultSelectionShortcutListener = vi.fn()
+    const unsubscribeResultSelectionShortcut = window.textLens.onResultSelectionShortcut?.(
+      resultSelectionShortcutListener
+    )
+    forwardResultSelectionShortcut?.({ payload: null })
+    expect(resultSelectionShortcutListener).toHaveBeenCalledTimes(1)
+    unsubscribeResultSelectionShortcut?.()
 
     const settingsCloseListener = vi.fn()
     const unsubscribeSettingsClose = window.textLens.onSettingsCloseRequested?.(
@@ -328,14 +352,16 @@ describe('Tauri renderer bridge', () => {
       actionId: 'search',
       cursor: null,
       selectionId: 'selection-1',
-      searchEngineId: null
+      searchEngineId: null,
+      initialQuestion: null
     })
     await window.textLens.runAction('search', undefined, 'selection-1', 'bing-china')
     expect(invokeMock).toHaveBeenCalledWith('run_action', {
       actionId: 'search',
       cursor: null,
       selectionId: 'selection-1',
-      searchEngineId: 'bing-china'
+      searchEngineId: 'bing-china',
+      initialQuestion: null
     })
 
 
@@ -413,7 +439,8 @@ describe('Tauri renderer bridge', () => {
     expect(invokeMock).toHaveBeenCalledWith('show_result_selection', {
       sessionId: 'session-1',
       text: 'selected result',
-      cursor: { x: 120, y: 240 }
+      cursor: { x: 120, y: 240 },
+      forceCapture: false
     })
 
     await window.textLens.hideResultSelection?.('session-1')

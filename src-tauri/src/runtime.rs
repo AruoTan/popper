@@ -26,7 +26,7 @@ use uuid::Uuid;
 #[cfg(target_os = "windows")]
 use crate::models::ApplicationCloseBehavior;
 use crate::{
-    actions::{ActionBeginReady, ActionService, ActionServiceError},
+    actions::{ActionBeginReady, ActionService, ActionServiceError, ConversationTurn},
     clipboard,
     models::{
         ActionKind, ActionNotice, ActionSnapshotStatus, ConnectionTestResult, CreateProviderInput,
@@ -53,6 +53,13 @@ pub const SHORTCUT_ERROR_EVENT: &str = "textlens:shortcut-error";
 pub const SETTINGS_CLOSE_REQUEST_EVENT: &str = "textlens:settings-close-requested";
 pub const SETTINGS_GUIDANCE_EVENT: &str = "textlens:settings-guidance";
 pub const TOOLBAR_DISMISSED_EVENT: &str = "textlens:toolbar-dismissed";
+pub const RESULT_SELECTION_SHORTCUT_EVENT: &str = "textlens:result-selection-shortcut";
+
+fn trace_toolbar_interaction(message: impl std::fmt::Display) {
+    if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+        eprintln!("[toolbar-interaction] {message}");
+    }
+}
 
 const SELECTION_MONITOR_START_ERROR: &str =
     "无法启动系统划词监听。请重新启动 TextLens；若仍然失败，请检查安全软件或系统策略。";
@@ -87,7 +94,6 @@ const RESULT_DEFAULT_HEIGHT: f64 = 420.0;
 const RESIZE_PERSIST_DELAY_MS: u64 = 420;
 const MAX_RESULT_SESSIONS: usize = 12;
 const RESULT_REVEAL_TIMEOUT: Duration = Duration::from_secs(3);
-
 #[cfg(target_os = "windows")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SettingsCloseAction {
@@ -369,6 +375,7 @@ pub struct ResultSessionSnapshot {
     #[serde(skip_serializing_if = "Option::is_none")]
     model_id: Option<String>,
     selection: RendererSelectionPayload,
+    conversation: Vec<ConversationTurn>,
     status: &'static str,
     content: String,
     #[serde(default)]
@@ -388,6 +395,7 @@ pub struct ResultSessionSnapshot {
 struct ResultSessionMeta {
     selection: CurrentSelection,
     action_id: String,
+    initial_question: Option<String>,
     pinned: bool,
 }
 
@@ -407,7 +415,22 @@ fn compose_result_ready_snapshot(
         snapshot,
         ack,
         route,
+        mut conversation,
     } = begin;
+    if conversation.is_empty() {
+        if let Some(question) = meta.initial_question.as_deref() {
+            conversation.push(ConversationTurn {
+                role: crate::actions::ChatRole::User,
+                content: question.to_owned(),
+            });
+            if !snapshot.content.is_empty() && snapshot.status == ActionSnapshotStatus::Completed {
+                conversation.push(ConversationTurn {
+                    role: crate::actions::ChatRole::Assistant,
+                    content: snapshot.content.clone(),
+                });
+            }
+        }
+    }
     let status = match snapshot.status {
         ActionSnapshotStatus::Running => "streaming",
         ActionSnapshotStatus::Completed => "completed",
@@ -428,6 +451,7 @@ fn compose_result_ready_snapshot(
         provider_id,
         model_id,
         selection: RendererSelectionPayload::new(&meta.selection.id, &meta.selection.payload),
+        conversation,
         status,
         content: snapshot.content,
         thinking_content: snapshot.thinking_content,
@@ -528,6 +552,13 @@ pub struct RuntimeState {
     latest_result_size: Mutex<Option<SettingsWindowSize>>,
     last_permission: Mutex<bool>,
     settings_renderer_ready: AtomicBool,
+    /// While the inline Ask composer owns keyboard focus, global key and
+    /// foreground notifications belong to TextLens itself and must not tear
+    /// down the selection toolbar.
+    toolbar_input_mode: AtomicBool,
+    /// Serializes mode changes with the delayed native focus commit so a
+    /// dismissed selection can never be reactivated by an older renderer IPC.
+    toolbar_input_switch: Mutex<()>,
     shutting_down: AtomicBool,
     pending_settings_guidance: Mutex<Option<SettingsGuidance>>,
 }
@@ -560,6 +591,8 @@ impl RuntimeState {
             latest_result_size: Mutex::new(None),
             last_permission: Mutex::new(SelectionMonitor::is_accessibility_trusted()),
             settings_renderer_ready: AtomicBool::new(false),
+            toolbar_input_mode: AtomicBool::new(false),
+            toolbar_input_switch: Mutex::new(()),
             shutting_down: AtomicBool::new(false),
             pending_settings_guidance: Mutex::new(None),
         }
@@ -649,6 +682,33 @@ impl RuntimeState {
         match event {
             SelectionEvent::Selection(selection) => self.handle_selection(app, selection, false),
             SelectionEvent::Dismiss(dismiss) => {
+                trace_toolbar_interaction(format_args!(
+                    "dismiss received reason={} input_mode={} point=({:.0},{:.0}) target_pid={} timestamp_ms={}",
+                    dismiss.reason,
+                    self.toolbar_input_mode.load(Ordering::Acquire),
+                    dismiss.mouse.x,
+                    dismiss.mouse.y,
+                    dismiss.target_pid,
+                    dismiss.timestamp_ms
+                ));
+                let input_mode_active = self.toolbar_input_mode.load(Ordering::Acquire);
+                if toolbar_input_mode_preserves_dismiss(input_mode_active) {
+                    // The low-level hook is not an authoritative dismissal
+                    // source once this no-activate overlay becomes an
+                    // interactive WebView. Focus can replay multiple
+                    // physical-looking events with unrelated coordinates.
+                    // X, Escape and submit remain explicit exit paths.
+                    trace_toolbar_interaction(format_args!(
+                        "dismiss preserved: inline composer owns reason={}",
+                        dismiss.reason
+                    ));
+                    if let Err(error) = self.windows.keep_toolbar_input_visible(app) {
+                        trace_toolbar_interaction(format_args!(
+                            "input visibility recovery failed error={error}"
+                        ));
+                    }
+                    return;
+                }
                 let result_selection_origin = self
                     .current_selection
                     .lock()
@@ -672,8 +732,11 @@ impl RuntimeState {
                     y: dismiss.mouse.y,
                 };
                 if dismiss.reason == "mouseDown" && self.windows.point_inside_toolbar(app, point) {
+                    trace_toolbar_interaction("dismiss preserved: pointer is inside toolbar");
                     return;
                 }
+                trace_toolbar_interaction("dismiss accepted: clearing toolbar selection");
+                self.deactivate_toolbar_input(app);
                 let (selection_id, dismissed_text) = {
                     let mut current = self.current_selection.lock();
                     if current.as_ref().is_some_and(|selection| {
@@ -761,12 +824,22 @@ impl RuntimeState {
         let _ = self.windows.hide_toolbar_if_selection(app, selection_id);
     }
 
+    fn deactivate_toolbar_input(&self, app: &AppHandle) {
+        let _input_switch = self.toolbar_input_switch.lock();
+        if self.toolbar_input_mode.swap(false, Ordering::AcqRel) {
+            let _ = self.windows.set_toolbar_input_mode(app, false);
+        }
+    }
+
     fn clear_and_hide_current_selection_if(&self, app: &AppHandle, selection_id: &str) -> bool {
         let cleared = self.clear_current_selection_if(selection_id);
         // The global dismiss hook may already have consumed the logical
         // selection while the native toolbar is still visible. Always retry
         // the selection-bound native hide; its coordinator check protects a
         // newer toolbar generation from an old action completion.
+        if cleared {
+            self.deactivate_toolbar_input(app);
+        }
         self.hide_toolbar_for_selection(app, selection_id);
         cleared
     }
@@ -995,9 +1068,12 @@ impl RuntimeState {
         let trusted = SelectionMonitor::is_accessibility_trusted();
         // Keep the native monitor running in both trigger modes while enabled:
         // shortcut mode still needs dismiss events (outside click) after a
-        // shortcut-invoked toolbar is shown. Auto-selection is filtered in
-        // handle_selection when mode is Shortcut.
+        // shortcut-invoked toolbar is shown. The Windows worker receives a
+        // separate capture gate so those hooks cannot start UIA/clipboard work.
         let should_listen = settings.enabled && trusted;
+        #[cfg(target_os = "windows")]
+        let automatic_capture_enabled =
+            should_listen && settings.trigger.mode == TriggerMode::Selected;
         if !should_listen {
             self.invalidate_shortcut_capture();
         }
@@ -1005,7 +1081,10 @@ impl RuntimeState {
             let monitor = self.selection_monitor.lock();
             #[cfg(target_os = "windows")]
             let settings_applied = monitor
-                .update_capture_settings(settings.selection_capture.clone())
+                .update_capture_settings(
+                    settings.selection_capture.clone(),
+                    automatic_capture_enabled,
+                )
                 .is_ok();
             if should_listen {
                 #[cfg(target_os = "windows")]
@@ -1292,6 +1371,7 @@ impl RuntimeState {
             selection,
             cursor,
             ResultSessionStart::Execute,
+            None,
         )
     }
 
@@ -1302,6 +1382,7 @@ impl RuntimeState {
         action_name: &str,
         selection: CurrentSelection,
         cursor: WindowPoint,
+        initial_question: Option<String>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         self.create_result_session_with(
             app,
@@ -1310,6 +1391,7 @@ impl RuntimeState {
             selection,
             cursor,
             ResultSessionStart::OpenAsk,
+            initial_question,
         )
     }
 
@@ -1321,6 +1403,7 @@ impl RuntimeState {
         selection: CurrentSelection,
         cursor: WindowPoint,
         start: ResultSessionStart,
+        initial_question: Option<String>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("TextLens 正在退出".to_owned());
@@ -1420,6 +1503,7 @@ impl RuntimeState {
             ResultSessionMeta {
                 selection,
                 action_id: action_id.to_owned(),
+                initial_question,
                 pinned: result.default_pinned,
             },
         );
@@ -1853,6 +1937,14 @@ pub fn handle_global_shortcut(app: &AppHandle, shortcut: &Shortcut, event: Short
         settings.trigger.mode,
         settings.capture_shortcut.as_str(),
     ) {
+        if let Some(label) = state.windows.foreground_result_label(app) {
+            if app
+                .emit_to(&label, RESULT_SELECTION_SHORTCUT_EVENT, ())
+                .is_ok()
+            {
+                return;
+            }
+        }
         state.capture_current(app);
     }
 }
@@ -2506,6 +2598,84 @@ pub fn present_toolbar(
 }
 
 #[tauri::command]
+pub fn set_toolbar_input_mode(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    active: bool,
+    selection_id: Option<String>,
+) -> Result<bool, String> {
+    ensure_toolbar_caller(&window)?;
+    if selection_id.as_ref().is_some_and(|value| value.len() > 128) {
+        return Err("选区标识无效".to_owned());
+    }
+    let _input_switch = state.toolbar_input_switch.lock();
+    let current_selection_id = state
+        .current_selection
+        .lock()
+        .as_ref()
+        .map(|selection| selection.id.clone());
+    let matches_current = selection_id.as_deref() == current_selection_id.as_deref();
+    trace_toolbar_interaction(format_args!(
+        "set input mode requested active={active} selection_matches={matches_current}"
+    ));
+    if (active && !matches_current)
+        || (!active && current_selection_id.is_some() && !matches_current)
+    {
+        return Ok(false);
+    }
+    state
+        .windows
+        .set_toolbar_input_mode(&app, active)
+        .map_err(|error| error.to_string())?;
+    // Publish the logical mode only after the native focusability/style
+    // transaction has committed. Dismiss handling must never observe an input
+    // mode that the HWND failed to enter.
+    state.toolbar_input_mode.store(active, Ordering::Release);
+    trace_toolbar_interaction(format_args!("set input mode committed active={active}"));
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn focus_toolbar_input(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    selection_id: Option<String>,
+) -> Result<bool, String> {
+    ensure_toolbar_caller(&window)?;
+    if selection_id.as_ref().is_some_and(|value| value.len() > 128) {
+        return Err("选区标识无效".to_owned());
+    }
+    let _input_switch = state.toolbar_input_switch.lock();
+    let current_selection_id = state
+        .current_selection
+        .lock()
+        .as_ref()
+        .map(|selection| selection.id.clone());
+    trace_toolbar_interaction(format_args!(
+        "focus requested input_mode={} selection_matches={}",
+        state.toolbar_input_mode.load(Ordering::Acquire),
+        selection_id.as_deref() == current_selection_id.as_deref()
+    ));
+    if !state.toolbar_input_mode.load(Ordering::Acquire)
+        || selection_id.as_deref() != current_selection_id.as_deref()
+    {
+        return Ok(false);
+    }
+    let focused = state
+        .windows
+        .focus_toolbar_input(&app)
+        .map_err(|error| error.to_string())?;
+    trace_toolbar_interaction(format_args!("focus committed focused={focused}"));
+    Ok(focused)
+}
+
+fn toolbar_input_mode_preserves_dismiss(active: bool) -> bool {
+    active
+}
+
+#[tauri::command]
 pub async fn run_action(
     app: AppHandle,
     window: WebviewWindow,
@@ -2514,6 +2684,7 @@ pub async fn run_action(
     cursor: Option<CursorPoint>,
     selection_id: Option<String>,
     search_engine_id: Option<String>,
+    initial_question: Option<String>,
 ) -> Result<RunActionResult, String> {
     if let Err(message) = ensure_toolbar_caller(&window) {
         return Ok(RunActionResult::rejected(message));
@@ -2534,7 +2705,11 @@ pub async fn run_action(
     let Some(action) = settings
         .actions
         .iter()
-        .find(|candidate| candidate.id == action_id && candidate.enabled)
+        .find(|candidate| {
+            candidate.id == action_id
+                && (candidate.enabled
+                    || (action_id == "ask-ai" && candidate.kind == ActionKind::Ask))
+        })
         .cloned()
     else {
         return Ok(RunActionResult::rejected("动作不存在或已停用"));
@@ -2591,11 +2766,46 @@ pub async fn run_action(
             }
         }
         _ if action.kind.opens_result_without_generation() => {
+            let initial_question = initial_question
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if initial_question.is_some_and(|value| value.chars().count() > 20_000) {
+                state
+                    .consuming_selection_ids
+                    .lock()
+                    .remove(&selection_token);
+                return Ok(RunActionResult::rejected("问题内容过长"));
+            }
             let cursor = action_result_cursor(&app, cursor, &selection.payload);
             let selected_text = selection.payload.text.clone();
-            match state.create_ask_result_session(&app, &action.id, &action.name, selection, cursor)
-            {
-                Ok((session_id, request_id, reveal_receiver)) => {
+            match state.create_ask_result_session(
+                &app,
+                &action.id,
+                &action.name,
+                selection,
+                cursor,
+                initial_question.map(str::to_owned),
+            ) {
+                Ok((session_id, open_request_id, reveal_receiver)) => {
+                    let request_id = if let Some(question) = initial_question {
+                        match state
+                            .actions
+                            .continue_with_question(&app, &session_id, question)
+                        {
+                            Ok(request_id) => request_id,
+                            Err(error) => {
+                                state.abort_result_reveal(&app, &session_id);
+                                state
+                                    .consuming_selection_ids
+                                    .lock()
+                                    .remove(&selection_token);
+                                return Ok(RunActionResult::rejected(error.to_string()));
+                            }
+                        }
+                    } else {
+                        open_request_id
+                    };
                     match wait_for_result_reveal_with_timeout(
                         reveal_receiver,
                         RESULT_REVEAL_TIMEOUT,
@@ -2685,6 +2895,7 @@ pub fn hide_toolbar(
         (should_hide, current_id)
     };
     if should_hide {
+        state.deactivate_toolbar_input(&app);
         if let Some(id) = selection_id.as_deref().or(current_id.as_deref()) {
             let _ = state.windows.hide_toolbar_if_selection(&app, id);
         } else {
@@ -2718,6 +2929,12 @@ pub fn report_toolbar_size(
             return Ok(());
         }
     }
+    trace_toolbar_interaction(format_args!(
+        "size requested width={:.0} height={:.0} scoped={}",
+        size.width,
+        size.height,
+        selection_id.is_some()
+    ));
     state
         .windows
         .update_toolbar_size(
@@ -2876,10 +3093,21 @@ pub fn show_result_selection(
     session_id: String,
     text: String,
     cursor: CursorPoint,
+    force_capture: Option<bool>,
 ) -> Result<(), String> {
     ensure_result_caller(&window, &session_id)?;
     if !state.result_sessions.lock().contains_key(&session_id) {
         return Err("结果会话已结束".to_owned());
+    }
+    // Result webviews submit their own selections because native monitors
+    // intentionally ignore TextLens-owned windows. This is still an automatic
+    // pointer-up trigger, so it must obey the same policy as native selection
+    // events instead of bypassing shortcut-only mode.
+    if !should_present_selection_for_trigger(
+        force_capture.unwrap_or(false),
+        state.settings.get_settings().trigger.mode,
+    ) {
+        return Ok(());
     }
     if text.trim().is_empty() {
         return Err("所选文字为空".to_owned());
@@ -3530,6 +3758,7 @@ mod tests {
                 source_result_session_id: Some("s".to_owned()),
             },
             action_id: "translate".to_owned(),
+            initial_question: None,
             pinned: false,
         }
     }
@@ -3585,6 +3814,7 @@ mod tests {
                 handshake_generation: HandshakeGeneration(1),
             },
             route: None,
+            conversation: Vec::new(),
         }
     }
 
@@ -3623,6 +3853,7 @@ mod tests {
                 model_id: "m".into(),
                 thinking_mode: crate::models::ThinkingMode::Off,
             }),
+            conversation: Vec::new(),
         };
         let result = compose_result_ready_snapshot(result_meta(), begin);
         assert_eq!(result.last_sequence, EventSequence(12));
@@ -3644,6 +3875,22 @@ mod tests {
         let result = compose_result_ready_snapshot(result_meta(), initial_preparing_begin());
         assert_eq!(result.provider_id, None);
         assert_eq!(result.model_id, None);
+    }
+
+    #[test]
+    fn ask_snapshot_keeps_toolbar_question_when_ready_handshake_wins_prepare_race() {
+        let mut meta = result_meta();
+        meta.action_id = "ask-ai".to_owned();
+        meta.initial_question = Some("什么是 title？".to_owned());
+        let mut begin = initial_preparing_begin();
+        begin.snapshot.action_id = "ask-ai".to_owned();
+        begin.snapshot.status = ActionSnapshotStatus::Completed;
+
+        let result = compose_result_ready_snapshot(meta, begin);
+
+        assert_eq!(result.conversation.len(), 1);
+        assert_eq!(result.conversation[0].role, crate::actions::ChatRole::User);
+        assert_eq!(result.conversation[0].content, "什么是 title？");
     }
 
     #[test]
@@ -4067,6 +4314,14 @@ mod tests {
     fn dismiss_does_not_repeat_a_successful_scoped_hide() {
         let plan = dismiss_hide_plan(Some("selection-1".to_owned()), true);
         assert!(!plan.force_hide);
+    }
+
+    #[test]
+    fn toolbar_input_mode_owns_all_global_dismiss_reasons() {
+        for reason in ["foregroundChanged", "keyDown", "mouseDown", "scroll"] {
+            assert!(toolbar_input_mode_preserves_dismiss(true), "{reason}");
+        }
+        assert!(!toolbar_input_mode_preserves_dismiss(false));
     }
 
     #[test]

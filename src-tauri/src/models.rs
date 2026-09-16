@@ -699,7 +699,16 @@ impl PublicSettings {
                     )
                 })
                 .collect(),
-            actions: settings.actions.clone(),
+            // Ask is a permanent toolbar capability, not a user-managed
+            // action. Keep its route/prompt in the internal settings for
+            // backwards-compatible persistence, but do not expose it in the
+            // editable action collection.
+            actions: settings
+                .actions
+                .iter()
+                .filter(|action| action.kind != ActionKind::Ask)
+                .cloned()
+                .collect(),
         }
     }
 }
@@ -1170,7 +1179,9 @@ impl AppSettings {
             if !valid_icon_name(&action.icon) {
                 return Err(format!("动作“{}”的图标名称无效", action.name));
             }
-            enabled_count += usize::from(action.enabled);
+            // The fixed Ask capability is always present and does not consume
+            // one of the user-configurable toolbar action slots.
+            enabled_count += usize::from(action.enabled && action.kind != ActionKind::Ask);
             custom_count += usize::from(action.kind == ActionKind::Custom);
 
             if action.kind.is_ai() {
@@ -1524,7 +1535,11 @@ mod tests {
         let json = serde_json::to_string(&public).unwrap();
         assert!(!json.contains("apiKey"));
         assert!(json.contains("keyConfigured"));
-        assert_eq!(public.actions.len(), 7);
+        assert_eq!(public.actions.len(), 6);
+        assert!(public
+            .actions
+            .iter()
+            .all(|action| action.kind != ActionKind::Ask));
         assert!(!public.providers[0].key_configured);
         assert_eq!(
             settings.selection_capture.default_strategy,

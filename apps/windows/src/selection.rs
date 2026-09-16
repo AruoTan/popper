@@ -368,11 +368,16 @@ impl WindowsSelectionMonitor {
     pub(super) fn update_capture_settings(
         &self,
         settings: SelectionCaptureSettings,
+        automatic_capture_enabled: bool,
     ) -> Result<(), SelectionError> {
         if self.shutdown_requested.load(Ordering::Acquire) {
             return Err(SelectionError::Internal);
         }
-        self.request_unit(|reply| WorkerMessage::UpdateCaptureSettings { settings, reply })
+        self.request_unit(|reply| WorkerMessage::UpdateCaptureSettings {
+            settings,
+            automatic_capture_enabled,
+            reply,
+        })
     }
 
     /// Requests shutdown and gives the worker a small grace period to finish.
@@ -435,6 +440,7 @@ enum WorkerMessage {
     Stop(UnitReply),
     UpdateCaptureSettings {
         settings: SelectionCaptureSettings,
+        automatic_capture_enabled: bool,
         reply: UnitReply,
     },
     Capture(CaptureReply),
@@ -676,6 +682,27 @@ impl CaptureCoordinator {
         if let Some(active) = self.active.as_ref() {
             active.user_keyboard.store(true, Ordering::Release);
             active.cancelled.store(true, Ordering::Release);
+        }
+    }
+
+    fn cancel_automatic(&mut self) {
+        if let Some(active) = self
+            .active
+            .as_ref()
+            .filter(|active| active.request.trigger != SelectionTrigger::Manual)
+        {
+            active.cancelled.store(true, Ordering::Release);
+        }
+        if self
+            .queued
+            .as_ref()
+            .is_some_and(|(job, _)| job.request.trigger != SelectionTrigger::Manual)
+        {
+            if let Some((_, reply)) = self.queued.take() {
+                if let Some(reply) = reply {
+                    let _ = reply.send(Ok(None));
+                }
+            }
         }
     }
 
@@ -1061,6 +1088,7 @@ fn selection_worker_main(
         event_sender,
         own_process_id: unsafe { GetCurrentProcessId() },
         capture_settings: SelectionCaptureSettings::default(),
+        automatic_capture_enabled: false,
         // Keep all UIA/OLE work off the hook/event state machine. A timed-out
         // helper lane can be discarded while the hook worker continues to
         // process the next gesture.
@@ -1113,6 +1141,7 @@ struct SelectionWorker {
     event_sender: Arc<Mutex<Sender<SelectionEvent>>>,
     own_process_id: u32,
     capture_settings: SelectionCaptureSettings,
+    automatic_capture_enabled: bool,
     capture_coordinator: Option<CaptureCoordinator>,
     hook_thread: Option<HookThread>,
     desired_listening: bool,
@@ -1205,8 +1234,16 @@ impl SelectionWorker {
                     .map_or(Ok(()), |mut thread| thread.stop());
                 let _ = reply.send(result);
             }
-            WorkerMessage::UpdateCaptureSettings { settings, reply } => {
+            WorkerMessage::UpdateCaptureSettings {
+                settings,
+                automatic_capture_enabled,
+                reply,
+            } => {
                 self.capture_settings = settings;
+                self.automatic_capture_enabled = automatic_capture_enabled;
+                if !automatic_capture_enabled {
+                    self.cancel_automatic_capture_state();
+                }
                 let _ = reply.send(Ok(()));
             }
             WorkerMessage::Capture(reply) => {
@@ -1495,6 +1532,24 @@ impl SelectionWorker {
         }
     }
 
+    fn cancel_automatic_capture_state(&mut self) {
+        self.pending_capture = None;
+        self.mouse_down = None;
+        self.mouse_down_at = None;
+        self.mouse_down_on_self = false;
+        self.mouse_down_target_root = 0;
+        self.mouse_down_shift = false;
+        self.mouse_down_clipboard_sequence = None;
+        self.last_mouse_up = None;
+        self.last_click = None;
+        self.keyboard_selection_key = None;
+        self.last_automatic_fingerprint = None;
+        self.recent_capture = None;
+        if let Some(coordinator) = self.capture_coordinator.as_mut() {
+            coordinator.cancel_automatic();
+        }
+    }
+
     fn manual_capture_active(&self) -> bool {
         self.capture_coordinator
             .as_ref()
@@ -1562,7 +1617,9 @@ impl SelectionWorker {
                 self.mouse_down_target_root = target_root.0 as isize;
                 self.mouse_down_shift =
                     modifiers.shift && !modifiers.control && !modifiers.alt && !modifiers.windows;
-                self.mouse_down_clipboard_sequence = Some(clipboard::windows_clipboard_sequence());
+                self.mouse_down_clipboard_sequence = self
+                    .automatic_capture_enabled
+                    .then(clipboard::windows_clipboard_sequence);
                 // Self clicks still produce Dismiss so runtime can preserve a
                 // click inside the no-activate toolbar while closing it for a
                 // click elsewhere in a TextLens window. Mouse-up below never
@@ -1585,6 +1642,11 @@ impl SelectionWorker {
                 let clipboard_sequence_at_start = self.mouse_down_clipboard_sequence.take();
                 let previous_mouse_up = self.last_mouse_up;
                 if began_on_self || target_is_self {
+                    return;
+                }
+                if !self.automatic_capture_enabled {
+                    self.last_mouse_up = None;
+                    self.last_click = None;
                     return;
                 }
                 let is_double_click = self.last_click.is_some_and(|(at, previous)| {
@@ -1707,6 +1769,10 @@ impl SelectionWorker {
 
         let point = current_cursor_position();
         self.emit_dismiss("keyDown", point, foreground, timestamp_ms);
+        if !self.automatic_capture_enabled {
+            self.keyboard_selection_key = None;
+            return;
+        }
         let navigation = matches!(
             virtual_key as u16,
             key if key == VK_LEFT.0
@@ -1740,6 +1806,9 @@ impl SelectionWorker {
         empty_attempt: u8,
         process_parents: Option<Option<HashMap<u32, u32>>>,
     ) {
+        if !automatic_capture_allowed(self.automatic_capture_enabled, request.trigger) {
+            return;
+        }
         self.cancel_active_capture();
         let now = Instant::now();
         let source_process_id = window_process_id(HWND(source_root_window as *mut c_void));
@@ -1901,6 +1970,12 @@ impl SelectionWorker {
         scheduled_at: Instant,
         reply: Option<CaptureReply>,
     ) {
+        if !automatic_capture_allowed(self.automatic_capture_enabled, request.trigger) {
+            if let Some(reply) = reply {
+                let _ = reply.send(Ok(None));
+            }
+            return;
+        }
         if self.capture_coordinator.is_none() {
             self.capture_coordinator =
                 CaptureCoordinator::spawn(self.own_process_id, self.inbox.clone()).ok();
@@ -1945,6 +2020,10 @@ impl SelectionWorker {
             if completion.cancelled.load(Ordering::Acquire)
                 || completion.superseded
                 || self.pending_capture.is_some()
+                || !automatic_capture_allowed(
+                    self.automatic_capture_enabled,
+                    completion.request.trigger,
+                )
             {
                 continue;
             }
@@ -2004,6 +2083,9 @@ impl SelectionWorker {
         source_root_window: isize,
         source_process_id: u32,
     ) -> bool {
+        if !automatic_capture_allowed(self.automatic_capture_enabled, request.trigger) {
+            return false;
+        }
         // Every capture is non-destructive and generation-bound. A stale AX
         // result must never repaint the toolbar after a newer selection.
         let generation_mismatch = request
@@ -6603,6 +6685,10 @@ fn should_retry_empty_capture(request: &CaptureRequest) -> bool {
     )
 }
 
+fn automatic_capture_allowed(enabled: bool, trigger: SelectionTrigger) -> bool {
+    enabled || trigger == SelectionTrigger::Manual
+}
+
 fn request_vertical_distance(request: &CaptureRequest) -> Option<i64> {
     let start = request.start?;
     let end = request.end.unwrap_or(request.current);
@@ -8432,6 +8518,7 @@ mod tests {
             event_sender: Arc::new(Mutex::new(event_sender)),
             own_process_id: 100,
             capture_settings: SelectionCaptureSettings::default(),
+            automatic_capture_enabled: true,
             capture_coordinator: None,
             hook_thread: None,
             desired_listening: false,
@@ -8451,6 +8538,19 @@ mod tests {
             last_automatic_fingerprint: None,
             recent_capture: None,
             last_raw_sequence: 0,
+        }
+    }
+
+    fn test_capture_request(trigger: SelectionTrigger) -> CaptureRequest {
+        CaptureRequest {
+            trigger,
+            start: Some(RawPoint { x: 10, y: 10 }),
+            end: Some(RawPoint { x: 80, y: 10 }),
+            current: RawPoint { x: 80, y: 10 },
+            generation: None,
+            clipboard_sequence_at_start: None,
+            press_duration_ms: 0,
+            capture_strategy: SelectionCaptureStrategy::Clipboard,
         }
     }
 
@@ -8485,6 +8585,156 @@ mod tests {
             normalize_captured_text("  中文\r\n第二行\r第三行\0\u{7}\t  "),
             "中文\n第二行\n第三行"
         );
+    }
+
+    #[test]
+    fn shortcut_mode_allows_only_manual_capture_requests() {
+        for trigger in [
+            SelectionTrigger::Drag,
+            SelectionTrigger::DoubleClick,
+            SelectionTrigger::ShiftClick,
+            SelectionTrigger::Keyboard,
+        ] {
+            assert!(!automatic_capture_allowed(false, trigger));
+            assert!(automatic_capture_allowed(true, trigger));
+        }
+        assert!(automatic_capture_allowed(false, SelectionTrigger::Manual));
+
+        let (sender, _receiver) = mpsc::channel();
+        let mut worker = test_worker(sender);
+        worker.automatic_capture_enabled = false;
+        worker.schedule_capture(test_capture_request(SelectionTrigger::Drag), 42);
+        assert!(worker.pending_capture.is_none());
+    }
+
+    #[test]
+    fn shortcut_mode_discards_late_automatic_delivery_but_keeps_manual_delivery() {
+        let (sender, receiver) = mpsc::channel();
+        let mut worker = test_worker(sender);
+        worker.automatic_capture_enabled = false;
+
+        let automatic = test_capture_request(SelectionTrigger::Drag);
+        assert!(!worker.deliver_captured_selection(
+            automatic,
+            test_selection(SelectionTrigger::Drag),
+            42,
+            200,
+        ));
+        assert!(receiver.try_recv().is_err());
+
+        let manual = test_capture_request(SelectionTrigger::Manual);
+        assert_eq!(manual.capture_strategy, SelectionCaptureStrategy::Clipboard);
+        assert!(worker.deliver_captured_selection(
+            manual,
+            test_selection(SelectionTrigger::Manual),
+            42,
+            200,
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(SelectionEvent::Selection(selection))
+                if selection.trigger == SelectionTrigger::Manual
+        ));
+    }
+
+    #[test]
+    fn disabling_automatic_capture_clears_gesture_and_pending_state() {
+        let (sender, _receiver) = mpsc::channel();
+        let mut worker = test_worker(sender);
+        worker.mouse_down = Some(RawPoint { x: 10, y: 10 });
+        worker.mouse_down_at = Some(Instant::now());
+        worker.last_click = Some((Instant::now(), RawPoint { x: 10, y: 10 }));
+        worker.keyboard_selection_key = Some(u32::from(VK_RIGHT.0));
+        worker.pending_capture = Some(PendingCapture {
+            due: Instant::now(),
+            expires_at: Instant::now() + Duration::from_secs(1),
+            scheduled_at: Instant::now(),
+            request: test_capture_request(SelectionTrigger::Drag),
+            source_root_window: 42,
+            source_process_id: 200,
+            process_parents: None,
+            empty_attempt: 0,
+        });
+
+        worker.automatic_capture_enabled = false;
+        worker.cancel_automatic_capture_state();
+
+        assert!(worker.mouse_down.is_none());
+        assert!(worker.last_click.is_none());
+        assert!(worker.keyboard_selection_key.is_none());
+        assert!(worker.pending_capture.is_none());
+    }
+
+    #[test]
+    fn coordinator_cancels_only_automatic_active_and_queued_jobs() {
+        let coordinator = |active_trigger, queued_trigger| {
+            let (command_sender, _command_receiver) = mpsc::channel();
+            let (_completion_sender, completion_receiver) = mpsc::channel();
+            let (completion_waker, _waker_receiver) = mpsc::channel();
+            let active_cancelled = Arc::new(AtomicBool::new(false));
+            let queued_cancelled = Arc::new(AtomicBool::new(false));
+            let active = ActiveCapture {
+                id: 1,
+                request: test_capture_request(active_trigger),
+                source_root_window: 42,
+                source_process_id: 200,
+                process_parents: None,
+                empty_attempt: 0,
+                reply: None,
+                cancelled: active_cancelled.clone(),
+                user_keyboard: Arc::new(AtomicBool::new(false)),
+                superseded: Arc::new(AtomicBool::new(false)),
+            };
+            let queued = CaptureJob {
+                id: 2,
+                request: test_capture_request(queued_trigger),
+                source_root_window: 42,
+                source_process_id: 200,
+                process_parents: None,
+                empty_attempt: 0,
+                cancelled: queued_cancelled,
+                user_keyboard: Arc::new(AtomicBool::new(false)),
+                superseded: Arc::new(AtomicBool::new(false)),
+                scheduled_at: Instant::now(),
+            };
+            (
+                CaptureCoordinator {
+                    own_process_id: 100,
+                    command_sender,
+                    completion_receiver,
+                    completion_waker,
+                    lane: None,
+                    next_id: 3,
+                    active: Some(active),
+                    queued: Some((queued, None)),
+                },
+                active_cancelled,
+            )
+        };
+
+        let (mut automatic, active_cancelled) =
+            coordinator(SelectionTrigger::Drag, SelectionTrigger::DoubleClick);
+        automatic.cancel_automatic();
+        assert!(active_cancelled.load(Ordering::Acquire));
+        assert!(automatic.queued.is_none());
+
+        let (mut manual, active_cancelled) =
+            coordinator(SelectionTrigger::Manual, SelectionTrigger::Manual);
+        manual.cancel_automatic();
+        assert!(!active_cancelled.load(Ordering::Acquire));
+        assert!(manual.queued.is_some());
+
+        let (mut automatic_with_manual_queued, active_cancelled) =
+            coordinator(SelectionTrigger::Drag, SelectionTrigger::Manual);
+        automatic_with_manual_queued.cancel_automatic();
+        assert!(active_cancelled.load(Ordering::Acquire));
+        assert!(automatic_with_manual_queued.queued.is_some());
+
+        let (mut manual_with_automatic_queued, active_cancelled) =
+            coordinator(SelectionTrigger::Manual, SelectionTrigger::Drag);
+        manual_with_automatic_queued.cancel_automatic();
+        assert!(!active_cancelled.load(Ordering::Acquire));
+        assert!(manual_with_automatic_queued.queued.is_none());
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
 import { StrictMode } from 'react'
 
 import {
@@ -9,6 +10,8 @@ import {
   type WindowTextLensApi
 } from '../../shared'
 import type { ResultSessionBootstrap } from './resultSessionBootstrap'
+
+const resultCss = readFileSync('src/renderer/result/result.css', 'utf8')
 
 const { startDragging, startResizeDragging } = vi.hoisted(() => ({
   startDragging: vi.fn(),
@@ -41,6 +44,7 @@ function resultSnapshot(
       direction: 'unknown',
       isFullscreen: false
     },
+    conversation: [],
     status: 'completed',
     content,
     thinkingContent: '',
@@ -110,6 +114,7 @@ async function renderResult(
   const failResultReveal = vi.fn().mockResolvedValue(undefined)
   const ackResultReady = vi.fn().mockResolvedValue(true)
   let settingsListener: ((next: PublicSettings) => void) | null = null
+  let resultSelectionShortcutListener: (() => void) | null = null
   const api = {
     getSettings: vi.fn().mockResolvedValue(settings),
     beginResultReady: vi.fn().mockResolvedValue(snapshot),
@@ -131,6 +136,12 @@ async function renderResult(
       settingsListener = listener
       return () => {
         if (settingsListener === listener) settingsListener = null
+      }
+    }),
+    onResultSelectionShortcut: vi.fn((listener: () => void) => {
+      resultSelectionShortcutListener = listener
+      return () => {
+        if (resultSelectionShortcutListener === listener) resultSelectionShortcutListener = null
       }
     }),
     ...apiOverrides
@@ -165,7 +176,8 @@ async function renderResult(
     commitResultReveal,
     failResultReveal,
     bootstrap,
-    emitSettings: (next: PublicSettings) => settingsListener?.(next)
+    emitSettings: (next: PublicSettings) => settingsListener?.(next),
+    emitResultSelectionShortcut: () => resultSelectionShortcutListener?.()
   }
 }
 
@@ -224,6 +236,14 @@ describe('ResultApp sessionId query', () => {
 })
 
 describe('ResultApp window interactions', () => {
+  it('limits the hidden footer hit area to the rendered controls height', () => {
+    const footerRule = resultCss.match(/\.result-footer\s*\{(?<body>[\s\S]*?)\}/)?.groups?.body
+
+    expect(footerRule).toBeDefined()
+    expect(footerRule).not.toMatch(/padding-top\s*:/)
+    expect(footerRule).not.toMatch(/margin-top\s*:/)
+  })
+
   it('hydrates and reveals while getSettings remains pending', async () => {
     const settings = deferred<PublicSettings>()
     const { prepareResultReveal } = await renderResult(
@@ -747,6 +767,48 @@ describe('ResultApp window interactions', () => {
     expect(screen.queryByText('已载入选中文本。请在下方输入问题。')).not.toBeInTheDocument()
   })
 
+  it('keeps the toolbar-submitted initial question and answer after streaming completes', async () => {
+    const askSession = resultSnapshot({
+      actionId: 'ask-ai',
+      status: 'completed',
+      content: '',
+      contentScalarCount: 0,
+      conversation: [{ role: 'user', content: '什么是 title？' }]
+    })
+    await renderResult(askSession)
+
+    expect(screen.getByText('什么是 title？')).toBeInTheDocument()
+    expect(screen.queryByText('已载入选中文本。请在下方输入问题。')).not.toBeInTheDocument()
+
+    const store = await import('./actionEventStore')
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askSession,
+        requestId: 'request-initial-question',
+        requestGeneration: 2,
+        status: 'streaming',
+        content: 'Title 是',
+        contentScalarCount: countUnicodeScalars('Title 是')
+      })
+    })
+    expect(screen.getByText('Title 是')).toBeInTheDocument()
+
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askSession,
+        requestId: 'request-initial-question',
+        requestGeneration: 2,
+        status: 'completed',
+        content: 'Title 是标题。',
+        contentScalarCount: countUnicodeScalars('Title 是标题。')
+      })
+    })
+
+    await waitFor(() => expect(screen.getByText('Title 是标题。')).toBeInTheDocument())
+    expect(screen.getByText('什么是 title？')).toBeInTheDocument()
+    expect(screen.queryByText('已载入选中文本。请在下方输入问题。')).not.toBeInTheDocument()
+  })
+
   it('shows the selected provider and model in non-translation result headers', async () => {
     const summary = { ...completedSession, actionId: 'summary' }
     const { container } = await renderResult(summary)
@@ -831,7 +893,8 @@ describe('ResultApp window interactions', () => {
       expect(showResultSelection).toHaveBeenCalledWith(
         'session-1',
         '可选择的结果',
-        { x: 320, y: 240 }
+        { x: 320, y: 240 },
+        false
       )
     })
 
@@ -856,6 +919,44 @@ describe('ResultApp window interactions', () => {
     // The deferred Markdown chunk may replace its initial plain-text node, so
     // assert against the live result container instead of the stale span.
     expect(container.querySelector('.result-content')).toHaveTextContent(completedSession.content)
+  })
+
+  it('does not auto-show the toolbar for result selections in shortcut mode', async () => {
+    const shortcutSettings: PublicSettings = {
+      ...settingsWithFontSize(),
+      trigger: { mode: 'shortcut' }
+    }
+    const { showResultSelection, hideResultSelection, emitResultSelectionShortcut } = await renderResult(
+      completedSession,
+      shortcutSettings
+    )
+    const selected = screen.getByText('可选择的结果')
+    const range = document.createRange()
+    range.selectNodeContents(selected)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+
+    fireEvent.pointerUp(selected, {
+      button: 0,
+      isPrimary: true,
+      screenX: 320,
+      screenY: 240
+    })
+    await waitForAnimationFrame()
+
+    expect(showResultSelection).not.toHaveBeenCalled()
+    expect(hideResultSelection).toHaveBeenCalledWith('session-1')
+
+    emitResultSelectionShortcut()
+    await waitFor(() => {
+      expect(showResultSelection).toHaveBeenCalledWith(
+        'session-1',
+        '可选择的结果',
+        { x: 320, y: 240 },
+        true
+      )
+    })
   })
 
   it('dismisses the in-result selection toolbar when clicking elsewhere inside the result window', async () => {

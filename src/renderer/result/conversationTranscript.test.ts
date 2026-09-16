@@ -4,10 +4,30 @@ import {
   beginAssistantTurn,
   isAskAction,
   patchStreamingAssistant,
+  transcriptFromSnapshot,
   type TranscriptTurn
 } from './conversationTranscript'
 
 describe('conversationTranscript', () => {
+  it('adds a pending assistant turn when a restored request is streaming', () => {
+    expect(transcriptFromSnapshot('session-1', [
+      { role: 'user', content: '什么是 title？' }
+    ], true)).toEqual([
+      {
+        id: 'session-1:history:0',
+        role: 'user',
+        content: '什么是 title？',
+        streaming: false
+      },
+      {
+        id: 'session-1:history:assistant-pending',
+        role: 'assistant',
+        content: '',
+        streaming: true
+      }
+    ])
+  })
+
   it('appends user then assistant streaming patches', () => {
     let turns: TranscriptTurn[] = []
     turns = appendUserTurn(turns, '你好')

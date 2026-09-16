@@ -271,6 +271,10 @@ export function installTauriBridge(): void {
     EVENTS.toolbarDismissed,
     (payload) => toolbarDismissedEventSchema.parse(payload)
   )
+  const resultSelectionShortcutEvents = new EventHub<void>(
+    EVENTS.resultSelectionShortcut,
+    () => undefined
+  )
 
   const api: WindowTextLensApi = {
     async getSettings() {
@@ -341,17 +345,30 @@ export function installTauriBridge(): void {
     async recoverToolbar(selectionId: string) {
       return await invoke<boolean>(TAURI_COMMANDS.recoverToolbar, { selectionId })
     },
+    async setToolbarInputMode(active: boolean, selectionId?: string) {
+      return await invoke<boolean>(TAURI_COMMANDS.setToolbarInputMode, {
+        active,
+        selectionId: selectionId ?? null
+      })
+    },
+    async focusToolbarInput(selectionId?: string) {
+      return await invoke<boolean>(TAURI_COMMANDS.focusToolbarInput, {
+        selectionId: selectionId ?? null
+      })
+    },
     async runAction(
       actionId: string,
       cursor?: Point,
       selectionId?: string,
-      searchEngineId?: string
+      searchEngineId?: string,
+      initialQuestion?: string
     ) {
       return parseRunActionResult(await invoke(TAURI_COMMANDS.runAction, {
         actionId,
         cursor: cursor ?? null,
         selectionId: selectionId ?? null,
-        searchEngineId: searchEngineId ?? null
+        searchEngineId: searchEngineId ?? null,
+        initialQuestion: initialQuestion ?? null
       }))
     },
     async hideToolbar(selectionId?: string) {
@@ -401,8 +418,18 @@ export function installTauriBridge(): void {
     async setResultPointerInside(sessionId: string, inside: boolean) {
       await invoke(TAURI_COMMANDS.setResultPointerInside, { sessionId, inside })
     },
-    async showResultSelection(sessionId: string, text: string, cursor: Point) {
-      await invoke(TAURI_COMMANDS.showResultSelection, { sessionId, text, cursor })
+    async showResultSelection(
+      sessionId: string,
+      text: string,
+      cursor: Point,
+      forceCapture = false
+    ) {
+      await invoke(TAURI_COMMANDS.showResultSelection, {
+        sessionId,
+        text,
+        cursor,
+        forceCapture
+      })
     },
     async hideResultSelection(sessionId: string) {
       await invoke(TAURI_COMMANDS.hideResultSelection, {
@@ -466,6 +493,9 @@ export function installTauriBridge(): void {
     },
     onSettingsGuidance(listener) {
       return settingsGuidanceEvents.subscribe(listener)
+    },
+    onResultSelectionShortcut(listener) {
+      return resultSelectionShortcutEvents.subscribe(listener)
     },
     onToolbarPointer(listener) {
       return toolbarPointerEvents.subscribe(listener)

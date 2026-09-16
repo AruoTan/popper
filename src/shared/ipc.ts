@@ -18,6 +18,8 @@ export const TAURI_COMMANDS = {
   toolbarReady: 'toolbar_ready',
   presentToolbar: 'present_toolbar',
   recoverToolbar: 'recover_toolbar',
+  setToolbarInputMode: 'set_toolbar_input_mode',
+  focusToolbarInput: 'focus_toolbar_input',
   runAction: 'run_action',
   hideToolbar: 'hide_toolbar',
   reportToolbarSize: 'report_toolbar_size',
@@ -51,7 +53,8 @@ export const TAURI_EVENTS = {
   settingsCloseRequested: 'textlens:settings-close-requested',
   settingsGuidance: 'textlens:settings-guidance',
   toolbarPointer: 'textlens:toolbar-pointer',
-  toolbarDismissed: 'textlens:toolbar-dismissed'
+  toolbarDismissed: 'textlens:toolbar-dismissed',
+  resultSelectionShortcut: 'textlens:result-selection-shortcut'
 } as const
 
 export type TauriCommand = (typeof TAURI_COMMANDS)[keyof typeof TAURI_COMMANDS]

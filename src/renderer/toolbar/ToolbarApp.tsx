@@ -7,7 +7,15 @@ import {
   type JSX,
   type MouseEvent
 } from 'react'
-import { CircleAlert, LoaderCircle, Settings2 } from 'lucide-react'
+import {
+  ChevronDown,
+  CircleAlert,
+  LoaderCircle,
+  SendHorizontal,
+  Settings2,
+  Sparkles,
+  X
+} from 'lucide-react'
 
 import {
   MAX_ENABLED_ACTIONS,
@@ -21,6 +29,7 @@ import { getErrorMessage } from '../lib/errors'
 const SETTINGS_RETRY_DELAYS_MS = [0, 16, 64] as const
 const TOOLBAR_PRESENTATION_ATTEMPTS = 3
 const COPY_SUCCESS_RESET_MS = 1_500
+const FIXED_ASK_ACTION_ID = 'ask-ai'
 const AI_CONFIGURATION_MESSAGES = [
   '请先为动作选择 AI 服务商',
   '请先为动作选择模型',
@@ -98,6 +107,12 @@ function toolbarControlIdFromElement(
 
 export function ToolbarApp(): JSX.Element {
   const toolbarRef = useRef<HTMLDivElement>(null)
+  const askInputRef = useRef<HTMLTextAreaElement>(null)
+  const askCursorRef = useRef<{ x: number; y: number } | undefined>(undefined)
+  const askModeActivatedRef = useRef(false)
+  const askNativeFrameExpandedRef = useRef(false)
+  const askTransitionRef = useRef(false)
+  const askExpandedRef = useRef(false)
   const focusClearFramesRef = useRef<number[]>([])
   const copySuccessTimerRef = useRef<number | null>(null)
   const copySuccessActiveRef = useRef(false)
@@ -107,6 +122,8 @@ export function ToolbarApp(): JSX.Element {
   const [copySuccessActionId, setCopySuccessActionId] = useState<string | null>(null)
   const [hoveredControlId, setHoveredControlId] = useState<string | null>(null)
   const [message, setMessage] = useState('')
+  const [askExpanded, setAskExpanded] = useState(false)
+  const [askQuestion, setAskQuestion] = useState('')
   const operationGenerationRef = useRef(0)
   const selectionGenerationRef = useRef(0)
   const selectionTimingStartedAtRef = useRef<number | null>(null)
@@ -192,6 +209,8 @@ export function ToolbarApp(): JSX.Element {
       setSelection(nextSelection)
       setBusyActionId(null)
       setMessage('')
+      setAskExpanded(false)
+      setAskQuestion('')
     })
     const initialSelectionGeneration = selectionGenerationRef.current
     const currentSelection = window.textLens.getCurrentSelection?.()
@@ -236,16 +255,26 @@ export function ToolbarApp(): JSX.Element {
     const unsubscribeDismiss = window.textLens.onToolbarDismissed?.((payload) => {
       resetCopySuccess()
       clearRetainedToolbarFocus()
+      selectionGenerationRef.current += 1
+      operationGenerationRef.current += 1
       setSelection((current) => {
         if (!payload.selectionId) return null
         return current?.selectionId === payload.selectionId ? null : current
       })
       setBusyActionId(null)
       setMessage('')
+      setAskExpanded(false)
+      setAskQuestion('')
     }) ?? (() => undefined)
 
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
+        if (askExpandedRef.current) {
+          event.preventDefault()
+          setAskExpanded(false)
+          setAskQuestion('')
+          return
+        }
         resetCopySuccess()
         clearRetainedToolbarFocus()
         runDetached(window.textLens.hideToolbar(), {
@@ -274,11 +303,128 @@ export function ToolbarApp(): JSX.Element {
   const visibleActions = useMemo(
     () =>
       [...(settings?.actions ?? [])]
-        .filter((action) => action.enabled)
+        .filter((action) => action.enabled && action.kind !== 'ask')
         .sort((left, right) => left.order - right.order)
         .slice(0, MAX_ENABLED_ACTIONS),
     [settings]
   )
+
+  useLayoutEffect(() => {
+    askExpandedRef.current = askExpanded
+    const selectionId = selection?.selectionId
+    let disposed = false
+    if (!askExpanded) {
+      if (askModeActivatedRef.current || askNativeFrameExpandedRef.current) {
+        const shouldDeactivateInput = askModeActivatedRef.current
+        askModeActivatedRef.current = false
+        askNativeFrameExpandedRef.current = false
+        void (async () => {
+          try {
+            if (shouldDeactivateInput) {
+              await window.textLens.setToolbarInputMode?.(false, selectionId)
+            }
+            if (disposed) return
+            const rectangle = toolbarRef.current?.getBoundingClientRect()
+            if (rectangle) {
+              await window.textLens.reportToolbarSize({
+                width: Math.max(1, Math.ceil(rectangle.width)),
+                height: Math.max(1, Math.ceil(rectangle.height))
+              }, selectionId)
+            }
+          } catch (error) {
+            if (!disposed) setMessage(getErrorMessage(error, '无法恢复工具栏尺寸'))
+          }
+        })()
+      }
+      return () => {
+        disposed = true
+      }
+    }
+
+    void (async () => {
+      let nativeInputModeActive = false
+      try {
+        // React has committed the second-stage DOM before this layout effect.
+        // Grow the native WebView first so a slow focusability/style transition
+        // can never leave the composer clipped inside the compact toolbar frame.
+        const rectangle = toolbarRef.current?.getBoundingClientRect()
+        if (rectangle) {
+          await window.textLens.reportToolbarSize({
+            width: Math.max(1, Math.ceil(rectangle.width)),
+            height: Math.max(1, Math.ceil(rectangle.height))
+          }, selectionId)
+          askNativeFrameExpandedRef.current = true
+        }
+        if (disposed) return
+        let activated = false
+        let activationError: unknown
+        for (let attempt = 0; attempt < 3 && !disposed; attempt += 1) {
+          try {
+            activated = await (window.textLens.setToolbarInputMode?.(true, selectionId)
+              ?? Promise.resolve(true))
+            activationError = undefined
+            break
+          } catch (error) {
+            activationError = error
+            if (attempt < 2) {
+              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            }
+          }
+        }
+        if (activationError) throw activationError
+        if (activated === false) {
+          throw new Error('当前选区已失效，请重新选择文字后重试')
+        }
+        nativeInputModeActive = true
+        if (disposed) {
+          await window.textLens.setToolbarInputMode?.(false, selectionId)
+          nativeInputModeActive = false
+          return
+        }
+        askModeActivatedRef.current = true
+        let focused = false
+        let focusError: unknown
+        for (let attempt = 0; attempt < 3 && !disposed; attempt += 1) {
+          try {
+            focused = await (window.textLens.focusToolbarInput?.(selectionId)
+              ?? Promise.resolve(true))
+            focusError = undefined
+            // Native focus can legitimately be rejected for one event-loop
+            // turn while Windows removes WS_EX_NOACTIVATE. Only stop retrying
+            // once the backend has verified that our HWND is foreground.
+            if (focused) break
+            if (attempt < 2) {
+              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            }
+          } catch (error) {
+            focusError = error
+            if (attempt < 2) {
+              await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+            }
+          }
+        }
+        if (focusError) throw focusError
+        if (focused === false) {
+          throw new Error('当前选区已失效，无法聚焦输入框')
+        }
+        if (disposed) return
+        requestAnimationFrame(() => askInputRef.current?.focus())
+      } catch (error) {
+        // The composer is renderer state, not a native-focus transaction.
+        // Windows can transiently reject foreground focus while the opening
+        // click is settling; keep stage two visible instead of making the
+        // interaction appear to do nothing.
+        if (!disposed) {
+          setMessage(getErrorMessage(error, '无法启用输入框'))
+        }
+      } finally {
+        askTransitionRef.current = false
+      }
+    })()
+    return () => {
+      disposed = true
+    }
+  }, [askExpanded, selection?.selectionId])
 
   useLayoutEffect(() => {
     const element = toolbarRef.current
@@ -411,26 +557,29 @@ export function ToolbarApp(): JSX.Element {
       cancelAnimationFrame(frame)
       observer.disconnect()
     }
-  }, [
-    message,
-    selection?.selectionId,
-    settings?.toolbar.displayMode,
-    visibleActions.length
-  ])
+  // Keep one observer alive for the lifetime of the current selection. If it
+  // is recreated after `askExpanded` changes, the expanded rectangle becomes
+  // its baseline and the native WebView never receives the resize that makes
+  // the second-stage composer visible.
+  }, [selection?.selectionId])
 
   const runAction = async (
     actionId: string,
-    event: MouseEvent<HTMLButtonElement>
+    event?: MouseEvent<HTMLButtonElement>,
+    initialQuestion?: string
   ): Promise<void> => {
     if (busyActionId) return
     const action = visibleActions.find((candidate) => candidate.id === actionId)
-    if (!action) return
+    const actionKind = actionId === FIXED_ASK_ACTION_ID ? 'ask' : action?.kind
+    if (!actionKind) return
     resetCopySuccess()
-    const pointerTriggered = event.detail > 0
+    const pointerTriggered = (event?.detail ?? 0) > 0
     const actedSelectionId = selection?.selectionId
-    const cursor = pointerTriggered && Number.isFinite(event.screenX) && Number.isFinite(event.screenY)
-      ? { x: event.screenX, y: event.screenY }
-      : undefined
+    const cursor = initialQuestion
+      ? askCursorRef.current
+      : pointerTriggered && event && Number.isFinite(event.screenX) && Number.isFinite(event.screenY)
+        ? { x: event.screenX, y: event.screenY }
+        : undefined
     if (pointerTriggered) {
       clearRetainedToolbarFocus()
     }
@@ -440,7 +589,15 @@ export function ToolbarApp(): JSX.Element {
     operationGenerationRef.current = operationGeneration
 
     try {
-      const result = await window.textLens.runAction(actionId, cursor, actedSelectionId)
+      const result = initialQuestion
+        ? await window.textLens.runAction(
+            actionId,
+            cursor,
+            actedSelectionId,
+            undefined,
+            initialQuestion
+          )
+        : await window.textLens.runAction(actionId, cursor, actedSelectionId)
       if (operationGenerationRef.current !== operationGeneration) return
       if (!result.accepted) {
         if (isAiConfigurationMessage(result.message) && window.textLens.openSettings) {
@@ -453,6 +610,8 @@ export function ToolbarApp(): JSX.Element {
             setSelection((current) =>
               current?.selectionId === actedSelectionId ? null : current
             )
+            setAskExpanded(false)
+            setAskQuestion('')
             await window.textLens.hideToolbar(actedSelectionId)
           } catch (error) {
             setMessage(getErrorMessage(error, result.message))
@@ -462,7 +621,7 @@ export function ToolbarApp(): JSX.Element {
         setMessage(result.message)
         return
       }
-      if (action.kind === 'copy') {
+      if (actionKind === 'copy' && action) {
         confirmCopySuccess(action.id)
         return
       }
@@ -472,6 +631,8 @@ export function ToolbarApp(): JSX.Element {
       setSelection((current) =>
         current?.selectionId === actedSelectionId ? null : current
       )
+      setAskExpanded(false)
+      setAskQuestion('')
       await window.textLens.hideToolbar(actedSelectionId)
     } catch (error) {
       if (operationGenerationRef.current === operationGeneration) {
@@ -482,6 +643,54 @@ export function ToolbarApp(): JSX.Element {
         setBusyActionId(null)
       }
     }
+  }
+
+  const openAsk = (event: MouseEvent<HTMLButtonElement>): void => {
+    if (busyActionId || askTransitionRef.current || askExpanded) return
+    const selectionId = selection?.selectionId
+    if (!selectionId) return
+    askCursorRef.current =
+      event.detail > 0 && Number.isFinite(event.screenX) && Number.isFinite(event.screenY)
+        ? { x: event.screenX, y: event.screenY }
+        : undefined
+    resetCopySuccess()
+    setMessage('')
+    askTransitionRef.current = true
+    askExpandedRef.current = true
+    // The layout effect performs native resize -> input mode -> focus after
+    // React has committed the expanded composer.
+    setAskExpanded(true)
+  }
+
+  const closeAsk = async (): Promise<void> => {
+    const actedSelectionId = selection?.selectionId
+    if (!actedSelectionId) return
+
+    try {
+      // Keep the expanded renderer mounted until the native window is hidden.
+      // Collapsing first exposes the compact toolbar for at least one frame,
+      // which makes a close action behave like a back action on Windows.
+      await window.textLens.hideToolbar(actedSelectionId)
+      selectionGenerationRef.current += 1
+      operationGenerationRef.current += 1
+      resetCopySuccess()
+      clearRetainedToolbarFocus()
+      setSelection((current) =>
+        current?.selectionId === actedSelectionId ? null : current
+      )
+      setBusyActionId(null)
+      setMessage('')
+      setAskExpanded(false)
+      setAskQuestion('')
+    } catch (error) {
+      setMessage(getErrorMessage(error, '无法关闭问 AI 窗口'))
+    }
+  }
+
+  const submitAsk = (): void => {
+    const question = askQuestion.trim()
+    if (!question || busyActionId) return
+    void runAction(FIXED_ASK_ACTION_ID, undefined, question)
   }
 
   const openSettings = async (notice?: string): Promise<void> => {
@@ -495,6 +704,8 @@ export function ToolbarApp(): JSX.Element {
       setSelection((current) =>
         current?.selectionId === actedSelectionId ? null : current
       )
+      setAskExpanded(false)
+      setAskQuestion('')
       await window.textLens.hideToolbar(actedSelectionId)
     } catch (error) {
       setMessage(getErrorMessage(error, '无法打开设置'))
@@ -524,8 +735,71 @@ export function ToolbarApp(): JSX.Element {
       onMouseMoveCapture={(event) => updateHoveredControl(event.target)}
       onMouseLeave={() => setHoveredControlId(null)}
     >
-      <div className="toolbar-pill">
-        {visibleActions.map((action) => {
+      <div className={`toolbar-pill ${askExpanded ? 'toolbar-pill--ask' : ''}`}>
+        {askExpanded ? (
+          <div className="toolbar-ask">
+            <div className="toolbar-ask__header">
+              <span className="toolbar-ask__selection" title={selection?.text}>
+                {selection?.text}
+              </span>
+              <button
+                type="button"
+                className="toolbar-ask__close"
+                data-toolbar-control="ask-close"
+                aria-label="关闭问 AI 窗口"
+                onClick={() => void closeAsk()}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="toolbar-ask__composer">
+              <span className="toolbar-ask__model" aria-hidden="true">
+                <span className="toolbar-ai-mark"><Sparkles size={13} /></span>
+                <ChevronDown size={10} />
+              </span>
+              <textarea
+                ref={askInputRef}
+                aria-label="向 AI 提问"
+                placeholder="向 AI 询问上述内容"
+                rows={1}
+                maxLength={20_000}
+                value={askQuestion}
+                disabled={busyActionId !== null}
+                onChange={(event) => setAskQuestion(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault()
+                    submitAsk()
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="toolbar-ask__send"
+                data-toolbar-control="ask-send"
+                aria-label="发送问题"
+                disabled={!askQuestion.trim() || busyActionId !== null}
+                onClick={submitAsk}
+              >
+                {busyActionId ? <LoaderCircle className="spin" size={16} /> : <SendHorizontal size={17} />}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <button
+              className="toolbar-action toolbar-action--icon-only toolbar-action--fixed-ask"
+              type="button"
+              data-toolbar-control="fixed-ask"
+              data-hovered={hoveredControlId === 'fixed-ask' ? 'true' : undefined}
+              title="问 AI"
+              aria-label="问 AI"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={(event) => void openAsk(event)}
+            >
+              <span className="toolbar-ai-mark"><Sparkles size={13} /></span>
+            </button>
+            {visibleActions.map((action) => {
           const busy = busyActionId === action.id
           const muted = busyActionId !== null && !busy
           const copySucceeded = action.kind === 'copy' && copySuccessActionId === action.id
@@ -556,9 +830,8 @@ export function ToolbarApp(): JSX.Element {
               {!iconOnly && <span>{action.name}</span>}
             </button>
           )
-        })}
-        {visibleActions.length === 0 && (
-          <span className="toolbar-empty">请在设置中启用动作</span>
+            })}
+          </>
         )}
       </div>
       {message && (

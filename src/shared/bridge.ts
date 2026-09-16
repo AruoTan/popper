@@ -97,8 +97,13 @@ export interface WindowTextLensApi {
     actionId: string,
     cursor?: Point,
     selectionId?: string,
-    searchEngineId?: string
+    searchEngineId?: string,
+    initialQuestion?: string
   ): Promise<RunActionResult>
+  /** Temporarily lets the selection toolbar accept keyboard input. */
+  setToolbarInputMode?(active: boolean, selectionId?: string): Promise<boolean>
+  /** Activates the toolbar after its inline input layout has been committed. */
+  focusToolbarInput?(selectionId?: string): Promise<boolean>
   hideToolbar(selectionId?: string): Promise<void>
   reportToolbarSize(size: ToolbarSize, selectionId?: string): Promise<void>
   beginResultReady(sessionId: string): Promise<ResultSessionSnapshot>
@@ -116,7 +121,12 @@ export interface WindowTextLensApi {
   failResultReveal?(sessionId: string, message: string): Promise<void>
   setResultPinned?(sessionId: string, pinned: boolean): Promise<boolean | void>
   setResultPointerInside?(sessionId: string, inside: boolean): Promise<void>
-  showResultSelection?(sessionId: string, text: string, cursor: Point): Promise<void>
+  showResultSelection?(
+    sessionId: string,
+    text: string,
+    cursor: Point,
+    forceCapture?: boolean
+  ): Promise<void>
   /** Result window only: dismiss toolbar opened from an in-result selection. */
   hideResultSelection?(sessionId: string): Promise<void>
   cancelAction(sessionId?: string): Promise<void>
@@ -138,6 +148,8 @@ export interface WindowTextLensApi {
   onSettingsChanged(listener: (settings: PublicSettings) => void): Unsubscribe
   onSettingsCloseRequested?(listener: () => void): Unsubscribe
   onSettingsGuidance?(listener: (guidance: SettingsGuidance) => void): Unsubscribe
+  /** Result window only: native global shortcut requests the current DOM selection. */
+  onResultSelectionShortcut?(listener: () => void): Unsubscribe
   /**
    * Native pointer movement for the non-activating selection toolbar.
    * Optional so a renderer can still hot-reload against an older backend.
