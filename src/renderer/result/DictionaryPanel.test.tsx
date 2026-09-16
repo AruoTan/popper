@@ -1,4 +1,4 @@
-import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DictionarySnapshot, WindowTextLensApi } from '../../shared'
 import { DictionaryPanel, useDictionarySession } from './DictionaryPanel'
@@ -14,7 +14,7 @@ function deferred<T>() {
   const promise = new Promise<T>((r) => { resolve = r })
   return { promise, resolve }
 }
-const props = () => ({ snapshot, onAi: vi.fn().mockResolvedValue(true), onAsk: vi.fn(), onQuery: vi.fn() })
+const props = () => ({ snapshot, onAi: vi.fn().mockResolvedValue(true), onQuery: vi.fn().mockResolvedValue(undefined) })
 beforeEach(() => {
   window.textLens = {
     queryDictionary: vi.fn().mockResolvedValue('request'),
@@ -39,23 +39,15 @@ describe('dictionary panel', () => {
     const input = props(); render(<DictionaryPanel {...input} />)
     expect(window.textLens.queryDictionary).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'account for 解释' }))
-    await waitFor(() => expect(window.textLens.queryDictionary).toHaveBeenCalledWith('session', 'account for'))
-    expect(input.onQuery).toHaveBeenCalled()
+    expect(input.onQuery).toHaveBeenCalledWith('account for')
   })
-  it('debounces suggestions and ignores a late response for previous input', async () => {
-    vi.useFakeTimers()
-    const old = deferred<{ word: string; explanation: string }[]>()
-    vi.mocked(window.textLens.suggestDictionary!).mockImplementation((_id, q) => q === 'acc' ? old.promise : Promise.resolve([{ word: 'cat', explanation: '猫' }]))
-    render(<DictionaryPanel {...props()} />)
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'acc' } })
-    await act(() => vi.advanceTimersByTimeAsync(249))
-    expect(window.textLens.suggestDictionary).not.toHaveBeenCalled()
-    await act(() => vi.advanceTimersByTimeAsync(1))
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'cat' } })
-    await act(() => vi.advanceTimersByTimeAsync(250))
-    await act(async () => old.resolve([{ word: 'account', explanation: '旧候选' }]))
-    expect(screen.getByRole('button', { name: 'cat 猫' })).toBeInTheDocument()
-    expect(screen.queryByText('旧候选')).not.toBeInTheDocument()
+  it('has no separate input and places actions beside phonetics and suggestions last', () => {
+    const { container } = render(<DictionaryPanel {...props()} />)
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+    const toolbar = container.querySelector('.dictionary-entry-toolbar')!
+    expect(toolbar.querySelector('.dictionary-phones')).toBeInTheDocument()
+    expect(toolbar.querySelector('.dictionary-actions')).toBeInTheDocument()
+    expect(container.querySelector('.dictionary-panel')!.lastElementChild).toHaveClass('dictionary-suggestions')
   })
   it('requires explicit book selection and prevents duplicate submission', async () => {
     const pending = deferred<void>(); vi.mocked(window.textLens.addEudicWord!).mockReturnValue(pending.promise)

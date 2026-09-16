@@ -3,6 +3,7 @@ import { listen, type Event } from '@tauri-apps/api/event'
 
 import {
   dictionarySnapshotSchema,
+  translationSubmissionSchema,
   dictionarySuggestionSchema,
   studyBookSchema,
   actionStreamEventSchema,
@@ -282,6 +283,12 @@ export function installTauriBridge(): void {
   const dictionaryEvents = new EventHub(EVENTS.dictionary, (payload) => dictionarySnapshotSchema.parse(payload))
 
   const api: WindowTextLensApi = {
+    async submitTranslation(sessionId, text) {
+      return translationSubmissionSchema.parse(await invoke(TAURI_COMMANDS.submitTranslation, { sessionId, text }))
+    },
+    async translationInputSuggestions(sessionId, requestId, version, text) {
+      return dictionarySuggestionSchema.array().parse(await invoke(TAURI_COMMANDS.translationInputSuggestions, { sessionId, requestId, version, text }))
+    },
     async getDictionaryState(sessionId) {
       await dictionaryEvents.ready()
       return dictionarySnapshotSchema.nullable().parse(await invoke(TAURI_COMMANDS.dictionaryState, { sessionId }))

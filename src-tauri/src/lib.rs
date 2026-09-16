@@ -142,6 +142,8 @@ pub fn run() {
             runtime::run_action,
             runtime::dictionary_state,
             runtime::dictionary_query,
+            runtime::submit_translation,
+            runtime::translation_input_suggestions,
             runtime::dictionary_suggest,
             runtime::dictionary_cancel_input,
             runtime::dictionary_audio,

@@ -1,5 +1,7 @@
 /** Live Tauri invoke command names used by the renderer bridge. */
 export const TAURI_COMMANDS = {
+  submitTranslation: 'submit_translation',
+  translationInputSuggestions: 'translation_input_suggestions',
   dictionaryState: 'dictionary_state',
   dictionaryQuery: 'dictionary_query',
   dictionarySuggest: 'dictionary_suggest',

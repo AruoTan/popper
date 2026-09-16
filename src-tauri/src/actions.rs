@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 mod session;
 mod dictionary_session;
+pub use dictionary_session::TranslationSubmission;
 
 use session::{
     CancelTransition, DeadlineGeneration, DeltaTransition, EmitOutcome, FlusherLease,
@@ -91,6 +92,7 @@ struct ActionServiceState {
     sessions: SessionTable,
     contexts: HashMap<String, ActionSessionContext>,
     dictionaries: HashMap<String, dictionary_session::DictionarySession>,
+    translation_inputs: HashMap<String, dictionary_session::TranslationInput>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -539,7 +541,7 @@ impl ActionServiceState {
         question: String,
         action_started: tokio::time::Instant,
     ) -> Result<ActionReservation, SessionError> {
-        let (request, route, committed_messages, ask_system) = {
+        let (request, route, committed_messages, ask_system, recover_translation) = {
             let snapshot = self
                 .sessions
                 .authoritative_snapshot(session_id)
@@ -549,7 +551,8 @@ impl ActionServiceState {
                 .get(session_id)
                 .filter(|context| {
                     context.session_generation == snapshot.session_generation
-                        && context.request_generation == snapshot.request_generation
+                        && (context.request_generation == snapshot.request_generation
+                            || (snapshot.action_id == "translate" && matches!(snapshot.status, ActionSnapshotStatus::Error | ActionSnapshotStatus::Cancelled)))
                 })
                 .ok_or(SessionError::Ended)?;
             (
@@ -557,9 +560,14 @@ impl ActionServiceState {
                 context.route.clone(),
                 context.committed_messages.clone(),
                 context.ask_system.clone(),
+                snapshot.action_id == "translate" && matches!(snapshot.status, ActionSnapshotStatus::Error | ActionSnapshotStatus::Cancelled),
             )
         };
-        let reservation = self.sessions.reserve_continue(session_id, request_id)?;
+        let reservation = if recover_translation {
+            self.sessions.reserve_retry(session_id, request_id)?
+        } else {
+            self.sessions.reserve_continue(session_id, request_id)?
+        };
         Ok(ActionReservation {
             reservation,
             seed: FrozenPreparationSeed::Continue {
@@ -706,11 +714,8 @@ impl ActionService {
         let action_started = tokio::time::Instant::now();
         validate_request_shape(&request)?;
         let dictionary_settings = self.inner.settings.get_settings();
-        if request.action_id == "translate" && dictionary_settings.translate.dictionary_enabled
-            && dictionary_settings.actions.iter().any(|a| a.id == request.action_id && a.kind == ActionKind::Translate) {
-            if let Some(query) = crate::dictionary::normalize_query(&request.text) {
-                return self.open_dictionary(app, request, query);
-            }
+        if let Some(query) = dictionary_session::translation_query(&dictionary_settings, &request.action_id, &request.text) {
+            return self.open_dictionary(app, request, query);
         }
         let action_reservation = {
             let mut state = self.inner.state.lock();
@@ -842,6 +847,7 @@ impl ActionService {
             let mut state = self.inner.state.lock();
             if expected_request.is_some_and(|expected| state.sessions.authoritative_snapshot(session_id)
                 .is_none_or(|snapshot| snapshot.request_id != expected)) { return Err(ActionServiceError::SessionEnded); }
+            if let Some(input) = state.translation_inputs.get(session_id) { input.cancellation.cancel(); }
             self.prepare_dictionary_ai(&mut state, &settings, session_id, provider_id.as_deref(), model_id.as_deref())?;
             state.reserve_retry(session_id, Uuid::new_v4().to_string(), RetryPreparationOptions {
                 target_language, provider_id, model_id,
@@ -909,6 +915,7 @@ impl ActionService {
         }
         let dictionary_cancelled = {
             let mut state = self.inner.state.lock();
+            if let Some(input) = state.translation_inputs.get(session_id) { input.cancellation.cancel(); }
             if let Some(d) = state.dictionaries.get_mut(session_id) {
                 if d.snapshot.status == "loading" {
                     d.cancellation.cancel(); d.snapshot.status = "cancelled".into(); d.snapshot.revision += 1; true
@@ -935,6 +942,9 @@ impl ActionService {
                 || state.contexts.contains_key(session_id);
             let transition = state.sessions.close(session_id);
             state.contexts.remove(session_id);
+            if let Some(input) = state.translation_inputs.remove(session_id) {
+                input.cancellation.cancel();
+            }
             if let Some(d) = state.dictionaries.remove(session_id) {
                 d.cancellation.cancel(); d.suggest_cancellation.cancel();
             }
@@ -1951,7 +1961,9 @@ fn resolve_request_config(
         } => {
             let action = prepared_action(settings, &request.action_id)?;
             let route = resolve_route(settings, action, &route.provider.id, &route.model)?;
-            let last_messages = if let Some(seed_system) = ask_system.as_deref() {
+            let last_messages = if request.action_id == "translate" && action.kind == ActionKind::Translate {
+                build_translation_continue_messages(ask_system.as_deref(), committed_messages, question)?
+            } else if let Some(seed_system) = ask_system.as_deref() {
                 build_ask_continue_messages(seed_system, committed_messages, question)?
             } else {
                 build_follow_up_messages(committed_messages, question)?
@@ -2059,6 +2071,18 @@ fn build_prompt(
         user,
         boundary,
     })
+}
+
+fn build_translation_continue_messages(
+    reference: Option<&str>, history: &[ChatMessage], question: &str,
+) -> Result<Vec<ChatMessage>, ActionServiceError> {
+    validate_follow_up_question(question)?;
+    // Preserve history without carrying the translation-only system instruction into questions.
+    let mut messages: Vec<_> = reference.map(|seed| ChatMessage::system(seed.to_owned())).into_iter().collect();
+    messages.extend(history.iter().filter(|message| message.role != ChatRole::System).cloned());
+    messages.push(ChatMessage::user(question.trim().to_owned()));
+    validate_conversation_messages(&messages)?;
+    Ok(messages)
 }
 
 fn build_follow_up_messages(

@@ -3328,6 +3328,18 @@ pub fn continue_action(
 }
 
 #[tauri::command]
+pub fn submit_translation(app: AppHandle, window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, text: String) -> Result<crate::actions::TranslationSubmission, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.submit_translation(&app, &session_id, &text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn translation_input_suggestions(window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, request_id: String, version: u64, text: String) -> Result<Vec<crate::dictionary::Suggestion>, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.translation_input_suggestions(&session_id, &request_id, version, &text).await
+}
+
+#[tauri::command]
 pub fn dictionary_state(window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String) -> Result<Option<crate::dictionary::DictionarySnapshot>, String> {
     ensure_result_caller(&window, &session_id)?;
     Ok(state.actions.dictionary_snapshot(&session_id))

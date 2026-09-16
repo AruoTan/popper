@@ -1,4 +1,5 @@
 import { DictionaryPanel, useDictionarySession } from './DictionaryPanel'
+import { useTranslationSuggestions } from './useTranslationSuggestions'
 import {
   useCallback,
   useEffect,
@@ -402,6 +403,7 @@ function ResultSessionApp({
   const [followUpQuestion, setFollowUpQuestion] = useState('')
   const [followUpExpanded, setFollowUpExpanded] = useState(false)
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false)
+  const followUpInFlight = useRef(false)
   const [revealCommitted, setRevealCommitted] = useState(false)
   const [bootstrapMessage, setBootstrapMessage] = useState('')
   const [bootstrapRetrying, setBootstrapRetrying] = useState(false)
@@ -419,7 +421,13 @@ function ResultSessionApp({
   const askOriginalDefaulted = useRef(false)
   const askSawStreaming = useRef(false)
   const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null)
-  const handleScroll = useAutoFollowOutput(contentRef, contentInnerRef, requestId)
+  const dictionaryMode = dictionary?.mode === 'dictionary'
+  const handleScroll = useAutoFollowOutput(
+    contentRef,
+    contentInnerRef,
+    dictionaryMode ? `${sessionId}:dictionary:${dictionary.queryGeneration}` : requestId,
+    !dictionaryMode
+  )
   // Thinking counts as visible activity — hide the empty waiting spinner early.
   const isWaitingForFirstContent = status === 'streaming' && !hasContent && !hasThinking
   const contentOverflow = useResultContentOverflow(
@@ -433,17 +441,22 @@ function ResultSessionApp({
     [session?.actionId, settings, actionId]
   )
   const resolvedActionId = actionId ?? session?.actionId
+  const isBuiltinTranslate = resolvedActionId === 'translate' && action?.kind === 'translate'
   const isAsk = resolvedActionId === 'ask-ai' || isAskAction(action?.kind) || dictionary?.mode === 'ai'
   // Every AI result is a resumable session. Keep the follow-up control for
   // translate/explain/summary/custom actions too; only hide it while a new
   // response is actively streaming.
   const isAiAction = isAsk || (action !== undefined && isAiActionDefinition(action))
-  const showFollowUp = isAiAction && status !== 'streaming' && dictionary?.status !== 'loading'
+  const showFollowUp = isBuiltinTranslate || (isAiAction && status !== 'streaming' && dictionary?.status !== 'loading')
   const followUpDisabled =
     followUpSubmitting ||
-    status === 'streaming' ||
+    (!isBuiltinTranslate && status === 'streaming') ||
+    (!isBuiltinTranslate && (
     (!isAsk && status !== 'completed') ||
-    (isAsk && status !== 'completed' && status !== 'idle')
+    (isAsk && status !== 'completed' && status !== 'idle')))
+
+  const inputSuggestions = useTranslationSuggestions(sessionId, requestId, followUpQuestion,
+    isBuiltinTranslate && !!settings?.translate.dictionaryEnabled && !followUpSubmitting)
 
   const defaultModelRoute = useMemo<ModelRoute | null>(() => {
     if (!action || !('providerId' in action) || !action.providerId || !action.modelId) return null
@@ -618,17 +631,30 @@ function ResultSessionApp({
     }
   }, [dictionary?.entry])
 
-  const submitFollowUp = useCallback(async (): Promise<void> => {
-    const question = followUpQuestion.trim()
+  const submitFollowUp = useCallback(async (text = followUpQuestion): Promise<void> => {
+    const question = text.trim()
     const canSubmit =
-      isAsk
+      isBuiltinTranslate || (isAsk
         ? status === 'completed' || status === 'idle'
-        : status === 'completed'
-    if (!question || followUpSubmitting || !canSubmit) return
+        : status === 'completed')
+    if (!question || followUpInFlight.current || !canSubmit) return
+    followUpInFlight.current = true
     setCommandMessage('')
     setFollowUpSubmitting(true)
+    let appended = false
     try {
-      if (!window.textLens.continueAction) {
+      let translationRequestId: string | undefined
+      if (isBuiltinTranslate) {
+        if (!window.textLens.submitTranslation) throw new Error('当前版本不支持翻译窗口输入')
+        const submission = await window.textLens.submitTranslation(sessionId, question)
+        if (disposedRef.current) return
+        if (submission.route === 'dictionary') {
+          setTurns([]); setFollowUpQuestion(''); pendingFollowUp.current = null; askSawStreaming.current = false
+          return
+        }
+        translationRequestId = submission.requestId
+      }
+      if (!translationRequestId && !window.textLens.continueAction) {
         throw new Error('当前版本不支持继续提问')
       }
       if (isAsk || dictionary) {
@@ -638,11 +664,13 @@ function ResultSessionApp({
             : `assistant-${Date.now()}`
         askSawStreaming.current = false
         setTurns((current) => beginAssistantTurn(appendUserTurn(current, question), turnId))
+        appended = true
       }
-      const result = await window.textLens.continueAction(sessionId, question)
+      const result = translationRequestId ? { accepted: true, requestId: translationRequestId, message: '' }
+        : await window.textLens.continueAction!(sessionId, question)
       if (!result.accepted) {
         setCommandMessage(result.message)
-        if (isAsk || dictionary) {
+        if (appended) {
           askSawStreaming.current = false
           setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
         }
@@ -654,14 +682,15 @@ function ResultSessionApp({
       reconcilePendingFollowUp(pending)
     } catch (error) {
       setCommandMessage(getErrorMessage(error, '无法继续提问'))
-      if (isAsk || dictionary) {
+      if (appended) {
         askSawStreaming.current = false
         setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
       }
     } finally {
+      followUpInFlight.current = false
       setFollowUpSubmitting(false)
     }
-  }, [followUpQuestion, followUpSubmitting, isAsk, dictionary, reconcilePendingFollowUp, sessionId, status])
+  }, [followUpQuestion, isBuiltinTranslate, isAsk, dictionary, reconcilePendingFollowUp, sessionId, status])
 
   useEffect(() => {
     let disposed = false
@@ -1229,15 +1258,11 @@ function ResultSessionApp({
             </section>
           )}
 
-          {dictionary && <DictionaryPanel snapshot={dictionary} onAi={() => retry(undefined, true)} onAsk={() => {
-            setFollowUpExpanded(true)
-            window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus())
-          }} onQuery={() => {
-            setTurns([]); setFollowUpQuestion(''); pendingFollowUp.current = null; askSawStreaming.current = false
-          }} />}
+          {dictionary && <DictionaryPanel snapshot={dictionary} onAi={() => retry(undefined, true)} onQuery={submitFollowUp} querying={followUpSubmitting}
+            suggestions={followUpQuestion.trim() ? inputSuggestions.items : dictionary.suggestions} />}
           {dictionary?.mode === 'dictionary' ? null : isAsk ? (
             <>
-              <AskStreamBridge enabled={isAsk} onStream={handleAskStream} />
+              <AskStreamBridge enabled={isAsk && !followUpSubmitting && (!pendingFollowUp.current?.requestId || pendingFollowUp.current.requestId === requestId)} onStream={handleAskStream} />
               {turns.length === 0 && status !== 'streaming' && status !== 'error' && (
                 <div className="result-placeholder">
                   <span>已载入选中文本。请在下方输入问题。</span>
@@ -1314,6 +1339,13 @@ function ResultSessionApp({
             </>
           )}
 
+          {!dictionary && inputSuggestions.items.length > 0 && <ul className="dictionary-suggestions" aria-label="联想词条">
+            {inputSuggestions.items.map((item) => <li key={item.word}><button type="button" disabled={followUpSubmitting} onClick={() => void submitFollowUp(item.word)}>
+              <strong>{item.word}</strong><span>{item.explanation}</span>
+            </button></li>)}
+          </ul>}
+          {inputSuggestions.error && <p className="dictionary-hint" role="status">{inputSuggestions.error}</p>}
+
           {status === 'error' && <div className="result-error" role="alert"><CircleAlert size={20} /><div>
             <strong>未能生成结果</strong><p>{errorMessage}</p></div></div>}
           {generationNotice && (
@@ -1337,7 +1369,7 @@ function ResultSessionApp({
         {showFollowUp && <div className={`result-followup ${followUpExpanded ? 'result-followup--expanded' : ''}`}>
           <textarea
             aria-label="继续提问"
-            placeholder={isAsk ? '输入问题，基于选中文本提问' : '输入继续提问'}
+            placeholder={isBuiltinTranslate ? '输入英文单词查词，或输入问题询问 AI' : isAsk ? '输入问题，基于选中文本提问' : '输入继续提问'}
             title="Enter 发送，Shift+Enter 换行"
             rows={followUpExpanded ? 4 : 1}
             maxLength={20_000}

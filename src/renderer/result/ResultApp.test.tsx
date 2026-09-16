@@ -136,6 +136,7 @@ async function renderResult(
     cancelAction: vi.fn().mockResolvedValue(undefined),
     retryAction,
     continueAction,
+    submitTranslation: vi.fn().mockResolvedValue({ route: 'ai', requestId: 'request-followup' }),
     copyText: vi.fn().mockResolvedValue(undefined),
     openExternal: vi.fn().mockResolvedValue(undefined),
     closeResult: vi.fn().mockResolvedValue(undefined),
@@ -243,6 +244,78 @@ describe('ResultApp sessionId query', () => {
 })
 
 describe('ResultApp window interactions', () => {
+  it('uses the single footer for dictionary input without AI and prevents duplicate submission', async () => {
+    const dictionary = dictionaryFixture()
+    const pending = deferred<{ route: 'dictionary'; requestId: string }>()
+    const submitTranslation = vi.fn().mockReturnValue(pending.promise)
+    const result = await renderResult(resultSnapshot({ dictionary, content: '' }, false), DEFAULT_PUBLIC_SETTINGS, {
+      getDictionaryState: vi.fn().mockResolvedValue(dictionary), submitTranslation
+    })
+    await screen.findByRole('heading', { name: 'hello' })
+    expect(screen.getAllByRole('textbox')).toHaveLength(1)
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    fireEvent.change(input, { target: { value: 'take off' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(submitTranslation).toHaveBeenCalledExactlyOnceWith('session-1', 'take off')
+    await act(async () => pending.resolve({ route: 'dictionary', requestId: 'lookup' }))
+    expect(input).toHaveValue('')
+    expect(result.continueAction).not.toHaveBeenCalled()
+    expect(result.container.querySelector('.result-turn--user')).toBeNull()
+  })
+
+  it('can replace an AI result with a dictionary card from footer input', async () => {
+    let listener: ((next: DictionarySnapshot) => void) | undefined
+    const submitTranslation = vi.fn().mockImplementation(async () => {
+      listener?.(dictionaryFixture())
+      return { route: 'dictionary', requestId: 'lookup' }
+    })
+    await renderResult(completedSession, settingsWithFontSize(), {
+      getDictionaryState: vi.fn().mockResolvedValue(null),
+      onDictionaryChanged: (fn) => { listener = fn; return () => {} }, submitTranslation
+    })
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(await screen.findByRole('heading', { name: 'hello' })).toBeInTheDocument()
+    expect(screen.queryByText('可选择的结果')).not.toBeInTheDocument()
+    expect(input).toHaveValue('')
+  })
+
+  it('keeps failed input and the existing dictionary card without creating a conversation turn', async () => {
+    const dictionary = dictionaryFixture()
+    const result = await renderResult(resultSnapshot({ dictionary, content: '' }), settingsWithFontSize(), {
+      getDictionaryState: vi.fn().mockResolvedValue(dictionary),
+      submitTranslation: vi.fn().mockRejectedValue(new Error('请配置模型'))
+    })
+    await screen.findByRole('heading', { name: 'hello' })
+    const input = screen.getByRole('textbox', { name: '继续提问' })
+    fireEvent.change(input, { target: { value: '解释用法' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(await screen.findByRole('alert')).toHaveTextContent('请配置模型')
+    expect(input).toHaveValue('解释用法')
+    expect(result.container.querySelector('.result-turn--user')).toBeNull()
+    expect(screen.getByRole('heading', { name: 'hello' })).toBeInTheDocument()
+  })
+
+  it('updates footer suggestions without cancelling the visible entry and submits the chosen candidate', async () => {
+    const dictionary = dictionaryFixture()
+    const submitTranslation = vi.fn().mockResolvedValue({ route: 'dictionary', requestId: 'lookup' })
+    const translationInputSuggestions = vi.fn().mockImplementation(async (_id, _request, _version, text) =>
+      text ? [{ word: 'account', explanation: '账户' }] : [])
+    const cancelDictionaryInput = vi.fn()
+    await renderResult(resultSnapshot({ dictionary, content: '' }), settingsWithFontSize(), {
+      getDictionaryState: vi.fn().mockResolvedValue(dictionary), submitTranslation, translationInputSuggestions, cancelDictionaryInput
+    })
+    await screen.findByRole('heading', { name: 'hello' })
+    fireEvent.change(screen.getByRole('textbox', { name: '继续提问' }), { target: { value: 'acc' } })
+    const candidate = await screen.findByRole('button', { name: 'account 账户' })
+    expect(screen.getByRole('heading', { name: 'hello' })).toBeInTheDocument()
+    expect(cancelDictionaryInput).not.toHaveBeenCalled()
+    fireEvent.click(candidate)
+    await waitFor(() => expect(submitTranslation).toHaveBeenCalledWith('session-1', 'account'))
+  })
+
   it('shows and copies dictionary results without a model and routes retry to lookup', async () => {
     const dictionary = dictionaryFixture()
     const queryDictionary = vi.fn().mockResolvedValue('lookup-next')
@@ -260,24 +333,29 @@ describe('ResultApp window interactions', () => {
     await waitFor(() => expect(result.retryAction).toHaveBeenCalled())
   })
 
-  it('keeps the dictionary card and the first user question when entering AI conversation', async () => {
+  it('keeps the dictionary card, question and a fast AI answer received before submit returns', async () => {
     const dictionary = dictionaryFixture()
     let listener: ((next: DictionarySnapshot) => void) | undefined
-    const continueAction = vi.fn().mockImplementation(async () => {
+    const submitTranslation = vi.fn().mockImplementation(async () => {
       listener?.({ ...dictionary, revision: 3, mode: 'ai' })
-      return { accepted: true, requestId: 'followup' }
+      const store = await import('./actionEventStore')
+      store.hydrateActionEventStore(resultSnapshot({
+        requestId: 'followup', requestGeneration: 2, content: 'Use hello as a greeting.'
+      }))
+      return { route: 'ai', requestId: 'followup' }
     })
     await renderResult(resultSnapshot({ dictionary, content: '', contentScalarCount: 0, lastContentSequence: 0 }), settingsWithFontSize(), {
       getDictionaryState: vi.fn().mockResolvedValue(dictionary),
-      onDictionaryChanged: (fn) => { listener = fn; return () => {} }, continueAction
+      onDictionaryChanged: (fn) => { listener = fn; return () => {} }, submitTranslation
     })
-    fireEvent.click(await screen.findByRole('button', { name: 'AI 追问' }))
+    await screen.findByRole('heading', { name: 'hello' })
     const input = screen.getByRole('textbox', { name: '继续提问' })
     fireEvent.change(input, { target: { value: 'How do I use this word?' } })
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(continueAction).toHaveBeenCalledWith('session-1', 'How do I use this word?'))
+    await waitFor(() => expect(submitTranslation).toHaveBeenCalledWith('session-1', 'How do I use this word?'))
     expect(screen.getByRole('heading', { name: 'hello' })).toBeInTheDocument()
     expect(screen.getByText('How do I use this word?')).toBeInTheDocument()
+    expect(await screen.findByText('Use hello as a greeting.')).toBeInTheDocument()
   })
 
   it('limits the hidden footer hit area to the rendered controls height', () => {
@@ -552,7 +630,7 @@ describe('ResultApp window interactions', () => {
     expect(footer.querySelector('.result-followup')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: '继续提问' })).toHaveAttribute(
       'placeholder',
-      '输入继续提问'
+      '输入英文单词查词，或输入问题询问 AI'
     )
     expect(footer.firstElementChild).toHaveClass('result-followup')
     expect([...footerActions.children]).toHaveLength(2)
@@ -564,7 +642,7 @@ describe('ResultApp window interactions', () => {
     fireEvent.change(followUp, { target: { value: '继续解释这一段' } })
     fireEvent.keyDown(followUp, { key: 'Enter' })
     await waitFor(() => {
-      expect(continueAction).toHaveBeenCalledWith('session-1', '继续解释这一段')
+      expect(api.submitTranslation).toHaveBeenCalledWith('session-1', '继续解释这一段')
     })
 
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
@@ -1099,7 +1177,7 @@ describe('ResultApp window interactions', () => {
     const first = await renderResult(streaming)
     expect(screen.getByRole('button', { name: '停止' })).toBeInTheDocument()
     expect(screen.getByText('正在等待模型响应…')).toBeInTheDocument()
-    expect(screen.queryByRole('textbox', { name: '继续提问' })).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '继续提问' })).toBeEnabled()
     first.unmount()
 
     vi.resetModules()

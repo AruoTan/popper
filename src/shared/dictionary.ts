@@ -1,5 +1,8 @@
 import { z } from 'zod'
 
+export const translationSubmissionSchema = z.object({ route: z.enum(['dictionary', 'ai']), requestId: z.string() })
+export type TranslationSubmission = z.infer<typeof translationSubmissionSchema>
+
 export const dictionarySuggestionSchema = z.object({ word: z.string(), explanation: z.string() })
 export const dictionaryEntrySchema = z.object({
   word: z.string(), ukPhone: z.string().nullable(), usPhone: z.string().nullable(),

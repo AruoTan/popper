@@ -1,4 +1,4 @@
-import type { DictionarySnapshot, DictionarySuggestion, StudyBook } from './dictionary'
+import type { DictionarySnapshot, DictionarySuggestion, StudyBook, TranslationSubmission } from './dictionary'
 import type {
   ActionStreamEvent,
   Point,
@@ -66,6 +66,8 @@ export interface SettingsGuidance {
 }
 
 export interface WindowTextLensApi {
+  submitTranslation?(sessionId: string, text: string): Promise<TranslationSubmission>
+  translationInputSuggestions?(sessionId: string, requestId: string, version: number, text: string): Promise<DictionarySuggestion[]>
   getDictionaryState?(sessionId: string): Promise<DictionarySnapshot | null>
   queryDictionary?(sessionId: string, query: string): Promise<string>
   suggestDictionary?(sessionId: string, query: string, queryGeneration: number): Promise<DictionarySuggestion[]>

@@ -1,6 +1,27 @@
 use super::*;
 use crate::dictionary::{self, DictionarySnapshot, Suggestion};
 
+pub(super) struct TranslationInput {
+    request_id: String,
+    version: u64,
+    pub cancellation: CancellationToken,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationSubmission {
+    route: &'static str,
+    request_id: String,
+}
+
+pub(super) fn translation_query(settings: &AppSettings, action_id: &str, text: &str) -> Option<String> {
+    if action_id != "translate" || !settings.translate.dictionary_enabled
+        || !settings.actions.iter().any(|a| a.id == action_id && a.kind == ActionKind::Translate) {
+        return None;
+    }
+    dictionary::normalize_query(text)
+}
+
 pub(super) struct DictionarySession {
     pub request: FrozenActionRequest,
     pub snapshot: DictionarySnapshot,
@@ -32,7 +53,82 @@ impl DictionarySession {
     }
 }
 
+impl ActionServiceState {
+    fn initialize_translation_dictionary(&mut self, id: &str, text: &str, query: String) -> Result<(), ActionServiceError> {
+        let request = self.contexts.get(id).ok_or(ActionServiceError::SessionEnded)?.frozen_request.clone();
+        let mut dictionary = DictionarySession::new(&ExecuteActionRequest {
+            session_id: id.into(), window_label: request.window_label,
+            action_id: request.action_id, text: text.into(), cursor: request.cursor,
+            target_language: request.target_language,
+        }, query);
+        dictionary.snapshot.status = "cancelled".into();
+        self.dictionaries.insert(id.into(), dictionary);
+        Ok(())
+    }
+}
+
 impl ActionService {
+    pub(crate) fn submit_translation<R: Runtime + 'static>(
+        &self, app: &AppHandle<R>, id: &str, text: &str,
+    ) -> Result<TranslationSubmission, ActionServiceError> {
+        validate_follow_up_question(text)?;
+        let settings = self.inner.settings.get_settings();
+        let query = {
+            let mut state = self.inner.state.lock();
+            let snapshot = state.sessions.authoritative_snapshot(id).ok_or(ActionServiceError::SessionEnded)?;
+            if snapshot.action_id != "translate" || !settings.actions.iter().any(|a| a.id == "translate" && a.kind == ActionKind::Translate) {
+                return Err(ActionServiceError::Validation("当前会话不是内置翻译".into()));
+            }
+            let query = translation_query(&settings, &snapshot.action_id, text);
+            if let Some(input) = state.translation_inputs.get(id) { input.cancellation.cancel(); }
+            if query.is_some() && !state.dictionaries.contains_key(id) {
+                state.initialize_translation_dictionary(id, text, query.clone().unwrap())?;
+            }
+            query
+        };
+        if query.is_some() {
+            let request_id = self.query_dictionary(app, id, text)?;
+            Ok(TranslationSubmission { route: "dictionary", request_id })
+        } else {
+            if self.dictionary_snapshot(id).is_some_and(|d| d.status == "loading") {
+                self.cancel(app, id)?;
+            }
+            let request_id = self.continue_with_question(app, id, text)?;
+            Ok(TranslationSubmission { route: "ai", request_id })
+        }
+    }
+
+    /// Debounce at the service boundary, so all recognition uses the same Rust rules.
+    /// Input suggestions have their own token and never cancel the displayed lookup.
+    pub(crate) async fn translation_input_suggestions(
+        &self, id: &str, request_id: &str, version: u64, text: &str,
+    ) -> Result<Vec<Suggestion>, String> {
+        let settings = self.inner.settings.get_settings();
+        let (query, token) = {
+            let mut state = self.inner.state.lock();
+            let snapshot = state.sessions.authoritative_snapshot(id).ok_or("结果会话已结束")?;
+            if snapshot.request_id != request_id { return Err("请求已改变".into()); }
+            let query = translation_query(&settings, &snapshot.action_id, text);
+            if let Some(old) = state.translation_inputs.get(id) {
+                if old.request_id == request_id && old.version >= version { return Err("输入已改变".into()); }
+                old.cancellation.cancel();
+            }
+            let token = CancellationToken::new();
+            state.translation_inputs.insert(id.into(), TranslationInput {
+                request_id: request_id.into(), version, cancellation: token.clone(),
+            });
+            (query, token)
+        };
+        let Some(query) = query else { return Ok(Vec::new()); };
+        tokio::select! {
+            _ = token.cancelled() => Err("查询已取消".into()),
+            result = async {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                dictionary::suggest(&self.inner.client, &query).await
+            } => result,
+        }
+    }
+
     pub(crate) fn dictionary_snapshot(&self, id: &str) -> Option<DictionarySnapshot> {
         self.inner
             .state
@@ -92,6 +188,7 @@ impl ActionService {
         // Cancel both the previous lookup and any AI continuation before replacing its generation.
         let (reservation, suggestion_token) = {
             let mut state = self.inner.state.lock();
+            if let Some(input) = state.translation_inputs.get(id) { input.cancellation.cancel(); }
             if !state.dictionaries.contains_key(id) {
                 return Err(ActionServiceError::SessionEnded);
             }
@@ -472,6 +569,67 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn translation_routing_uses_selection_rules_and_respects_settings_and_action() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = SettingsRepository::new(directory.path().join("settings.json")).unwrap();
+        let mut settings = repository.get_settings();
+        for text in ["rust", "take off", "don't", "well-known", "  \"hello!\"  ", "I am happy"] {
+            assert_eq!(translation_query(&settings, "translate", text), dictionary::normalize_query(text));
+            assert!(translation_query(&settings, "translate", text).is_some());
+        }
+        for text in ["", "hello, world", "abc123", "你好", "hello 世界", "one two three four five six"] {
+            assert!(translation_query(&settings, "translate", text).is_none());
+        }
+        assert!(translation_query(&settings, "custom", "rust").is_none());
+        settings.translate.dictionary_enabled = false;
+        assert!(translation_query(&settings, "translate", "rust").is_none());
+        settings.translate.dictionary_enabled = true;
+        settings.actions.iter_mut().find(|a| a.id == "translate").unwrap().kind = ActionKind::Explain;
+        assert!(translation_query(&settings, "translate", "rust").is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn input_debounce_cancels_stale_work_without_touching_lookup_and_isolates_windows() {
+        let directory = tempfile::tempdir().unwrap();
+        let repository = Arc::new(SettingsRepository::new(directory.path().join("settings.json")).unwrap());
+        let service = ActionService::new(repository).unwrap();
+        {
+            let mut state = service.inner.state.lock();
+            shell(&mut state.sessions, "one");
+            shell(&mut state.sessions, "two");
+        }
+        let work = service.translation_input_suggestions("one", "initial", 1, "cat");
+        tokio::pin!(work);
+        tokio::select! { biased; _ = &mut work => panic!("must debounce"), _ = tokio::task::yield_now() => {} }
+        tokio::time::advance(Duration::from_millis(249)).await;
+        tokio::select! { biased; _ = &mut work => panic!("must wait 250 ms"), _ = tokio::task::yield_now() => {} }
+        assert!(service.translation_input_suggestions("one", "initial", 2, "中文").await.unwrap().is_empty());
+        assert!(work.await.is_err());
+        assert!(service.translation_input_suggestions("one", "initial", 1, "dog").await.is_err());
+        assert!(service.translation_input_suggestions("two", "initial", 1, "").await.is_ok());
+        assert!(service.inner.state.lock().dictionaries.is_empty());
+        assert_eq!(service.get_snapshot("one").unwrap().request_id, "initial");
+        let token = service.inner.state.lock().translation_inputs["two"].cancellation.clone();
+        service.clear_session("one");
+        assert!(!token.is_cancelled());
+        service.clear_session("two");
+        assert!(token.is_cancelled());
+        assert!(service.translation_input_suggestions("one", "initial", 3, "cat").await.is_err());
+    }
+
+    #[test]
+    fn freeform_translation_question_keeps_history_without_translation_instructions() {
+        let history = vec![ChatMessage::system("Translate everything".into()),
+            ChatMessage::user("hello".into()), ChatMessage::assistant("你好".into())];
+        let messages = build_translation_continue_messages(None, &history, "解释一下用法").unwrap();
+        assert_eq!(&messages[..2], &history[1..]);
+        assert_eq!(messages[2], ChatMessage::user("解释一下用法".into()));
+        assert!(messages.iter().all(|m| m.role != ChatRole::System));
+        let messages = build_translation_continue_messages(Some("词典参考"), &history, "为什么？").unwrap();
+        assert_eq!(messages[0].content, "词典参考");
+        assert_eq!(messages.last().unwrap().content, "为什么？");
+    }
+    #[test]
     fn first_lookup_needs_no_ai_context_and_empty_completion_allows_follow_up() {
         let mut sessions = SessionTable::default();
         shell(&mut sessions, "one");
@@ -587,5 +745,13 @@ mod tests {
             "How is this used?"
         );
         assert_eq!(state.dictionaries["one"].snapshot.mode, "ai");
+        // A result initially produced by AI can create its first dictionary card
+        // using the same session and the new input, without resolving a model again.
+        state.dictionaries.remove("one");
+        state.initialize_translation_dictionary("one", "  take off.  ", "take off".into()).unwrap();
+        assert_eq!(state.dictionaries["one"].request.source_text, "  take off.  ");
+        assert_eq!(state.dictionaries["one"].snapshot.query, "take off");
+        assert_eq!(state.dictionaries["one"].snapshot.session_id, "one");
+        assert_eq!(state.dictionaries["one"].snapshot.mode, "dictionary");
     }
 }
