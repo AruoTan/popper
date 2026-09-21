@@ -1,4 +1,5 @@
 export * from './bridge'
+export * from './dictionary'
 export * from './constants'
 export * from './defaults'
 export * from './ipc'

@@ -424,6 +424,17 @@ impl SettingsRepository {
             .ok_or_else(|| SettingsError::ProviderNotFound(provider_id.to_owned()))
     }
 
+    pub(crate) fn eudic_authorization(&self) -> Result<Option<String>, SettingsError> {
+        self.secrets.get("integration:eudic")
+    }
+
+    pub(crate) fn set_eudic_authorization(&self, value: &str) -> Result<(), String> {
+        let value = value.trim();
+        if value.len() > 4096 || value.contains(['\r', '\n']) { return Err("授权信息格式无效".to_owned()); }
+        if value.is_empty() { return self.secrets.delete("integration:eudic").map_err(|e| e.to_string()); }
+        self.secrets.set("integration:eudic", value).map_err(|e| e.to_string())
+    }
+
     pub(crate) fn get_api_key(&self, provider_id: &str) -> Result<Option<String>, SettingsError> {
         self.ensure_provider(provider_id)?;
         self.secrets.get(&secret_account(provider_id))
@@ -1430,6 +1441,32 @@ mod tests {
         let json = fs::read_to_string(path).unwrap();
         assert!(!json.contains("sk-super-secret"));
         assert!(!json.contains("apiKey"));
+    }
+
+    #[test]
+    fn eudic_authorization_is_encrypted_and_never_public() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository = SettingsRepository::new(&path).unwrap();
+        repository.set_eudic_authorization("NIS test-eudic-secret").unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("test-eudic-secret"));
+        assert!(!serde_json::to_string(&repository.get_public_settings().unwrap()).unwrap().contains("test-eudic-secret"));
+        drop(repository);
+        let reopened = SettingsRepository::new(&path).unwrap();
+        assert_eq!(reopened.eudic_authorization().unwrap().as_deref(), Some("NIS test-eudic-secret"));
+        assert!(reopened.set_eudic_authorization("NIS test\r\ninjected: header").is_err());
+        reopened.set_eudic_authorization("").unwrap();
+        assert_eq!(reopened.eudic_authorization().unwrap(), None);
+    }
+
+    #[test]
+    fn existing_translation_settings_default_dictionary_on_and_preserve_off() {
+        let old = serde_json::json!({"primaryLanguage":"zh-CN","alternateLanguage":"en-US"});
+        let migrated: TranslationSettings = serde_json::from_value(old.clone()).unwrap();
+        assert!(migrated.dictionary_enabled);
+        let mut disabled = old;
+        disabled["dictionaryEnabled"] = serde_json::json!(false);
+        assert!(!serde_json::from_value::<TranslationSettings>(disabled).unwrap().dictionary_enabled);
     }
 
     #[test]

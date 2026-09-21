@@ -1,3 +1,4 @@
+import { DictionarySettings } from './DictionarySettings'
 import {
   useCallback,
   useEffect,
@@ -1452,7 +1453,7 @@ export function SettingsApp(): JSX.Element {
                       : current.translate.alternateLanguage
                   return {
                     ...current,
-                    translate: { primaryLanguage, alternateLanguage }
+                    translate: { ...current.translate, primaryLanguage, alternateLanguage }
                   }
                 })
               }}
@@ -1477,7 +1478,7 @@ export function SettingsApp(): JSX.Element {
                       : current.translate.primaryLanguage
                   return {
                     ...current,
-                    translate: { primaryLanguage, alternateLanguage }
+                    translate: { ...current.translate, primaryLanguage, alternateLanguage }
                   }
                 })
               }}
@@ -1487,6 +1488,9 @@ export function SettingsApp(): JSX.Element {
               ))}
             </select>
           </label>
+          <div className="field--wide"><SettingSwitch title="英文短文本优先查词" description="内置翻译对 1–5 个英文词调用有道联想与释义；无词条时转 AI。查词无需配置模型。"
+            checked={draft.translate.dictionaryEnabled} onChange={(dictionaryEnabled) => changeDraft((current) => ({ ...current, translate: { ...current.translate, dictionaryEnabled } }))} /></div>
+          <DictionarySettings />
           <p className="translation-summary field--wide">
             默认：检测到 {TRANSLATION_LANGUAGE_NAMES[draft.translate.primaryLanguage]} 时译为{' '}
             {TRANSLATION_LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然；

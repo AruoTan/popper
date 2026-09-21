@@ -1,5 +1,16 @@
 /** Live Tauri invoke command names used by the renderer bridge. */
 export const TAURI_COMMANDS = {
+  submitTranslation: 'submit_translation',
+  translationInputSuggestions: 'translation_input_suggestions',
+  dictionaryState: 'dictionary_state',
+  dictionaryQuery: 'dictionary_query',
+  dictionarySuggest: 'dictionary_suggest',
+  dictionaryCancelInput: 'dictionary_cancel_input',
+  dictionaryAudio: 'dictionary_audio',
+  eudicBooks: 'eudic_books',
+  eudicAdd: 'eudic_add',
+  eudicConfigured: 'eudic_configured',
+  setEudicAuthorization: 'set_eudic_authorization',
   getSettings: 'get_settings',
   settingsReady: 'settings_ready',
   updateSettings: 'update_settings',
@@ -47,6 +58,7 @@ export const TAURI_COMMANDS = {
 
 /** Live Tauri event names emitted by the native runtime and listened by the bridge. */
 export const TAURI_EVENTS = {
+  dictionary: 'textlens:dictionary',
   selection: 'textlens:selection',
   actionStream: 'textlens:action-stream',
   settingsChanged: 'textlens:settings-changed',

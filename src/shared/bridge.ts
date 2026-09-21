@@ -1,3 +1,4 @@
+import type { DictionarySnapshot, DictionarySuggestion, StudyBook, TranslationSubmission } from './dictionary'
 import type {
   ActionStreamEvent,
   Point,
@@ -65,6 +66,18 @@ export interface SettingsGuidance {
 }
 
 export interface WindowTextLensApi {
+  submitTranslation?(sessionId: string, text: string): Promise<TranslationSubmission>
+  translationInputSuggestions?(sessionId: string, requestId: string, version: number, text: string): Promise<DictionarySuggestion[]>
+  getDictionaryState?(sessionId: string): Promise<DictionarySnapshot | null>
+  queryDictionary?(sessionId: string, query: string): Promise<string>
+  suggestDictionary?(sessionId: string, query: string, queryGeneration: number): Promise<DictionarySuggestion[]>
+  cancelDictionaryInput?(sessionId: string, queryGeneration: number): Promise<void>
+  dictionaryAudio?(sessionId: string, accent: 1 | 2): Promise<string>
+  getEudicBooks?(sessionId: string): Promise<StudyBook[]>
+  addEudicWord?(sessionId: string, queryGeneration: number, categoryId: string): Promise<void>
+  eudicConfigured?(): Promise<boolean>
+  setEudicAuthorization?(authorization: string): Promise<void>
+  onDictionaryChanged?(listener: (snapshot: DictionarySnapshot) => void): Unsubscribe
   getSettings(): Promise<PublicSettings>
   settingsReady?(): Promise<void>
   updateSettings(update: SettingsUpdate): Promise<PublicSettings>

@@ -366,6 +366,10 @@ impl Default for SelectionCaptureSettings {
                 "docbox.exe",
                 "docboxrenderer.exe",
                 "emeditor.exe",
+                "zotero.exe",
+                "chrome.exe",
+                "code.exe",
+                "obsidian.exe",
             ]
             .into_iter()
             .map(|application| SelectionCaptureRule {
@@ -380,13 +384,18 @@ impl Default for SelectionCaptureSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TranslationSettings {
+    #[serde(default = "dictionary_enabled_default")]
+    pub dictionary_enabled: bool,
     pub primary_language: TranslationLanguage,
     pub alternate_language: TranslationLanguage,
 }
 
+fn dictionary_enabled_default() -> bool { true }
+
 impl Default for TranslationSettings {
     fn default() -> Self {
         Self {
+            dictionary_enabled: true,
             primary_language: TranslationLanguage::ZhCn,
             alternate_language: TranslationLanguage::EnUs,
         }

@@ -9,32 +9,39 @@ export function isNearScrollBottom(element: HTMLElement): boolean {
 export function useAutoFollowOutput(
   scrollRef: RefObject<HTMLDivElement | null>,
   observedRef: RefObject<HTMLDivElement | null>,
-  resetKey: string | null
+  resetKey: string | null,
+  enabled = true
 ): (event: UIEvent<HTMLDivElement>) => void {
   const followingRef = useRef(true)
   const frameRef = useRef<number | null>(null)
 
   const scrollToBottom = useCallback((): void => {
+    if (!enabled) return
     if (frameRef.current !== null) return
     frameRef.current = window.requestAnimationFrame(() => {
       frameRef.current = null
       const element = scrollRef.current
       if (element && followingRef.current) element.scrollTop = element.scrollHeight
     })
-  }, [scrollRef])
+  }, [scrollRef, enabled])
 
   useEffect(() => {
-    followingRef.current = true
-    scrollToBottom()
-  }, [resetKey, scrollToBottom])
+    if (frameRef.current !== null) {
+      window.cancelAnimationFrame(frameRef.current)
+      frameRef.current = null
+    }
+    followingRef.current = enabled
+    if (enabled) scrollToBottom()
+    else if (scrollRef.current) scrollRef.current.scrollTop = 0
+  }, [resetKey, scrollToBottom, scrollRef, enabled])
 
   useEffect(() => {
     const observed = observedRef.current
-    if (!observed || typeof ResizeObserver !== 'function') return
+    if (!enabled || !observed || typeof ResizeObserver !== 'function') return
     const observer = new ResizeObserver(scrollToBottom)
     observer.observe(observed)
     return () => observer.disconnect()
-  }, [observedRef, scrollToBottom])
+  }, [observedRef, scrollToBottom, enabled])
 
   useEffect(() => () => {
     if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current)

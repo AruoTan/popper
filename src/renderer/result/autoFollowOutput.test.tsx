@@ -29,6 +29,40 @@ afterEach(() => {
 })
 
 describe('result auto-follow scrolling', () => {
+  it('opens dictionary results at the top, preserves reading position, and resets for a new word', async () => {
+    const scroller = document.createElement('div')
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, value: 900 },
+      clientHeight: { configurable: true, value: 200 },
+      scrollTop: { configurable: true, writable: true, value: 700 }
+    })
+    const scrollRef = createRef<HTMLDivElement>()
+    const observedRef = createRef<HTMLDivElement>()
+    scrollRef.current = scroller
+    observedRef.current = document.createElement('div')
+    const { result, rerender } = renderHook(
+      ({ key, enabled }) => useAutoFollowOutput(scrollRef, observedRef, key, enabled),
+      { initialProps: { key: 'ai-1', enabled: true } }
+    )
+    // Switching before a queued AI scroll runs must cancel that scroll.
+    rerender({ key: 'dictionary-1', enabled: false })
+    await act(async () => vi.advanceTimersByTimeAsync(16))
+    expect(scroller.scrollTop).toBe(0)
+
+    scroller.scrollTop = 650
+    act(() => result.current({ currentTarget: scroller } as never))
+    rerender({ key: 'dictionary-1', enabled: false })
+    await act(async () => vi.advanceTimersByTimeAsync(16))
+    expect(scroller.scrollTop).toBe(650)
+
+    rerender({ key: 'dictionary-2', enabled: false })
+    expect(scroller.scrollTop).toBe(0)
+
+    rerender({ key: 'ai-2', enabled: true })
+    await act(async () => vi.advanceTimersByTimeAsync(16))
+    expect(scroller.scrollTop).toBe(900)
+  })
+
   it('recognizes whether the user is near the bottom', () => {
     const element = document.createElement('div')
     Object.defineProperties(element, {

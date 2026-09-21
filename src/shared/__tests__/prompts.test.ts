@@ -91,7 +91,7 @@ Rules:
 
   it('keeps bidirectional translation correct when the configured pair is reversed', () => {
     const prompt = buildActionPrompt(action('translate'), '这是测试。', {
-      translate: { primaryLanguage: 'en-US', alternateLanguage: 'zh-CN' }
+      translate: { dictionaryEnabled: true, primaryLanguage: 'en-US', alternateLanguage: 'zh-CN' }
     })
     expect(prompt.sourceLanguage).toBe('zh-CN')
     expect(prompt.targetLanguage).toBe('en-US')

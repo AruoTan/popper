@@ -53,6 +53,7 @@ export const DEFAULT_CAPTURE_SHORTCUT = ''
 
 export const DEFAULT_LOCALE = 'zh-CN' as const
 export const DEFAULT_TRANSLATION_PAIR = {
+  dictionaryEnabled: true,
   primaryLanguage: 'zh-CN',
   alternateLanguage: 'en-US'
 } as const
@@ -94,7 +95,11 @@ export const DEFAULT_SELECTION_CAPTURE_SETTINGS = {
     { application: 'rdrcef.exe', strategy: 'clipboard' },
     { application: 'docbox.exe', strategy: 'clipboard' },
     { application: 'docboxrenderer.exe', strategy: 'clipboard' },
-    { application: 'emeditor.exe', strategy: 'clipboard' }
+    { application: 'emeditor.exe', strategy: 'clipboard' },
+    { application: 'zotero.exe', strategy: 'clipboard' },
+    { application: 'chrome.exe', strategy: 'clipboard' },
+    { application: 'code.exe', strategy: 'clipboard' },
+    { application: 'obsidian.exe', strategy: 'clipboard' }
   ]
 } as const
 
