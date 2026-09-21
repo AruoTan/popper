@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /workspaces/textlens
+cd /workspaces/popper
 
 pnpm typecheck
 pnpm test

@@ -6,8 +6,8 @@
 
 1. 将源码和 `.github` 配置提交、推送到 GitHub 仓库。工作流首次必须存在于默认分支，Actions 页面才会显示手动运行按钮。
 2. 打开 **Actions → Build Windows installer → Run workflow**，选择待构建分支并运行。
-3. 成功后，在该次运行的 **Artifacts** 下载 `TextLens-windows-x64-运行编号`，解压得到 `.exe` 和 `SHA256SUMS.txt`。
-4. 可用 PowerShell 的 `Get-FileHash .\TextLens_0.5.1_x64-setup.exe -Algorithm SHA256` 与校验文件比对（文件名随版本变化）。
+3. 成功后，在该次运行的 **Artifacts** 下载 `Popper-windows-x64-运行编号`，解压得到 `.exe` 和 `SHA256SUMS.txt`。
+4. 可用 PowerShell 的 `Get-FileHash .\Popper_0.5.1_x64-setup.exe -Algorithm SHA256` 与校验文件比对（文件名随版本变化）。
 
 工作流仅手动触发，不因 push/PR 自动消耗构建额度，不创建 Release、不推送提交、不需要发布令牌或签名密钥。产物保留 14 天；请及时下载。私有仓库需留意账户的 Actions 分钟数、存储额度及组织策略。
 

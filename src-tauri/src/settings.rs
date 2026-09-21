@@ -1527,13 +1527,13 @@ mod tests {
     }
 
     #[test]
-    fn imports_pristine_textlens_settings_and_secrets_from_the_legacy_directory() {
+    fn imports_pristine_popper_settings_and_secrets_from_the_legacy_directory() {
         let root = tempdir().unwrap();
         let legacy_path = root
             .path()
             .join(LEGACY_APP_CONFIG_DIRECTORY)
             .join("settings.json");
-        let current_path = root.path().join("com.local.textlens").join("settings.json");
+        let current_path = root.path().join("com.local.popper").join("settings.json");
         let legacy = SettingsRepository::new(&legacy_path).unwrap();
         configure_ai_repository(&legacy, "legacy-model", "legacy-secret");
         drop(legacy);
@@ -1562,13 +1562,13 @@ mod tests {
     }
 
     #[test]
-    fn legacy_import_never_overwrites_configured_textlens_settings() {
+    fn legacy_import_never_overwrites_configured_popper_settings() {
         let root = tempdir().unwrap();
         let legacy_path = root
             .path()
             .join(LEGACY_APP_CONFIG_DIRECTORY)
             .join("settings.json");
-        let current_path = root.path().join("com.local.textlens").join("settings.json");
+        let current_path = root.path().join("com.local.popper").join("settings.json");
         let legacy = SettingsRepository::new(&legacy_path).unwrap();
         configure_ai_repository(&legacy, "legacy-model", "legacy-secret");
         let current = SettingsRepository::new(&current_path).unwrap();

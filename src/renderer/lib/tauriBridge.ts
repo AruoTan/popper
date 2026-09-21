@@ -1,28 +1,29 @@
-import { invoke } from '@tauri-apps/api/core'
-import { listen, type Event } from '@tauri-apps/api/event'
+import { invoke } from "@tauri-apps/api/core";
+import { listen, type Event } from "@tauri-apps/api/event";
 
 import {
-  dictionarySnapshotSchema,
-  translationSubmissionSchema,
-  dictionarySuggestionSchema,
-  studyBookSchema,
   actionStreamEventSchema,
+  dictionarySnapshotSchema,
+  dictionarySuggestionSchema,
   providerModelSchema,
   publicSettingsSchema,
-  resultReadyAckSchema,
   rendererMarkerIdSchema,
+  resultReadyAckSchema,
   resultRendererMarkerSchema,
   resultSessionSnapshotSchema,
   selectionPayloadSchema,
-  toolbarDismissedEventSchema,
-  toolbarPointerEventSchema,
+  studyBookSchema,
   TAURI_COMMANDS,
   TAURI_EVENTS,
+  toolbarDismissedEventSchema,
+  toolbarPointerEventSchema,
+  translationSubmissionSchema,
   type AccessibilityStatus,
+  type ActionRetryOptions,
   type ActionStreamEvent,
   type ConnectionTestResult,
+  type OpenSettingsOptions,
   type Point,
-  type ActionRetryOptions,
   type ProviderCreateInput,
   type ProviderModelsSyncResult,
   type ProviderUpdateInput,
@@ -32,506 +33,538 @@ import {
   type ResultSessionSnapshot,
   type RunActionResult,
   type SelectionPayload,
-  type OpenSettingsOptions,
   type SettingsGuidance,
   type SettingsUpdate,
-  type SupportedLocale,
   type ToolbarDismissedEvent,
   type ToolbarPointerEvent,
   type ToolbarSize,
   type Unsubscribe,
-  type WindowTextLensApi
-} from '../../shared'
+  type WindowPopperApi,
+} from "../../shared";
 
-const EVENTS = TAURI_EVENTS
+const EVENTS = TAURI_EVENTS;
 
-const SELECTION_LISTEN_RETRY_DELAYS_MS = [0, 16, 64] as const
+const SELECTION_LISTEN_RETRY_DELAYS_MS = [0, 16, 64] as const;
 
 function rendererErrorClass(error: unknown): string {
-  if (error instanceof TypeError) return 'TypeError'
-  if (error instanceof RangeError) return 'RangeError'
-  if (error instanceof DOMException) return 'DOMException'
-  if (error instanceof Error) return 'Error'
-  if (error === null) return 'null'
-  return typeof error
+  if (error instanceof TypeError) return "TypeError";
+  if (error instanceof RangeError) return "RangeError";
+  if (error instanceof DOMException) return "DOMException";
+  if (error instanceof Error) return "Error";
+  if (error === null) return "null";
+  return typeof error;
 }
 
 function waitForRetry(delayMs: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, delayMs))
+  return new Promise((resolve) => window.setTimeout(resolve, delayMs));
 }
 
-
 function parseSettingsGuidance(value: unknown): SettingsGuidance {
-  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  const focus = typeof record.focus === 'string' ? record.focus.trim() : ''
-  const notice = typeof record.notice === 'string' ? record.notice.trim() : ''
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const focus = typeof record.focus === "string" ? record.focus.trim() : "";
+  const notice = typeof record.notice === "string" ? record.notice.trim() : "";
   return {
     ...(focus ? { focus } : {}),
-    ...(notice ? { notice } : {})
-  }
+    ...(notice ? { notice } : {}),
+  };
 }
 
 class EventHub<T> {
-  private readonly listeners = new Set<(value: T) => void>()
-  private readonly readyPromise: Promise<void>
-  private error: unknown = null
+  private readonly listeners = new Set<(value: T) => void>();
+  private readonly readyPromise: Promise<void>;
+  private error: unknown = null;
 
   constructor(
     eventName: string,
     parse: (payload: unknown) => T,
-    retryDelaysMs: readonly number[] = [0]
+    retryDelaysMs: readonly number[] = [0],
   ) {
     const forward = (event: Event<unknown>): void => {
-      let value: T
+      let value: T;
       try {
-        value = parse(event.payload)
+        value = parse(event.payload);
       } catch {
-        console.error(`[TextLens] ignored invalid ${eventName} event payload`)
-        return
+        console.error(`[Popper] ignored invalid ${eventName} event payload`);
+        return;
       }
       for (const listener of this.listeners) {
         try {
-          listener(value)
+          listener(value);
         } catch {
           // One renderer subscriber must not prevent other windows/components
           // from receiving the same validated native event.
-          console.error(`[TextLens] ${eventName} event listener failed`)
+          console.error(`[Popper] ${eventName} event listener failed`);
         }
       }
-    }
-    this.readyPromise = this.install(eventName, forward, retryDelaysMs)
+    };
+    this.readyPromise = this.install(eventName, forward, retryDelaysMs);
   }
 
   private async install(
     eventName: string,
     forward: (event: Event<unknown>) => void,
-    retryDelaysMs: readonly number[]
+    retryDelaysMs: readonly number[],
   ): Promise<void> {
-    const attempts = retryDelaysMs.length > 0 ? retryDelaysMs : [0]
+    const attempts = retryDelaysMs.length > 0 ? retryDelaysMs : [0];
     for (let index = 0; index < attempts.length; index += 1) {
-      const delayMs = attempts[index] ?? 0
-      if (delayMs > 0) await waitForRetry(delayMs)
+      const delayMs = attempts[index] ?? 0;
+      if (delayMs > 0) await waitForRetry(delayMs);
       try {
-        await listen(eventName, forward)
-        return
+        await listen(eventName, forward);
+        return;
       } catch (error: unknown) {
-        console.warn('[TextLens][renderer]', {
+        console.warn("[Popper][renderer]", {
           stage: `event-listen:${index + 1}`,
           eventId: eventName,
-          errorClass: rendererErrorClass(error)
-        })
-        if (index === attempts.length - 1) this.error = error
+          errorClass: rendererErrorClass(error),
+        });
+        if (index === attempts.length - 1) this.error = error;
       }
     }
   }
 
   subscribe(listener: (value: T) => void): Unsubscribe {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   async ready(): Promise<void> {
-    await this.readyPromise
-    if (this.error) throw this.error
+    await this.readyPromise;
+    if (this.error) throw this.error;
   }
 }
 
 function parseConnectionResult(value: unknown): ConnectionTestResult {
-  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  const models = providerModelSchema.array().parse(record.models ?? [])
-  if (record.ok === true) return { ok: true, models }
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const models = providerModelSchema.array().parse(record.models ?? []);
+  if (record.ok === true) return { ok: true, models };
   return {
     ok: false,
-    message: typeof record.message === 'string' ? record.message : '连接测试失败',
-    ...(typeof record.status === 'number' ? { status: record.status } : {})
-  }
+    message: typeof record.message === "string" ? record.message : "连接测试失败",
+    ...(typeof record.status === "number" ? { status: record.status } : {}),
+  };
 }
 
 function parseSyncResult(value: unknown): ProviderModelsSyncResult {
-  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  const models = providerModelSchema.array().parse(record.models ?? [])
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const models = providerModelSchema.array().parse(record.models ?? []);
   if (record.ok === true) {
     return {
       ok: true,
       models,
-      ...(record.settings ? { settings: publicSettingsSchema.parse(record.settings) } : {})
-    }
+      ...(record.settings ? { settings: publicSettingsSchema.parse(record.settings) } : {}),
+    };
   }
   return {
     ok: false,
-    message: typeof record.message === 'string' ? record.message : '同步模型失败',
-    ...(typeof record.status === 'number' ? { status: record.status } : {})
-  }
+    message: typeof record.message === "string" ? record.message : "同步模型失败",
+    ...(typeof record.status === "number" ? { status: record.status } : {}),
+  };
 }
 
 function parseRunActionResult(value: unknown): RunActionResult {
-  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
   if (record.accepted === true) {
     return {
       accepted: true,
-      ...(typeof record.sessionId === 'string' ? { sessionId: record.sessionId } : {}),
-      ...(typeof record.requestId === 'string' ? { requestId: record.requestId } : {})
-    }
+      ...(typeof record.sessionId === "string" ? { sessionId: record.sessionId } : {}),
+      ...(typeof record.requestId === "string" ? { requestId: record.requestId } : {}),
+    };
   }
   return {
     accepted: false,
-    message: typeof record.message === 'string' ? record.message : '动作未被接受'
-  }
+    message: typeof record.message === "string" ? record.message : "动作未被接受",
+  };
 }
 
 function parseAccessibility(value: unknown): AccessibilityStatus {
-  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {}
-  const platform = record.platform === 'darwin' || record.platform === 'windows'
-    ? record.platform
-    : 'unsupported'
-  const trusted = record.trusted === true
-  const diagnosticsRecord = record.diagnostics && typeof record.diagnostics === 'object'
-    ? record.diagnostics as Record<string, unknown>
-    : {}
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const platform =
+    record.platform === "darwin" || record.platform === "windows" ? record.platform : "unsupported";
+  const trusted = record.trusted === true;
+  const diagnosticsRecord =
+    record.diagnostics && typeof record.diagnostics === "object"
+      ? (record.diagnostics as Record<string, unknown>)
+      : {};
   const diagnostics = {
-    ...(typeof diagnosticsRecord.selectionMonitorError === 'string'
+    ...(typeof diagnosticsRecord.selectionMonitorError === "string"
       ? { selectionMonitorError: diagnosticsRecord.selectionMonitorError }
       : {}),
-    ...(typeof diagnosticsRecord.shortcutError === 'string'
+    ...(typeof diagnosticsRecord.shortcutError === "string"
       ? { shortcutError: diagnosticsRecord.shortcutError }
-      : {})
-  }
+      : {}),
+  };
   return {
     platform,
     trusted,
     canRequest: record.canRequest === true,
     // Keep the renderer compatible with a 0.3.5 backend during hot reload.
-    available: typeof record.available === 'boolean' ? record.available : trusted,
-    diagnostics
-  }
+    available: typeof record.available === "boolean" ? record.available : trusted,
+    diagnostics,
+  };
 }
 
 function querySessionId(): string | undefined {
-  return new URLSearchParams(window.location.search).get('sessionId') || undefined
+  return new URLSearchParams(window.location.search).get("sessionId") || undefined;
 }
 
 function requiredSessionId(sessionId?: string): string {
-  const resolved = sessionId || querySessionId()
-  if (!resolved) throw new Error('结果会话无效')
-  return resolved
+  const resolved = sessionId || querySessionId();
+  if (!resolved) throw new Error("结果会话无效");
+  return resolved;
 }
 
-function defineTextLensApi(value: WindowTextLensApi): void {
-  if ('textLens' in window) return
-  Object.defineProperty(window, 'textLens', {
+function definePopperApi(value: WindowPopperApi): void {
+  if ("_popper_" in window) return;
+  Object.defineProperty(window, "_popper_", {
     configurable: false,
     enumerable: false,
     writable: false,
-    value
-  })
+    value,
+  });
 }
 
 /** Compatibility-only adapter for renderers built before the product rename. */
-function defineLegacySelectionBarAlias(value: WindowTextLensApi): void {
-  if ('selectionBar' in window) return
-  Object.defineProperty(window, 'selectionBar', {
+function defineLegacySelectionBarAlias(value: WindowPopperApi): void {
+  if ("selectionBar" in window) return;
+  Object.defineProperty(window, "selectionBar", {
     configurable: false,
     enumerable: false,
     writable: false,
-    value
-  })
+    value,
+  });
 }
 
 /** Installs the narrow renderer API before React mounts. */
 export function installTauriBridge(): void {
-  if ('textLens' in window && window.textLens) {
-    defineLegacySelectionBarAlias(window.textLens)
-    return
+  if ("_popper_" in window && window._popper_) {
+    defineLegacySelectionBarAlias(window._popper_);
+    return;
   }
-  if ('selectionBar' in window && window.selectionBar) {
-    defineTextLensApi(window.selectionBar)
-    return
+  if ("selectionBar" in window && window.selectionBar) {
+    definePopperApi(window.selectionBar);
+    return;
   }
 
   const selectionEvents = new EventHub<SelectionPayload>(
     EVENTS.selection,
     (payload) => selectionPayloadSchema.parse(payload),
-    SELECTION_LISTEN_RETRY_DELAYS_MS
-  )
+    SELECTION_LISTEN_RETRY_DELAYS_MS,
+  );
   const actionEvents = new EventHub<ActionStreamEvent>(EVENTS.actionStream, (payload) =>
-    actionStreamEventSchema.parse(payload)
-  )
+    actionStreamEventSchema.parse(payload),
+  );
   const settingsEvents = new EventHub<PublicSettings>(EVENTS.settingsChanged, (payload) =>
-    publicSettingsSchema.parse(payload)
-  )
+    publicSettingsSchema.parse(payload),
+  );
   const settingsCloseRequestEvents = new EventHub<void>(
     EVENTS.settingsCloseRequested,
-    () => undefined
-  )
+    () => undefined,
+  );
   const settingsGuidanceEvents = new EventHub<SettingsGuidance>(
     EVENTS.settingsGuidance,
-    parseSettingsGuidance
-  )
-  const toolbarPointerEvents = new EventHub<ToolbarPointerEvent>(
-    EVENTS.toolbarPointer,
-    (payload) => toolbarPointerEventSchema.parse(payload)
-  )
+    parseSettingsGuidance,
+  );
+  const toolbarPointerEvents = new EventHub<ToolbarPointerEvent>(EVENTS.toolbarPointer, (payload) =>
+    toolbarPointerEventSchema.parse(payload),
+  );
   const toolbarDismissedEvents = new EventHub<ToolbarDismissedEvent>(
     EVENTS.toolbarDismissed,
-    (payload) => toolbarDismissedEventSchema.parse(payload)
-  )
+    (payload) => toolbarDismissedEventSchema.parse(payload),
+  );
   const resultSelectionShortcutEvents = new EventHub<void>(
     EVENTS.resultSelectionShortcut,
-    () => undefined
-  )
+    () => undefined,
+  );
 
-  const dictionaryEvents = new EventHub(EVENTS.dictionary, (payload) => dictionarySnapshotSchema.parse(payload))
+  const dictionaryEvents = new EventHub(EVENTS.dictionary, (payload) =>
+    dictionarySnapshotSchema.parse(payload),
+  );
 
-  const api: WindowTextLensApi = {
+  const api: WindowPopperApi = {
     async submitTranslation(sessionId, text) {
-      return translationSubmissionSchema.parse(await invoke(TAURI_COMMANDS.submitTranslation, { sessionId, text }))
+      return translationSubmissionSchema.parse(
+        await invoke(TAURI_COMMANDS.submitTranslation, { sessionId, text }),
+      );
     },
     async translationInputSuggestions(sessionId, requestId, version, text) {
-      return dictionarySuggestionSchema.array().parse(await invoke(TAURI_COMMANDS.translationInputSuggestions, { sessionId, requestId, version, text }))
+      return dictionarySuggestionSchema.array().parse(
+        await invoke(TAURI_COMMANDS.translationInputSuggestions, {
+          sessionId,
+          requestId,
+          version,
+          text,
+        }),
+      );
     },
     async getDictionaryState(sessionId) {
-      await dictionaryEvents.ready()
-      return dictionarySnapshotSchema.nullable().parse(await invoke(TAURI_COMMANDS.dictionaryState, { sessionId }))
+      await dictionaryEvents.ready();
+      return dictionarySnapshotSchema
+        .nullable()
+        .parse(await invoke(TAURI_COMMANDS.dictionaryState, { sessionId }));
     },
-    async queryDictionary(sessionId, query) { return invoke<string>(TAURI_COMMANDS.dictionaryQuery, { sessionId, query }) },
+    async queryDictionary(sessionId, query) {
+      return invoke<string>(TAURI_COMMANDS.dictionaryQuery, { sessionId, query });
+    },
     async suggestDictionary(sessionId, query, queryGeneration) {
-      return dictionarySuggestionSchema.array().parse(await invoke(TAURI_COMMANDS.dictionarySuggest, { sessionId, query, queryGeneration }))
+      return dictionarySuggestionSchema
+        .array()
+        .parse(
+          await invoke(TAURI_COMMANDS.dictionarySuggest, { sessionId, query, queryGeneration }),
+        );
     },
-    async cancelDictionaryInput(sessionId, queryGeneration) { await invoke(TAURI_COMMANDS.dictionaryCancelInput, { sessionId, queryGeneration }) },
-    async dictionaryAudio(sessionId, accent) { return invoke<string>(TAURI_COMMANDS.dictionaryAudio, { sessionId, accent }) },
-    async getEudicBooks(sessionId) { return studyBookSchema.array().parse(await invoke(TAURI_COMMANDS.eudicBooks, { sessionId })) },
-    async addEudicWord(sessionId, queryGeneration, categoryId) { await invoke(TAURI_COMMANDS.eudicAdd, { sessionId, queryGeneration, categoryId }) },
-    async eudicConfigured() { return invoke<boolean>(TAURI_COMMANDS.eudicConfigured) },
-    async setEudicAuthorization(authorization) { await invoke(TAURI_COMMANDS.setEudicAuthorization, { authorization }) },
-    onDictionaryChanged(listener) { return dictionaryEvents.subscribe(listener) },
+    async cancelDictionaryInput(sessionId, queryGeneration) {
+      await invoke(TAURI_COMMANDS.dictionaryCancelInput, { sessionId, queryGeneration });
+    },
+    async dictionaryAudio(sessionId, accent) {
+      return invoke<string>(TAURI_COMMANDS.dictionaryAudio, { sessionId, accent });
+    },
+    async getEudicBooks(sessionId) {
+      return studyBookSchema.array().parse(await invoke(TAURI_COMMANDS.eudicBooks, { sessionId }));
+    },
+    async addEudicWord(sessionId, queryGeneration, categoryId) {
+      await invoke(TAURI_COMMANDS.eudicAdd, { sessionId, queryGeneration, categoryId });
+    },
+    async eudicConfigured() {
+      return invoke<boolean>(TAURI_COMMANDS.eudicConfigured);
+    },
+    async setEudicAuthorization(authorization) {
+      await invoke(TAURI_COMMANDS.setEudicAuthorization, { authorization });
+    },
+    onDictionaryChanged(listener) {
+      return dictionaryEvents.subscribe(listener);
+    },
     async getSettings() {
-      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.getSettings))
+      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.getSettings));
     },
     async settingsReady() {
-      await settingsCloseRequestEvents.ready()
-      await invoke(TAURI_COMMANDS.settingsReady)
+      await settingsCloseRequestEvents.ready();
+      await invoke(TAURI_COMMANDS.settingsReady);
     },
     async updateSettings(update: SettingsUpdate) {
-      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.updateSettings, { update }))
+      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.updateSettings, { update }));
     },
     async resetResultSize() {
-      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.resetResultSize))
+      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.resetResultSize));
     },
     async createProvider(input: ProviderCreateInput) {
-      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.createProvider, { input }))
+      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.createProvider, { input }));
     },
     async updateProvider(providerId: string, update: ProviderUpdateInput) {
       return publicSettingsSchema.parse(
-        await invoke(TAURI_COMMANDS.updateProvider, { providerId, update })
-      )
+        await invoke(TAURI_COMMANDS.updateProvider, { providerId, update }),
+      );
     },
     async deleteProvider(providerId: string) {
-      return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.deleteProvider, { providerId }))
+      return publicSettingsSchema.parse(
+        await invoke(TAURI_COMMANDS.deleteProvider, { providerId }),
+      );
     },
     async setProviderApiKey(providerId: string, apiKey: string) {
       return publicSettingsSchema.parse(
-        await invoke(TAURI_COMMANDS.setProviderApiKey, { providerId, apiKey })
-      )
+        await invoke(TAURI_COMMANDS.setProviderApiKey, { providerId, apiKey }),
+      );
     },
     async clearProviderApiKey(providerId: string) {
       return publicSettingsSchema.parse(
-        await invoke(TAURI_COMMANDS.clearProviderApiKey, { providerId })
-      )
+        await invoke(TAURI_COMMANDS.clearProviderApiKey, { providerId }),
+      );
     },
     async getProviderApiKey(providerId: string) {
-      const value = await invoke<string | null>(TAURI_COMMANDS.getProviderApiKey, { providerId })
-      return value == null || value === '' ? null : value
+      const value = await invoke<string | null>(TAURI_COMMANDS.getProviderApiKey, { providerId });
+      return value == null || value === "" ? null : value;
     },
     async testProviderConnection(providerId: string) {
       return parseConnectionResult(
-        await invoke(TAURI_COMMANDS.testProviderConnection, { providerId })
-      )
+        await invoke(TAURI_COMMANDS.testProviderConnection, { providerId }),
+      );
     },
     async listProviderModels(providerId: string) {
-      return parseConnectionResult(
-        await invoke(TAURI_COMMANDS.listProviderModels, { providerId })
-      )
+      return parseConnectionResult(await invoke(TAURI_COMMANDS.listProviderModels, { providerId }));
     },
     async syncProviderModels(providerId: string) {
-      return parseSyncResult(await invoke(TAURI_COMMANDS.syncProviderModels, { providerId }))
+      return parseSyncResult(await invoke(TAURI_COMMANDS.syncProviderModels, { providerId }));
     },
     async getAccessibilityStatus() {
-      return parseAccessibility(await invoke(TAURI_COMMANDS.getAccessibilityStatus))
+      return parseAccessibility(await invoke(TAURI_COMMANDS.getAccessibilityStatus));
     },
     async requestAccessibility() {
-      return parseAccessibility(await invoke(TAURI_COMMANDS.requestAccessibility))
+      return parseAccessibility(await invoke(TAURI_COMMANDS.requestAccessibility));
     },
     async getCurrentSelection() {
-      await selectionEvents.ready()
-      const payload = await invoke<unknown>(TAURI_COMMANDS.toolbarReady)
-      return payload == null ? null : selectionPayloadSchema.parse(payload)
+      await selectionEvents.ready();
+      const payload = await invoke<unknown>(TAURI_COMMANDS.toolbarReady);
+      return payload == null ? null : selectionPayloadSchema.parse(payload);
     },
     async presentToolbar(selectionId: string, size: ToolbarSize) {
-      return await invoke<boolean>(TAURI_COMMANDS.presentToolbar, { selectionId, size })
+      return await invoke<boolean>(TAURI_COMMANDS.presentToolbar, { selectionId, size });
     },
     async recoverToolbar(selectionId: string) {
-      return await invoke<boolean>(TAURI_COMMANDS.recoverToolbar, { selectionId })
+      return await invoke<boolean>(TAURI_COMMANDS.recoverToolbar, { selectionId });
     },
     async setToolbarInputMode(active: boolean, selectionId?: string) {
       return await invoke<boolean>(TAURI_COMMANDS.setToolbarInputMode, {
         active,
-        selectionId: selectionId ?? null
-      })
+        selectionId: selectionId ?? null,
+      });
     },
     async focusToolbarInput(selectionId?: string) {
       return await invoke<boolean>(TAURI_COMMANDS.focusToolbarInput, {
-        selectionId: selectionId ?? null
-      })
+        selectionId: selectionId ?? null,
+      });
     },
     async runAction(
       actionId: string,
       cursor?: Point,
       selectionId?: string,
       searchEngineId?: string,
-      initialQuestion?: string
+      initialQuestion?: string,
     ) {
-      return parseRunActionResult(await invoke(TAURI_COMMANDS.runAction, {
-        actionId,
-        cursor: cursor ?? null,
-        selectionId: selectionId ?? null,
-        searchEngineId: searchEngineId ?? null,
-        initialQuestion: initialQuestion ?? null
-      }))
+      return parseRunActionResult(
+        await invoke(TAURI_COMMANDS.runAction, {
+          actionId,
+          cursor: cursor ?? null,
+          selectionId: selectionId ?? null,
+          searchEngineId: searchEngineId ?? null,
+          initialQuestion: initialQuestion ?? null,
+        }),
+      );
     },
     async hideToolbar(selectionId?: string) {
-      await invoke(TAURI_COMMANDS.hideToolbar, { selectionId: selectionId ?? null })
+      await invoke(TAURI_COMMANDS.hideToolbar, { selectionId: selectionId ?? null });
     },
     async reportToolbarSize(size: ToolbarSize, selectionId?: string) {
-      await invoke(TAURI_COMMANDS.reportToolbarSize, { size, selectionId: selectionId ?? null })
+      await invoke(TAURI_COMMANDS.reportToolbarSize, { size, selectionId: selectionId ?? null });
     },
     async beginResultReady(sessionId: string): Promise<ResultSessionSnapshot> {
-      await actionEvents.ready()
+      await actionEvents.ready();
       return resultSessionSnapshotSchema.parse(
         await invoke(TAURI_COMMANDS.beginResultReady, {
-          sessionId: requiredSessionId(sessionId)
-        })
-      )
+          sessionId: requiredSessionId(sessionId),
+        }),
+      );
     },
     async ackResultReady(ack: ResultReadyAck): Promise<boolean> {
-      const parsed = resultReadyAckSchema.parse(ack)
-      return await invoke<boolean>(TAURI_COMMANDS.ackResultReady, { ack: parsed })
+      const parsed = resultReadyAckSchema.parse(ack);
+      return await invoke<boolean>(TAURI_COMMANDS.ackResultReady, { ack: parsed });
     },
     async recordResultRendererMarker(
       sessionId: string,
       requestId: string,
-      marker: ResultRendererMarker
+      marker: ResultRendererMarker,
     ): Promise<void> {
       await invoke(TAURI_COMMANDS.recordResultRendererMarker, {
         sessionId: rendererMarkerIdSchema.parse(sessionId),
         requestId: rendererMarkerIdSchema.parse(requestId),
-        marker: resultRendererMarkerSchema.parse(marker)
-      })
+        marker: resultRendererMarkerSchema.parse(marker),
+      });
     },
     async prepareResultReveal(sessionId: string) {
-      await invoke(TAURI_COMMANDS.prepareResultReveal, { sessionId: requiredSessionId(sessionId) })
+      await invoke(TAURI_COMMANDS.prepareResultReveal, { sessionId: requiredSessionId(sessionId) });
     },
     async commitResultReveal(sessionId: string) {
-      await invoke(TAURI_COMMANDS.commitResultReveal, { sessionId: requiredSessionId(sessionId) })
+      await invoke(TAURI_COMMANDS.commitResultReveal, { sessionId: requiredSessionId(sessionId) });
     },
     async failResultReveal(sessionId: string, message: string) {
       await invoke(TAURI_COMMANDS.failResultReveal, {
         sessionId: requiredSessionId(sessionId),
-        message
-      })
+        message,
+      });
     },
     async setResultPinned(sessionId: string, pinned: boolean) {
-      await invoke(TAURI_COMMANDS.setResultPinned, { sessionId, pinned })
+      await invoke(TAURI_COMMANDS.setResultPinned, { sessionId, pinned });
     },
     async setResultPointerInside(sessionId: string, inside: boolean) {
-      await invoke(TAURI_COMMANDS.setResultPointerInside, { sessionId, inside })
+      await invoke(TAURI_COMMANDS.setResultPointerInside, { sessionId, inside });
     },
     async showResultSelection(
       sessionId: string,
       text: string,
       cursor: Point,
-      forceCapture = false
+      forceCapture = false,
     ) {
       await invoke(TAURI_COMMANDS.showResultSelection, {
         sessionId,
         text,
         cursor,
-        forceCapture
-      })
+        forceCapture,
+      });
     },
     async hideResultSelection(sessionId: string) {
       await invoke(TAURI_COMMANDS.hideResultSelection, {
-        sessionId: requiredSessionId(sessionId)
-      })
+        sessionId: requiredSessionId(sessionId),
+      });
     },
     async cancelAction(sessionId?: string) {
-      await invoke(TAURI_COMMANDS.cancelAction, { sessionId: requiredSessionId(sessionId) })
+      await invoke(TAURI_COMMANDS.cancelAction, { sessionId: requiredSessionId(sessionId) });
     },
-    async retryAction(
-      sessionId?: string,
-      options?: ActionRetryOptions
-    ) {
-      return parseRunActionResult(await invoke(TAURI_COMMANDS.retryAction, {
-        sessionId: requiredSessionId(sessionId),
-        targetLanguage: options?.targetLanguage ?? null,
-        providerId: options?.providerId ?? null,
-        modelId: options?.modelId ?? null
-      }))
+    async retryAction(sessionId?: string, options?: ActionRetryOptions) {
+      return parseRunActionResult(
+        await invoke(TAURI_COMMANDS.retryAction, {
+          sessionId: requiredSessionId(sessionId),
+          targetLanguage: options?.targetLanguage ?? null,
+          providerId: options?.providerId ?? null,
+          modelId: options?.modelId ?? null,
+        }),
+      );
     },
     async continueAction(sessionId: string, question: string) {
-      return parseRunActionResult(await invoke(TAURI_COMMANDS.continueAction, {
-        sessionId: requiredSessionId(sessionId),
-        question
-      }))
+      return parseRunActionResult(
+        await invoke(TAURI_COMMANDS.continueAction, {
+          sessionId: requiredSessionId(sessionId),
+          question,
+        }),
+      );
     },
     async copyText(text: string) {
-      await invoke(TAURI_COMMANDS.copyText, { text })
+      await invoke(TAURI_COMMANDS.copyText, { text });
     },
     async openExternal(url: string) {
-      await invoke(TAURI_COMMANDS.openExternal, { url })
+      await invoke(TAURI_COMMANDS.openExternal, { url });
     },
     async openSettings(options?: OpenSettingsOptions) {
-      await invoke(TAURI_COMMANDS.openSettings, { options: options ?? null })
+      await invoke(TAURI_COMMANDS.openSettings, { options: options ?? null });
     },
     async takeSettingsGuidance() {
-      const value = await invoke(TAURI_COMMANDS.takeSettingsGuidance)
-      if (value == null) return null
-      return parseSettingsGuidance(value)
+      const value = await invoke(TAURI_COMMANDS.takeSettingsGuidance);
+      if (value == null) return null;
+      return parseSettingsGuidance(value);
     },
     async hideResult(sessionId?: string) {
-      await invoke(TAURI_COMMANDS.hideResult, { sessionId: requiredSessionId(sessionId) })
+      await invoke(TAURI_COMMANDS.hideResult, { sessionId: requiredSessionId(sessionId) });
     },
     async closeResult(sessionId?: string) {
-      await invoke(TAURI_COMMANDS.closeResult, { sessionId: requiredSessionId(sessionId) })
+      await invoke(TAURI_COMMANDS.closeResult, { sessionId: requiredSessionId(sessionId) });
     },
     async quitApp() {
-      await invoke(TAURI_COMMANDS.quitApp)
+      await invoke(TAURI_COMMANDS.quitApp);
     },
     onSelection(listener) {
-      return selectionEvents.subscribe(listener)
+      return selectionEvents.subscribe(listener);
     },
     onActionEvent(listener) {
-      return actionEvents.subscribe(listener)
+      return actionEvents.subscribe(listener);
     },
     onSettingsChanged(listener) {
-      return settingsEvents.subscribe(listener)
+      return settingsEvents.subscribe(listener);
     },
     onSettingsCloseRequested(listener) {
-      return settingsCloseRequestEvents.subscribe(listener)
+      return settingsCloseRequestEvents.subscribe(listener);
     },
     onSettingsGuidance(listener) {
-      return settingsGuidanceEvents.subscribe(listener)
+      return settingsGuidanceEvents.subscribe(listener);
     },
     onResultSelectionShortcut(listener) {
-      return resultSelectionShortcutEvents.subscribe(listener)
+      return resultSelectionShortcutEvents.subscribe(listener);
     },
     onToolbarPointer(listener) {
-      return toolbarPointerEvents.subscribe(listener)
+      return toolbarPointerEvents.subscribe(listener);
     },
     onToolbarDismissed(listener) {
-      return toolbarDismissedEvents.subscribe(listener)
-    }
-  }
+      return toolbarDismissedEvents.subscribe(listener);
+    },
+  };
 
-  defineTextLensApi(api)
-  defineLegacySelectionBarAlias(api)
+  definePopperApi(api);
+  defineLegacySelectionBarAlias(api);
 }

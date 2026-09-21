@@ -115,11 +115,11 @@ const MAX_MESSAGES_PER_TICK: usize = 64;
 const CAPTURE_SETTLE_DELAY: Duration = Duration::from_millis(12);
 // After an action opens a result window, Windows may deliver the source
 // application's mouse-up before its foreground activation has completed. Do
-// not start a capture against the still-foreground TextLens window; wait for
+// not start a capture against the still-foreground Popper window; wait for
 // the original source process to become foreground for a short, bounded time.
 // Normal selections are already foreground and therefore do not pay this
 // delay.
-// Only wait while TextLens itself (or a transient desktop transition) owns
+// Only wait while Popper itself (or a transient desktop transition) owns
 // the foreground. Once another external window is foreground, let the helper
 // validate the preserved source context instead of waiting on a brittle HWND
 // relationship in the hook worker.
@@ -244,7 +244,7 @@ const PDF_CLIPBOARD_TEXT_SETTLE_DELAY: Duration = Duration::from_millis(12);
 // restart this timer or add hundreds of milliseconds to a valid selection.
 const ACROBAT_CLIPBOARD_TEXT_SETTLE_DELAY: Duration = Duration::from_millis(12);
 // This is an ownership window, not an extra capture delay. A few document
-// renderers publish one final clipboard update after TextLens has restored the
+// renderers publish one final clipboard update after Popper has restored the
 // user's original IDataObject. Retain that original object only long enough to
 // repair a late source-owned update before the next gesture starts its copy.
 const CLIPBOARD_RECOVERY_WINDOW: Duration = Duration::from_secs(2);
@@ -253,7 +253,7 @@ const CAPTURE_ENGINE_BUDGET: Duration = Duration::from_millis(2_000);
 const MAX_UIA_SELECTION_RANGES: i32 = 256;
 const UIA_SELECTION_TEXT_PROBE_LIMIT: i32 = 1_024;
 const HELPER_START_TIMEOUT: Duration = Duration::from_secs(2);
-// A helper that died while TextLens was idle must not block the first new
+// A helper that died while Popper was idle must not block the first new
 // selection for the full process-start timeout. The warm-up continues in the
 // background and the bounded empty-capture retry picks it up if necessary.
 const HELPER_CAPTURE_WARMUP_WAIT: Duration = Duration::from_millis(64);
@@ -267,7 +267,7 @@ const CAPTURE_EXECUTOR_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 // process without consuming CPU or delaying hook callbacks.
 const HELPER_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 const HELPER_FRAME_LIMIT: usize = 16 * 1024 * 1024;
-const SELECTION_HELPER_FLAG: &str = "--textlens-selection-helper";
+const SELECTION_HELPER_FLAG: &str = "--popper-selection-helper";
 const SELECTION_HELPER_PROTOCOL_VERSION: u32 = 2;
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 const MAX_UIA_ANCESTORS: usize = 32;
@@ -307,7 +307,7 @@ impl WindowsSelectionMonitor {
         let worker_inbox = inbox.clone();
         let worker_event_sender = event_sender.clone();
         let worker = thread::Builder::new()
-            .name("textlens-selection-uia".to_owned())
+            .name("popper-selection-uia".to_owned())
             .spawn(move || {
                 selection_worker_main(receiver, worker_inbox, worker_event_sender, ready_sender);
             })
@@ -427,7 +427,7 @@ fn reap_worker(worker: JoinHandle<()>, grace: Duration) -> bool {
 
     let (done_sender, done_receiver) = mpsc::sync_channel(1);
     let _reaper = thread::Builder::new()
-        .name("textlens-selection-reaper".to_owned())
+        .name("popper-selection-reaper".to_owned())
         .spawn(move || {
             let _ = worker.join();
             let _ = done_sender.send(());
@@ -512,7 +512,7 @@ struct CaptureRequest {
     generation: Option<u64>,
     /// Clipboard sequence sampled at mouse-down. It is not a hard capture
     /// gate: document renderers can publish delayed formats after a previous
-    /// TextLens restore. Instead it lets the recovery ledger distinguish a
+    /// Popper restore. Instead it lets the recovery ledger distinguish a
     /// source-owned late write during this gesture from a clipboard update
     /// that was already present before the user started dragging.
     #[serde(default)]
@@ -602,7 +602,7 @@ impl CaptureCoordinator {
         let (completion_sender, completion_receiver) = mpsc::channel();
         let lane_completion_waker = completion_waker.clone();
         let lane = thread::Builder::new()
-            .name("textlens-selection-capture".to_owned())
+            .name("popper-selection-capture".to_owned())
             .spawn(move || {
                 capture_lane_main(
                     command_receiver,
@@ -817,7 +817,7 @@ impl CaptureCoordinator {
         let own_process_id = self.own_process_id;
         let completion_waker = self.completion_waker.clone();
         let Ok(lane) = thread::Builder::new()
-            .name("textlens-selection-capture".to_owned())
+            .name("popper-selection-capture".to_owned())
             .spawn(move || {
                 capture_lane_main(
                     command_receiver,
@@ -1026,10 +1026,10 @@ enum HelperCommand {
         request: CaptureRequest,
         source_window: isize,
         source_process_id: u32,
-        /// The long-lived TextLens host PID. The helper has a different PID,
-        /// so it must not use its own process identity to reject TextLens UIA
+        /// The long-lived Popper host PID. The helper has a different PID,
+        /// so it must not use its own process identity to reject Popper UIA
         /// providers.
-        textlens_process_id: u32,
+        popper_process_id: u32,
     },
     Cancel {
         request_id: u64,
@@ -1622,7 +1622,7 @@ impl SelectionWorker {
                     .then(clipboard::windows_clipboard_sequence);
                 // Self clicks still produce Dismiss so runtime can preserve a
                 // click inside the no-activate toolbar while closing it for a
-                // click elsewhere in a TextLens window. Mouse-up below never
+                // click elsewhere in a Popper window. Mouse-up below never
                 // schedules UIA capture for the self process.
                 self.emit_dismiss("mouseDown", point, target_window, timestamp_ms);
             }
@@ -1724,7 +1724,7 @@ impl SelectionWorker {
             return;
         }
         if !is_modifier_virtual_key(virtual_key as u16) {
-            // Synthetic TextLens keys are filtered in the hook callback. Any
+            // Synthetic Popper keys are filtered in the hook callback. Any
             // remaining non-modifier key is genuine newer input and must
             // invalidate a capture which has not started yet.
             self.cancel_active_capture_for_user_keyboard();
@@ -2252,7 +2252,7 @@ impl CaptureExecutor {
         if Instant::now() < self.next_helper_maintenance {
             return;
         }
-        // A helper can be reclaimed while TextLens is idle. Detect that before
+        // A helper can be reclaimed while Popper is idle. Detect that before
         // the next mouse-up and begin its replacement asynchronously, so the
         // first capture after a long pause does not have to cold-start it.
         self.discard_exited_helper();
@@ -2290,7 +2290,7 @@ impl CaptureExecutor {
         }
         let (sender, receiver) = mpsc::sync_channel(1);
         match thread::Builder::new()
-            .name("textlens-selection-helper-warmup".to_owned())
+            .name("popper-selection-helper-warmup".to_owned())
             .spawn(move || {
                 for attempt in 0..3 {
                     match SelectionHelperProcess::spawn() {
@@ -2377,7 +2377,7 @@ impl SelectionHelperProcess {
         };
         let (event_sender, events) = mpsc::channel();
         let reader = match thread::Builder::new()
-            .name("textlens-selection-helper-reader".to_owned())
+            .name("popper-selection-helper-reader".to_owned())
             .spawn(move || {
                 let mut reader = BufReader::new(stdout);
                 loop {
@@ -2461,7 +2461,7 @@ impl SelectionHelperProcess {
         }
         // Keep the HWND/PID sampled during the original mouse gesture. The
         // foreground window can move to a renderer child, an owned popup, or
-        // TextLens itself between mouse-up and this helper request. Re-reading
+        // Popper itself between mouse-up and this helper request. Re-reading
         // it here loses the source identity that the coordinator already
         // correlated with the gesture.
         let mut source_window = HWND(source_root_window as *mut c_void);
@@ -2486,7 +2486,7 @@ impl SelectionHelperProcess {
             request: helper_request,
             source_window: source_window.0 as isize,
             source_process_id,
-            textlens_process_id: own_process_id,
+            popper_process_id: own_process_id,
         })?;
 
         let task_deadline = Instant::now() + CAPTURE_TASK_TIMEOUT;
@@ -2814,7 +2814,7 @@ struct CaptureControl {
     event_writer: Arc<Mutex<BufWriter<std::io::Stdout>>>,
     source_window: HWND,
     source_process_id: u32,
-    textlens_process_id: u32,
+    popper_process_id: u32,
 }
 
 impl CaptureControl {
@@ -2849,7 +2849,7 @@ enum HelperWork {
         request: CaptureRequest,
         source_window: isize,
         source_process_id: u32,
-        textlens_process_id: u32,
+        popper_process_id: u32,
     },
     Shutdown,
 }
@@ -2887,7 +2887,7 @@ fn selection_helper_main() -> io::Result<()> {
     let reader_cancel_reason = cancel_reason.clone();
     let (command_sender, command_receiver) = mpsc::channel();
     let reader = thread::Builder::new()
-        .name("textlens-selection-helper-input".to_owned())
+        .name("popper-selection-helper-input".to_owned())
         .spawn(move || {
             let mut input = BufReader::new(std::io::stdin());
             loop {
@@ -2897,7 +2897,7 @@ fn selection_helper_main() -> io::Result<()> {
                         request,
                         source_window,
                         source_process_id,
-                        textlens_process_id,
+                        popper_process_id,
                     })) => {
                         if command_sender
                             .send(HelperWork::Capture {
@@ -2905,7 +2905,7 @@ fn selection_helper_main() -> io::Result<()> {
                                 request,
                                 source_window,
                                 source_process_id,
-                                textlens_process_id,
+                                popper_process_id,
                             })
                             .is_err()
                         {
@@ -2948,7 +2948,7 @@ fn selection_helper_main() -> io::Result<()> {
                 request,
                 source_window,
                 source_process_id,
-                textlens_process_id,
+                popper_process_id,
             }) => {
                 let control = CaptureControl {
                     request_id,
@@ -2957,7 +2957,7 @@ fn selection_helper_main() -> io::Result<()> {
                     event_writer: writer.clone(),
                     source_window: HWND(source_window as *mut c_void),
                     source_process_id,
-                    textlens_process_id,
+                    popper_process_id,
                 };
                 let result = if control.is_cancelled() {
                     HelperCaptureResult::Empty
@@ -3147,7 +3147,7 @@ impl CaptureEngine {
                 );
             }
         }
-        // TextLens follows the same non-destructive order as Cherry's native
+        // Popper follows the same non-destructive order as Cherry's native
         // hook: query UI Automation and legacy accessibility only. Document
         // hosts get a short MSAA `accSelection` probe first because Office and
         // PDF surfaces often expose it before UIA publishes a text range.
@@ -3631,7 +3631,7 @@ impl CaptureEngine {
             focused_element_is_password(&self.automation)
         };
         if process_id == 0
-            || process_id == control.textlens_process_id
+            || process_id == control.popper_process_id
             || prohibited_clipboard_application(&image_path)
             || focused_control_is_password
         {
@@ -4120,7 +4120,7 @@ impl CaptureEngine {
         let process_id = window_process_id(foreground);
         if foreground.0 == ptr::null_mut()
             || process_id == 0
-            || process_id == control.textlens_process_id
+            || process_id == control.popper_process_id
             || !capture_control_foreground_is_related(
                 control,
                 foreground,
@@ -4216,7 +4216,7 @@ impl CaptureEngine {
         let process_id = window_process_id(foreground);
         if foreground.0 == ptr::null_mut()
             || process_id == 0
-            || process_id == control.textlens_process_id
+            || process_id == control.popper_process_id
             || !capture_control_foreground_is_related(
                 control,
                 foreground,
@@ -4275,7 +4275,7 @@ impl CaptureEngine {
         let process_id = window_process_id(foreground);
         if foreground.0 == ptr::null_mut()
             || process_id == 0
-            || process_id == control.textlens_process_id
+            || process_id == control.popper_process_id
             || !capture_control_foreground_is_related(
                 control,
                 foreground,
@@ -4314,7 +4314,7 @@ impl CaptureEngine {
             Ok(value) if value > 0 => value as u32,
             _ => return CaptureTargetLookup::Retryable,
         };
-        if element_process_id == control.textlens_process_id {
+        if element_process_id == control.popper_process_id {
             return CaptureTargetLookup::Stop;
         }
         // Chromium/Electron accessibility providers and their native child
@@ -4430,7 +4430,7 @@ impl CaptureEngine {
         let process_id = window_process_id(foreground);
         if foreground.0 == ptr::null_mut()
             || process_id == 0
-            || process_id == control.textlens_process_id
+            || process_id == control.popper_process_id
             || !capture_control_foreground_is_related(
                 control,
                 foreground,
@@ -7177,7 +7177,7 @@ fn wait_for_clipboard_change(
 /// Complete an interrupted synthetic-copy transaction when it has already
 /// advanced the clipboard. Keyboard cancellation is deliberately excluded:
 /// the user's own Ctrl+C/Ctrl+V must never be overwritten by a retained
-/// TextLens snapshot. Mouse/foreground supersession can still restore a
+/// Popper snapshot. Mouse/foreground supersession can still restore a
 /// synthetic write while the same source application remains foreground,
 /// which prevents the next gesture from seeing an abandoned selection as its
 /// baseline.
@@ -7443,7 +7443,7 @@ fn selection_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
         let environment_enabled =
-            std::env::var_os("TEXTLENS_SELECTION_TRACE").is_some_and(|value| {
+            std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
                 let value = value.to_string_lossy();
                 value == "1" || value.eq_ignore_ascii_case("true")
             });
@@ -7455,7 +7455,7 @@ fn selection_trace_enabled() -> bool {
 
 fn selection_trace_directory() -> Option<std::path::PathBuf> {
     std::env::var_os("LOCALAPPDATA")
-        .map(|directory| std::path::PathBuf::from(directory).join("TextLens"))
+        .map(|directory| std::path::PathBuf::from(directory).join("Popper"))
 }
 
 fn trace_selection_line(line: String) {
@@ -8107,7 +8107,7 @@ impl HookThread {
         let hook_thread_id = published_thread_id.clone();
         let hook_stop_requested = stop_requested.clone();
         let join = thread::Builder::new()
-            .name("textlens-selection-hooks".to_owned())
+            .name("popper-selection-hooks".to_owned())
             .spawn(move || {
                 hook_thread_main(
                     inbox,
@@ -8500,7 +8500,7 @@ unsafe extern "system" fn foreground_event_callback(
         sequence: next_raw_input_sequence(),
         window: window.0 as isize,
         // Foreground activation commonly lands between the mouse down/up that
-        // moved focus from a TextLens result back to the source application.
+        // moved focus from a Popper result back to the source application.
         // Treating it as fresh user input cancels that legitimate capture.
         // Capture paths already validate the foreground HWND/PID during
         // and after capture, so unrelated programmatic focus changes still
@@ -8810,7 +8810,7 @@ mod tests {
     }
 
     #[test]
-    fn foreground_events_ignore_textlens_and_dismiss_only_without_active_work() {
+    fn foreground_events_ignore_popper_and_dismiss_only_without_active_work() {
         assert_eq!(
             foreground_interaction_decision(true, 100, 100, true, false, false),
             ForegroundInteractionDecision::Ignore
@@ -8955,7 +8955,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_capture_waits_only_for_missing_or_textlens_foreground() {
+    fn pending_capture_waits_only_for_missing_or_popper_foreground() {
         assert_eq!(
             pending_foreground_decision(false, 0, 100, false, true),
             PendingForegroundDecision::Wait
@@ -9713,7 +9713,7 @@ mod tests {
         assert!(!parent_capture_accepts(
             false, 300, 200, 200, 100, false, true, true, false
         ));
-        // Never accept TextLens itself as the actual provider.
+        // Never accept Popper itself as the actual provider.
         assert!(!parent_capture_accepts(
             true, 200, 200, 100, 100, true, false, true, false
         ));
@@ -9833,7 +9833,7 @@ mod tests {
             },
             source_window: 123,
             source_process_id: 456,
-            textlens_process_id: 789,
+            popper_process_id: 789,
         };
         let mut bytes = Vec::new();
         write_helper_frame(&mut bytes, &command).expect("serialize helper command");
@@ -9846,13 +9846,13 @@ mod tests {
                 request,
                 source_window,
                 source_process_id,
-                textlens_process_id,
+                popper_process_id,
             } => {
                 assert_eq!(request_id, 7);
                 assert_eq!(request.current, RawPoint { x: 40, y: 50 });
                 assert_eq!(source_window, 123);
                 assert_eq!(source_process_id, 456);
-                assert_eq!(textlens_process_id, 789);
+                assert_eq!(popper_process_id, 789);
             }
             _ => panic!("expected capture command"),
         }

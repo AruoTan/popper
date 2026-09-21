@@ -11,7 +11,7 @@ fn main() {
             .flag_if_supported("-std=c++17")
             .flag_if_supported("-fobjc-arc")
             .warnings(true)
-            .compile("textlens_selection_bridge");
+            .compile("popper_selection_bridge");
 
         for framework in [
             "AppKit",

@@ -26,9 +26,9 @@ const FORMAT_VERSION: u8 = 1;
 const KEY_LENGTH: usize = 32;
 const NONCE_LENGTH: usize = 12;
 const MAX_ENCRYPTED_FILE_SIZE: u64 = 1_048_576;
-const ASSOCIATED_DATA: &[u8] = b"com.local.textlens/api-keys/v1";
+const ASSOCIATED_DATA: &[u8] = b"com.local.popper/api-keys/v1";
 // Keep the historical AAD literal so existing installations can decrypt API
-// keys written before the TextLens product rename.
+// keys written before the Popper product rename.
 const LEGACY_V1_ASSOCIATED_DATA: &[u8] = b"com.local.selectionbar/api-keys/v1";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -204,7 +204,7 @@ fn load_or_create_key(path: &Path) -> Result<[u8; KEY_LENGTH], SettingsError> {
         Ok(key) => Ok(key),
         Err(SettingsError::SecretStorage) if !path.exists() => {
             // Serialize first use inside this process. Atomic publication
-            // below still protects multiple TextLens processes, while this
+            // below still protects multiple Popper processes, while this
             // avoids eight local threads simultaneously creating temporary
             // keys and contending in MoveFileExW/antivirus filters.
             let _creation = key_creation_lock().lock();
@@ -424,7 +424,7 @@ mod tests {
             LEGACY_V1_ASSOCIATED_DATA,
             b"com.local.selectionbar/api-keys/v1"
         );
-        assert_eq!(ASSOCIATED_DATA, b"com.local.textlens/api-keys/v1");
+        assert_eq!(ASSOCIATED_DATA, b"com.local.popper/api-keys/v1");
         assert_eq!(ENCRYPTED_SECRETS_FILE_NAME, "api-keys.enc.json");
         assert_eq!(LOCAL_SECRET_KEY_FILE_NAME, ".api-keys.key");
     }

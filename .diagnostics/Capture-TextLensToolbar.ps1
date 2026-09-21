@@ -10,7 +10,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public sealed class TextLensWindowInfo {
+public sealed class PopperWindowInfo {
     public IntPtr Handle;
     public uint ProcessId;
     public string Title;
@@ -20,7 +20,7 @@ public sealed class TextLensWindowInfo {
     public int Height;
 }
 
-public static class TextLensWindowProbe {
+public static class PopperWindowProbe {
     private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr parameter);
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left, Top, Right, Bottom; }
@@ -31,9 +31,9 @@ public static class TextLensWindowProbe {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowTextW(IntPtr hwnd, StringBuilder text, int count);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rectangle);
 
-    public static TextLensWindowInfo[] VisibleWindows(uint[] processIds) {
+    public static PopperWindowInfo[] VisibleWindows(uint[] processIds) {
         var wanted = new HashSet<uint>(processIds);
-        var result = new List<TextLensWindowInfo>();
+        var result = new List<PopperWindowInfo>();
         EnumWindows(delegate(IntPtr hwnd, IntPtr parameter) {
             uint processId;
             RECT rectangle;
@@ -41,7 +41,7 @@ public static class TextLensWindowProbe {
             if (!wanted.Contains(processId) || !IsWindowVisible(hwnd) || !GetWindowRect(hwnd, out rectangle)) return true;
             var title = new StringBuilder(512);
             GetWindowTextW(hwnd, title, title.Capacity);
-            result.Add(new TextLensWindowInfo {
+            result.Add(new PopperWindowInfo {
                 Handle = hwnd,
                 ProcessId = processId,
                 Title = title.ToString(),
@@ -61,8 +61,8 @@ $deadline = [DateTime]::UtcNow.AddMinutes(5)
 while ([DateTime]::UtcNow -lt $deadline) {
   if ((Test-Path -LiteralPath $LogPath) -and (Select-String -LiteralPath $LogPath -SimpleMatch 'focus committed' -Quiet)) {
     Start-Sleep -Milliseconds 250
-    $processIds = @(Get-Process textlens -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })
-    $windows = [TextLensWindowProbe]::VisibleWindows($processIds)
+    $processIds = @(Get-Process popper -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })
+    $windows = [PopperWindowProbe]::VisibleWindows($processIds)
     $index = 0
     foreach ($window in $windows) {
       if ($window.Width -lt 100 -or $window.Height -lt 20) { continue }

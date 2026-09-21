@@ -20,10 +20,10 @@ ENV CARGO_HOME=/home/node/.cargo \
     PATH=/home/node/.cargo/bin:${PATH}
 
 USER node
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/textlens-rustup.sh \
-    && sh /tmp/textlens-rustup.sh -y --profile minimal --no-modify-path \
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/popper-rustup.sh \
+    && sh /tmp/popper-rustup.sh -y --profile minimal --no-modify-path \
         --default-toolchain ${RUST_VERSION} --component rustfmt --component clippy \
-    && rm /tmp/textlens-rustup.sh \
-    && mkdir -p /home/node/.cache/textlens
+    && rm /tmp/popper-rustup.sh \
+    && mkdir -p /home/node/.cache/popper
 
-WORKDIR /workspaces/textlens
+WORKDIR /workspaces/popper

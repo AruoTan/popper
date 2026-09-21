@@ -1,6 +1,6 @@
-# TextLens 独立开发容器
+# Popper 独立开发容器
 
-用于前端开发和 Linux 目标下的共享 Rust 检查，不改变 TextLens 仅支持 Windows/macOS 原生划词的边界。不读取宿主机的 Node、Rust、Windows SDK、用户设置或 API Key，不挂载 Docker socket。
+用于前端开发和 Linux 目标下的共享 Rust 检查，不改变 Popper 仅支持 Windows/macOS 原生划词的边界。不读取宿主机的 Node、Rust、Windows SDK、用户设置或 API Key，不挂载 Docker socket。
 
 ## 开始使用
 
@@ -23,20 +23,20 @@ pnpm dev:web --host 0.0.0.0
 
 - Debian Bookworm、Node 22.22.0、pnpm 11.7.0、Rust 1.97.1（含 rustfmt、clippy），以及 Tauri Linux 开发库、C/C++、CMake、NASM、虚拟显示和 D-Bus。
 - Node 镜像标签、Rust 和 pnpm 版本显式固定；npm/Cargo 使用仓库锁文件。Debian 软件包与镜像标签不是不可变快照，不承诺逐字节复现或离线首次构建。
-- 源码绑定到 `/workspaces/textlens`，没有本机盘符或用户名依赖，面向 amd64/arm64 Linux 容器；不同架构各自构建，不共享二进制缓存。
+- 源码绑定到 `/workspaces/popper`，没有本机盘符或用户名依赖，面向 amd64/arm64 Linux 容器；不同架构各自构建，不共享二进制缓存。
 - `node_modules` 使用容器专属命名卷，遮盖宿主依赖；pnpm store 与 Cargo target 放在独立缓存卷，不使用宿主 `src-tauri/target`。卷名包含容器标识，避免不同工作区相互污染。
 - 以非 root 的 `node` 用户开发；初始化仅对两个卷根目录修正权限。Rust 工具链在镜像内，Cargo 下载缓存在容器用户目录，重建后可重新下载。
 - 宿主只需 Docker 和编辑器，无需安装 Node、pnpm 或 Cargo。配置不自动注入密钥；编辑器自身的 Git/SSH 凭据转发仍由编辑器设置控制。
 
 ## 平台边界
 
-| 工作 | 此容器 |
-| --- | --- |
-| React/TypeScript 编辑、测试、构建 | 支持 |
-| 共享 Rust 的 Linux 检查、测试 | 提供命令，不能覆盖 Windows/macOS 条件编译代码 |
-| UIA、受控 Ctrl+C、全局钩子、跨应用划词回归 | 必须在 Windows 原生环境验证 |
-| macOS 辅助功能与桌面回归 | 必须在 macOS 原生环境验证 |
-| Windows NSIS / macOS DMG 安装包 | 仍使用对应原生系统及 SDK |
+| 工作                                       | 此容器                                        |
+| ------------------------------------------ | --------------------------------------------- |
+| React/TypeScript 编辑、测试、构建          | 支持                                          |
+| 共享 Rust 的 Linux 检查、测试              | 提供命令，不能覆盖 Windows/macOS 条件编译代码 |
+| UIA、受控 Ctrl+C、全局钩子、跨应用划词回归 | 必须在 Windows 原生环境验证                   |
+| macOS 辅助功能与桌面回归                   | 必须在 macOS 原生环境验证                     |
+| Windows NSIS / macOS DMG 安装包            | 仍使用对应原生系统及 SDK                      |
 
 不要在容器内用 `pnpm dev`、`pnpm verify` 或 `pnpm package:windows` 代替上述命令：原有脚本显式面向 macOS/Windows。Xvfb 仅用于满足测试的显示依赖，不提供宿主桌面的划词能力。如发现 Linux 条件编译兼容问题，应单独处理，不能视为 Windows 构建结果。
 
@@ -50,6 +50,6 @@ pnpm dev:web --host 0.0.0.0
 
 - 将源码、`.devcontainer`、`package.json`、`pnpm-workspace.yaml`、两个锁文件一并提交或复制即可；不迁移 `node_modules`、`.pnpm-store`、`target` 或本机密钥。`pnpm export:dev-source` 也包含此配置。
 - 修改 Dockerfile 后执行 **Dev Containers: Rebuild Container**。升级 `packageManager` 时同步修改 `PNPM_VERSION`，初始化会检查版本一致性。
-- 缓存不是源码，可停止容器后通过 Docker Desktop 精确选择本项目的 `textlens-node-modules-*` / `textlens-cache-*` 卷删除以重新安装；不要执行全局 volume prune。删除这些缓存不会删除绑定的源码。
+- 缓存不是源码，可停止容器后通过 Docker Desktop 精确选择本项目的 `popper-node-modules-*` / `popper-cache-*` 卷删除以重新安装；不要执行全局 volume prune。删除这些缓存不会删除绑定的源码。
 - Windows 文件监听不及时可尝试 `CHOKIDAR_USEPOLLING=true pnpm dev:web --host 0.0.0.0`，或把仓库放到 WSL2 Linux 文件系统。`.gitattributes` 确保容器脚本使用 LF。
 - 配置参考 [Dev Container 规范](https://containers.dev/implementors/json_reference/)，系统库参考 [Tauri 官方依赖说明](https://tauri.app/start/prerequisites/)。

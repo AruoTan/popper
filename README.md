@@ -1,10 +1,10 @@
-# TextLens
+# Popper
 
 [English](./README.en.md) | **中文**
 
-TextLens 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
+Popper 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon（M 系列芯片）**和 **Windows 10/11 x64**，使用 Tauri 2、Rust、React 和 TypeScript 构建。
 
-用户在其他应用中选中文字后，可以直接执行复制、搜索、翻译、总结、解释、润色、问AI 及自定义 AI 动作。macOS 版本常驻菜单栏，默认不在 Dock 显示；Windows 版本普通启动后在通知区域和后台运行，仅显示短暂的“TextLens 已启动”提示，设置窗口由用户从通知区域打开。TextLens 不保存划词历史，只有用户主动点击 AI 动作后才会把选中文字发送给所配置的模型服务。
+用户在其他应用中选中文字后，可以直接执行复制、搜索、翻译、总结、解释、润色、问AI 及自定义 AI 动作。macOS 版本常驻菜单栏，默认不在 Dock 显示；Windows 版本普通启动后在通知区域和后台运行，仅显示短暂的“Popper 已启动”提示，设置窗口由用户从通知区域打开。Popper 不保存划词历史，只有用户主动点击 AI 动作后才会把选中文字发送给所配置的模型服务。
 
 两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。本地开发、可迁移源码导出与版本演进记录见 [DEVELOPMENT_HANDBOOK.md](./DEVELOPMENT_HANDBOOK.md)。
 
@@ -28,11 +28,11 @@ TextLens 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon
 
 ## 设计灵感与第三方来源
 
-- TextLens 的产品方向和部分交互习惯参考了 [CherryHQ/cherry-studio](https://github.com/CherryHQ/cherry-studio) 的“划词助手”，包括划词工具栏、结果窗、置顶、失焦关闭、再次划词和模型切换等使用逻辑。
-- Cherry Studio 主体使用 Electron；TextLens 主要使用更轻量的 Tauri 框架，把其中启发性的“划词助手”工作流重构为独立桌面工具，并保留自己的窗口管理、设置存储、模型请求与界面实现。
+- Popper 的产品方向和部分交互习惯参考了 [CherryHQ/cherry-studio](https://github.com/CherryHQ/cherry-studio) 的“划词助手”，包括划词工具栏、结果窗、置顶、失焦关闭、再次划词和模型切换等使用逻辑。
+- Cherry Studio 主体使用 Electron；Popper 主要使用更轻量的 Tauri 框架，把其中启发性的“划词助手”工作流重构为独立桌面工具，并保留自己的窗口管理、设置存储、模型请求与界面实现。
 - macOS 选区捕获桥接层基于 MIT 许可的 [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2) 改造，完整 MIT 许可保存在 [LICENSE.selection-hook](./LICENSE.selection-hook)。
 
-TextLens 当前没有声明独立的开源许可证。Cherry Studio 改编材料仍受其上游 AGPL-3.0 条款约束，selection-hook 改编部分仍受 MIT 许可证约束。公开分发或二次开发前，请先阅读第三方许可文件。
+Popper 当前没有声明独立的开源许可证。Cherry Studio 改编材料仍受其上游 AGPL-3.0 条款约束，selection-hook 改编部分仍受 MIT 许可证约束。公开分发或二次开发前，请先阅读第三方许可文件。
 
 ## 主要功能
 
@@ -43,7 +43,7 @@ TextLens 当前没有声明独立的开源许可证。Cherry Studio 改编材料
 - 多服务商、多模型（OpenAI-compatible）；服务商可启停；动作可单独绑定模型与提示词；支持获取模型后多选合并与排序。
 - 结果窗流式输出，支持 Markdown / 表格 / 公式；可拖动、缩放、置顶与多种关闭方式；正文可再次划词。
 
-在 Cherry Studio「划词助手」启发之上，TextLens 侧重的增强：
+在 Cherry Studio「划词助手」启发之上，Popper 侧重的增强：
 
 - **结果内继续提问：** 翻译 / 解释 / 总结 / 润色等结果框底部均可继续输入，在当前结果上多轮追问（不只「问AI」）。
 - **标题栏换模重生：** 按服务商分组切换模型，并在同一结果框内重新生成；翻译可切换 CN/EN/JA/KO/RU/DE/FR 目标语言。
@@ -65,51 +65,51 @@ TextLens 当前没有声明独立的开源许可证。Cherry Studio 改编材料
 
 ## 技术栈
 
-| 层级 | 技术 | 用途 |
-| --- | --- | --- |
-| 桌面框架 | Tauri 2 | 应用生命周期、菜单栏/通知区、WebView 窗口、IPC、权限和跨平台打包 |
-| 原生后端 | Rust 2021 | 选区控制、窗口定位、设置、加密、剪贴板和模型流式请求 |
-| macOS 原生桥接 | Objective-C++、Accessibility API、Core Graphics、AppKit | 全局选区、剪贴板兼容捕获和窗口层级 |
-| Windows 原生后端 | Rust、UI Automation、Win32、OLE、低级输入钩子 | 隔离式选区捕获、剪贴板恢复、Hook 自愈、非激活窗口、混合 DPI 和单实例 |
-| 前端 | React 19、TypeScript 5.9 | 设置页、工具栏和结果窗 |
-| 构建工具 | Vite 7、pnpm 11、Cargo | Web 前端构建、依赖锁定和 Rust 编译 |
-| 数据校验 | Zod、Serde、serde_json | renderer 与 Rust 之间的数据结构和运行时输入校验 |
-| UI 与交互 | Lucide React、dnd kit | 动作图标、自定义图标和拖动排序 |
-| Markdown | react-markdown、remark-gfm、remark-math、rehype-katex、KaTeX | 安全 Markdown、表格、列表和数学公式 |
-| 网络与流式 | reqwest、Tokio、futures-util | OpenAI-compatible HTTP 请求、SSE 接收、取消和流式缓冲 |
-| 本地安全 | ring、base64、原子文件写入 | API Key 的 AES-256-GCM 本地加密与安全落盘 |
-| 并发与状态 | parking_lot、tokio-util、UUID | 窗口状态、请求会话和取消控制 |
-| 测试 | Vitest、Testing Library、jsdom、Rust tests | 前端状态、交互、数据校验和后端逻辑测试 |
-| 发布 | Tauri CLI、DMG、NSIS | 生成 macOS arm64 应用以及 Windows x64 安装包 |
+| 层级             | 技术                                                         | 用途                                                                 |
+| ---------------- | ------------------------------------------------------------ | -------------------------------------------------------------------- |
+| 桌面框架         | Tauri 2                                                      | 应用生命周期、菜单栏/通知区、WebView 窗口、IPC、权限和跨平台打包     |
+| 原生后端         | Rust 2021                                                    | 选区控制、窗口定位、设置、加密、剪贴板和模型流式请求                 |
+| macOS 原生桥接   | Objective-C++、Accessibility API、Core Graphics、AppKit      | 全局选区、剪贴板兼容捕获和窗口层级                                   |
+| Windows 原生后端 | Rust、UI Automation、Win32、OLE、低级输入钩子                | 隔离式选区捕获、剪贴板恢复、Hook 自愈、非激活窗口、混合 DPI 和单实例 |
+| 前端             | React 19、TypeScript 5.9                                     | 设置页、工具栏和结果窗                                               |
+| 构建工具         | Vite 7、pnpm 11、Cargo                                       | Web 前端构建、依赖锁定和 Rust 编译                                   |
+| 数据校验         | Zod、Serde、serde_json                                       | renderer 与 Rust 之间的数据结构和运行时输入校验                      |
+| UI 与交互        | Lucide React、dnd kit                                        | 动作图标、自定义图标和拖动排序                                       |
+| Markdown         | react-markdown、remark-gfm、remark-math、rehype-katex、KaTeX | 安全 Markdown、表格、列表和数学公式                                  |
+| 网络与流式       | reqwest、Tokio、futures-util                                 | OpenAI-compatible HTTP 请求、SSE 接收、取消和流式缓冲                |
+| 本地安全         | ring、base64、原子文件写入                                   | API Key 的 AES-256-GCM 本地加密与安全落盘                            |
+| 并发与状态       | parking_lot、tokio-util、UUID                                | 窗口状态、请求会话和取消控制                                         |
+| 测试             | Vitest、Testing Library、jsdom、Rust tests                   | 前端状态、交互、数据校验和后端逻辑测试                               |
+| 发布             | Tauri CLI、DMG、NSIS                                         | 生成 macOS arm64 应用以及 Windows x64 安装包                         |
 
 macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 Runtime。当前 macOS DMG 和 Windows NSIS 均为未签名测试产物。
 
 ## 主要开源项目与用途
 
-以下列表记录直接影响 TextLens 主要功能的上游项目。精确版本以 [pnpm-lock.yaml](./pnpm-lock.yaml) 和 [src-tauri/Cargo.lock](./src-tauri/Cargo.lock) 为准，详细归属说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
+以下列表记录直接影响 Popper 主要功能的上游项目。精确版本以 [pnpm-lock.yaml](./pnpm-lock.yaml) 和 [src-tauri/Cargo.lock](./src-tauri/Cargo.lock) 为准，详细归属说明见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
-| 项目 | 用途 | 许可证 |
-| --- | --- | --- |
-| [Cherry Studio](https://github.com/CherryHQ/cherry-studio) | 交互逻辑参考；部分默认 AI 提示词改编 | AGPL-3.0 |
-| [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2) | macOS 选区捕获桥接层的上游基础 | MIT |
-| [Tauri](https://github.com/tauri-apps/tauri) | 跨平台桌面框架、窗口和打包 | Apache-2.0 OR MIT |
-| [React](https://github.com/facebook/react) | 用户界面 | MIT |
-| [dnd kit](https://github.com/clauderic/dnd-kit) | 设置页动作拖动排序 | MIT |
-| [Lucide](https://github.com/lucide-icons/lucide) | 工具栏和设置界面图标 | ISC |
-| [react-markdown](https://github.com/remarkjs/react-markdown) | 安全 Markdown 渲染 | MIT |
-| [remark-gfm](https://github.com/remarkjs/remark-gfm) | GFM 表格、任务列表等语法 | MIT |
-| [remark-math](https://github.com/remarkjs/remark-math) | Markdown 数学公式语法 | MIT |
-| [rehype-katex](https://github.com/remarkjs/remark-math/tree/main/packages/rehype-katex) / [KaTeX](https://github.com/KaTeX/KaTeX) | 数学公式渲染 | MIT |
-| [Zod](https://github.com/colinhacks/zod) | 前端数据校验 | MIT |
-| [reqwest](https://github.com/seanmonstar/reqwest) | OpenAI-compatible HTTP 与 SSE 请求 | MIT OR Apache-2.0 |
-| [Tokio](https://github.com/tokio-rs/tokio) | Rust 异步运行时 | MIT |
-| [Serde](https://github.com/serde-rs/serde) | Rust 序列化和反序列化 | MIT OR Apache-2.0 |
-| [ring](https://github.com/briansmith/ring) | 本地密钥派生和 AES-256-GCM 加密 | ISC、MIT、OpenSSL |
-| [objc2](https://github.com/madsmtm/objc2) | Rust 与 macOS AppKit/Foundation 交互 | MIT |
-| [macos-accessibility-client](https://codeberg.org/fresskoma/macos-accessibility-client) | macOS 辅助功能权限检查 | Apache-2.0 |
-| [windows-rs](https://github.com/microsoft/windows-rs) | Windows UI Automation、窗口、输入、剪贴板和 OLE 接口 | MIT OR Apache-2.0 |
-| [Vite](https://github.com/vitejs/vite) / [Vitest](https://github.com/vitest-dev/vitest) | 前端构建和测试 | MIT |
-| [TypeScript](https://github.com/microsoft/TypeScript) | 类型系统和编译器 | Apache-2.0 |
+| 项目                                                                                                                              | 用途                                                 | 许可证            |
+| --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------- |
+| [Cherry Studio](https://github.com/CherryHQ/cherry-studio)                                                                        | 交互逻辑参考；部分默认 AI 提示词改编                 | AGPL-3.0          |
+| [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2)                                                    | macOS 选区捕获桥接层的上游基础                       | MIT               |
+| [Tauri](https://github.com/tauri-apps/tauri)                                                                                      | 跨平台桌面框架、窗口和打包                           | Apache-2.0 OR MIT |
+| [React](https://github.com/facebook/react)                                                                                        | 用户界面                                             | MIT               |
+| [dnd kit](https://github.com/clauderic/dnd-kit)                                                                                   | 设置页动作拖动排序                                   | MIT               |
+| [Lucide](https://github.com/lucide-icons/lucide)                                                                                  | 工具栏和设置界面图标                                 | ISC               |
+| [react-markdown](https://github.com/remarkjs/react-markdown)                                                                      | 安全 Markdown 渲染                                   | MIT               |
+| [remark-gfm](https://github.com/remarkjs/remark-gfm)                                                                              | GFM 表格、任务列表等语法                             | MIT               |
+| [remark-math](https://github.com/remarkjs/remark-math)                                                                            | Markdown 数学公式语法                                | MIT               |
+| [rehype-katex](https://github.com/remarkjs/remark-math/tree/main/packages/rehype-katex) / [KaTeX](https://github.com/KaTeX/KaTeX) | 数学公式渲染                                         | MIT               |
+| [Zod](https://github.com/colinhacks/zod)                                                                                          | 前端数据校验                                         | MIT               |
+| [reqwest](https://github.com/seanmonstar/reqwest)                                                                                 | OpenAI-compatible HTTP 与 SSE 请求                   | MIT OR Apache-2.0 |
+| [Tokio](https://github.com/tokio-rs/tokio)                                                                                        | Rust 异步运行时                                      | MIT               |
+| [Serde](https://github.com/serde-rs/serde)                                                                                        | Rust 序列化和反序列化                                | MIT OR Apache-2.0 |
+| [ring](https://github.com/briansmith/ring)                                                                                        | 本地密钥派生和 AES-256-GCM 加密                      | ISC、MIT、OpenSSL |
+| [objc2](https://github.com/madsmtm/objc2)                                                                                         | Rust 与 macOS AppKit/Foundation 交互                 | MIT               |
+| [macos-accessibility-client](https://codeberg.org/fresskoma/macos-accessibility-client)                                           | macOS 辅助功能权限检查                               | Apache-2.0        |
+| [windows-rs](https://github.com/microsoft/windows-rs)                                                                             | Windows UI Automation、窗口、输入、剪贴板和 OLE 接口 | MIT OR Apache-2.0 |
+| [Vite](https://github.com/vitejs/vite) / [Vitest](https://github.com/vitest-dev/vitest)                                           | 前端构建和测试                                       | MIT               |
+| [TypeScript](https://github.com/microsoft/TypeScript)                                                                             | 类型系统和编译器                                     | Apache-2.0        |
 
 这些项目还会引入各自的传递依赖。正式公开发布前，应从两个锁文件生成完整依赖清单并复核所有许可证和版权通知。
 
@@ -157,8 +157,8 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 1. 运行生成的 NSIS 安装包；如果系统没有 WebView2 Runtime，安装程序会自动拉起 bootstrapper。
 2. 未签名测试包可能触发 Microsoft Defender SmartScreen，可在确认 SHA-256 后选择“更多信息 → 仍要运行”。
 3. 首次启动后应用会常驻通知区域，不会自动打开设置页；设置窗口由通知区域菜单打开。
-4. 点击设置窗口 X 默认隐藏到通知区域；可在设置中改为直接退出。完整退出可使用通知区域菜单的“退出 TextLens”。
-5. TextLens 不提权，因此无法读取“以管理员身份运行”的高权限应用选区；普通权限应用不受此限制。
+4. 点击设置窗口 X 默认隐藏到通知区域；可在设置中改为直接退出。完整退出可使用通知区域菜单的“退出 Popper”。
+5. Popper 不提权，因此无法读取“以管理员身份运行”的高权限应用选区；普通权限应用不受此限制。
 
 当前 Windows 安装包仍是未签名测试版，可能触发 Microsoft Defender SmartScreen；自动化验证不能替代不同应用、权限和 DPI 环境下的实机验收，不适合在完成代码签名和完整兼容性验收前公开分发。
 
@@ -166,10 +166,10 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 
 当前只发布 Apple Silicon 版本，不能在 Intel Mac 上运行。
 
-1. 打开生成的 DMG，将 TextLens 拖到“应用程序”。
-2. 安装新版本前，先从菜单栏彻底退出正在运行的旧版 TextLens；新版本默认作为菜单栏工具运行，不在 Dock 显示。
-3. 首次启动若被 Gatekeeper 拦截，在 Finder 中右键 TextLens 并选择“打开”；也可以到“系统设置 → 隐私与安全性”确认打开。
-4. 按提示到“系统设置 → 隐私与安全性 → 辅助功能”启用 TextLens，然后重新启动应用。
+1. 打开生成的 DMG，将 Popper 拖到“应用程序”。
+2. 安装新版本前，先从菜单栏彻底退出正在运行的旧版 Popper；新版本默认作为菜单栏工具运行，不在 Dock 显示。
+3. 首次启动若被 Gatekeeper 拦截，在 Finder 中右键 Popper 并选择“打开”；也可以到“系统设置 → 隐私与安全性”确认打开。
+4. 按提示到“系统设置 → 隐私与安全性 → 辅助功能”启用 Popper，然后重新启动应用。
 
 当前 macOS DMG 仍是未签名、未公证的测试产物，不适合直接公开分发。正式发布前仍需 Apple Developer ID 签名和公证。
 
@@ -181,7 +181,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 - [LICENSE.selection-hook](./LICENSE.selection-hook)
 - 上游项目许可证要求的版权和许可文本
 
-TextLens 当前未声明开源许可证，也没有完成 Apple Developer ID、Windows Authenticode 签名、公证或自动更新。正式公开发布之前，还应完成完整的依赖许可证清单、安全复核、签名、公证和安装验收。
+Popper 当前未声明开源许可证，也没有完成 Apple Developer ID、Windows Authenticode 签名、公证或自动更新。正式公开发布之前，还应完成完整的依赖许可证清单、安全复核、签名、公证和安装验收。
 
 ## 友链
 

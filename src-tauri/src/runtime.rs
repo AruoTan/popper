@@ -47,23 +47,23 @@ use crate::{
     },
 };
 
-pub const SELECTION_EVENT: &str = "textlens:selection";
-pub const SETTINGS_CHANGED_EVENT: &str = "textlens:settings-changed";
-pub const SHORTCUT_ERROR_EVENT: &str = "textlens:shortcut-error";
-pub const SETTINGS_CLOSE_REQUEST_EVENT: &str = "textlens:settings-close-requested";
-pub const SETTINGS_GUIDANCE_EVENT: &str = "textlens:settings-guidance";
-pub const TOOLBAR_DISMISSED_EVENT: &str = "textlens:toolbar-dismissed";
-pub const RESULT_SELECTION_SHORTCUT_EVENT: &str = "textlens:result-selection-shortcut";
+pub const SELECTION_EVENT: &str = "popper:selection";
+pub const SETTINGS_CHANGED_EVENT: &str = "popper:settings-changed";
+pub const SHORTCUT_ERROR_EVENT: &str = "popper:shortcut-error";
+pub const SETTINGS_CLOSE_REQUEST_EVENT: &str = "popper:settings-close-requested";
+pub const SETTINGS_GUIDANCE_EVENT: &str = "popper:settings-guidance";
+pub const TOOLBAR_DISMISSED_EVENT: &str = "popper:toolbar-dismissed";
+pub const RESULT_SELECTION_SHORTCUT_EVENT: &str = "popper:result-selection-shortcut";
 
 fn trace_toolbar_interaction(message: impl std::fmt::Display) {
-    if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+    if std::env::var_os("POPPER_TOOLBAR_DIAGNOSTICS").is_some() {
         eprintln!("[toolbar-interaction] {message}");
     }
 }
 
 const SELECTION_MONITOR_START_ERROR: &str =
-    "无法启动系统划词监听。请重新启动 TextLens；若仍然失败，请检查安全软件或系统策略。";
-const SELECTION_MONITOR_DISCONNECTED_ERROR: &str = "系统划词监听意外停止。请重新启动 TextLens。";
+    "无法启动系统划词监听。请重新启动 Popper；若仍然失败，请检查安全软件或系统策略。";
+const SELECTION_MONITOR_DISCONNECTED_ERROR: &str = "系统划词监听意外停止。请重新启动 Popper。";
 const GLOBAL_SHORTCUT_ERROR: &str =
     "全局快捷键注册失败，可能已被其他应用占用。请更换快捷键后重试。";
 
@@ -84,11 +84,11 @@ pub struct SettingsGuidance {
     pub notice: Option<String>,
 }
 const RESULT_LABEL_PREFIX: &str = "selection-result-";
-const TRAY_ID: &str = "textlens-tray";
-const TRAY_TOGGLE_ID: &str = "textlens-toggle";
-const TRAY_PERMISSION_ID: &str = "textlens-permission";
-const TRAY_SETTINGS_ID: &str = "textlens-settings";
-const TRAY_QUIT_ID: &str = "textlens-quit";
+const TRAY_ID: &str = "popper-tray";
+const TRAY_TOGGLE_ID: &str = "popper-toggle";
+const TRAY_PERMISSION_ID: &str = "popper-permission";
+const TRAY_SETTINGS_ID: &str = "popper-settings";
+const TRAY_QUIT_ID: &str = "popper-quit";
 const RESULT_DEFAULT_WIDTH: f64 = 520.0;
 const RESULT_DEFAULT_HEIGHT: f64 = 420.0;
 const RESIZE_PERSIST_DELAY_MS: u64 = 420;
@@ -555,7 +555,7 @@ pub struct RuntimeState {
     last_permission: Mutex<bool>,
     settings_renderer_ready: AtomicBool,
     /// While the inline Ask composer owns keyboard focus, global key and
-    /// foreground notifications belong to TextLens itself and must not tear
+    /// foreground notifications belong to Popper itself and must not tear
     /// down the selection toolbar.
     toolbar_input_mode: AtomicBool,
     /// Serializes mode changes with the delayed native focus commit so a
@@ -654,7 +654,7 @@ impl RuntimeState {
             let clear_bundle_id = clear.bundle_id;
             let clear_app = app.clone();
             let spawned = thread::Builder::new()
-                .name("textlens-host-selection-clear".to_owned())
+                .name("popper-host-selection-clear".to_owned())
                 .spawn(move || {
                     let _ = SelectionMonitor::clear_matching_text(
                         clear_bundle_id.as_deref(),
@@ -724,7 +724,7 @@ impl RuntimeState {
                     std::process::id(),
                 ) {
                     // A result webview explicitly dismisses its own selection
-                    // on pointer-down. The toolbar is another TextLens window;
+                    // on pointer-down. The toolbar is another Popper window;
                     // its mouse-down must keep the current selection alive
                     // long enough for the action IPC to consume it.
                     return;
@@ -999,7 +999,7 @@ impl RuntimeState {
         }
         let app = app.clone();
         let _ = thread::Builder::new()
-            .name("textlens-close-selection-results".to_owned())
+            .name("popper-close-selection-results".to_owned())
             .spawn(move || {
                 // Let ToolbarApp's layout effect enqueue the native visible
                 // commit before closing result windows on the same UI thread.
@@ -1021,7 +1021,7 @@ impl RuntimeState {
             .wrapping_add(1);
         let app = app.clone();
         let _ = thread::Builder::new()
-            .name("textlens-shortcut-capture".to_owned())
+            .name("popper-shortcut-capture".to_owned())
             .spawn(move || {
                 let state = app.state::<RuntimeState>();
                 let current = || {
@@ -1408,7 +1408,7 @@ impl RuntimeState {
         initial_question: Option<String>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         if self.shutting_down.load(Ordering::Acquire) {
-            return Err("TextLens 正在退出".to_owned());
+            return Err("Popper 正在退出".to_owned());
         }
         // Different renderer commands can arrive concurrently. Serialize the
         // short create/replace transaction so a newer selection cannot insert
@@ -1850,7 +1850,7 @@ pub fn spawn_selection_loop(
     receiver: SelectionEventReceiver,
 ) -> std::io::Result<()> {
     std::thread::Builder::new()
-        .name("textlens-events".to_owned())
+        .name("popper-events".to_owned())
         .spawn(move || selection_loop(app, receiver))
         .map(|_| ())
 }
@@ -1963,7 +1963,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         tauri::image::Image::from_bytes(include_bytes!("../../apps/windows/icons/32x32.png"))?;
     let tray = TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
-        .tooltip("TextLens")
+        .tooltip("Popper")
         .icon(tray_icon)
         .show_menu_on_left_click(true)
         .on_menu_event(handle_tray_menu_event);
@@ -1994,10 +1994,10 @@ fn build_tray_menu(
         .enabled(permission_enabled)
         .build(app)?;
     let open_settings = MenuItemBuilder::with_id(TRAY_SETTINGS_ID, "打开设置…").build(app)?;
-    let version = MenuItemBuilder::new(format!("TextLens {}", app.package_info().version))
+    let version = MenuItemBuilder::new(format!("Popper {}", app.package_info().version))
         .enabled(false)
         .build(app)?;
-    let quit = MenuItemBuilder::with_id(TRAY_QUIT_ID, "退出 TextLens").build(app)?;
+    let quit = MenuItemBuilder::with_id(TRAY_QUIT_ID, "退出 Popper").build(app)?;
     let menu = MenuBuilder::new(app).item(&toggle);
     #[cfg(not(target_os = "windows"))]
     let menu = menu.item(&permission);
@@ -2139,7 +2139,7 @@ fn selection_monitor_diagnostic(should_listen: bool, start_failed: bool) -> Opti
 }
 
 fn trace_selection_timing(stage: &str, started: Instant) {
-    let enabled = std::env::var_os("TEXTLENS_SELECTION_TRACE").is_some_and(|value| {
+    let enabled = std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
         let value = value.to_string_lossy();
         value == "1" || value.eq_ignore_ascii_case("true")
     });
@@ -2692,7 +2692,7 @@ pub async fn run_action(
         return Ok(RunActionResult::rejected(message));
     }
     if state.shutting_down.load(Ordering::Acquire) {
-        return Ok(RunActionResult::rejected("TextLens 正在退出"));
+        return Ok(RunActionResult::rejected("Popper 正在退出"));
     }
     let Some(selection) = state.current_selection.lock().clone() else {
         return Ok(RunActionResult::rejected("当前没有可用的选中文本"));
@@ -3104,7 +3104,7 @@ pub fn show_result_selection(
         return Err("结果会话已结束".to_owned());
     }
     // Result webviews submit their own selections because native monitors
-    // intentionally ignore TextLens-owned windows. This is still an automatic
+    // intentionally ignore Popper-owned windows. This is still an automatic
     // pointer-up trigger, so it must obey the same policy as native selection
     // events instead of bypassing shortcut-only mode.
     if !should_present_selection_for_trigger(
@@ -3132,7 +3132,7 @@ pub fn show_result_selection(
         text,
         source_app: SourceApplication {
             bundle_id: app.config().identifier.clone(),
-            name: "TextLens 结果".to_owned(),
+            name: "Popper 结果".to_owned(),
         },
         bounds: None,
         start_top: None,
@@ -3233,7 +3233,7 @@ pub fn show_result_selection(
 
 /// Dismiss a toolbar that was opened from a selection inside this result window.
 ///
-/// Clicks inside TextLens webviews (especially macOS, where the native hook
+/// Clicks inside Popper webviews (especially macOS, where the native hook
 /// ignores own-process targets) do not generate a global outside-click dismiss.
 /// The result renderer calls this on pointer-down so in-window clicks match the
 /// normal “click outside toolbar → hide” behavior without closing the result.

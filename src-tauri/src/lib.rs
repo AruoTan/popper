@@ -171,7 +171,7 @@ pub fn run() {
             runtime::close_result,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build TextLens")
+        .expect("failed to build Popper")
         .run(|app, event| {
             if matches!(
                 event,

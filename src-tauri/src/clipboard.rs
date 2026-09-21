@@ -342,7 +342,7 @@ fn restore_windows_clipboard_snapshot(
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("STATIC"),
-            w!("TextLens Clipboard Restore Owner"),
+            w!("Popper Clipboard Restore Owner"),
             WINDOW_STYLE(0),
             0,
             0,
@@ -696,8 +696,8 @@ fn trace_windows_clipboard_text_status(sequence: u32, status: &'static str) {
 
     let trace_directory = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .map(|directory| directory.join("TextLens"));
-    let environment_enabled = std::env::var_os("TEXTLENS_SELECTION_TRACE").is_some_and(|value| {
+        .map(|directory| directory.join("Popper"));
+    let environment_enabled = std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
         let value = value.to_string_lossy();
         value == "1" || value.eq_ignore_ascii_case("true")
     });
@@ -861,7 +861,7 @@ fn write_to_windows_clipboard(text: &str) -> Result<(), String> {
         CreateWindowExW(
             WINDOW_EX_STYLE(0),
             w!("STATIC"),
-            w!("TextLens Clipboard Owner"),
+            w!("Popper Clipboard Owner"),
             WINDOW_STYLE(0),
             0,
             0,
@@ -1012,11 +1012,11 @@ mod tests {
 
     #[test]
     fn windows_clipboard_encoding_is_unicode_and_nul_terminated() {
-        let encoded = encode_windows_clipboard_text("TextLens 中文 🍎\n第二行").unwrap();
+        let encoded = encode_windows_clipboard_text("Popper 中文 🍎\n第二行").unwrap();
         assert_eq!(encoded.last(), Some(&0));
         assert_eq!(
             String::from_utf16(&encoded[..encoded.len() - 1]).unwrap(),
-            "TextLens 中文 🍎\n第二行"
+            "Popper 中文 🍎\n第二行"
         );
     }
 
@@ -1035,13 +1035,13 @@ mod tests {
 
     #[test]
     fn windows_clipboard_decoding_requires_a_bounded_nul_terminated_value() {
-        let encoded = "TextLens 中文 🍎"
+        let encoded = "Popper 中文 🍎"
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
         assert_eq!(
             decode_windows_clipboard_text(&encoded, WINDOWS_CLIPBOARD_TEXT_LIMIT).as_deref(),
-            Some("TextLens 中文 🍎")
+            Some("Popper 中文 🍎")
         );
         assert!(decode_windows_clipboard_text(&[b'a' as u16, b'b' as u16], 2).is_none());
         assert!(decode_windows_clipboard_text(&[b'a' as u16, b'b' as u16, 0], 1).is_none());
@@ -1172,7 +1172,7 @@ mod tests {
     #[test]
     fn writes_unicode_text_to_an_isolated_pasteboard() {
         let pasteboard = NSPasteboard::pasteboardWithUniqueName();
-        let expected = "TextLens 剪贴板测试 🍎\n第二行";
+        let expected = "Popper 剪贴板测试 🍎\n第二行";
 
         write_to_pasteboard(&pasteboard, expected).unwrap();
 

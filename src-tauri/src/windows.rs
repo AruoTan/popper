@@ -18,7 +18,7 @@ use tauri::{LogicalPosition, LogicalSize};
 use tauri::{PhysicalPosition, PhysicalSize};
 
 const TOOLBAR_LABEL: &str = "selection-toolbar";
-pub const TOOLBAR_POINTER_EVENT: &str = "textlens:toolbar-pointer";
+pub const TOOLBAR_POINTER_EVENT: &str = "popper:toolbar-pointer";
 #[cfg(target_os = "windows")]
 const STARTUP_NOTICE_LABEL_PREFIX: &str = "startup-notice-";
 #[cfg(target_os = "windows")]
@@ -101,7 +101,7 @@ fn is_windows_ui_thread() -> bool {
     )
 }
 
-/// Shows a short, click-through Windows notice without activating TextLens or
+/// Shows a short, click-through Windows notice without activating Popper or
 /// adding another taskbar entry. The renderer owns the 1 s hold + 0.5 s fade;
 /// the native window is retained briefly after that animation, then destroyed.
 #[cfg(target_os = "windows")]
@@ -125,7 +125,7 @@ pub fn show_startup_notice(app: &AppHandle, kind: StartupNoticeKind) -> tauri::R
         label,
         WebviewUrl::App(format!("startup/index.html?kind={}", kind.query_value()).into()),
     )
-    .title("TextLens")
+    .title("Popper")
     .inner_size(logical_size.width, logical_size.height)
     .decorations(false)
     .transparent(true)
@@ -317,7 +317,7 @@ fn result_window_step_error(step: &'static str, error: impl std::fmt::Display) -
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 fn trace_toolbar_timing(stage: &str, started: Instant) {
-    let enabled = std::env::var_os("TEXTLENS_SELECTION_TRACE").is_some_and(|value| {
+    let enabled = std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
         let value = value.to_string_lossy();
         value == "1" || value.eq_ignore_ascii_case("true")
     });
@@ -522,7 +522,7 @@ impl WindowCoordinator {
             TOOLBAR_LABEL,
             WebviewUrl::App("toolbar/index.html".into()),
         )
-        .title("TextLens")
+        .title("Popper")
         .inner_size(size.width, size.height)
         .decorations(false)
         .transparent(true)
@@ -856,7 +856,7 @@ impl WindowCoordinator {
         let app = app.clone();
         let selection_id = selection_id.to_owned();
         let _ = std::thread::Builder::new()
-            .name("textlens-toolbar-hide".to_owned())
+            .name("popper-toolbar-hide".to_owned())
             .spawn(move || {
                 let _ = coordinator.hide_toolbar_if_selection(&app, &selection_id);
             });
@@ -869,7 +869,7 @@ impl WindowCoordinator {
         let coordinator = self.clone();
         let app = app.clone();
         let _ = std::thread::Builder::new()
-            .name("textlens-toolbar-hide".to_owned())
+            .name("popper-toolbar-hide".to_owned())
             .spawn(move || coordinator.hide_toolbar(&app));
     }
 
@@ -1131,7 +1131,7 @@ impl WindowCoordinator {
             &label,
             WebviewUrl::App(format!("result/index.html?sessionId={session_id}").into()),
         )
-        .title(format!("{title} - TextLens"))
+        .title(format!("{title} - Popper"))
         .inner_size(size.width, size.height)
         .min_inner_size(360.0, 260.0)
         .decorations(false)
@@ -1510,7 +1510,7 @@ impl WindowCoordinator {
     }
 
     /// Returns the result webview that currently owns foreground interaction.
-    /// Global shortcut capture cannot read TextLens-owned WebView selections
+    /// Global shortcut capture cannot read Popper-owned WebView selections
     /// through the external accessibility monitor, so the renderer must handle
     /// those selections directly.
     pub fn foreground_result_label(&self, app: &AppHandle) -> Option<String> {
@@ -2080,7 +2080,7 @@ fn show_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<()> {
             )
             .map_err(windows_error)?;
         }
-        if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+        if std::env::var_os("POPPER_TOOLBAR_DIAGNOSTICS").is_some() {
             eprintln!(
                 "[toolbar-interaction] input visibility committed visible={}",
                 unsafe { IsWindowVisible(hwnd).as_bool() }
@@ -2119,7 +2119,7 @@ fn restore_toolbar_input_visibility(window: &WebviewWindow) -> tauri::Result<()>
                     .map_err(windows_error)?;
             }
         }
-        if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+        if std::env::var_os("POPPER_TOOLBAR_DIAGNOSTICS").is_some() {
             eprintln!("[toolbar-interaction] input visibility preserved was_visible={was_visible}");
         }
         Ok(())
@@ -2166,7 +2166,7 @@ fn activate_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<bool> 
             && (foreground == hwnd
                 || unsafe { IsChild(hwnd, foreground).as_bool() }
                 || unsafe { GetAncestor(foreground, GA_ROOT) } == hwnd);
-        if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+        if std::env::var_os("POPPER_TOOLBAR_DIAGNOSTICS").is_some() {
             eprintln!("[toolbar-interaction] foreground activation committed focused={focused}");
         }
         callback_verified.store(focused, Ordering::Release);
@@ -2570,7 +2570,7 @@ fn windows_point_inside_window(window: &WebviewWindow, point: Point) -> bool {
         && point.x <= f64::from(rectangle.right) + tolerance
         && point.y >= f64::from(rectangle.top) - tolerance
         && point.y <= f64::from(rectangle.bottom) + tolerance;
-    if std::env::var_os("TEXTLENS_TOOLBAR_DIAGNOSTICS").is_some() {
+    if std::env::var_os("POPPER_TOOLBAR_DIAGNOSTICS").is_some() {
         eprintln!(
             "[toolbar-interaction] hit-test point=({:.0},{:.0}) rect=({},{})-({},{}) visible=true inside={}",
             point.x,
@@ -2737,7 +2737,7 @@ pub fn restore_source_app_activation(app: &AppHandle, bundle_id: &str) -> bool {
                 return;
             };
 
-            // If TextLens became active after the toolbar click, drop activation
+            // If Popper became active after the toolbar click, drop activation
             // first — this restores the previous app without a window parade.
             let ns_app = NSApplication::sharedApplication(mtm);
             if ns_app.isActive() {
@@ -2827,7 +2827,7 @@ fn install_toolbar_mouse_tracking(window: &WebviewWindow) -> tauri::Result<()> {
         // The toolbar never becomes key, so WKWebView's normal tracking area
         // only refreshes reliably while dragging. Attach an always-active
         // tracking area to the WKWebView itself so ordinary mouse movement is
-        // delivered to WebKit while TextLens remains in the background.
+        // delivered to WebKit while Popper remains in the background.
         let view = &*(webview.inner().cast::<NSView>());
         let options = NSTrackingAreaOptions::MouseEnteredAndExited
             | NSTrackingAreaOptions::MouseMoved

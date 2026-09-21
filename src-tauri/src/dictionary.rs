@@ -260,7 +260,7 @@ mod tests {
     #[ignore = "Live Youdao smoke test; requires network and is run explicitly"]
     async fn live_youdao_lookup_and_suggestions() {
         let client = Client::builder()
-            .user_agent(format!("TextLens/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("Popper/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .unwrap();
         for query in ["account", "take off"] {

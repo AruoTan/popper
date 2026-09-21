@@ -1,152 +1,147 @@
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync
-} from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const scriptDirectory = dirname(fileURLToPath(import.meta.url))
-const root = resolve(scriptDirectory, '..')
-const packageJson = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
-const args = process.argv.slice(2)
-let version = packageJson.version
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const root = resolve(scriptDirectory, "..");
+const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+const args = process.argv.slice(2);
+let version = packageJson.version;
 
 if (args.length > 0) {
-  if (args.length !== 2 || args[0] !== '--version') {
-    throw new Error('Usage: node scripts/export-dev-source.mjs [--version <source-package-version>]')
+  if (args.length !== 2 || args[0] !== "--version") {
+    throw new Error(
+      "Usage: node scripts/export-dev-source.mjs [--version <source-package-version>]",
+    );
   }
-  version = args[1]
+  version = args[1];
 }
 
-if (typeof version !== 'string' || !/^(?:\d+\.){2,3}\d+$/u.test(version)) {
-  throw new Error(`source package version is invalid: ${String(version)}`)
+if (typeof version !== "string" || !/^(?:\d+\.){2,3}\d+$/u.test(version)) {
+  throw new Error(`source package version is invalid: ${String(version)}`);
 }
 
-const exportRoot = join(root, 'portable-dev-sources')
-const bundleName = `TextLens-${version}-dev-source`
-const outputDirectory = join(exportRoot, bundleName)
+const exportRoot = join(root, "portable-dev-sources");
+const bundleName = `Popper-${version}-dev-source`;
+const outputDirectory = join(exportRoot, bundleName);
 
 const includeEntries = [
-  '.devcontainer',
-  '.github',
-  '.env.example',
-  '.gitignore',
-  'LICENSE.selection-hook',
-  'README.md',
-  'README.en.md',
-  'THIRD_PARTY_NOTICES.md',
-  'DEVELOPMENT_HANDBOOK.md',
-  'apps',
-  'assets',
-  'package.json',
-  'pnpm-lock.yaml',
-  'pnpm-workspace.yaml',
-  'scripts',
-  'src',
-  'src-tauri',
-  'tsconfig.json',
-  'tsconfig.node.json',
-  'tsconfig.web.json',
-  'vite.config.ts',
-  'vitest.config.ts',
-  'vitest.setup.ts'
-]
+  ".devcontainer",
+  ".github",
+  ".env.example",
+  ".gitignore",
+  "LICENSE.selection-hook",
+  "README.md",
+  "README.en.md",
+  "THIRD_PARTY_NOTICES.md",
+  "DEVELOPMENT_HANDBOOK.md",
+  "apps",
+  "assets",
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "scripts",
+  "src",
+  "src-tauri",
+  "tsconfig.json",
+  "tsconfig.node.json",
+  "tsconfig.web.json",
+  "vite.config.ts",
+  "vitest.config.ts",
+  "vitest.setup.ts",
+];
 
 function normalize(path) {
-  return path.replace(/\\/gu, '/')
+  return path.replace(/\\/gu, "/");
 }
 
 function shouldCopy(sourcePath) {
-  const relativePath = normalize(relative(root, sourcePath))
-  if (!relativePath || relativePath === '') return true
+  const relativePath = normalize(relative(root, sourcePath));
+  if (!relativePath || relativePath === "") return true;
 
-  const name = basename(sourcePath)
+  const name = basename(sourcePath);
   if (
-    name === '.DS_Store'
-    || name === '.git'
-    || name === '.pnpm-store'
-    || name === '.tmp-textlens-start-diagnostic'
-    || name === 'artifacts'
-    || name === 'coverage'
-    || name === 'dist'
-    || name === 'node_modules'
-    || name === 'out'
-    || name === 'portable-dev-sources'
-    || name === 'release'
-    || name === 'target'
-    || name === '.vite'
-    || /^archive-pre-/u.test(name)
-    || name.endsWith('.tsbuildinfo')
-    || name.endsWith('.log')
+    name === ".DS_Store" ||
+    name === ".git" ||
+    name === ".pnpm-store" ||
+    name === ".tmp-popper-start-diagnostic" ||
+    name === "artifacts" ||
+    name === "coverage" ||
+    name === "dist" ||
+    name === "node_modules" ||
+    name === "out" ||
+    name === "portable-dev-sources" ||
+    name === "release" ||
+    name === "target" ||
+    name === ".vite" ||
+    /^archive-pre-/u.test(name) ||
+    name.endsWith(".tsbuildinfo") ||
+    name.endsWith(".log")
   ) {
-    return false
+    return false;
   }
 
-  return true
+  return true;
 }
 
 function copyEntry(relativeEntry) {
-  const source = join(root, relativeEntry)
-  const destination = join(outputDirectory, relativeEntry)
+  const source = join(root, relativeEntry);
+  const destination = join(outputDirectory, relativeEntry);
   if (!existsSync(source)) {
-    throw new Error(`Required entry is missing: ${relativeEntry}`)
+    throw new Error(`Required entry is missing: ${relativeEntry}`);
   }
   cpSync(source, destination, {
     recursive: true,
     force: true,
-    filter: (sourcePath) => shouldCopy(sourcePath)
-  })
+    filter: (sourcePath) => shouldCopy(sourcePath),
+  });
 }
 
 function requireExportedPath(relativeEntry, kind) {
-  const path = join(outputDirectory, relativeEntry)
+  const path = join(outputDirectory, relativeEntry);
   if (!existsSync(path)) {
-    throw new Error(`Export validation failed: missing ${kind} ${relativeEntry}`)
+    throw new Error(`Export validation failed: missing ${kind} ${relativeEntry}`);
   }
-  if (kind === 'file' && !statSync(path).isFile()) {
-    throw new Error(`Export validation failed: ${relativeEntry} is not a file`)
+  if (kind === "file" && !statSync(path).isFile()) {
+    throw new Error(`Export validation failed: ${relativeEntry} is not a file`);
   }
-  if (kind === 'directory' && !statSync(path).isDirectory()) {
-    throw new Error(`Export validation failed: ${relativeEntry} is not a directory`)
+  if (kind === "directory" && !statSync(path).isDirectory()) {
+    throw new Error(`Export validation failed: ${relativeEntry} is not a directory`);
   }
 }
 
-rmSync(outputDirectory, { recursive: true, force: true })
-mkdirSync(outputDirectory, { recursive: true })
+rmSync(outputDirectory, { recursive: true, force: true });
+mkdirSync(outputDirectory, { recursive: true });
 
 for (const entry of includeEntries) {
-  copyEntry(entry)
+  copyEntry(entry);
 }
 
 for (const [entry, kind] of [
-  ['apps', 'directory'],
-  ['assets', 'directory'],
-  ['DEVELOPMENT_HANDBOOK.md', 'file'],
-  ['src', 'directory'],
-  ['src-tauri', 'directory'],
-  ['package.json', 'file'],
-  ['pnpm-lock.yaml', 'file'],
-  ['README.md', 'file'],
-  ['README.en.md', 'file']
+  ["apps", "directory"],
+  ["assets", "directory"],
+  ["DEVELOPMENT_HANDBOOK.md", "file"],
+  ["src", "directory"],
+  ["src-tauri", "directory"],
+  ["package.json", "file"],
+  ["pnpm-lock.yaml", "file"],
+  ["README.md", "file"],
+  ["README.en.md", "file"],
 ]) {
-  requireExportedPath(entry, kind)
+  requireExportedPath(entry, kind);
 }
 
 for (const excluded of [
-  'artifacts',
-  'dist',
-  'node_modules',
-  'portable-dev-sources',
-  'release',
-  'src-tauri/target'
+  "artifacts",
+  "dist",
+  "node_modules",
+  "portable-dev-sources",
+  "release",
+  "src-tauri/target",
 ]) {
   if (existsSync(join(outputDirectory, excluded))) {
-    throw new Error(`Export validation failed: excluded path copied into bundle: ${excluded}`)
+    throw new Error(`Export validation failed: excluded path copied into bundle: ${excluded}`);
   }
 }
 
-console.log(`Portable development source created at: ${outputDirectory}`)
+console.log(`Portable development source created at: ${outputDirectory}`);

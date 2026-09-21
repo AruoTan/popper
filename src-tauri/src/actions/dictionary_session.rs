@@ -172,7 +172,7 @@ impl ActionService {
                 .get(id)
                 .map(|d| d.request.window_label.clone());
             if let Some(label) = label {
-                let _ = app.emit_to(label, "textlens:dictionary", snapshot);
+                let _ = app.emit_to(label, "popper:dictionary", snapshot);
             }
         }
     }

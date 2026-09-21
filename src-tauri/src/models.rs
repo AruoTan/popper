@@ -317,7 +317,7 @@ impl Default for ApplicationFilterSettings {
     }
 }
 
-/// Controls how TextLens reads a selection after a verified user gesture.
+/// Controls how Popper reads a selection after a verified user gesture.
 /// `SelectionHook` is the non-destructive default. Clipboard routes are
 /// limited to a short, guarded Ctrl+C transaction and always restore the
 /// previous clipboard state when no user clipboard operation intervenes.

@@ -2721,6 +2721,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "popper"
+version = "0.5.1"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "cc",
+ "core-foundation 0.10.1",
+ "core-graphics",
+ "futures-util",
+ "macos-accessibility-client",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "parking_lot",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
+ "windows",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4039,38 +4071,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5fed54709c5b3a53d09bb1c113ea4f5ceafd1e772ddcb0030a82e1d56c087b08"
 dependencies = [
  "new_debug_unreachable",
-]
-
-[[package]]
-name = "textlens"
-version = "0.5.1"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "cc",
- "core-foundation 0.10.1",
- "core-graphics",
- "futures-util",
- "macos-accessibility-client",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "parking_lot",
- "reqwest",
- "ring",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-single-instance",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "url",
- "uuid",
- "windows",
 ]
 
 [[package]]

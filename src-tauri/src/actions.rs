@@ -38,7 +38,7 @@ use crate::{
     thinking::{self, AppliedThinkingControl, ThinkingRequestPlan},
 };
 
-pub const ACTION_STREAM_EVENT: &str = "textlens:action-stream";
+pub const ACTION_STREAM_EVENT: &str = "popper:action-stream";
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 const JSON_RESPONSE_LIMIT: usize = 2 * 1024 * 1024;
 const ERROR_RESPONSE_LIMIT: usize = 8 * 1024;
@@ -263,8 +263,8 @@ impl SourceBoundary {
             .collect();
         let token = format!("{}_{}", safe_seed, counter);
         Self {
-            begin: format!("<<<TEXTLENS_SOURCE_{}_BEGIN>>>", token),
-            end: format!("<<<TEXTLENS_SOURCE_{}_END>>>", token),
+            begin: format!("<<<POPPER_SOURCE_{}_BEGIN>>>", token),
+            end: format!("<<<POPPER_SOURCE_{}_END>>>", token),
         }
     }
 }
@@ -687,7 +687,7 @@ impl ActionService {
             .pool_idle_timeout(Duration::from_secs(300))
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)
-            .user_agent(format!("TextLens/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("Popper/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| ActionServiceError::Client)?;
         Ok(Self {
@@ -2899,9 +2899,9 @@ mod tests {
 
     #[test]
     fn transport_trace_records_each_marker_once_and_never_stores_content() {
-        let selected_secret = "TEXTLENS_SELECTED_SECRET".repeat(5);
-        let prompt_secret = "TEXTLENS_PROMPT_SECRET";
-        let generated_secret = "TEXTLENS_GENERATED_SECRET".repeat(3);
+        let selected_secret = "POPPER_SELECTED_SECRET".repeat(5);
+        let prompt_secret = "POPPER_PROMPT_SECRET";
+        let generated_secret = "POPPER_GENERATED_SECRET".repeat(3);
         let start = tokio::time::Instant::now();
         let mut trace = RequestTrace::new(
             start,

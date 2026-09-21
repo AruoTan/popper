@@ -20,7 +20,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: 1.97.1-x86_64-pc-windows-msvc
-      CARGO_INCREMENTAL: '0'
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - name: Check out source
@@ -31,7 +31,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '22.22.0'
+          node-version: "22.22.0"
 
       - name: Install locked JavaScript dependencies
         run: |
@@ -62,7 +62,7 @@ jobs:
       - name: Upload installer and checksums
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: TextLens-windows-x64-${{ github.run_number }}
+          name: Popper-windows-x64-${{ github.run_number }}
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_x64-setup.exe
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt

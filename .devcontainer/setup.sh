@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd /workspaces/textlens
+cd /workspaces/popper
 
 # Only change ownership of container volume roots, never the host source tree.
-sudo chown "$(id -u):$(id -g)" /workspaces/textlens/node_modules /home/node/.cache/textlens
+sudo chown "$(id -u):$(id -g)" /workspaces/popper/node_modules /home/node/.cache/popper
 
 expected_pnpm="$(node -p "require('./package.json').packageManager")"
 if [[ "pnpm@$(pnpm --version)" != "$expected_pnpm" ]]; then
@@ -16,4 +16,4 @@ node --version
 pnpm --version
 rustc --version
 cargo --version
-echo 'TextLens ready. Run: bash .devcontainer/verify.sh or pnpm dev:web --host 0.0.0.0'
+echo 'Popper ready. Run: bash .devcontainer/verify.sh or pnpm dev:web --host 0.0.0.0'

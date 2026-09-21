@@ -1,17 +1,4 @@
-import { DictionaryPanel, useDictionarySession } from './DictionaryPanel'
-import { useTranslationSuggestions } from './useTranslationSuggestions'
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent,
-  type JSX
-} from 'react'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowRight,
   Check,
@@ -25,8 +12,19 @@ import {
   RefreshCw,
   Settings2,
   Square,
-  X
-} from 'lucide-react'
+  X,
+} from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type CSSProperties,
+  type JSX,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   DEFAULT_PUBLIC_SETTINGS,
   DEFAULT_RESULT_FONT_SIZE,
@@ -42,43 +40,45 @@ import {
   type Point,
   type PublicSettings,
   type ResultSessionSnapshot,
-  type TranslationLanguage
-} from '../../shared'
-import { ActionIcon } from '../components/ActionIcon'
-import { runDetached } from '../lib/asyncEffects'
-import { getErrorMessage } from '../lib/errors'
+  type TranslationLanguage,
+} from "../../shared";
+import { ActionIcon } from "../components/ActionIcon";
+import { runDetached } from "../lib/asyncEffects";
+import { getErrorMessage } from "../lib/errors";
 import {
   flushPendingActionEvents,
   getActionEventSnapshot,
-  subscribeToActionEvents
-} from './actionEventStore'
-import { useAutoFollowOutput } from './autoFollowOutput'
+  subscribeToActionEvents,
+} from "./actionEventStore";
+import { useAutoFollowOutput } from "./autoFollowOutput";
 import {
   appendUserTurn,
   beginAssistantTurn,
   isAskAction,
   patchStreamingAssistant,
   transcriptFromSnapshot,
-  type TranscriptTurn
-} from './conversationTranscript'
-import { ResultOutput } from './ResultOutput'
-import { useResultContentOverflow } from './resultContentOverflow'
-import type { ResultSessionBootstrap } from './resultSessionBootstrap'
-import type { ResultState } from './resultState'
-import { useSmoothStreamText } from './useSmoothStreamText'
+  type TranscriptTurn,
+} from "./conversationTranscript";
+import { DictionaryPanel, useDictionarySession } from "./DictionaryPanel";
+import { useResultContentOverflow } from "./resultContentOverflow";
+import { ResultOutput } from "./ResultOutput";
+import type { ResultSessionBootstrap } from "./resultSessionBootstrap";
+import type { ResultState } from "./resultState";
+import { useSmoothStreamText } from "./useSmoothStreamText";
+import { useTranslationSuggestions } from "./useTranslationSuggestions";
 
 const RESULT_RESIZE_DIRECTIONS = [
-  'NorthWest',
-  'North',
-  'NorthEast',
-  'East',
-  'SouthEast',
-  'South',
-  'SouthWest',
-  'West'
-] as const
+  "NorthWest",
+  "North",
+  "NorthEast",
+  "East",
+  "SouthEast",
+  "South",
+  "SouthWest",
+  "West",
+] as const;
 
-type ResultResizeDirection = (typeof RESULT_RESIZE_DIRECTIONS)[number]
+type ResultResizeDirection = (typeof RESULT_RESIZE_DIRECTIONS)[number];
 
 /**
  * Collapse WebKit/AppKit native popup menus (e.g. `<select>`) before the
@@ -87,95 +87,106 @@ type ResultResizeDirection = (typeof RESULT_RESIZE_DIRECTIONS)[number]
  * WindowState lock this previously deadlocked the tray.
  */
 function dismissNativeOverlays(): void {
-  const active = document.activeElement
+  const active = document.activeElement;
   if (active instanceof HTMLElement) {
-    active.blur()
+    active.blur();
   }
-  for (const select of document.querySelectorAll('select')) {
+  for (const select of document.querySelectorAll("select")) {
     if (select instanceof HTMLSelectElement) {
-      select.blur()
+      select.blur();
     }
   }
 }
 
 interface ModelRoute {
-  providerId: string
-  modelId: string
+  providerId: string;
+  modelId: string;
 }
 
 interface ModelChoice extends ModelRoute {
-  value: string
-  providerName: string
-  modelName: string
-  keyConfigured: boolean
+  value: string;
+  providerName: string;
+  modelName: string;
+  keyConfigured: boolean;
 }
 
 function modelRouteValue(route: ModelRoute): string {
-  return JSON.stringify([route.providerId, route.modelId])
+  return JSON.stringify([route.providerId, route.modelId]);
 }
 
 function modelRouteFromSnapshot(snapshot: ResultSessionSnapshot): ModelRoute | null {
-  const { providerId, modelId } = snapshot
-  if (providerId === undefined && modelId === undefined) return null
+  const { providerId, modelId } = snapshot;
+  if (providerId === undefined && modelId === undefined) return null;
   if (providerId === undefined || modelId === undefined) {
-    throw new Error('validated result snapshot has an incomplete model route')
+    throw new Error("validated result snapshot has an incomplete model route");
   }
-  return { providerId, modelId }
+  return { providerId, modelId };
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLInputElement ||
+  return (
+    target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement ||
     (target instanceof HTMLElement && target.isContentEditable)
+  );
 }
 
 function isInteractiveElement(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest(
-    'button, select, a, input, textarea, [contenteditable="true"], [data-no-drag]'
-  ) !== null
+  return (
+    target instanceof Element &&
+    target.closest(
+      'button, select, a, input, textarea, [contenteditable="true"], [data-no-drag]',
+    ) !== null
+  );
 }
 
 function nodeIsWithin(container: HTMLElement, node: Node | null): boolean {
-  if (!node) return false
-  return container === node || container.contains(node.nodeType === Node.TEXT_NODE ? node.parentNode : node)
+  if (!node) return false;
+  return (
+    container === node ||
+    container.contains(node.nodeType === Node.TEXT_NODE ? node.parentNode : node)
+  );
 }
 
 export function selectedTextWithin(
   container: HTMLElement | null,
-  selection: Selection | null
+  selection: Selection | null,
 ): string | null {
-  if (!container || !selection || selection.isCollapsed || selection.rangeCount === 0) return null
-  const range = selection.getRangeAt(0)
-  if (!nodeIsWithin(container, range.startContainer) || !nodeIsWithin(container, range.endContainer)) {
-    return null
+  if (!container || !selection || selection.isCollapsed || selection.rangeCount === 0) return null;
+  const range = selection.getRangeAt(0);
+  if (
+    !nodeIsWithin(container, range.startContainer) ||
+    !nodeIsWithin(container, range.endContainer)
+  ) {
+    return null;
   }
-  const text = selection.toString()
-  return text.trim() ? text : null
+  const text = selection.toString();
+  return text.trim() ? text : null;
 }
 
 function selectedTextScreenPoint(selection: Selection | null): Point {
   if (selection && selection.rangeCount > 0) {
-    const rectangle = selection.getRangeAt(0).getBoundingClientRect()
-    const x = window.screenX + rectangle.left + rectangle.width / 2
-    const y = window.screenY + rectangle.bottom
-    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y }
+    const rectangle = selection.getRangeAt(0).getBoundingClientRect();
+    const x = window.screenX + rectangle.left + rectangle.width / 2;
+    const y = window.screenY + rectangle.bottom;
+    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
   }
   return {
     x: window.screenX + window.innerWidth / 2,
-    y: window.screenY + window.innerHeight / 2
-  }
+    y: window.screenY + window.innerHeight / 2,
+  };
 }
 
 export function resultFontSize(settings: PublicSettings | null): number {
-  const configured = settings?.result.fontSize
-  return typeof configured === 'number' && Number.isFinite(configured)
+  const configured = settings?.result.fontSize;
+  return typeof configured === "number" && Number.isFinite(configured)
     ? Math.min(RESULT_FONT_SIZE_MAX, Math.max(RESULT_FONT_SIZE_MIN, configured))
-    : DEFAULT_RESULT_FONT_SIZE
+    : DEFAULT_RESULT_FONT_SIZE;
 }
 
 export function isWindowsResultRenderer(userAgent = window.navigator.userAgent): boolean {
-  return /Windows/i.test(userAgent)
+  return /Windows/i.test(userAgent);
 }
 
 /**
@@ -183,9 +194,9 @@ export function isWindowsResultRenderer(userAgent = window.navigator.userAgent):
  * without paying a second frame of empty-window latency (Cherry-style TTFB).
  */
 export async function waitForResultRevealFrames(
-  scheduleFrame: (callback: FrameRequestCallback) => number = window.requestAnimationFrame
+  scheduleFrame: (callback: FrameRequestCallback) => number = window.requestAnimationFrame,
 ): Promise<void> {
-  await new Promise<void>((resolve) => scheduleFrame(() => resolve()))
+  await new Promise<void>((resolve) => scheduleFrame(() => resolve()));
 }
 
 /** Subscribe to a single field so content deltas do not re-render chrome. */
@@ -193,8 +204,8 @@ function useResultField<T>(select: (state: ResultState) => T): T {
   return useSyncExternalStore(
     subscribeToActionEvents,
     () => select(getActionEventSnapshot()),
-    () => select(getActionEventSnapshot())
-  )
+    () => select(getActionEventSnapshot()),
+  );
 }
 
 /**
@@ -204,24 +215,20 @@ function useResultField<T>(select: (state: ResultState) => T): T {
  */
 function ResultStreamBody({
   revealCommitted,
-  onOpenExternal
+  onOpenExternal,
 }: {
-  revealCommitted: boolean
-  onOpenExternal: (url: string) => void
+  revealCommitted: boolean;
+  onOpenExternal: (url: string) => void;
 }): JSX.Element {
-  const status = useResultField((state) => state.status)
-  const content = useResultField((state) => state.content)
-  const contentScalarCount = useResultField((state) => state.contentScalarCount)
-  const contentRevision = useResultField((state) => state.contentRevision)
-  const sessionGeneration = useResultField((state) => state.sessionGeneration)
-  const requestGeneration = useResultField((state) => state.requestGeneration)
-  const requestId = useResultField((state) => state.requestId)
-  const requestKey = `${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`
-  const streamContent = useSmoothStreamText(
-    content,
-    status === 'streaming',
-    requestKey
-  )
+  const status = useResultField((state) => state.status);
+  const content = useResultField((state) => state.content);
+  const contentScalarCount = useResultField((state) => state.contentScalarCount);
+  const contentRevision = useResultField((state) => state.contentRevision);
+  const sessionGeneration = useResultField((state) => state.sessionGeneration);
+  const requestGeneration = useResultField((state) => state.requestGeneration);
+  const requestId = useResultField((state) => state.requestId);
+  const requestKey = `${sessionGeneration ?? "none"}:${requestGeneration ?? "none"}:${requestId ?? "none"}`;
+  const streamContent = useSmoothStreamText(content, status === "streaming", requestKey);
 
   return (
     <article className="markdown-body">
@@ -230,16 +237,14 @@ function ResultStreamBody({
         status={status}
         content={streamContent}
         contentScalarCount={
-          status === 'streaming'
-            ? countUnicodeScalars(streamContent)
-            : contentScalarCount
+          status === "streaming" ? countUnicodeScalars(streamContent) : contentScalarCount
         }
         contentRevision={contentRevision}
         revealCommitted={revealCommitted}
         onOpenExternal={onOpenExternal}
       />
     </article>
-  )
+  );
 }
 
 /**
@@ -250,56 +255,56 @@ function ResultStreamBody({
  * Chrome is intentionally minimal: only the accent「思考」badge + chevron.
  */
 function ThinkingPanel(): JSX.Element | null {
-  const thinkingContent = useResultField((state) => state.thinkingContent)
-  const status = useResultField((state) => state.status)
-  const requestGeneration = useResultField((state) => state.requestGeneration)
-  const hasAnswer = useResultField((state) => state.content.length > 0)
-  const [expanded, setExpanded] = useState(false)
-  const userToggledRef = useRef(false)
+  const thinkingContent = useResultField((state) => state.thinkingContent);
+  const status = useResultField((state) => state.status);
+  const requestGeneration = useResultField((state) => state.requestGeneration);
+  const hasAnswer = useResultField((state) => state.content.length > 0);
+  const [expanded, setExpanded] = useState(false);
+  const userToggledRef = useRef(false);
 
-  const live = status === 'streaming' && !hasAnswer
-  const hasThinking = thinkingContent.length > 0
+  const live = status === "streaming" && !hasAnswer;
+  const hasThinking = thinkingContent.length > 0;
 
   // New request (retry / continue / model switch) always restarts collapse preference.
   useEffect(() => {
-    setExpanded(false)
-    userToggledRef.current = false
-  }, [requestGeneration])
+    setExpanded(false);
+    userToggledRef.current = false;
+  }, [requestGeneration]);
 
   // Auto open while reasoning; auto close when the answer starts (unless user toggled).
   useEffect(() => {
-    if (!hasThinking || userToggledRef.current) return
-    if (live) setExpanded(true)
-    else if (hasAnswer) setExpanded(false)
-  }, [hasThinking, live, hasAnswer])
+    if (!hasThinking || userToggledRef.current) return;
+    if (live) setExpanded(true);
+    else if (hasAnswer) setExpanded(false);
+  }, [hasThinking, live, hasAnswer]);
 
-  if (!hasThinking) return null
+  if (!hasThinking) return null;
 
   return (
     <section
-      className={`result-thinking ${live ? 'result-thinking--live' : ''} ${expanded ? 'result-thinking--open' : ''}`}
+      className={`result-thinking ${live ? "result-thinking--live" : ""} ${expanded ? "result-thinking--open" : ""}`}
       data-testid="result-thinking"
     >
       <button
         type="button"
         className="result-thinking__toggle"
         aria-expanded={expanded}
-        aria-label={live ? '思考中，点击展开或收起' : '思考，点击展开或收起'}
+        aria-label={live ? "思考中，点击展开或收起" : "思考，点击展开或收起"}
         onClick={() => {
-          userToggledRef.current = true
-          setExpanded((current) => !current)
+          userToggledRef.current = true;
+          setExpanded((current) => !current);
         }}
       >
         <span className="result-thinking__title">
           <span
-            className={`result-thinking__badge ${live ? 'result-thinking__badge--live' : ''}`}
+            className={`result-thinking__badge ${live ? "result-thinking__badge--live" : ""}`}
             aria-hidden="true"
           >
             思考
           </span>
         </span>
         <span className="result-thinking__meta" aria-hidden="true">
-          <ChevronDown size={12} className={expanded ? 'is-expanded' : ''} />
+          <ChevronDown size={12} className={expanded ? "is-expanded" : ""} />
         </span>
       </button>
       {expanded && (
@@ -309,7 +314,7 @@ function ThinkingPanel(): JSX.Element | null {
         </div>
       )}
     </section>
-  )
+  );
 }
 
 /**
@@ -319,40 +324,36 @@ function ThinkingPanel(): JSX.Element | null {
  */
 function AskStreamBridge({
   enabled,
-  onStream
+  onStream,
 }: {
-  enabled: boolean
-  onStream: (status: ResultState['status'], content: string) => void
+  enabled: boolean;
+  onStream: (status: ResultState["status"], content: string) => void;
 }): null {
-  const status = useResultField((state) => state.status)
-  const content = useResultField((state) => state.content)
-  const sessionGeneration = useResultField((state) => state.sessionGeneration)
-  const requestGeneration = useResultField((state) => state.requestGeneration)
-  const requestId = useResultField((state) => state.requestId)
-  const requestKey = `${sessionGeneration ?? 'none'}:${requestGeneration ?? 'none'}:${requestId ?? 'none'}`
-  const streamContent = useSmoothStreamText(
-    content,
-    status === 'streaming',
-    requestKey
-  )
+  const status = useResultField((state) => state.status);
+  const content = useResultField((state) => state.content);
+  const sessionGeneration = useResultField((state) => state.sessionGeneration);
+  const requestGeneration = useResultField((state) => state.requestGeneration);
+  const requestId = useResultField((state) => state.requestId);
+  const requestKey = `${sessionGeneration ?? "none"}:${requestGeneration ?? "none"}:${requestId ?? "none"}`;
+  const streamContent = useSmoothStreamText(content, status === "streaming", requestKey);
   // Terminal states use store content so a lagging typewriter frame cannot
   // seal the assistant turn with a truncated string.
-  const streamPatch = status === 'streaming' ? streamContent : content
+  const streamPatch = status === "streaming" ? streamContent : content;
 
   useEffect(() => {
-    if (!enabled) return
-    onStream(status, streamPatch)
-  }, [enabled, onStream, status, streamPatch])
+    if (!enabled) return;
+    onStream(status, streamPatch);
+  }, [enabled, onStream, status, streamPatch]);
 
-  return null
+  return null;
 }
 
 export interface ResultAppProps {
-  bootstrap?: ResultSessionBootstrap | null
+  bootstrap?: ResultSessionBootstrap | null;
 }
 
 export function ResultApp({ bootstrap = null }: ResultAppProps = {}): JSX.Element {
-  const sessionId = bootstrap?.sessionId.trim() ?? ''
+  const sessionId = bootstrap?.sessionId.trim() ?? "";
   if (!bootstrap || !sessionId) {
     return (
       <main className="result-window">
@@ -364,604 +365,687 @@ export function ResultApp({ bootstrap = null }: ResultAppProps = {}): JSX.Elemen
           </div>
         </div>
       </main>
-    )
+    );
   }
-  return <ResultSessionApp sessionId={sessionId} bootstrap={bootstrap} />
+  return <ResultSessionApp sessionId={sessionId} bootstrap={bootstrap} />;
 }
 
 function ResultSessionApp({
   sessionId,
-  bootstrap
+  bootstrap,
 }: {
-  sessionId: string
-  bootstrap: ResultSessionBootstrap
+  sessionId: string;
+  bootstrap: ResultSessionBootstrap;
 }): JSX.Element {
-  const dictionary = useDictionarySession(sessionId)
-  const windowsRenderer = useMemo(() => isWindowsResultRenderer(), [])
+  const dictionary = useDictionarySession(sessionId);
+  const windowsRenderer = useMemo(() => isWindowsResultRenderer(), []);
   // Field-level subscriptions: content growth must not re-render chrome/footer.
-  const status = useResultField((state) => state.status)
-  const requestId = useResultField((state) => state.requestId)
-  const actionId = useResultField((state) => state.actionId)
-  const errorMessage = useResultField((state) => state.errorMessage)
-  const generationNotice = useResultField((state) => state.generationNotice)
-  const retryable = useResultField((state) => state.retryable)
-  const hasContent = useResultField((state) => state.content.length > 0)
-  const hasThinking = useResultField((state) => state.thinkingContent.length > 0)
-  const [settings, setSettings] = useState<PublicSettings>(DEFAULT_PUBLIC_SETTINGS)
-  const settingsRevisionRef = useRef(0)
-  const [session, setSession] = useState<ResultSessionSnapshot | null>(null)
-  const [pinned, setPinned] = useState(false)
-  const [showOriginal, setShowOriginal] = useState(false)
-  const [turns, setTurns] = useState<TranscriptTurn[]>([])
-  const [translationTarget, setTranslationTarget] = useState<TranslationLanguage | null>(null)
-  const [activeModelRoute, setActiveModelRoute] = useState<ModelRoute | null>(null)
-  const [modelMenuOpen, setModelMenuOpen] = useState(false)
-  const [routeSwitching, setRouteSwitching] = useState(false)
-  const [retrying, setRetrying] = useState(false)
-  const [commandMessage, setCommandMessage] = useState('')
-  const [copyComplete, setCopyComplete] = useState(false)
-  const [followUpQuestion, setFollowUpQuestion] = useState('')
-  const [followUpExpanded, setFollowUpExpanded] = useState(false)
-  const [followUpSubmitting, setFollowUpSubmitting] = useState(false)
-  const followUpInFlight = useRef(false)
-  const [revealCommitted, setRevealCommitted] = useState(false)
-  const [bootstrapMessage, setBootstrapMessage] = useState('')
-  const [bootstrapRetrying, setBootstrapRetrying] = useState(false)
-  const contentRef = useRef<HTMLDivElement>(null)
-  const contentInnerRef = useRef<HTMLDivElement>(null)
-  const modelSwitchRef = useRef<HTMLDivElement>(null)
-  const modelToggleRef = useRef<HTMLButtonElement>(null)
-  const copyResetTimer = useRef<number | null>(null)
-  const selectionFrame = useRef<number | null>(null)
-  const selectionCursor = useRef<Point | null>(null)
-  const retryInFlight = useRef(false)
-  const bootstrapRetryInFlight = useRef(false)
-  const disposedRef = useRef(false)
-  const followUpComposing = useRef(false)
-  const askOriginalDefaulted = useRef(false)
-  const askSawStreaming = useRef(false)
-  const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null)
-  const dictionaryMode = dictionary?.mode === 'dictionary'
+  const status = useResultField((state) => state.status);
+  const requestId = useResultField((state) => state.requestId);
+  const actionId = useResultField((state) => state.actionId);
+  const errorMessage = useResultField((state) => state.errorMessage);
+  const generationNotice = useResultField((state) => state.generationNotice);
+  const retryable = useResultField((state) => state.retryable);
+  const hasContent = useResultField((state) => state.content.length > 0);
+  const hasThinking = useResultField((state) => state.thinkingContent.length > 0);
+  const [settings, setSettings] = useState<PublicSettings>(DEFAULT_PUBLIC_SETTINGS);
+  const settingsRevisionRef = useRef(0);
+  const [session, setSession] = useState<ResultSessionSnapshot | null>(null);
+  const [pinned, setPinned] = useState(false);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [turns, setTurns] = useState<TranscriptTurn[]>([]);
+  const [translationTarget, setTranslationTarget] = useState<TranslationLanguage | null>(null);
+  const [activeModelRoute, setActiveModelRoute] = useState<ModelRoute | null>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [routeSwitching, setRouteSwitching] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [commandMessage, setCommandMessage] = useState("");
+  const [copyComplete, setCopyComplete] = useState(false);
+  const [followUpQuestion, setFollowUpQuestion] = useState("");
+  const [followUpExpanded, setFollowUpExpanded] = useState(false);
+  const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
+  const followUpInFlight = useRef(false);
+  const [revealCommitted, setRevealCommitted] = useState(false);
+  const [bootstrapMessage, setBootstrapMessage] = useState("");
+  const [bootstrapRetrying, setBootstrapRetrying] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const contentInnerRef = useRef<HTMLDivElement>(null);
+  const modelSwitchRef = useRef<HTMLDivElement>(null);
+  const modelToggleRef = useRef<HTMLButtonElement>(null);
+  const copyResetTimer = useRef<number | null>(null);
+  const selectionFrame = useRef<number | null>(null);
+  const selectionCursor = useRef<Point | null>(null);
+  const retryInFlight = useRef(false);
+  const bootstrapRetryInFlight = useRef(false);
+  const disposedRef = useRef(false);
+  const followUpComposing = useRef(false);
+  const askOriginalDefaulted = useRef(false);
+  const askSawStreaming = useRef(false);
+  const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null);
+  const dictionaryMode = dictionary?.mode === "dictionary";
   const handleScroll = useAutoFollowOutput(
     contentRef,
     contentInnerRef,
     dictionaryMode ? `${sessionId}:dictionary:${dictionary.queryGeneration}` : requestId,
-    !dictionaryMode
-  )
+    !dictionaryMode,
+  );
   // Thinking counts as visible activity — hide the empty waiting spinner early.
-  const isWaitingForFirstContent = status === 'streaming' && !hasContent && !hasThinking
+  const isWaitingForFirstContent = status === "streaming" && !hasContent && !hasThinking;
   const contentOverflow = useResultContentOverflow(
     contentRef,
     contentInnerRef,
-    !isWaitingForFirstContent
-  )
+    !isWaitingForFirstContent,
+  );
 
   const action = useMemo(
     () => settings?.actions.find((item) => item.id === (actionId ?? session?.actionId)),
-    [session?.actionId, settings, actionId]
-  )
-  const resolvedActionId = actionId ?? session?.actionId
-  const isBuiltinTranslate = resolvedActionId === 'translate' && action?.kind === 'translate'
-  const isAsk = resolvedActionId === 'ask-ai' || isAskAction(action?.kind) || dictionary?.mode === 'ai'
+    [session?.actionId, settings, actionId],
+  );
+  const resolvedActionId = actionId ?? session?.actionId;
+  const isBuiltinTranslate = resolvedActionId === "translate" && action?.kind === "translate";
+  const isAsk =
+    resolvedActionId === "ask-ai" || isAskAction(action?.kind) || dictionary?.mode === "ai";
   // Every AI result is a resumable session. Keep the follow-up control for
   // translate/explain/summary/custom actions too; only hide it while a new
   // response is actively streaming.
-  const isAiAction = isAsk || (action !== undefined && isAiActionDefinition(action))
-  const showFollowUp = isBuiltinTranslate || (isAiAction && status !== 'streaming' && dictionary?.status !== 'loading')
+  const isAiAction = isAsk || (action !== undefined && isAiActionDefinition(action));
+  const showFollowUp =
+    isBuiltinTranslate ||
+    (isAiAction && status !== "streaming" && dictionary?.status !== "loading");
   const followUpDisabled =
     followUpSubmitting ||
-    (!isBuiltinTranslate && status === 'streaming') ||
-    (!isBuiltinTranslate && (
-    (!isAsk && status !== 'completed') ||
-    (isAsk && status !== 'completed' && status !== 'idle')))
+    (!isBuiltinTranslate && status === "streaming") ||
+    (!isBuiltinTranslate &&
+      ((!isAsk && status !== "completed") ||
+        (isAsk && status !== "completed" && status !== "idle")));
 
-  const inputSuggestions = useTranslationSuggestions(sessionId, requestId, followUpQuestion,
-    isBuiltinTranslate && !!settings?.translate.dictionaryEnabled && !followUpSubmitting)
+  const inputSuggestions = useTranslationSuggestions(
+    sessionId,
+    requestId,
+    followUpQuestion,
+    isBuiltinTranslate && !!settings?.translate.dictionaryEnabled && !followUpSubmitting,
+  );
 
   const defaultModelRoute = useMemo<ModelRoute | null>(() => {
-    if (!action || !('providerId' in action) || !action.providerId || !action.modelId) return null
-    return { providerId: action.providerId, modelId: action.modelId }
-  }, [action])
+    if (!action || !("providerId" in action) || !action.providerId || !action.modelId) return null;
+    return { providerId: action.providerId, modelId: action.modelId };
+  }, [action]);
 
-  const effectiveModelRoute = activeModelRoute ?? defaultModelRoute
-  const modelGroups = useMemo(() => (
-    settings?.providers
-      .filter((provider) => provider.enabled !== false && provider.models.length > 0)
-      .map((provider) => ({
-        id: provider.id,
-        name: provider.name,
-        keyConfigured: provider.keyConfigured,
-        choices: provider.models.map<ModelChoice>((model) => ({
-          providerId: provider.id,
-          modelId: model.id,
-          providerName: provider.name,
-          modelName: model.name,
+  const effectiveModelRoute = activeModelRoute ?? defaultModelRoute;
+  const modelGroups = useMemo(
+    () =>
+      settings?.providers
+        .filter((provider) => provider.enabled !== false && provider.models.length > 0)
+        .map((provider) => ({
+          id: provider.id,
+          name: provider.name,
           keyConfigured: provider.keyConfigured,
-          value: modelRouteValue({ providerId: provider.id, modelId: model.id })
-        }))
-      })) ?? []
-  ), [settings?.providers])
+          choices: provider.models.map<ModelChoice>((model) => ({
+            providerId: provider.id,
+            modelId: model.id,
+            providerName: provider.name,
+            modelName: model.name,
+            keyConfigured: provider.keyConfigured,
+            value: modelRouteValue({ providerId: provider.id, modelId: model.id }),
+          })),
+        })) ?? [],
+    [settings?.providers],
+  );
   const modelChoices = useMemo(
     () => modelGroups.flatMap((provider) => provider.choices),
-    [modelGroups]
-  )
+    [modelGroups],
+  );
   const selectedModel = useMemo(() => {
-    if (!effectiveModelRoute) return null
-    return modelChoices.find((choice) =>
-      choice.providerId === effectiveModelRoute.providerId &&
-      choice.modelId === effectiveModelRoute.modelId
-    ) ?? null
-  }, [effectiveModelRoute, modelChoices])
+    if (!effectiveModelRoute) return null;
+    return (
+      modelChoices.find(
+        (choice) =>
+          choice.providerId === effectiveModelRoute.providerId &&
+          choice.modelId === effectiveModelRoute.modelId,
+      ) ?? null
+    );
+  }, [effectiveModelRoute, modelChoices]);
   const modelSummary = selectedModel
     ? `${selectedModel.providerName} · ${selectedModel.modelName}`
-    : '未选择模型'
-  const modelSwitchDisabled = status === 'streaming' || routeSwitching || retrying
+    : "未选择模型";
+  const modelSwitchDisabled = status === "streaming" || routeSwitching || retrying;
 
   const reconcilePendingFollowUp = useCallback(
     (pending: { question: string; requestId: string | null }): void => {
-      const latest = getActionEventSnapshot()
-      if (pending.requestId && latest.requestId !== pending.requestId) return
-      if (latest.status === 'completed') {
-        pendingFollowUp.current = null
-        setFollowUpQuestion((current) => current === pending.question ? '' : current)
-      } else if (latest.status === 'error' || latest.status === 'cancelled') {
-        setFollowUpQuestion((current) => current || pending.question)
+      const latest = getActionEventSnapshot();
+      if (pending.requestId && latest.requestId !== pending.requestId) return;
+      if (latest.status === "completed") {
+        pendingFollowUp.current = null;
+        setFollowUpQuestion((current) => (current === pending.question ? "" : current));
+      } else if (latest.status === "error" || latest.status === "cancelled") {
+        setFollowUpQuestion((current) => current || pending.question);
       }
     },
-    []
-  )
+    [],
+  );
 
-  const handleAskStream = useCallback((streamStatus: ResultState['status'], content: string): void => {
-    if (streamStatus === 'streaming') {
-      askSawStreaming.current = true
-      setTurns((current) => {
-        const withAssistant = current.at(-1)?.role === 'assistant'
-          ? current
-          : beginAssistantTurn(current, `assistant-${Date.now()}`)
-        return patchStreamingAssistant(withAssistant, content, true)
-      })
-      return
-    }
-    if (
-      (askSawStreaming.current || content.length > 0) &&
-      (streamStatus === 'completed' ||
-        streamStatus === 'cancelled' ||
-        streamStatus === 'error')
-    ) {
-      setTurns((current) => {
-        const withAssistant = content && current.at(-1)?.role !== 'assistant'
-          ? beginAssistantTurn(current, `assistant-${Date.now()}`)
-          : current
-        return patchStreamingAssistant(withAssistant, content, false)
-      })
-      askSawStreaming.current = false
-    }
-  }, [])
-
-  const closeWindow = useCallback(async (): Promise<void> => {
-    dismissNativeOverlays()
-    await window.textLens.closeResult(sessionId)
-  }, [sessionId])
-
-  const cancel = useCallback(async (): Promise<void> => {
-    setCommandMessage('')
-    try {
-      await window.textLens.cancelAction(sessionId)
-    } catch (error) {
-      setCommandMessage(getErrorMessage(error, '无法取消当前操作'))
-    }
-  }, [sessionId])
-
-  const retry = useCallback(async (options?: ActionRetryOptions, forceAi = false): Promise<boolean> => {
-    if (retryInFlight.current) return false
-    retryInFlight.current = true
-    setRetrying(true)
-    setCommandMessage('')
-    try {
-      if (dictionary?.mode === 'dictionary' && !options && !forceAi && window.textLens.queryDictionary) {
-        await window.textLens.queryDictionary(sessionId, dictionary.query)
-        setTurns([]); setFollowUpQuestion(''); pendingFollowUp.current = null
-        return true
-      }
-      if (dictionary) { setTurns([]); askSawStreaming.current = false }
-      const result = await window.textLens.retryAction(sessionId, options)
-      if (!result.accepted) {
-        setCommandMessage(result.message)
-        return false
+  const handleAskStream = useCallback(
+    (streamStatus: ResultState["status"], content: string): void => {
+      if (streamStatus === "streaming") {
+        askSawStreaming.current = true;
+        setTurns((current) => {
+          const withAssistant =
+            current.at(-1)?.role === "assistant"
+              ? current
+              : beginAssistantTurn(current, `assistant-${Date.now()}`);
+          return patchStreamingAssistant(withAssistant, content, true);
+        });
+        return;
       }
       if (
-        options?.targetLanguage !== undefined ||
-        options?.providerId !== undefined ||
-        options?.modelId !== undefined
+        (askSawStreaming.current || content.length > 0) &&
+        (streamStatus === "completed" || streamStatus === "cancelled" || streamStatus === "error")
       ) {
-        pendingFollowUp.current = null
-        setFollowUpQuestion('')
-      } else if (pendingFollowUp.current) {
-        pendingFollowUp.current.requestId = result.requestId ?? null
-        reconcilePendingFollowUp(pendingFollowUp.current)
+        setTurns((current) => {
+          const withAssistant =
+            content && current.at(-1)?.role !== "assistant"
+              ? beginAssistantTurn(current, `assistant-${Date.now()}`)
+              : current;
+          return patchStreamingAssistant(withAssistant, content, false);
+        });
+        askSawStreaming.current = false;
       }
-      return true
+    },
+    [],
+  );
+
+  const closeWindow = useCallback(async (): Promise<void> => {
+    dismissNativeOverlays();
+    await window._popper_.closeResult(sessionId);
+  }, [sessionId]);
+
+  const cancel = useCallback(async (): Promise<void> => {
+    setCommandMessage("");
+    try {
+      await window._popper_.cancelAction(sessionId);
     } catch (error) {
-      setCommandMessage(getErrorMessage(error, '无法重试当前操作'))
-      return false
-    } finally {
-      retryInFlight.current = false
-      setRetrying(false)
+      setCommandMessage(getErrorMessage(error, "无法取消当前操作"));
     }
-  }, [dictionary, reconcilePendingFollowUp, sessionId])
+  }, [sessionId]);
 
-  const switchModel = useCallback(async (value: string): Promise<void> => {
-    const next = modelChoices.find((choice) => choice.value === value)
-    if (
-      !next || routeSwitching || status === 'streaming' ||
-      (effectiveModelRoute?.providerId === next.providerId &&
-        effectiveModelRoute.modelId === next.modelId)
-    ) return
+  const retry = useCallback(
+    async (options?: ActionRetryOptions, forceAi = false): Promise<boolean> => {
+      if (retryInFlight.current) return false;
+      retryInFlight.current = true;
+      setRetrying(true);
+      setCommandMessage("");
+      try {
+        if (
+          dictionary?.mode === "dictionary" &&
+          !options &&
+          !forceAi &&
+          window._popper_.queryDictionary
+        ) {
+          await window._popper_.queryDictionary(sessionId, dictionary.query);
+          setTurns([]);
+          setFollowUpQuestion("");
+          pendingFollowUp.current = null;
+          return true;
+        }
+        if (dictionary) {
+          setTurns([]);
+          askSawStreaming.current = false;
+        }
+        const result = await window._popper_.retryAction(sessionId, options);
+        if (!result.accepted) {
+          setCommandMessage(result.message);
+          return false;
+        }
+        if (
+          options?.targetLanguage !== undefined ||
+          options?.providerId !== undefined ||
+          options?.modelId !== undefined
+        ) {
+          pendingFollowUp.current = null;
+          setFollowUpQuestion("");
+        } else if (pendingFollowUp.current) {
+          pendingFollowUp.current.requestId = result.requestId ?? null;
+          reconcilePendingFollowUp(pendingFollowUp.current);
+        }
+        return true;
+      } catch (error) {
+        setCommandMessage(getErrorMessage(error, "无法重试当前操作"));
+        return false;
+      } finally {
+        retryInFlight.current = false;
+        setRetrying(false);
+      }
+    },
+    [dictionary, reconcilePendingFollowUp, sessionId],
+  );
 
-    const previous = activeModelRoute
-    setRouteSwitching(true)
-    setActiveModelRoute({ providerId: next.providerId, modelId: next.modelId })
-    const accepted = await retry({ providerId: next.providerId, modelId: next.modelId })
-    if (!accepted) setActiveModelRoute(previous)
-    setRouteSwitching(false)
-  }, [activeModelRoute, effectiveModelRoute, modelChoices, retry, routeSwitching, status])
+  const switchModel = useCallback(
+    async (value: string): Promise<void> => {
+      const next = modelChoices.find((choice) => choice.value === value);
+      if (
+        !next ||
+        routeSwitching ||
+        status === "streaming" ||
+        (effectiveModelRoute?.providerId === next.providerId &&
+          effectiveModelRoute.modelId === next.modelId)
+      )
+        return;
 
-  const chooseModel = useCallback((value: string): void => {
-    setModelMenuOpen(false)
-    void switchModel(value)
-  }, [switchModel])
+      const previous = activeModelRoute;
+      setRouteSwitching(true);
+      setActiveModelRoute({ providerId: next.providerId, modelId: next.modelId });
+      const accepted = await retry({ providerId: next.providerId, modelId: next.modelId });
+      if (!accepted) setActiveModelRoute(previous);
+      setRouteSwitching(false);
+    },
+    [activeModelRoute, effectiveModelRoute, modelChoices, retry, routeSwitching, status],
+  );
+
+  const chooseModel = useCallback(
+    (value: string): void => {
+      setModelMenuOpen(false);
+      void switchModel(value);
+    },
+    [switchModel],
+  );
 
   const copy = useCallback(async (): Promise<void> => {
-    const entry = dictionary?.entry
-    const content = getActionEventSnapshot().content || (entry ? [entry.word, ...entry.definitions,
-      ...entry.forms.map((form) => `${form.name}：${form.value}`),
-      ...entry.examples.flatMap((example) => [example.text, example.translation])].join('\n') : '')
-    if (!content) return
-    setCommandMessage('')
+    const entry = dictionary?.entry;
+    const content =
+      getActionEventSnapshot().content ||
+      (entry
+        ? [
+            entry.word,
+            ...entry.definitions,
+            ...entry.forms.map((form) => `${form.name}：${form.value}`),
+            ...entry.examples.flatMap((example) => [example.text, example.translation]),
+          ].join("\n")
+        : "");
+    if (!content) return;
+    setCommandMessage("");
     try {
-      await window.textLens.copyText(content)
-      setCopyComplete(true)
-      if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current)
+      await window._popper_.copyText(content);
+      setCopyComplete(true);
+      if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
       copyResetTimer.current = window.setTimeout(() => {
-        copyResetTimer.current = null
-        setCopyComplete(false)
-      }, 1_500)
+        copyResetTimer.current = null;
+        setCopyComplete(false);
+      }, 1_500);
     } catch (error) {
-      setCommandMessage(getErrorMessage(error, '复制失败'))
+      setCommandMessage(getErrorMessage(error, "复制失败"));
     }
-  }, [dictionary?.entry])
+  }, [dictionary?.entry]);
 
-  const submitFollowUp = useCallback(async (text = followUpQuestion): Promise<void> => {
-    const question = text.trim()
-    const canSubmit =
-      isBuiltinTranslate || (isAsk
-        ? status === 'completed' || status === 'idle'
-        : status === 'completed')
-    if (!question || followUpInFlight.current || !canSubmit) return
-    followUpInFlight.current = true
-    setCommandMessage('')
-    setFollowUpSubmitting(true)
-    let appended = false
-    try {
-      let translationRequestId: string | undefined
-      if (isBuiltinTranslate) {
-        if (!window.textLens.submitTranslation) throw new Error('当前版本不支持翻译窗口输入')
-        const submission = await window.textLens.submitTranslation(sessionId, question)
-        if (disposedRef.current) return
-        if (submission.route === 'dictionary') {
-          setTurns([]); setFollowUpQuestion(''); pendingFollowUp.current = null; askSawStreaming.current = false
-          return
+  const submitFollowUp = useCallback(
+    async (text = followUpQuestion): Promise<void> => {
+      const question = text.trim();
+      const canSubmit =
+        isBuiltinTranslate ||
+        (isAsk ? status === "completed" || status === "idle" : status === "completed");
+      if (!question || followUpInFlight.current || !canSubmit) return;
+      followUpInFlight.current = true;
+      setCommandMessage("");
+      setFollowUpSubmitting(true);
+      let appended = false;
+      try {
+        let translationRequestId: string | undefined;
+        if (isBuiltinTranslate) {
+          if (!window._popper_.submitTranslation) throw new Error("当前版本不支持翻译窗口输入");
+          const submission = await window._popper_.submitTranslation(sessionId, question);
+          if (disposedRef.current) return;
+          if (submission.route === "dictionary") {
+            setTurns([]);
+            setFollowUpQuestion("");
+            pendingFollowUp.current = null;
+            askSawStreaming.current = false;
+            return;
+          }
+          translationRequestId = submission.requestId;
         }
-        translationRequestId = submission.requestId
-      }
-      if (!translationRequestId && !window.textLens.continueAction) {
-        throw new Error('当前版本不支持继续提问')
-      }
-      if (isAsk || dictionary) {
-        const turnId =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : `assistant-${Date.now()}`
-        askSawStreaming.current = false
-        setTurns((current) => beginAssistantTurn(appendUserTurn(current, question), turnId))
-        appended = true
-      }
-      const result = translationRequestId ? { accepted: true, requestId: translationRequestId, message: '' }
-        : await window.textLens.continueAction!(sessionId, question)
-      if (!result.accepted) {
-        setCommandMessage(result.message)
+        if (!translationRequestId && !window._popper_.continueAction) {
+          throw new Error("当前版本不支持继续提问");
+        }
+        if (isAsk || dictionary) {
+          const turnId =
+            typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+              ? crypto.randomUUID()
+              : `assistant-${Date.now()}`;
+          askSawStreaming.current = false;
+          setTurns((current) => beginAssistantTurn(appendUserTurn(current, question), turnId));
+          appended = true;
+        }
+        const result = translationRequestId
+          ? { accepted: true, requestId: translationRequestId, message: "" }
+          : await window._popper_.continueAction!(sessionId, question);
+        if (!result.accepted) {
+          setCommandMessage(result.message);
+          if (appended) {
+            askSawStreaming.current = false;
+            setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)));
+          }
+          return;
+        }
+        const pending = { question, requestId: result.requestId ?? null };
+        pendingFollowUp.current = pending;
+        setFollowUpQuestion("");
+        reconcilePendingFollowUp(pending);
+      } catch (error) {
+        setCommandMessage(getErrorMessage(error, "无法继续提问"));
         if (appended) {
-          askSawStreaming.current = false
-          setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
+          askSawStreaming.current = false;
+          setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)));
         }
-        return
+      } finally {
+        followUpInFlight.current = false;
+        setFollowUpSubmitting(false);
       }
-      const pending = { question, requestId: result.requestId ?? null }
-      pendingFollowUp.current = pending
-      setFollowUpQuestion('')
-      reconcilePendingFollowUp(pending)
-    } catch (error) {
-      setCommandMessage(getErrorMessage(error, '无法继续提问'))
-      if (appended) {
-        askSawStreaming.current = false
-        setTurns((current) => (current.length < 2 ? current : current.slice(0, -2)))
-      }
-    } finally {
-      followUpInFlight.current = false
-      setFollowUpSubmitting(false)
-    }
-  }, [followUpQuestion, isBuiltinTranslate, isAsk, dictionary, reconcilePendingFollowUp, sessionId, status])
+    },
+    [
+      followUpQuestion,
+      isBuiltinTranslate,
+      isAsk,
+      dictionary,
+      reconcilePendingFollowUp,
+      sessionId,
+      status,
+    ],
+  );
 
   useEffect(() => {
-    let disposed = false
-    const startedAtRevision = settingsRevisionRef.current
-    const unsubscribe = window.textLens.onSettingsChanged((next) => {
-      settingsRevisionRef.current += 1
-      setSettings(next)
-    })
-    void window.textLens.getSettings().then((initial) => {
-      if (!disposed && settingsRevisionRef.current === startedAtRevision) {
-        setSettings(initial)
-      }
-    }).catch((error: unknown) => {
-      if (!disposed) {
-        setCommandMessage(getErrorMessage(error, '无法读取结果窗口设置'))
-      }
-    })
+    let disposed = false;
+    const startedAtRevision = settingsRevisionRef.current;
+    const unsubscribe = window._popper_.onSettingsChanged((next) => {
+      settingsRevisionRef.current += 1;
+      setSettings(next);
+    });
+    void window._popper_
+      .getSettings()
+      .then((initial) => {
+        if (!disposed && settingsRevisionRef.current === startedAtRevision) {
+          setSettings(initial);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!disposed) {
+          setCommandMessage(getErrorMessage(error, "无法读取结果窗口设置"));
+        }
+      });
     return () => {
-      disposed = true
-      unsubscribe()
-    }
-  }, [sessionId])
+      disposed = true;
+      unsubscribe();
+    };
+  }, [sessionId]);
 
-  const consumeBootstrap = useCallback(async (
-    start: () => Promise<ResultSessionSnapshot | null>,
-    isDisposed: () => boolean
-  ): Promise<void> => {
-    let snapshot: ResultSessionSnapshot | null
-    try {
-      snapshot = await start()
-      if (isDisposed()) return
-      if (!snapshot) throw new Error('结果会话不可用')
-      setSession(snapshot)
-      setPinned(snapshot.pinned)
-      setActiveModelRoute(modelRouteFromSnapshot(snapshot))
-      if (snapshot.actionId === 'ask-ai' || snapshot.dictionary?.mode === 'ai') {
-        setTurns(transcriptFromSnapshot(
-          snapshot.sessionId,
-          snapshot.conversation ?? [],
-          snapshot.status === 'streaming'
-        ))
+  const consumeBootstrap = useCallback(
+    async (
+      start: () => Promise<ResultSessionSnapshot | null>,
+      isDisposed: () => boolean,
+    ): Promise<void> => {
+      let snapshot: ResultSessionSnapshot | null;
+      try {
+        snapshot = await start();
+        if (isDisposed()) return;
+        if (!snapshot) throw new Error("结果会话不可用");
+        setSession(snapshot);
+        setPinned(snapshot.pinned);
+        setActiveModelRoute(modelRouteFromSnapshot(snapshot));
+        if (snapshot.actionId === "ask-ai" || snapshot.dictionary?.mode === "ai") {
+          setTurns(
+            transcriptFromSnapshot(
+              snapshot.sessionId,
+              snapshot.conversation ?? [],
+              snapshot.status === "streaming",
+            ),
+          );
+        }
+        setBootstrapMessage("");
+      } catch {
+        if (!isDisposed()) {
+          setBootstrapMessage("无法连接结果会话，请重试。");
+        }
+        return;
       }
-      setBootstrapMessage('')
-    } catch {
-      if (!isDisposed()) {
-        setBootstrapMessage('无法连接结果会话，请重试。')
-      }
-      return
-    }
 
-    try {
-      await bootstrap.reveal(async () => {
-        if (window.textLens.prepareResultReveal) {
-          await window.textLens.prepareResultReveal(sessionId)
-        }
-        await waitForResultRevealFrames()
-        if (window.textLens.commitResultReveal) {
-          await window.textLens.commitResultReveal(sessionId)
-        }
-      })
-      if (isDisposed()) return
-      flushPendingActionEvents('native-reveal')
-      setRevealCommitted(true)
-    } catch {
-      if (isDisposed()) return
-      const revealMessage = '结果窗口显示失败，请重试。'
-      setCommandMessage(revealMessage)
-      runDetached(window.textLens.failResultReveal?.(sessionId, revealMessage), {
-        scope: 'result',
-        operation: 'fail-result-reveal',
-        onError: (error) => setCommandMessage(getErrorMessage(error, revealMessage))
-      })
-    }
-  }, [bootstrap, sessionId])
+      try {
+        await bootstrap.reveal(async () => {
+          if (window._popper_.prepareResultReveal) {
+            await window._popper_.prepareResultReveal(sessionId);
+          }
+          await waitForResultRevealFrames();
+          if (window._popper_.commitResultReveal) {
+            await window._popper_.commitResultReveal(sessionId);
+          }
+        });
+        if (isDisposed()) return;
+        flushPendingActionEvents("native-reveal");
+        setRevealCommitted(true);
+      } catch {
+        if (isDisposed()) return;
+        const revealMessage = "结果窗口显示失败，请重试。";
+        setCommandMessage(revealMessage);
+        runDetached(window._popper_.failResultReveal?.(sessionId, revealMessage), {
+          scope: "result",
+          operation: "fail-result-reveal",
+          onError: (error) => setCommandMessage(getErrorMessage(error, revealMessage)),
+        });
+      }
+    },
+    [bootstrap, sessionId],
+  );
 
   useEffect(() => {
-    let disposed = false
-    disposedRef.current = false
-    runDetached(consumeBootstrap(bootstrap.start, () => disposed), {
-      scope: 'result',
-      operation: 'result-ready-consume'
-    })
+    let disposed = false;
+    disposedRef.current = false;
+    runDetached(
+      consumeBootstrap(bootstrap.start, () => disposed),
+      {
+        scope: "result",
+        operation: "result-ready-consume",
+      },
+    );
     return () => {
-      disposed = true
-      disposedRef.current = true
-    }
-  }, [bootstrap, consumeBootstrap])
+      disposed = true;
+      disposedRef.current = true;
+    };
+  }, [bootstrap, consumeBootstrap]);
 
   const retryBootstrap = useCallback((): void => {
-    if (bootstrapRetryInFlight.current) return
-    bootstrapRetryInFlight.current = true
-    setBootstrapRetrying(true)
-    runDetached(consumeBootstrap(bootstrap.retryStart, () => disposedRef.current).finally(() => {
-      bootstrapRetryInFlight.current = false
-      if (!disposedRef.current) setBootstrapRetrying(false)
-    }), {
-      scope: 'result',
-      operation: 'result-ready-retry',
-      onError: (error) => setCommandMessage(getErrorMessage(error, '无法连接结果会话，请重试。'))
-    })
-  }, [bootstrap, consumeBootstrap])
+    if (bootstrapRetryInFlight.current) return;
+    bootstrapRetryInFlight.current = true;
+    setBootstrapRetrying(true);
+    runDetached(
+      consumeBootstrap(bootstrap.retryStart, () => disposedRef.current).finally(() => {
+        bootstrapRetryInFlight.current = false;
+        if (!disposedRef.current) setBootstrapRetrying(false);
+      }),
+      {
+        scope: "result",
+        operation: "result-ready-retry",
+        onError: (error) => setCommandMessage(getErrorMessage(error, "无法连接结果会话，请重试。")),
+      },
+    );
+  }, [bootstrap, consumeBootstrap]);
 
   useEffect(() => {
-    setTurns([])
-    askOriginalDefaulted.current = false
-    askSawStreaming.current = false
-  }, [sessionId])
+    setTurns([]);
+    askOriginalDefaulted.current = false;
+    askSawStreaming.current = false;
+  }, [sessionId]);
 
   useEffect(() => {
-    if (!isAsk || askOriginalDefaulted.current) return
-    askOriginalDefaulted.current = true
-    setShowOriginal(true)
-  }, [isAsk, sessionId])
+    if (!isAsk || askOriginalDefaulted.current) return;
+    askOriginalDefaulted.current = true;
+    setShowOriginal(true);
+  }, [isAsk, sessionId]);
 
   useEffect(() => {
-    if (!requestId) return
-    setCommandMessage('')
-    setCopyComplete(false)
-    if (!isAsk) setShowOriginal(false)
+    if (!requestId) return;
+    setCommandMessage("");
+    setCopyComplete(false);
+    if (!isAsk) setShowOriginal(false);
     if (copyResetTimer.current !== null) {
-      window.clearTimeout(copyResetTimer.current)
-      copyResetTimer.current = null
+      window.clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = null;
     }
-  }, [isAsk, requestId])
+  }, [isAsk, requestId]);
 
   useEffect(() => {
-    const pending = pendingFollowUp.current
-    if (pending) reconcilePendingFollowUp(pending)
-  }, [reconcilePendingFollowUp, requestId, status])
+    const pending = pendingFollowUp.current;
+    if (pending) reconcilePendingFollowUp(pending);
+  }, [reconcilePendingFollowUp, requestId, status]);
 
   useEffect(() => {
     const onPageHide = (): void => {
-      dismissNativeOverlays()
-    }
-    window.addEventListener('pagehide', onPageHide)
+      dismissNativeOverlays();
+    };
+    window.addEventListener("pagehide", onPageHide);
     return () => {
-      window.removeEventListener('pagehide', onPageHide)
-      dismissNativeOverlays()
-      if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current)
-      if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current)
-    }
-  }, [])
+      window.removeEventListener("pagehide", onPageHide);
+      dismissNativeOverlays();
+      if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
+      if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current);
+    };
+  }, []);
 
   useEffect(() => {
-    if (!modelMenuOpen) return
+    if (!modelMenuOpen) return;
     const close = (restoreFocus: boolean): void => {
-      setModelMenuOpen(false)
+      setModelMenuOpen(false);
       if (restoreFocus) {
-        window.requestAnimationFrame(() => modelToggleRef.current?.focus())
+        window.requestAnimationFrame(() => modelToggleRef.current?.focus());
       }
-    }
+    };
     const onPointerDown = (event: PointerEvent): void => {
-      const target = event.target
-      if (target instanceof Node && modelSwitchRef.current?.contains(target)) return
-      close(false)
-    }
+      const target = event.target;
+      if (target instanceof Node && modelSwitchRef.current?.contains(target)) return;
+      close(false);
+    };
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopPropagation()
-      close(true)
-    }
-    document.addEventListener('pointerdown', onPointerDown, true)
-    window.addEventListener('keydown', onKeyDown, true)
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    window.addEventListener("keydown", onKeyDown, true);
     return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true)
-      window.removeEventListener('keydown', onKeyDown, true)
-    }
-  }, [modelMenuOpen])
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [modelMenuOpen]);
 
   useEffect(() => {
-    if (modelMenuOpen && modelSwitchDisabled) setModelMenuOpen(false)
-  }, [modelMenuOpen, modelSwitchDisabled])
+    if (modelMenuOpen && modelSwitchDisabled) setModelMenuOpen(false);
+  }, [modelMenuOpen, modelSwitchDisabled]);
 
-  const keyboardState = useRef({ status, hasContent, cancel, closeWindow, retry, copy })
-  keyboardState.current = { status, hasContent, cancel, closeWindow, retry, copy }
+  const keyboardState = useRef({ status, hasContent, cancel, closeWindow, retry, copy });
+  keyboardState.current = { status, hasContent, cancel, closeWindow, retry, copy };
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (isEditableTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return
-      const current = keyboardState.current
-      const key = event.key.toLowerCase()
-      if (key === 'escape') {
-        event.preventDefault()
-        if (current.status === 'streaming') void current.cancel()
-        else runDetached(current.closeWindow(), {
-          scope: 'result',
-          operation: 'close',
-          onError: (error) => setCommandMessage(getErrorMessage(error, '无法关闭结果窗口'))
-        })
-        return
+      if (isEditableTarget(event.target) || event.metaKey || event.ctrlKey || event.altKey) return;
+      const current = keyboardState.current;
+      const key = event.key.toLowerCase();
+      if (key === "escape") {
+        event.preventDefault();
+        if (current.status === "streaming") void current.cancel();
+        else
+          runDetached(current.closeWindow(), {
+            scope: "result",
+            operation: "close",
+            onError: (error) => setCommandMessage(getErrorMessage(error, "无法关闭结果窗口")),
+          });
+        return;
       }
-      if (key === 'r' && current.status !== 'streaming') {
-        event.preventDefault()
-        void current.retry()
-        return
+      if (key === "r" && current.status !== "streaming") {
+        event.preventDefault();
+        void current.retry();
+        return;
       }
-      if (key === 'c' && current.hasContent && !window.getSelection()?.toString()) {
-        event.preventDefault()
-        void current.copy()
+      if (key === "c" && current.hasContent && !window.getSelection()?.toString()) {
+        event.preventDefault();
+        void current.copy();
       }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
-    if (action?.kind !== 'translate' || !session?.selection || !settings) {
-      setTranslationTarget(null)
-      return
+    if (action?.kind !== "translate" || !session?.selection || !settings) {
+      setTranslationTarget(null);
+      return;
     }
-    const detected = detectTranslationLanguage(session.selection.text)
-    setTranslationTarget(dictionary?.mode === 'dictionary' ? 'zh-CN' : defaultTranslationTarget(detected, settings.translate))
-  }, [action?.kind, session?.sessionId, session?.selection, settings?.translate, dictionary?.queryGeneration])
+    const detected = detectTranslationLanguage(session.selection.text);
+    setTranslationTarget(
+      dictionary?.mode === "dictionary"
+        ? "zh-CN"
+        : defaultTranslationTarget(detected, settings.translate),
+    );
+  }, [
+    action?.kind,
+    session?.sessionId,
+    session?.selection,
+    settings?.translate,
+    dictionary?.queryGeneration,
+  ]);
 
   const openExternal = useCallback(async (url: string): Promise<void> => {
-    setCommandMessage('')
+    setCommandMessage("");
     try {
-      await window.textLens.openExternal(url)
+      await window._popper_.openExternal(url);
     } catch (error) {
-      setCommandMessage(getErrorMessage(error, '无法打开外部链接'))
+      setCommandMessage(getErrorMessage(error, "无法打开外部链接"));
     }
-  }, [])
+  }, []);
 
   const openSettings = async (): Promise<void> => {
-    if (!window.textLens.openSettings) return
-    setCommandMessage('')
+    if (!window._popper_.openSettings) return;
+    setCommandMessage("");
     try {
       // Deliberately omit guidance so a hidden settings window resumes the
       // section and draft the user was already configuring.
-      await window.textLens.openSettings()
+      await window._popper_.openSettings();
     } catch (error) {
-      setCommandMessage(getErrorMessage(error, '无法打开设置'))
+      setCommandMessage(getErrorMessage(error, "无法打开设置"));
     }
-  }
+  };
 
   const togglePin = async (): Promise<void> => {
-    const next = !pinned
-    setCommandMessage('')
-    setPinned(next)
+    const next = !pinned;
+    setCommandMessage("");
+    setPinned(next);
     try {
-      if (window.textLens.setResultPinned) {
-        await window.textLens.setResultPinned(sessionId, next)
+      if (window._popper_.setResultPinned) {
+        await window._popper_.setResultPinned(sessionId, next);
       }
     } catch (error) {
-      setPinned(!next)
-      setCommandMessage(getErrorMessage(error, '无法更改置顶状态'))
+      setPinned(!next);
+      setCommandMessage(getErrorMessage(error, "无法更改置顶状态"));
     }
-  }
+  };
 
   const pointerEnter = (): void => {
-    runDetached(window.textLens.setResultPointerInside?.(sessionId, true), {
-      scope: 'result',
-      operation: 'pointer-inside'
-    })
-  }
+    runDetached(window._popper_.setResultPointerInside?.(sessionId, true), {
+      scope: "result",
+      operation: "pointer-inside",
+    });
+  };
 
   const pointerLeave = (): void => {
-    runDetached(window.textLens.setResultPointerInside?.(sessionId, false), {
-      scope: 'result',
-      operation: 'pointer-outside'
-    })
-  }
+    runDetached(window._popper_.setResultPointerInside?.(sessionId, false), {
+      scope: "result",
+      operation: "pointer-outside",
+    });
+  };
 
   const startWindowDrag = (event: ReactPointerEvent<HTMLElement>): void => {
-    if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return
-    event.preventDefault()
+    if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return;
+    event.preventDefault();
     runDetached(getCurrentWindow().startDragging(), {
-      scope: 'result',
-      operation: 'start-dragging'
-    })
-  }
+      scope: "result",
+      operation: "start-dragging",
+    });
+  };
 
   /**
    * In-result clicks never reach the native outside-click dismiss path on
@@ -970,132 +1054,132 @@ function ResultSessionApp({
    * still selected in the result body.
    */
   const dismissResultSelectionToolbar = useCallback((): void => {
-    if (!window.textLens.hideResultSelection) return
-    runDetached(window.textLens.hideResultSelection(sessionId), {
-      scope: 'result',
-      operation: 'hide-result-selection'
-    })
-  }, [sessionId])
+    if (!window._popper_.hideResultSelection) return;
+    runDetached(window._popper_.hideResultSelection(sessionId), {
+      scope: "result",
+      operation: "hide-result-selection",
+    });
+  }, [sessionId]);
 
   const handleResultPointerDown = (event: ReactPointerEvent<HTMLElement>): void => {
-    if (event.button !== 0 || !event.isPrimary) return
-    dismissResultSelectionToolbar()
-  }
+    if (event.button !== 0 || !event.isPrimary) return;
+    dismissResultSelectionToolbar();
+  };
 
   const showSelectionToolbar = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return
-    const cursor = { x: event.screenX, y: event.screenY }
-    selectionCursor.current = cursor
+    if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return;
+    const cursor = { x: event.screenX, y: event.screenY };
+    selectionCursor.current = cursor;
     // Result-window selections use a renderer-owned path because native hooks
-    // filter TextLens's own webviews. Keep that path aligned with the global
+    // filter Popper's own webviews. Keep that path aligned with the global
     // trigger policy: shortcut mode must never auto-present on pointer-up.
-    if (settings.trigger.mode !== 'selected') {
-      dismissResultSelectionToolbar()
-      return
+    if (settings.trigger.mode !== "selected") {
+      dismissResultSelectionToolbar();
+      return;
     }
-    if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current)
+    if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current);
     selectionFrame.current = window.requestAnimationFrame(() => {
-      selectionFrame.current = null
-      const text = selectedTextWithin(contentRef.current, window.getSelection())
-      if (!text || !window.textLens.showResultSelection) {
+      selectionFrame.current = null;
+      const text = selectedTextWithin(contentRef.current, window.getSelection());
+      if (!text || !window._popper_.showResultSelection) {
         // Click cleared the selection or landed outside selectable text —
         // ensure any result-sourced toolbar is gone (pointer-down may have
         // already done this; this covers edge cases / older backends).
-        dismissResultSelectionToolbar()
-        return
+        dismissResultSelectionToolbar();
+        return;
       }
-      void window.textLens
+      void window._popper_
         .showResultSelection(sessionId, text, cursor, false)
         .catch((error: unknown) => {
-          setCommandMessage(getErrorMessage(error, '无法处理所选文字'))
-        })
-    })
-  }
+          setCommandMessage(getErrorMessage(error, "无法处理所选文字"));
+        });
+    });
+  };
 
   useEffect(() => {
-    if (!window.textLens.onResultSelectionShortcut) return
-    return window.textLens.onResultSelectionShortcut(() => {
-      if (settings.trigger.mode !== 'shortcut') return
-      const browserSelection = window.getSelection()
-      const text = selectedTextWithin(contentRef.current, browserSelection)
-      if (!text || !window.textLens.showResultSelection) {
-        dismissResultSelectionToolbar()
-        return
+    if (!window._popper_.onResultSelectionShortcut) return;
+    return window._popper_.onResultSelectionShortcut(() => {
+      if (settings.trigger.mode !== "shortcut") return;
+      const browserSelection = window.getSelection();
+      const text = selectedTextWithin(contentRef.current, browserSelection);
+      if (!text || !window._popper_.showResultSelection) {
+        dismissResultSelectionToolbar();
+        return;
       }
-      const cursor = selectionCursor.current ?? selectedTextScreenPoint(browserSelection)
-      runDetached(
-        window.textLens.showResultSelection(sessionId, text, cursor, true),
-        {
-          scope: 'result',
-          operation: 'show-shortcut-selection',
-          onError: (error) => setCommandMessage(getErrorMessage(error, '无法处理所选文字'))
-        }
-      )
-    })
-  }, [dismissResultSelectionToolbar, sessionId, settings.trigger.mode])
+      const cursor = selectionCursor.current ?? selectedTextScreenPoint(browserSelection);
+      runDetached(window._popper_.showResultSelection(sessionId, text, cursor, true), {
+        scope: "result",
+        operation: "show-shortcut-selection",
+        onError: (error) => setCommandMessage(getErrorMessage(error, "无法处理所选文字")),
+      });
+    });
+  }, [dismissResultSelectionToolbar, sessionId, settings.trigger.mode]);
 
-  const selection = session?.selection
+  const selection = session?.selection;
   const translationRoute = useMemo(() => {
-    if (action?.kind !== 'translate' || !selection || !settings) return null
-    const detected = detectTranslationLanguage(selection.text)
-    const defaultTarget = defaultTranslationTarget(detected, settings.translate)
-    return { detected, target: translationTarget ?? defaultTarget }
-  }, [action?.kind, selection, settings, translationTarget])
-  const translationSwitching = status === 'streaming' || routeSwitching || retrying
+    if (action?.kind !== "translate" || !selection || !settings) return null;
+    const detected = detectTranslationLanguage(selection.text);
+    const defaultTarget = defaultTranslationTarget(detected, settings.translate);
+    return { detected, target: translationTarget ?? defaultTarget };
+  }, [action?.kind, selection, settings, translationTarget]);
+  const translationSwitching = status === "streaming" || routeSwitching || retrying;
   const changeTranslationTarget = (target: TranslationLanguage): void => {
-    const previous = translationTarget
-    setRouteSwitching(true)
-    setTranslationTarget(target)
-    void retry({ targetLanguage: target }).then((accepted) => {
-      if (!accepted) setTranslationTarget(previous)
-    }).finally(() => setRouteSwitching(false))
-  }
+    const previous = translationTarget;
+    setRouteSwitching(true);
+    setTranslationTarget(target);
+    void retry({ targetLanguage: target })
+      .then((accepted) => {
+        if (!accepted) setTranslationTarget(previous);
+      })
+      .finally(() => setRouteSwitching(false));
+  };
 
   const style = {
-    '--result-font-size': `${resultFontSize(settings)}px`,
-    '--result-scrollbar-track-margin': `${contentOverflow.trackMarginPx}px`
-  } as CSSProperties
+    "--result-font-size": `${resultFontSize(settings)}px`,
+    "--result-scrollbar-track-margin": `${contentOverflow.trackMarginPx}px`,
+  } as CSSProperties;
 
   const startWindowResize = (
     event: ReactPointerEvent<HTMLDivElement>,
-    direction: ResultResizeDirection
+    direction: ResultResizeDirection,
   ): void => {
-    if (event.button !== 0 || !event.isPrimary) return
-    event.preventDefault()
-    event.stopPropagation()
+    if (event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    event.stopPropagation();
     runDetached(getCurrentWindow().startResizeDragging(direction), {
-      scope: 'result',
-      operation: 'start-resize-dragging'
-    })
-  }
+      scope: "result",
+      operation: "start-resize-dragging",
+    });
+  };
 
   return (
     <main
-      className={`result-window ${windowsRenderer ? 'result-window--windows' : ''} ${
-        showFollowUp && followUpExpanded ? 'result-window--followup-expanded' : ''
+      className={`result-window ${windowsRenderer ? "result-window--windows" : ""} ${
+        showFollowUp && followUpExpanded ? "result-window--followup-expanded" : ""
       }`}
       style={style}
       onPointerEnter={pointerEnter}
       onPointerLeave={pointerLeave}
       onPointerDown={handleResultPointerDown}
     >
-      {windowsRenderer && RESULT_RESIZE_DIRECTIONS.map((direction) => (
-        <div
-          key={direction}
-          className={`result-resize-handle result-resize-handle--${direction.toLowerCase()}`}
-          data-no-drag
-          data-resize-direction={direction}
-          aria-hidden="true"
-          onPointerDown={(event) => startWindowResize(event, direction)}
-        />
-      ))}
+      {windowsRenderer &&
+        RESULT_RESIZE_DIRECTIONS.map((direction) => (
+          <div
+            key={direction}
+            className={`result-resize-handle result-resize-handle--${direction.toLowerCase()}`}
+            data-no-drag
+            data-resize-direction={direction}
+            aria-hidden="true"
+            onPointerDown={(event) => startWindowResize(event, direction)}
+          />
+        ))}
       <header className="result-header" onPointerDown={startWindowDrag}>
         <div className="result-heading">
           <span className="result-heading__icon">
-            <ActionIcon name={action?.icon ?? 'sparkles'} size={16} />
+            <ActionIcon name={action?.icon ?? "sparkles"} size={16} />
           </span>
           <div className="result-heading__line">
-            <h1>{action?.name ?? 'AI 结果'}</h1>
+            <h1>{action?.name ?? "AI 结果"}</h1>
             {translationRoute ? (
               <div className="translation-route" aria-label="翻译方向" data-no-drag>
                 {windowsRenderer ? (
@@ -1106,7 +1190,7 @@ function ResultSessionApp({
                     <ArrowRight className="translation-route__arrow" size={10} />
                     <span
                       className="translation-route__target"
-                      data-disabled={translationSwitching ? 'true' : undefined}
+                      data-disabled={translationSwitching ? "true" : undefined}
                     >
                       <span aria-hidden="true">
                         {TRANSLATION_LANGUAGE_CODES[translationRoute.target]}
@@ -1117,9 +1201,9 @@ function ResultSessionApp({
                         aria-label="翻译目标语言"
                         value={translationRoute.target}
                         disabled={translationSwitching}
-                        onChange={(event) => changeTranslationTarget(
-                          event.target.value as TranslationLanguage
-                        )}
+                        onChange={(event) =>
+                          changeTranslationTarget(event.target.value as TranslationLanguage)
+                        }
                       >
                         {TRANSLATION_LANGUAGES.map((code) => (
                           <option key={code} value={code}>
@@ -1137,9 +1221,9 @@ function ResultSessionApp({
                       aria-label="翻译目标语言"
                       value={translationRoute.target}
                       disabled={translationSwitching}
-                      onChange={(event) => changeTranslationTarget(
-                        event.target.value as TranslationLanguage
-                      )}
+                      onChange={(event) =>
+                        changeTranslationTarget(event.target.value as TranslationLanguage)
+                      }
                     >
                       {TRANSLATION_LANGUAGES.map((code) => (
                         <option key={code} value={code}>
@@ -1154,7 +1238,7 @@ function ResultSessionApp({
             {effectiveModelRoute && modelChoices.length > 0 ? (
               <div
                 ref={modelSwitchRef}
-                className={`result-model-switch ${modelMenuOpen ? 'result-model-switch--open' : ''}`}
+                className={`result-model-switch ${modelMenuOpen ? "result-model-switch--open" : ""}`}
                 title={modelSummary}
                 data-no-drag
               >
@@ -1168,7 +1252,7 @@ function ResultSessionApp({
                   disabled={modelSwitchDisabled}
                   onClick={() => setModelMenuOpen((current) => !current)}
                 >
-                  <span>{selectedModel?.modelName ?? '未选择模型'}</span>
+                  <span>{selectedModel?.modelName ?? "未选择模型"}</span>
                   <ChevronDown size={13} aria-hidden="true" />
                 </button>
                 {modelMenuOpen && (
@@ -1178,7 +1262,9 @@ function ResultSessionApp({
                         key={provider.id}
                         className="result-model-menu__group"
                         role="group"
-                        aria-label={provider.keyConfigured ? provider.name : `${provider.name}（未配置密钥）`}
+                        aria-label={
+                          provider.keyConfigured ? provider.name : `${provider.name}（未配置密钥）`
+                        }
                       >
                         <div className="result-model-menu__provider">
                           <span>{provider.name}</span>
@@ -1186,11 +1272,11 @@ function ResultSessionApp({
                         </div>
                         <div className="result-model-menu__options">
                           {provider.choices.map((choice) => {
-                            const selected = choice.value === modelRouteValue(effectiveModelRoute)
+                            const selected = choice.value === modelRouteValue(effectiveModelRoute);
                             return (
                               <button
                                 key={choice.value}
-                                className={`result-model-menu__option ${selected ? 'is-selected' : ''}`}
+                                className={`result-model-menu__option ${selected ? "is-selected" : ""}`}
                                 type="button"
                                 role="option"
                                 aria-selected={selected}
@@ -1200,7 +1286,7 @@ function ResultSessionApp({
                                 <span>{choice.modelName}</span>
                                 {selected && <Check size={13} aria-hidden="true" />}
                               </button>
-                            )
+                            );
                           })}
                         </div>
                       </div>
@@ -1209,12 +1295,14 @@ function ResultSessionApp({
                 )}
               </div>
             ) : (
-              <span className="result-model-summary" title={modelSummary}>{modelSummary}</span>
+              <span className="result-model-summary" title={modelSummary}>
+                {modelSummary}
+              </span>
             )}
           </div>
         </div>
         <div className="result-window-actions" data-no-drag>
-          {window.textLens.openSettings && (
+          {window._popper_.openSettings && (
             <button
               className="icon-button result-settings"
               type="button"
@@ -1225,17 +1313,29 @@ function ResultSessionApp({
               <Settings2 size={15} aria-hidden="true" />
             </button>
           )}
-          <button className={`icon-button result-pin ${pinned ? 'result-pin--active' : ''}`} type="button"
-            aria-label={pinned ? '取消置顶' : '置顶结果窗口'} aria-pressed={pinned}
-            title={pinned ? '取消置顶' : '置顶'} onClick={() => void togglePin()}>
-            <Pin size={16} className={pinned ? 'result-pin__icon--active' : ''} />
+          <button
+            className={`icon-button result-pin ${pinned ? "result-pin--active" : ""}`}
+            type="button"
+            aria-label={pinned ? "取消置顶" : "置顶结果窗口"}
+            aria-pressed={pinned}
+            title={pinned ? "取消置顶" : "置顶"}
+            onClick={() => void togglePin()}
+          >
+            <Pin size={16} className={pinned ? "result-pin__icon--active" : ""} />
           </button>
-          <button className="icon-button result-close" type="button" aria-label="关闭结果窗口"
-            title="关闭" onClick={() => runDetached(closeWindow(), {
-              scope: 'result',
-              operation: 'close',
-              onError: (error) => setCommandMessage(getErrorMessage(error, '无法关闭结果窗口'))
-            })}>
+          <button
+            className="icon-button result-close"
+            type="button"
+            aria-label="关闭结果窗口"
+            title="关闭"
+            onClick={() =>
+              runDetached(closeWindow(), {
+                scope: "result",
+                operation: "close",
+                onError: (error) => setCommandMessage(getErrorMessage(error, "无法关闭结果窗口")),
+              })
+            }
+          >
             <X size={15} aria-hidden="true" />
           </button>
         </div>
@@ -1243,42 +1343,62 @@ function ResultSessionApp({
 
       <div
         ref={contentRef}
-        className={`result-content ${contentOverflow.isOverflowing ? 'result-content--scrollable' : ''}`}
+        className={`result-content ${contentOverflow.isOverflowing ? "result-content--scrollable" : ""}`}
         onScroll={handleScroll}
         onPointerUp={showSelectionToolbar}
       >
         <div ref={contentInnerRef} className="result-content__inner">
           {selection && (
             <section className="result-original">
-              <button type="button" onClick={() => setShowOriginal((current) => !current)} aria-expanded={showOriginal}>
-                <span>{showOriginal ? '隐藏原文' : '显示原文'}</span>
-                <ChevronDown size={14} className={showOriginal ? 'is-expanded' : ''} />
+              <button
+                type="button"
+                onClick={() => setShowOriginal((current) => !current)}
+                aria-expanded={showOriginal}
+              >
+                <span>{showOriginal ? "隐藏原文" : "显示原文"}</span>
+                <ChevronDown size={14} className={showOriginal ? "is-expanded" : ""} />
               </button>
               {showOriginal && <div className="result-original__content">{selection.text}</div>}
             </section>
           )}
 
-          {dictionary && <DictionaryPanel snapshot={dictionary} onAi={() => retry(undefined, true)} onQuery={submitFollowUp} querying={followUpSubmitting}
-            suggestions={followUpQuestion.trim() ? inputSuggestions.items : dictionary.suggestions} />}
-          {dictionary?.mode === 'dictionary' ? null : isAsk ? (
+          {dictionary && (
+            <DictionaryPanel
+              snapshot={dictionary}
+              onAi={() => retry(undefined, true)}
+              onQuery={submitFollowUp}
+              querying={followUpSubmitting}
+              suggestions={
+                followUpQuestion.trim() ? inputSuggestions.items : dictionary.suggestions
+              }
+            />
+          )}
+          {dictionary?.mode === "dictionary" ? null : isAsk ? (
             <>
-              <AskStreamBridge enabled={isAsk && !followUpSubmitting && (!pendingFollowUp.current?.requestId || pendingFollowUp.current.requestId === requestId)} onStream={handleAskStream} />
-              {turns.length === 0 && status !== 'streaming' && status !== 'error' && (
+              <AskStreamBridge
+                enabled={
+                  isAsk &&
+                  !followUpSubmitting &&
+                  (!pendingFollowUp.current?.requestId ||
+                    pendingFollowUp.current.requestId === requestId)
+                }
+                onStream={handleAskStream}
+              />
+              {turns.length === 0 && status !== "streaming" && status !== "error" && (
                 <div className="result-placeholder">
                   <span>已载入选中文本。请在下方输入问题。</span>
                 </div>
               )}
               {turns.map((turn, index) => {
-                const isLatestAssistant =
-                  turn.role === 'assistant' && index === turns.length - 1
+                const isLatestAssistant = turn.role === "assistant" && index === turns.length - 1;
                 return (
                   <div
                     key={turn.id}
                     className={`result-turn result-turn--${turn.role}`}
                     data-role={turn.role}
                   >
-                    <div className="result-turn__label">{turn.role === 'user' ? '你' : 'AI'}</div>
-                    {turn.role === 'user' ? (
+                    <div className="result-turn__label">{turn.role === "user" ? "你" : "AI"}</div>
+                    {turn.role === "user" ? (
                       <div className="result-turn__content">{turn.content}</div>
                     ) : (
                       <>
@@ -1288,7 +1408,7 @@ function ResultSessionApp({
                           <article className="markdown-body result-turn__content">
                             <ResultOutput
                               requestKey={`${sessionId}:${turn.id}`}
-                              status={turn.streaming ? 'streaming' : 'completed'}
+                              status={turn.streaming ? "streaming" : "completed"}
                               content={turn.content}
                               contentScalarCount={countUnicodeScalars(turn.content)}
                               contentRevision={turn.content.length}
@@ -1305,24 +1425,21 @@ function ResultSessionApp({
                       </>
                     )}
                   </div>
-                )
+                );
               })}
             </>
           ) : (
             <>
               <ThinkingPanel />
               {hasContent ? (
-                <ResultStreamBody
-                  revealCommitted={revealCommitted}
-                  onOpenExternal={openExternal}
-                />
-              ) : status === 'error' ? null : hasThinking ? null : (
+                <ResultStreamBody revealCommitted={revealCommitted} onOpenExternal={openExternal} />
+              ) : status === "error" ? null : hasThinking ? null : (
                 <div
                   className={`result-placeholder ${
-                    status === 'streaming' ? 'result-placeholder--waiting' : ''
+                    status === "streaming" ? "result-placeholder--waiting" : ""
                   }`}
                 >
-                  {status === 'streaming' ? (
+                  {status === "streaming" ? (
                     <>
                       <span className="result-waiting-dots" aria-hidden="true">
                         <span />
@@ -1339,19 +1456,47 @@ function ResultSessionApp({
             </>
           )}
 
-          {!dictionary && inputSuggestions.items.length > 0 && <ul className="dictionary-suggestions" aria-label="联想词条">
-            {inputSuggestions.items.map((item) => <li key={item.word}><button type="button" disabled={followUpSubmitting} onClick={() => void submitFollowUp(item.word)}>
-              <strong>{item.word}</strong><span>{item.explanation}</span>
-            </button></li>)}
-          </ul>}
-          {inputSuggestions.error && <p className="dictionary-hint" role="status">{inputSuggestions.error}</p>}
-
-          {status === 'error' && <div className="result-error" role="alert"><CircleAlert size={20} /><div>
-            <strong>未能生成结果</strong><p>{errorMessage}</p></div></div>}
-          {generationNotice && (
-            <div className="result-inline-notice" role="status">{generationNotice}</div>
+          {!dictionary && inputSuggestions.items.length > 0 && (
+            <ul className="dictionary-suggestions" aria-label="联想词条">
+              {inputSuggestions.items.map((item) => (
+                <li key={item.word}>
+                  <button
+                    type="button"
+                    disabled={followUpSubmitting}
+                    onClick={() => void submitFollowUp(item.word)}
+                  >
+                    <strong>{item.word}</strong>
+                    <span>{item.explanation}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
-          {status === 'cancelled' && <div className="result-inline-notice" role="status">本次生成已取消。已生成的内容仍可复制。</div>}
+          {inputSuggestions.error && (
+            <p className="dictionary-hint" role="status">
+              {inputSuggestions.error}
+            </p>
+          )}
+
+          {status === "error" && (
+            <div className="result-error" role="alert">
+              <CircleAlert size={20} />
+              <div>
+                <strong>未能生成结果</strong>
+                <p>{errorMessage}</p>
+              </div>
+            </div>
+          )}
+          {generationNotice && (
+            <div className="result-inline-notice" role="status">
+              {generationNotice}
+            </div>
+          )}
+          {status === "cancelled" && (
+            <div className="result-inline-notice" role="status">
+              本次生成已取消。已生成的内容仍可复制。
+            </div>
+          )}
         </div>
       </div>
 
@@ -1363,55 +1508,78 @@ function ResultSessionApp({
           </button>
         </div>
       )}
-      {commandMessage && <div className="result-command-error" role="alert">{commandMessage}</div>}
+      {commandMessage && (
+        <div className="result-command-error" role="alert">
+          {commandMessage}
+        </div>
+      )}
 
-      <footer className={`result-footer ${showFollowUp ? '' : 'result-footer--actions-only'}`}>
-        {showFollowUp && <div className={`result-followup ${followUpExpanded ? 'result-followup--expanded' : ''}`}>
-          <textarea
-            aria-label="继续提问"
-            placeholder={isBuiltinTranslate ? '输入英文单词查词，或输入问题询问 AI' : isAsk ? '输入问题，基于选中文本提问' : '输入继续提问'}
-            title="Enter 发送，Shift+Enter 换行"
-            rows={followUpExpanded ? 4 : 1}
-            maxLength={20_000}
-            value={followUpQuestion}
-            disabled={followUpDisabled}
-            onChange={(event) => setFollowUpQuestion(event.target.value)}
-            onCompositionStart={() => { followUpComposing.current = true }}
-            onCompositionEnd={() => { followUpComposing.current = false }}
-            onKeyDown={(event) => {
-              if (
-                event.key === 'Enter' &&
-                !event.shiftKey &&
-                !event.nativeEvent.isComposing &&
-                !followUpComposing.current
-              ) {
-                event.preventDefault()
-                void submitFollowUp()
+      <footer className={`result-footer ${showFollowUp ? "" : "result-footer--actions-only"}`}>
+        {showFollowUp && (
+          <div className={`result-followup ${followUpExpanded ? "result-followup--expanded" : ""}`}>
+            <textarea
+              aria-label="继续提问"
+              placeholder={
+                isBuiltinTranslate
+                  ? "输入英文单词查词，或输入问题询问 AI"
+                  : isAsk
+                    ? "输入问题，基于选中文本提问"
+                    : "输入继续提问"
               }
-            }}
-          />
-          <button
-            className="result-followup-expand"
-            type="button"
-            aria-label={followUpExpanded ? '收起继续提问输入框' : '放大继续提问输入框'}
-            aria-expanded={followUpExpanded}
-            title={followUpExpanded ? '收起输入框' : '放大输入框'}
-            onClick={() => setFollowUpExpanded((current) => !current)}
-          >
-            {followUpExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-          </button>
-        </div>}
+              title="Enter 发送，Shift+Enter 换行"
+              rows={followUpExpanded ? 4 : 1}
+              maxLength={20_000}
+              value={followUpQuestion}
+              disabled={followUpDisabled}
+              onChange={(event) => setFollowUpQuestion(event.target.value)}
+              onCompositionStart={() => {
+                followUpComposing.current = true;
+              }}
+              onCompositionEnd={() => {
+                followUpComposing.current = false;
+              }}
+              onKeyDown={(event) => {
+                if (
+                  event.key === "Enter" &&
+                  !event.shiftKey &&
+                  !event.nativeEvent.isComposing &&
+                  !followUpComposing.current
+                ) {
+                  event.preventDefault();
+                  void submitFollowUp();
+                }
+              }}
+            />
+            <button
+              className="result-followup-expand"
+              type="button"
+              aria-label={followUpExpanded ? "收起继续提问输入框" : "放大继续提问输入框"}
+              aria-expanded={followUpExpanded}
+              title={followUpExpanded ? "收起输入框" : "放大输入框"}
+              onClick={() => setFollowUpExpanded((current) => !current)}
+            >
+              {followUpExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+            </button>
+          </div>
+        )}
         <div className="result-actions">
-          {!windowsRenderer && settings?.result.dismissMode === 'manual' && (
-            <button className="result-footer-button" type="button" onClick={() => runDetached(closeWindow(), {
-              scope: 'result',
-              operation: 'close',
-              onError: (error) => setCommandMessage(getErrorMessage(error, '无法关闭结果窗口'))
-            })}>
-              <X size={15} />关闭
+          {!windowsRenderer && settings?.result.dismissMode === "manual" && (
+            <button
+              className="result-footer-button"
+              type="button"
+              onClick={() =>
+                runDetached(closeWindow(), {
+                  scope: "result",
+                  operation: "close",
+                  onError: (error) => setCommandMessage(getErrorMessage(error, "无法关闭结果窗口")),
+                })
+              }
+            >
+              <X size={15} />
+              关闭
             </button>
           )}
-          {status === 'streaming' ? (
+          {status === "streaming" ? (
             <button
               className="result-footer-button result-footer-button--stop"
               type="button"
@@ -1425,7 +1593,7 @@ function ResultSessionApp({
             <button
               className="result-footer-button"
               type="button"
-              disabled={retrying || !requestId || (status === 'error' && !retryable)}
+              disabled={retrying || !requestId || (status === "error" && !retryable)}
               onClick={() => void retry()}
               title="使用相同选区重新生成"
             >
@@ -1434,17 +1602,17 @@ function ResultSessionApp({
             </button>
           )}
           <button
-            className={`result-footer-button ${copyComplete ? 'result-footer-button--done' : ''}`}
+            className={`result-footer-button ${copyComplete ? "result-footer-button--done" : ""}`}
             type="button"
             disabled={!hasContent && !dictionary?.entry}
             onClick={() => void copy()}
-            title={hasContent || dictionary?.entry ? '复制结果到剪贴板' : '生成完成后可复制'}
+            title={hasContent || dictionary?.entry ? "复制结果到剪贴板" : "生成完成后可复制"}
           >
             {copyComplete ? <Check size={14} /> : <Copy size={14} />}
-            {copyComplete ? '已复制' : '复制'}
+            {copyComplete ? "已复制" : "复制"}
           </button>
         </div>
       </footer>
     </main>
-  )
+  );
 }

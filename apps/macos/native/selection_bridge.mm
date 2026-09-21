@@ -1,5 +1,5 @@
 /**
- * Native macOS selection bridge for TextLens.
+ * Native macOS selection bridge for Popper.
  *
  * The Accessibility traversal, text-range bounds helpers, and input detection
  * in this file are adapted from selection-hook 2.0.2:
@@ -156,7 +156,7 @@ static void ConfigureAccessibilityElement(AXUIElementRef element) {
 
 static bool SelectionTimingEnabled() {
     static const bool enabled = [] {
-        const char *value = std::getenv("TEXTLENS_SELECTION_TRACE");
+        const char *value = std::getenv("POPPER_SELECTION_TRACE");
         return value != nullptr &&
             (std::strcmp(value, "1") == 0 || std::strcmp(value, "true") == 0 ||
              std::strcmp(value, "TRUE") == 0);
@@ -1252,16 +1252,16 @@ static uint8_t ClearMatchingTextOnMainThread(
 
 } // namespace
 
-struct TextLensSelectionMonitor {
-    explicit TextLensSelectionMonitor(
+struct PopperSelectionMonitor {
+    explicit PopperSelectionMonitor(
         std::string excludedBundle,
-        TextLensSelectionEventCallback eventCallback,
+        PopperSelectionEventCallback eventCallback,
         void *eventContext)
         : excludedBundleId(std::move(excludedBundle)),
           callback(eventCallback),
           callbackContext(eventContext) {}
 
-    ~TextLensSelectionMonitor() {
+    ~PopperSelectionMonitor() {
         stop();
         std::lock_guard<std::mutex> lock(callbackMutex);
         callback = nullptr;
@@ -1271,16 +1271,16 @@ struct TextLensSelectionMonitor {
     int32_t start() {
         std::lock_guard<std::mutex> lifecycleLock(lifecycleMutex);
         if (running.load(std::memory_order_acquire)) {
-            return TEXTLENS_SELECTION_ALREADY_RUNNING;
+            return POPPER_SELECTION_ALREADY_RUNNING;
         }
         if (!AXIsProcessTrusted()) {
-            return TEXTLENS_SELECTION_NOT_TRUSTED;
+            return POPPER_SELECTION_NOT_TRUSTED;
         }
 
         {
             std::lock_guard<std::mutex> startupLock(startupMutex);
             startupReady = false;
-            startupStatus = TEXTLENS_SELECTION_INTERNAL_ERROR;
+            startupStatus = POPPER_SELECTION_INTERNAL_ERROR;
         }
         {
             std::lock_guard<std::mutex> runLoopLock(runLoopMutex);
@@ -1298,9 +1298,9 @@ struct TextLensSelectionMonitor {
         running.store(true, std::memory_order_release);
 
         try {
-            workerThread = std::thread(&TextLensSelectionMonitor::workerMain, this);
-            dismissThread = std::thread(&TextLensSelectionMonitor::dismissMain, this);
-            eventThread = std::thread(&TextLensSelectionMonitor::eventMain, this);
+            workerThread = std::thread(&PopperSelectionMonitor::workerMain, this);
+            dismissThread = std::thread(&PopperSelectionMonitor::dismissMain, this);
+            eventThread = std::thread(&PopperSelectionMonitor::eventMain, this);
         } catch (...) {
             running.store(false, std::memory_order_release);
             taskCondition.notify_all();
@@ -1308,16 +1308,16 @@ struct TextLensSelectionMonitor {
             if (eventThread.joinable()) eventThread.join();
             if (dismissThread.joinable()) dismissThread.join();
             if (workerThread.joinable()) workerThread.join();
-            return TEXTLENS_SELECTION_INTERNAL_ERROR;
+            return POPPER_SELECTION_INTERNAL_ERROR;
         }
 
-        int32_t status = TEXTLENS_SELECTION_INTERNAL_ERROR;
+        int32_t status = POPPER_SELECTION_INTERNAL_ERROR;
         {
             std::unique_lock<std::mutex> startupLock(startupMutex);
             startupCondition.wait(startupLock, [this] { return startupReady; });
             status = startupStatus;
         }
-        if (status != TEXTLENS_SELECTION_OK) {
+        if (status != POPPER_SELECTION_OK) {
             running.store(false, std::memory_order_release);
             taskCondition.notify_all();
             dismissCondition.notify_all();
@@ -1351,7 +1351,7 @@ struct TextLensSelectionMonitor {
             std::lock_guard<std::mutex> dismissLock(dismissMutex);
             dismissTasks.clear();
         }
-        return wasRunning ? TEXTLENS_SELECTION_OK : TEXTLENS_SELECTION_NOT_RUNNING;
+        return wasRunning ? POPPER_SELECTION_OK : POPPER_SELECTION_NOT_RUNNING;
     }
 
     bool captureCurrent(SelectionInfo &info) {
@@ -1374,7 +1374,7 @@ struct TextLensSelectionMonitor {
         CGEventType type,
         CGEventRef event,
         void *context) {
-        auto *monitor = static_cast<TextLensSelectionMonitor *>(context);
+        auto *monitor = static_cast<PopperSelectionMonitor *>(context);
         if (monitor == nullptr || !monitor->running.load(std::memory_order_acquire)) {
             return event;
         }
@@ -1394,7 +1394,7 @@ struct TextLensSelectionMonitor {
     // capture would otherwise stay silent until app restart. This periodic
     // check gives the same self-healing Windows already has for its hook.
     static void HealthCheckTimerCallback(CFRunLoopTimerRef, void *context) {
-        auto *monitor = static_cast<TextLensSelectionMonitor *>(context);
+        auto *monitor = static_cast<PopperSelectionMonitor *>(context);
         if (monitor == nullptr || !monitor->running.load(std::memory_order_acquire)) {
             return;
         }
@@ -1405,7 +1405,7 @@ struct TextLensSelectionMonitor {
 
     void handleEvent(CGEventType type, CGEventRef event) {
         const int64_t targetPid = CGEventGetIntegerValueField(event, kCGEventTargetUnixProcessID);
-        // Clicks/scrolls targeting TextLens itself must still dismiss an open
+        // Clicks/scrolls targeting Popper itself must still dismiss an open
         // toolbar (e.g. re-select toolbar over the result webview). Runtime
         // ignores dismiss points that land on the no-activate toolbar window.
         // Never schedule selection capture for the own process.
@@ -1676,16 +1676,16 @@ struct TextLensSelectionMonitor {
                 kCGTailAppendEventTap,
                 kCGEventTapOptionListenOnly,
                 eventMask,
-                &TextLensSelectionMonitor::eventTapCallback,
+                &PopperSelectionMonitor::eventTapCallback,
                 this);
             if (eventTap != nullptr) {
                 runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
             }
 
             int32_t status = eventTap != nullptr && runLoopSource != nullptr
-                ? TEXTLENS_SELECTION_OK
-                : TEXTLENS_SELECTION_EVENT_TAP_FAILED;
-            if (status == TEXTLENS_SELECTION_OK) {
+                ? POPPER_SELECTION_OK
+                : POPPER_SELECTION_EVENT_TAP_FAILED;
+            if (status == POPPER_SELECTION_OK) {
                 {
                     std::lock_guard<std::mutex> lock(runLoopMutex);
                     eventRunLoop = runLoop;
@@ -1700,7 +1700,7 @@ struct TextLensSelectionMonitor {
                     kEventTapHealthCheckIntervalSeconds,
                     0,
                     0,
-                    &TextLensSelectionMonitor::HealthCheckTimerCallback,
+                    &PopperSelectionMonitor::HealthCheckTimerCallback,
                     &timerContext);
                 if (healthTimer != nullptr) {
                     CFRunLoopAddTimer(runLoop, healthTimer, kCFRunLoopDefaultMode);
@@ -1713,7 +1713,7 @@ struct TextLensSelectionMonitor {
             }
             startupCondition.notify_all();
 
-            if (status == TEXTLENS_SELECTION_OK && running.load(std::memory_order_acquire)) {
+            if (status == POPPER_SELECTION_OK && running.load(std::memory_order_acquire)) {
                 CFRunLoopRun();
             }
 
@@ -1742,7 +1742,7 @@ struct TextLensSelectionMonitor {
     }
 
     std::string excludedBundleId;
-    TextLensSelectionEventCallback callback = nullptr;
+    PopperSelectionEventCallback callback = nullptr;
     void *callbackContext = nullptr;
     std::mutex callbackMutex;
     EnhancedUiCache enhancedUiCache;
@@ -1764,7 +1764,7 @@ struct TextLensSelectionMonitor {
     std::mutex startupMutex;
     std::condition_variable startupCondition;
     bool startupReady = false;
-    int32_t startupStatus = TEXTLENS_SELECTION_INTERNAL_ERROR;
+    int32_t startupStatus = POPPER_SELECTION_INTERNAL_ERROR;
 
     std::mutex taskMutex;
     std::condition_variable taskCondition;
@@ -1782,11 +1782,11 @@ struct TextLensSelectionMonitor {
     CGKeyCode keyboardSelectionKey = 0;
 };
 
-extern "C" uint8_t textlens_accessibility_is_trusted(void) {
+extern "C" uint8_t popper_accessibility_is_trusted(void) {
     return AXIsProcessTrusted() ? 1 : 0;
 }
 
-extern "C" uint8_t textlens_accessibility_request(void) {
+extern "C" uint8_t popper_accessibility_request(void) {
     @autoreleasepool {
         const void *keys[] = { kAXTrustedCheckOptionPrompt };
         const void *values[] = { kCFBooleanTrue };
@@ -1803,84 +1803,84 @@ extern "C" uint8_t textlens_accessibility_request(void) {
     }
 }
 
-extern "C" TextLensSelectionMonitor *textlens_selection_monitor_create(
+extern "C" PopperSelectionMonitor *popper_selection_monitor_create(
     const char *excluded_bundle_id_utf8,
-    TextLensSelectionEventCallback callback,
+    PopperSelectionEventCallback callback,
     void *context) {
     if (excluded_bundle_id_utf8 == nullptr || callback == nullptr) {
         return nullptr;
     }
     try {
-        return new TextLensSelectionMonitor(excluded_bundle_id_utf8, callback, context);
+        return new PopperSelectionMonitor(excluded_bundle_id_utf8, callback, context);
     } catch (...) {
         return nullptr;
     }
 }
 
-extern "C" int32_t textlens_selection_monitor_start(TextLensSelectionMonitor *monitor) {
+extern "C" int32_t popper_selection_monitor_start(PopperSelectionMonitor *monitor) {
     if (monitor == nullptr) {
-        return TEXTLENS_SELECTION_INVALID_ARGUMENT;
+        return POPPER_SELECTION_INVALID_ARGUMENT;
     }
     try {
         return monitor->start();
     } catch (...) {
-        return TEXTLENS_SELECTION_INTERNAL_ERROR;
+        return POPPER_SELECTION_INTERNAL_ERROR;
     }
 }
 
-extern "C" int32_t textlens_selection_monitor_stop(TextLensSelectionMonitor *monitor) {
+extern "C" int32_t popper_selection_monitor_stop(PopperSelectionMonitor *monitor) {
     if (monitor == nullptr) {
-        return TEXTLENS_SELECTION_INVALID_ARGUMENT;
+        return POPPER_SELECTION_INVALID_ARGUMENT;
     }
     try {
         return monitor->stop();
     } catch (...) {
-        return TEXTLENS_SELECTION_INTERNAL_ERROR;
+        return POPPER_SELECTION_INTERNAL_ERROR;
     }
 }
 
-extern "C" char *textlens_selection_monitor_capture_current(
-    TextLensSelectionMonitor *monitor,
+extern "C" char *popper_selection_monitor_capture_current(
+    PopperSelectionMonitor *monitor,
     int32_t *status_out) {
-    if (status_out != nullptr) *status_out = TEXTLENS_SELECTION_INVALID_ARGUMENT;
+    if (status_out != nullptr) *status_out = POPPER_SELECTION_INVALID_ARGUMENT;
     if (monitor == nullptr) {
         return nullptr;
     }
     if (!AXIsProcessTrusted()) {
-        if (status_out != nullptr) *status_out = TEXTLENS_SELECTION_NOT_TRUSTED;
+        if (status_out != nullptr) *status_out = POPPER_SELECTION_NOT_TRUSTED;
         return nullptr;
     }
     try {
         SelectionInfo info;
         if (!monitor->captureCurrent(info)) {
-            if (status_out != nullptr) *status_out = TEXTLENS_SELECTION_OK;
+            if (status_out != nullptr) *status_out = POPPER_SELECTION_OK;
             return nullptr;
         }
         std::string json = SelectionJSON(info);
         if (json.empty()) {
-            if (status_out != nullptr) *status_out = TEXTLENS_SELECTION_INTERNAL_ERROR;
+            if (status_out != nullptr) *status_out = POPPER_SELECTION_INTERNAL_ERROR;
             return nullptr;
         }
         char *result = static_cast<char *>(std::malloc(json.size() + 1));
         if (result == nullptr) {
-            if (status_out != nullptr) *status_out = TEXTLENS_SELECTION_INTERNAL_ERROR;
+            if (status_out != nullptr) *status_out = POPPER_SELECTION_INTERNAL_ERROR;
             return nullptr;
         }
         std::memcpy(result, json.data(), json.size());
         result[json.size()] = '\0';
-        if (status_out != nullptr) *status_out = TEXTLENS_SELECTION_OK;
+        if (status_out != nullptr) *status_out = POPPER_SELECTION_OK;
         return result;
     } catch (...) {
-        if (status_out != nullptr) *status_out = TEXTLENS_SELECTION_INTERNAL_ERROR;
+        if (status_out != nullptr) *status_out = POPPER_SELECTION_INTERNAL_ERROR;
         return nullptr;
     }
 }
 
-extern "C" void textlens_selection_string_free(char *value) {
+extern "C" void popper_selection_string_free(char *value) {
     std::free(value);
 }
 
-extern "C" uint8_t textlens_selection_clear_matching_text(
+extern "C" uint8_t popper_selection_clear_matching_text(
     const char *bundle_id_utf8,
     const char *text_utf8) {
     try {
@@ -1909,6 +1909,6 @@ extern "C" uint8_t textlens_selection_clear_matching_text(
     }
 }
 
-extern "C" void textlens_selection_monitor_destroy(TextLensSelectionMonitor *monitor) {
+extern "C" void popper_selection_monitor_destroy(PopperSelectionMonitor *monitor) {
     delete monitor;
 }

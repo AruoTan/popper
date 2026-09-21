@@ -1,543 +1,558 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ActionStreamEvent, ResultSessionSnapshot } from '../../shared'
+import type { ActionStreamEvent, ResultSessionSnapshot } from "../../shared";
 
-let receiveEvent: ((event: ActionStreamEvent) => void) | null = null
-let frameCallbacks = new Map<number, FrameRequestCallback>()
-let nextFrameId = 1
+let receiveEvent: ((event: ActionStreamEvent) => void) | null = null;
+let frameCallbacks = new Map<number, FrameRequestCallback>();
+let nextFrameId = 1;
 
 const eventBase = {
-  sessionId: 'session-1',
+  sessionId: "session-1",
   sessionGeneration: 9,
-  requestId: 'request-1',
+  requestId: "request-1",
   requestGeneration: 1,
-  actionId: 'summary'
-} as const
+  actionId: "summary",
+} as const;
 
-type EventOverrides = Partial<Pick<
-  ActionStreamEvent,
-  | 'sessionId'
-  | 'sessionGeneration'
-  | 'requestId'
-  | 'requestGeneration'
-  | 'actionId'
->>
+type EventOverrides = Partial<
+  Pick<
+    ActionStreamEvent,
+    "sessionId" | "sessionGeneration" | "requestId" | "requestGeneration" | "actionId"
+  >
+>;
 
 const started = (sequence = 1, overrides: EventOverrides = {}): ActionStreamEvent => ({
   ...eventBase,
   ...overrides,
-  type: 'started',
-  sequence
-})
+  type: "started",
+  sequence,
+});
 
 const delta = (
   sequence: number,
   value: string,
-  overrides: EventOverrides = {}
+  overrides: EventOverrides = {},
 ): ActionStreamEvent => ({
   ...eventBase,
   ...overrides,
-  type: 'delta',
+  type: "delta",
   sequence,
-  delta: value
-})
+  delta: value,
+});
 
-function snapshot(
-  overrides: Partial<ResultSessionSnapshot> = {}
-): ResultSessionSnapshot {
+function snapshot(overrides: Partial<ResultSessionSnapshot> = {}): ResultSessionSnapshot {
   return {
-    sessionId: 'session-1',
+    sessionId: "session-1",
     sessionGeneration: 9,
-    requestId: 'request-1',
+    requestId: "request-1",
     requestGeneration: 1,
-    actionId: 'summary',
-    providerId: 'openai-compatible',
-    modelId: 'model-1',
+    actionId: "summary",
+    providerId: "openai-compatible",
+    modelId: "model-1",
     selection: {
-      selectionId: 'selection-1',
-      text: 'hello',
-      sourceApp: { name: 'Test', bundleId: null },
-      anchor: { kind: 'cursor', x: 10, y: 20 },
-      direction: 'unknown',
-      isFullscreen: false
+      selectionId: "selection-1",
+      text: "hello",
+      sourceApp: { name: "Test", bundleId: null },
+      anchor: { kind: "cursor", x: 10, y: 20 },
+      direction: "unknown",
+      isFullscreen: false,
     },
-    status: 'streaming',
-    content: '',
-    thinkingContent: '',
+    status: "streaming",
+    content: "",
+    thinkingContent: "",
     contentScalarCount: 0,
     lastContentSequence: 0,
     lastSequence: 0,
     handshakeGeneration: 4,
-    errorMessage: '',
+    errorMessage: "",
     retryable: false,
     pinned: false,
-    ...overrides
-  }
+    ...overrides,
+  };
 }
 
 function emit(event: ActionStreamEvent): void {
-  if (!receiveEvent) throw new Error('action event bridge is not listening')
-  receiveEvent(event)
+  if (!receiveEvent) throw new Error("action event bridge is not listening");
+  receiveEvent(event);
 }
 
 const thinkingDelta = (
   sequence: number,
   value: string,
-  overrides: EventOverrides = {}
+  overrides: EventOverrides = {},
 ): ActionStreamEvent => ({
   ...eventBase,
   ...overrides,
-  type: 'thinkingDelta',
+  type: "thinkingDelta",
   sequence,
-  delta: value
-})
+  delta: value,
+});
 
 function runNextFrame(now = 16): void {
-  const [id, callback] = frameCallbacks.entries().next().value ?? []
-  if (id === undefined || !callback) throw new Error('No frame was scheduled')
-  frameCallbacks.delete(id)
-  callback(now)
+  const [id, callback] = frameCallbacks.entries().next().value ?? [];
+  if (id === undefined || !callback) throw new Error("No frame was scheduled");
+  frameCallbacks.delete(id);
+  callback(now);
 }
 
 beforeEach(() => {
-  vi.useFakeTimers()
-  vi.resetModules()
-  receiveEvent = null
-  frameCallbacks = new Map()
-  nextFrameId = 1
-  vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
-    const id = nextFrameId++
-    frameCallbacks.set(id, callback)
-    return id
-  })
-  vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => {
-    frameCallbacks.delete(id)
-  })
-  Object.defineProperty(window, 'textLens', {
+  vi.useFakeTimers();
+  vi.resetModules();
+  receiveEvent = null;
+  frameCallbacks = new Map();
+  nextFrameId = 1;
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    const id = nextFrameId++;
+    frameCallbacks.set(id, callback);
+    return id;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+    frameCallbacks.delete(id);
+  });
+  Object.defineProperty(window, "_popper_", {
     configurable: true,
     value: {
       onActionEvent: vi.fn((listener: (event: ActionStreamEvent) => void) => {
-        receiveEvent = listener
+        receiveEvent = listener;
         return () => {
-          receiveEvent = null
-        }
-      })
-    }
-  })
-})
+          receiveEvent = null;
+        };
+      }),
+    },
+  });
+});
 
 afterEach(() => {
-  vi.restoreAllMocks()
-  vi.useRealTimers()
-  Reflect.deleteProperty(window, 'textLens')
-})
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+  Reflect.deleteProperty(window, "_popper_");
+});
 
-describe('action event store publication pacing', () => {
-  it('applies every delta synchronously without waiting for rAF', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore()
-    const listener = vi.fn()
-    const unsubscribe = store.subscribeToActionEvents(listener)
+describe("action event store publication pacing", () => {
+  it("applies every delta synchronously without waiting for rAF", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore();
+    const listener = vi.fn();
+    const unsubscribe = store.subscribeToActionEvents(listener);
 
-    emit(started())
-    expect(listener).toHaveBeenCalledTimes(1)
-    emit(delta(2, '一'))
-    expect(listener).toHaveBeenCalledTimes(2)
-    expect(store.getActionEventSnapshot().content).toBe('一')
-    emit(delta(3, '二'))
-    expect(listener).toHaveBeenCalledTimes(3)
-    expect(store.getActionEventSnapshot().content).toBe('一二')
+    emit(started());
+    expect(listener).toHaveBeenCalledTimes(1);
+    emit(delta(2, "一"));
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(store.getActionEventSnapshot().content).toBe("一");
+    emit(delta(3, "二"));
+    expect(listener).toHaveBeenCalledTimes(3);
+    expect(store.getActionEventSnapshot().content).toBe("一二");
     // must not require flushPendingActionEvents('frame')
-    expect(frameCallbacks.size).toBe(0)
+    expect(frameCallbacks.size).toBe(0);
 
-    unsubscribe()
-    stop()
-  })
+    unsubscribe();
+    stop();
+  });
 
-  it('publishes many subsequent deltas immediately without frame batching', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore()
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
+  it("publishes many subsequent deltas immediately without frame batching", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore();
+    const listener = vi.fn();
+    store.subscribeToActionEvents(listener);
 
-    emit(started())
-    emit(delta(2, 'A'))
+    emit(started());
+    emit(delta(2, "A"));
     for (let index = 0; index < 100; index += 1) {
-      emit(delta(index + 3, 'x'))
+      emit(delta(index + 3, "x"));
     }
-    expect(listener).toHaveBeenCalledTimes(102)
-    expect(store.getActionEventSnapshot().content).toBe(`A${'x'.repeat(100)}`)
-    expect(frameCallbacks.size).toBe(0)
-    stop()
-  })
+    expect(listener).toHaveBeenCalledTimes(102);
+    expect(store.getActionEventSnapshot().content).toBe(`A${"x".repeat(100)}`);
+    expect(frameCallbacks.size).toBe(0);
+    stop();
+  });
 
-  it('streams thinking deltas immediately without changing answer integrity counters', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore()
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
+  it("streams thinking deltas immediately without changing answer integrity counters", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore();
+    const listener = vi.fn();
+    store.subscribeToActionEvents(listener);
 
-    emit(started())
-    emit(thinkingDelta(2, 'think'))
-    emit(thinkingDelta(3, '-more'))
-    emit(delta(4, 'ans'))
+    emit(started());
+    emit(thinkingDelta(2, "think"));
+    emit(thinkingDelta(3, "-more"));
+    emit(delta(4, "ans"));
 
     expect(store.getActionEventSnapshot()).toMatchObject({
-      thinkingContent: 'think-more',
-      content: 'ans',
+      thinkingContent: "think-more",
+      content: "ans",
       contentScalarCount: 3,
-      status: 'streaming'
-    })
+      status: "streaming",
+    });
     // started + 2 thinking + 1 answer
-    expect(listener).toHaveBeenCalledTimes(4)
-    stop()
-  })
+    expect(listener).toHaveBeenCalledTimes(4);
+    stop();
+  });
 
-  it('publishes a valid terminal once with full content already applied', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore()
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
+  it("publishes a valid terminal once with full content already applied", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore();
+    const listener = vi.fn();
+    store.subscribeToActionEvents(listener);
 
-    emit(started())
-    emit(delta(2, 'A'))
-    emit(delta(3, 'B'))
+    emit(started());
+    emit(delta(2, "A"));
+    emit(delta(3, "B"));
     emit({
       ...eventBase,
-      type: 'completed',
+      type: "completed",
       sequence: 4,
       lastContentSequence: 3,
-      contentScalarCount: 2
-    })
+      contentScalarCount: 2,
+    });
 
     expect(store.getActionEventSnapshot()).toMatchObject({
-      status: 'completed',
-      content: 'AB',
-      contentScalarCount: 2
-    })
+      status: "completed",
+      content: "AB",
+      contentScalarCount: 2,
+    });
     // started + 2 deltas + completed
-    expect(listener).toHaveBeenCalledTimes(4)
-    expect(frameCallbacks.size).toBe(0)
-    stop()
-  })
+    expect(listener).toHaveBeenCalledTimes(4);
+    expect(frameCallbacks.size).toBe(0);
+    stop();
+  });
 
-  it('keeps flushPendingActionEvents as a safe no-op after sync publish', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore()
+  it("keeps flushPendingActionEvents as a safe no-op after sync publish", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore();
 
-    emit(started())
-    emit(delta(2, 'A'))
-    emit(delta(3, 'B'))
-    expect(store.getActionEventSnapshot().content).toBe('AB')
+    emit(started());
+    emit(delta(2, "A"));
+    emit(delta(3, "B"));
+    expect(store.getActionEventSnapshot().content).toBe("AB");
 
-    window.dispatchEvent(new PageTransitionEvent('pageshow'))
-    store.flushPendingActionEvents('native-reveal')
-    expect(store.getActionEventSnapshot().content).toBe('AB')
-    expect(frameCallbacks.size).toBe(0)
-    stop()
-  })
-})
+    window.dispatchEvent(new PageTransitionEvent("pageshow"));
+    store.flushPendingActionEvents("native-reveal");
+    expect(store.getActionEventSnapshot().content).toBe("AB");
+    expect(frameCallbacks.size).toBe(0);
+    stop();
+  });
+});
 
-describe('action event store hydration and recovery', () => {
-  it('atomically hydrates, replays a continuous buffered suffix, and ACKs the snapshot watermark', async () => {
-    const store = await import('./actionEventStore')
-    const recovery = vi.fn()
-    const stop = store.startActionEventStore('session-1', recovery)
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
+describe("action event store hydration and recovery", () => {
+  it("atomically hydrates, replays a continuous buffered suffix, and ACKs the snapshot watermark", async () => {
+    const store = await import("./actionEventStore");
+    const recovery = vi.fn();
+    const stop = store.startActionEventStore("session-1", recovery);
+    const listener = vi.fn();
+    store.subscribeToActionEvents(listener);
 
-    emit(delta(12, 'A'))
-    emit(delta(13, 'B'))
-    const outcome = store.hydrateActionEventStore(snapshot({
-      content: 'base',
-      contentScalarCount: 4,
-      lastContentSequence: 11,
-      lastSequence: 11
-    }))
+    emit(delta(12, "A"));
+    emit(delta(13, "B"));
+    const outcome = store.hydrateActionEventStore(
+      snapshot({
+        content: "base",
+        contentScalarCount: 4,
+        lastContentSequence: 11,
+        lastSequence: 11,
+      }),
+    );
 
     expect(outcome).toEqual({
       ack: {
-        sessionId: 'session-1',
+        sessionId: "session-1",
         sessionGeneration: 9,
         requestGeneration: 1,
         lastSequence: 11,
-        handshakeGeneration: 4
+        handshakeGeneration: 4,
       },
-      recoveryNeeded: false
-    })
-    expect(store.getActionEventSnapshot().content).toBe('baseAB')
-    expect(listener).toHaveBeenCalledTimes(2)
-    expect(recovery).not.toHaveBeenCalled()
-    stop()
-  })
+      recoveryNeeded: false,
+    });
+    expect(store.getActionEventSnapshot().content).toBe("baseAB");
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(recovery).not.toHaveBeenCalled();
+    stop();
+  });
 
-  it('discards buffered duplicates at or below the snapshot watermark', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore('session-1')
+  it("discards buffered duplicates at or below the snapshot watermark", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore("session-1");
 
-    emit(delta(10, 'old-10'))
-    emit(delta(11, 'old-11'))
-    emit(delta(12, 'new'))
-    const outcome = store.hydrateActionEventStore(snapshot({
-      content: 'base',
-      contentScalarCount: 4,
-      lastContentSequence: 11,
-      lastSequence: 11
-    }))
+    emit(delta(10, "old-10"));
+    emit(delta(11, "old-11"));
+    emit(delta(12, "new"));
+    const outcome = store.hydrateActionEventStore(
+      snapshot({
+        content: "base",
+        contentScalarCount: 4,
+        lastContentSequence: 11,
+        lastSequence: 11,
+      }),
+    );
 
-    expect(outcome.recoveryNeeded).toBe(false)
-    expect(store.getActionEventSnapshot().content).toBe('basenew')
-    stop()
-  })
+    expect(outcome.recoveryNeeded).toBe(false);
+    expect(store.getActionEventSnapshot().content).toBe("basenew");
+    stop();
+  });
 
-  it('starts one recovery for a live sequence gap and buffers later events', async () => {
-    const store = await import('./actionEventStore')
-    const recovery = vi.fn()
-    const stop = store.startActionEventStore('session-1', recovery)
-    store.hydrateActionEventStore(snapshot({ lastSequence: 13 }))
+  it("starts one recovery for a live sequence gap and buffers later events", async () => {
+    const store = await import("./actionEventStore");
+    const recovery = vi.fn();
+    const stop = store.startActionEventStore("session-1", recovery);
+    store.hydrateActionEventStore(snapshot({ lastSequence: 13 }));
 
-    emit(delta(15, 'gap'))
-    emit(delta(14, 'later-arrival'))
+    emit(delta(15, "gap"));
+    emit(delta(14, "later-arrival"));
 
-    expect(store.getActionEventSnapshot().content).toBe('')
-    expect(recovery).toHaveBeenCalledTimes(1)
-    expect(recovery).toHaveBeenCalledWith('sequence-gap')
-    stop()
-  })
+    expect(store.getActionEventSnapshot().content).toBe("");
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(recovery).toHaveBeenCalledWith("sequence-gap");
+    stop();
+  });
 
-  it('starts resync recovery and buffers subsequent live events', async () => {
-    const store = await import('./actionEventStore')
-    const recovery = vi.fn()
-    const stop = store.startActionEventStore('session-1', recovery)
-    store.hydrateActionEventStore(snapshot({ lastSequence: 11 }))
+  it("starts resync recovery and buffers subsequent live events", async () => {
+    const store = await import("./actionEventStore");
+    const recovery = vi.fn();
+    const stop = store.startActionEventStore("session-1", recovery);
+    store.hydrateActionEventStore(snapshot({ lastSequence: 11 }));
 
     emit({
       ...eventBase,
-      type: 'resyncRequired',
+      type: "resyncRequired",
       sequence: 12,
-      snapshotLastSequence: 11
-    })
-    emit(delta(13, 'buffered'))
+      snapshotLastSequence: 11,
+    });
+    emit(delta(13, "buffered"));
 
-    expect(recovery).toHaveBeenCalledTimes(1)
-    expect(recovery).toHaveBeenCalledWith('resync-required')
-    expect(store.getActionEventSnapshot().content).toBe('')
-    stop()
-  })
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(recovery).toHaveBeenCalledWith("resync-required");
+    expect(store.getActionEventSnapshot().content).toBe("");
+    stop();
+  });
 
-  it('retains a higher session generation for recovery even when its sequence is lower', async () => {
-    const store = await import('./actionEventStore')
-    const recovery = vi.fn()
-    const stop = store.startActionEventStore('session-1', recovery)
+  it("retains a higher session generation for recovery even when its sequence is lower", async () => {
+    const store = await import("./actionEventStore");
+    const recovery = vi.fn();
+    const stop = store.startActionEventStore("session-1", recovery);
 
-    emit(started(1, { sessionGeneration: 10 }))
-    const outcome = store.hydrateActionEventStore(snapshot({
-      sessionGeneration: 9,
-      lastSequence: 11
-    }))
+    emit(started(1, { sessionGeneration: 10 }));
+    const outcome = store.hydrateActionEventStore(
+      snapshot({
+        sessionGeneration: 9,
+        lastSequence: 11,
+      }),
+    );
 
-    expect(outcome.recoveryNeeded).toBe(true)
-    expect(recovery).not.toHaveBeenCalled()
-    stop()
-  })
+    expect(outcome.recoveryNeeded).toBe(true);
+    expect(recovery).not.toHaveBeenCalled();
+    stop();
+  });
 
-  it('ignores an older request generation even when its sequence is newer', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore('session-1')
-    store.hydrateActionEventStore(snapshot({ lastSequence: 10 }))
+  it("ignores an older request generation even when its sequence is newer", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore("session-1");
+    store.hydrateActionEventStore(snapshot({ lastSequence: 10 }));
 
-    emit(started(11, { requestId: 'request-2', requestGeneration: 2 }))
-    const current = store.getActionEventSnapshot()
+    emit(started(11, { requestId: "request-2", requestGeneration: 2 }));
+    const current = store.getActionEventSnapshot();
     emit({
       ...eventBase,
-      requestId: 'request-1',
+      requestId: "request-1",
       requestGeneration: 1,
-      type: 'notice',
+      type: "notice",
       sequence: 12,
-      code: 'old',
-      message: 'old notice'
-    })
+      code: "old",
+      message: "old notice",
+    });
 
-    expect(store.getActionEventSnapshot()).toBe(current)
-    stop()
-  })
+    expect(store.getActionEventSnapshot()).toBe(current);
+    stop();
+  });
 
   it.each([
     { lastContentSequence: 1, contentScalarCount: 1 },
-    { lastContentSequence: 2, contentScalarCount: 2 }
-  ])('recovers instead of publishing a terminal with mismatched watermarks', async (watermark) => {
-    const store = await import('./actionEventStore')
-    const recovery = vi.fn()
-    const stop = store.startActionEventStore(undefined, recovery)
+    { lastContentSequence: 2, contentScalarCount: 2 },
+  ])("recovers instead of publishing a terminal with mismatched watermarks", async (watermark) => {
+    const store = await import("./actionEventStore");
+    const recovery = vi.fn();
+    const stop = store.startActionEventStore(undefined, recovery);
 
-    emit(started())
-    emit(delta(2, 'A'))
+    emit(started());
+    emit(delta(2, "A"));
     emit({
       ...eventBase,
-      type: 'completed',
+      type: "completed",
       sequence: 3,
-      ...watermark
-    })
+      ...watermark,
+    });
 
-    expect(store.getActionEventSnapshot().status).toBe('streaming')
-    expect(recovery).toHaveBeenCalledTimes(1)
-    expect(recovery).toHaveBeenCalledWith('sequence-gap')
-    stop()
-  })
+    expect(store.getActionEventSnapshot().status).toBe("streaming");
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(recovery).toHaveBeenCalledWith("sequence-gap");
+    stop();
+  });
 
-  it('returns replay recovery intent only after installing a continuous prefix', async () => {
-    const store = await import('./actionEventStore')
-    const recovery = vi.fn()
-    const stop = store.startActionEventStore('session-1', recovery)
+  it("returns replay recovery intent only after installing a continuous prefix", async () => {
+    const store = await import("./actionEventStore");
+    const recovery = vi.fn();
+    const stop = store.startActionEventStore("session-1", recovery);
 
-    emit(delta(12, 'A'))
-    emit(delta(14, 'C'))
-    const outcome = store.hydrateActionEventStore(snapshot({ lastSequence: 11 }))
+    emit(delta(12, "A"));
+    emit(delta(14, "C"));
+    const outcome = store.hydrateActionEventStore(snapshot({ lastSequence: 11 }));
 
-    expect(outcome.recoveryNeeded).toBe(true)
-    expect(store.getActionEventSnapshot().content).toBe('A')
-    expect(recovery).not.toHaveBeenCalled()
+    expect(outcome.recoveryNeeded).toBe(true);
+    expect(store.getActionEventSnapshot().content).toBe("A");
+    expect(recovery).not.toHaveBeenCalled();
 
-    const second = store.hydrateActionEventStore(snapshot({
-      content: 'AB',
-      contentScalarCount: 2,
-      lastContentSequence: 13,
-      lastSequence: 13,
-      handshakeGeneration: 5
-    }))
-    expect(second.recoveryNeeded).toBe(false)
-    expect(store.getActionEventSnapshot().content).toBe('ABC')
-    stop()
-  })
+    const second = store.hydrateActionEventStore(
+      snapshot({
+        content: "AB",
+        contentScalarCount: 2,
+        lastContentSequence: 13,
+        lastSequence: 13,
+        handshakeGeneration: 5,
+      }),
+    );
+    expect(second.recoveryNeeded).toBe(false);
+    expect(store.getActionEventSnapshot().content).toBe("ABC");
+    stop();
+  });
 
-  it('validates snapshot scalar counts before publishing any hydration', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore('session-1')
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
+  it("validates snapshot scalar counts before publishing any hydration", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore("session-1");
+    const listener = vi.fn();
+    store.subscribeToActionEvents(listener);
 
-    expect(() => store.hydrateActionEventStore(snapshot({
-      content: '😀𠮷',
-      contentScalarCount: 2,
-      lastContentSequence: 2,
-      lastSequence: 2
-    }))).not.toThrow()
-    const valid = store.getActionEventSnapshot()
+    expect(() =>
+      store.hydrateActionEventStore(
+        snapshot({
+          content: "😀𠮷",
+          contentScalarCount: 2,
+          lastContentSequence: 2,
+          lastSequence: 2,
+        }),
+      ),
+    ).not.toThrow();
+    const valid = store.getActionEventSnapshot();
 
-    expect(() => store.hydrateActionEventStore(snapshot({
-      content: '😀𠮷',
-      contentScalarCount: 3,
-      lastContentSequence: 2,
-      lastSequence: 2
-    }))).toThrow()
+    expect(() =>
+      store.hydrateActionEventStore(
+        snapshot({
+          content: "😀𠮷",
+          contentScalarCount: 3,
+          lastContentSequence: 2,
+          lastSequence: 2,
+        }),
+      ),
+    ).toThrow();
     const understated = snapshot({
-      content: `# heading\n${'😀'.repeat(16_384)}`,
+      content: `# heading\n${"😀".repeat(16_384)}`,
       contentScalarCount: 16_384,
       lastContentSequence: 2,
-      lastSequence: 2
-    }) as ResultSessionSnapshot
-    expect(() => store.hydrateActionEventStore(understated)).toThrow()
-    expect(store.getActionEventSnapshot()).toBe(valid)
-    expect(listener).toHaveBeenCalledTimes(1)
-    stop()
-  })
+      lastSequence: 2,
+    }) as ResultSessionSnapshot;
+    expect(() => store.hydrateActionEventStore(understated)).toThrow();
+    expect(store.getActionEventSnapshot()).toBe(valid);
+    expect(listener).toHaveBeenCalledTimes(1);
+    stop();
+  });
 
-  it('rejects a snapshot for a different active session', async () => {
-    const store = await import('./actionEventStore')
-    const stop = store.startActionEventStore('session-1')
-    expect(() => store.hydrateActionEventStore(snapshot({ sessionId: 'session-2' })))
-      .toThrow(/session/i)
-    stop()
-  })
-})
+  it("rejects a snapshot for a different active session", async () => {
+    const store = await import("./actionEventStore");
+    const stop = store.startActionEventStore("session-1");
+    expect(() => store.hydrateActionEventStore(snapshot({ sessionId: "session-2" }))).toThrow(
+      /session/i,
+    );
+    stop();
+  });
+});
 
-describe('action event store ordered notices', () => {
-  it('advances only notice sequence state and recovers gaps through hydration', async () => {
-    const store = await import('./actionEventStore')
-    const recovery = vi.fn()
-    const stop = store.startActionEventStore(undefined, recovery)
-    const listener = vi.fn()
-    store.subscribeToActionEvents(listener)
+describe("action event store ordered notices", () => {
+  it("advances only notice sequence state and recovers gaps through hydration", async () => {
+    const store = await import("./actionEventStore");
+    const recovery = vi.fn();
+    const stop = store.startActionEventStore(undefined, recovery);
+    const listener = vi.fn();
+    store.subscribeToActionEvents(listener);
 
-    emit(started(20))
-    emit(delta(21, 'A'))
-    emit(delta(22, 'B'))
-    const beforeNotice = store.getActionEventSnapshot()
-    const logicalBeforeNotice = store.getActionEventLogicalRevision()
-    expect(beforeNotice.content).toBe('AB')
-    expect(frameCallbacks.size).toBe(0)
+    emit(started(20));
+    emit(delta(21, "A"));
+    emit(delta(22, "B"));
+    const beforeNotice = store.getActionEventSnapshot();
+    const logicalBeforeNotice = store.getActionEventLogicalRevision();
+    expect(beforeNotice.content).toBe("AB");
+    expect(frameCallbacks.size).toBe(0);
 
     emit({
       ...eventBase,
-      type: 'notice',
+      type: "notice",
       sequence: 23,
-      code: 'fallback',
-      message: 'fallback applied'
-    })
-    const noticed = store.getActionEventSnapshot()
+      code: "fallback",
+      message: "fallback applied",
+    });
+    const noticed = store.getActionEventSnapshot();
     expect(noticed).toMatchObject({
-      content: 'AB',
+      content: "AB",
       contentScalarCount: 2,
-      status: 'streaming',
-      generationNotice: 'fallback applied'
-    })
-    expect(noticed).not.toBe(beforeNotice)
-    expect(store.getActionEventLogicalRevision()).toBe(logicalBeforeNotice + 1)
+      status: "streaming",
+      generationNotice: "fallback applied",
+    });
+    expect(noticed).not.toBe(beforeNotice);
+    expect(store.getActionEventLogicalRevision()).toBe(logicalBeforeNotice + 1);
 
-    const callsAfterNotice = listener.mock.calls.length
+    const callsAfterNotice = listener.mock.calls.length;
     emit({
       ...eventBase,
-      type: 'notice',
+      type: "notice",
       sequence: 23,
-      code: 'fallback',
-      message: 'fallback applied'
-    })
-    expect(store.getActionEventSnapshot()).toBe(noticed)
-    expect(listener).toHaveBeenCalledTimes(callsAfterNotice)
+      code: "fallback",
+      message: "fallback applied",
+    });
+    expect(store.getActionEventSnapshot()).toBe(noticed);
+    expect(listener).toHaveBeenCalledTimes(callsAfterNotice);
 
     emit({
       ...eventBase,
-      type: 'notice',
+      type: "notice",
       sequence: 25,
-      code: 'gap',
-      message: 'gap notice'
-    })
-    expect(recovery).toHaveBeenCalledWith('sequence-gap')
+      code: "gap",
+      message: "gap notice",
+    });
+    expect(recovery).toHaveBeenCalledWith("sequence-gap");
 
-    const outcome = store.hydrateActionEventStore(snapshot({
-      content: 'AB',
-      contentScalarCount: 2,
-      lastContentSequence: 22,
-      lastSequence: 24,
-      generationNotice: { code: 'snapshot', message: 'snapshot notice' },
-      handshakeGeneration: 5
-    }))
-    expect(outcome.recoveryNeeded).toBe(false)
+    const outcome = store.hydrateActionEventStore(
+      snapshot({
+        content: "AB",
+        contentScalarCount: 2,
+        lastContentSequence: 22,
+        lastSequence: 24,
+        generationNotice: { code: "snapshot", message: "snapshot notice" },
+        handshakeGeneration: 5,
+      }),
+    );
+    expect(outcome.recoveryNeeded).toBe(false);
     expect(store.getActionEventSnapshot()).toMatchObject({
-      content: 'AB',
+      content: "AB",
       contentScalarCount: 2,
-      status: 'streaming',
-      generationNotice: 'gap notice'
-    })
+      status: "streaming",
+      generationNotice: "gap notice",
+    });
 
-    const afterReplay = store.getActionEventSnapshot()
+    const afterReplay = store.getActionEventSnapshot();
     emit({
       ...eventBase,
-      requestId: 'old-request',
+      requestId: "old-request",
       requestGeneration: 0,
-      type: 'notice',
+      type: "notice",
       sequence: 26,
-      code: 'old',
-      message: 'old notice'
-    })
-    expect(store.getActionEventSnapshot()).toBe(afterReplay)
+      code: "old",
+      message: "old notice",
+    });
+    expect(store.getActionEventSnapshot()).toBe(afterReplay);
 
-    emit(started(26, { requestId: 'request-2', requestGeneration: 2 }))
+    emit(started(26, { requestId: "request-2", requestGeneration: 2 }));
     expect(store.getActionEventSnapshot()).toMatchObject({
-      requestId: 'request-2',
-      generationNotice: '',
-      content: ''
-    })
-    stop()
-  })
-})
+      requestId: "request-2",
+      generationNotice: "",
+      content: "",
+    });
+    stop();
+  });
+});

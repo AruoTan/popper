@@ -266,25 +266,25 @@ type NativeCallback = extern "C" fn(*const c_char, *mut c_void);
 
 #[cfg(target_os = "macos")]
 extern "C" {
-    fn textlens_accessibility_is_trusted() -> u8;
-    fn textlens_accessibility_request() -> u8;
-    fn textlens_selection_monitor_create(
+    fn popper_accessibility_is_trusted() -> u8;
+    fn popper_accessibility_request() -> u8;
+    fn popper_selection_monitor_create(
         excluded_bundle_id_utf8: *const c_char,
         callback: NativeCallback,
         context: *mut c_void,
     ) -> *mut NativeSelectionMonitor;
-    fn textlens_selection_monitor_start(monitor: *mut NativeSelectionMonitor) -> i32;
-    fn textlens_selection_monitor_stop(monitor: *mut NativeSelectionMonitor) -> i32;
-    fn textlens_selection_monitor_capture_current(
+    fn popper_selection_monitor_start(monitor: *mut NativeSelectionMonitor) -> i32;
+    fn popper_selection_monitor_stop(monitor: *mut NativeSelectionMonitor) -> i32;
+    fn popper_selection_monitor_capture_current(
         monitor: *mut NativeSelectionMonitor,
         status_out: *mut i32,
     ) -> *mut c_char;
-    fn textlens_selection_string_free(value: *mut c_char);
-    fn textlens_selection_clear_matching_text(
+    fn popper_selection_string_free(value: *mut c_char);
+    fn popper_selection_clear_matching_text(
         bundle_id_utf8: *const c_char,
         text_utf8: *const c_char,
     ) -> u8;
-    fn textlens_selection_monitor_destroy(monitor: *mut NativeSelectionMonitor);
+    fn popper_selection_monitor_destroy(monitor: *mut NativeSelectionMonitor);
 }
 
 #[cfg(target_os = "macos")]
@@ -353,7 +353,7 @@ impl SelectionMonitor {
         // SAFETY: The C string and callback function are valid for the call;
         // the boxed context remains alive until Drop, after native teardown.
         let native = unsafe {
-            textlens_selection_monitor_create(
+            popper_selection_monitor_create(
                 excluded_bundle_id.as_ptr(),
                 native_event_callback,
                 callback_context.as_ptr().cast(),
@@ -413,7 +413,7 @@ impl SelectionMonitor {
     #[cfg(target_os = "macos")]
     pub fn start(&self) -> Result<(), SelectionError> {
         // SAFETY: `native` is owned by self and remains alive for this call.
-        let status = unsafe { textlens_selection_monitor_start(self.native.as_ptr()) };
+        let status = unsafe { popper_selection_monitor_start(self.native.as_ptr()) };
         match status {
             0 | 1 => Ok(()),
             status => Err(error_from_native_status(status)),
@@ -446,7 +446,7 @@ impl SelectionMonitor {
     #[cfg(target_os = "macos")]
     pub fn stop(&self) -> Result<(), SelectionError> {
         // SAFETY: `native` is owned by self and remains alive for this call.
-        let status = unsafe { textlens_selection_monitor_stop(self.native.as_ptr()) };
+        let status = unsafe { popper_selection_monitor_stop(self.native.as_ptr()) };
         match status {
             0 | 2 => Ok(()),
             status => Err(error_from_native_status(status)),
@@ -484,11 +484,11 @@ impl SelectionMonitor {
         let mut status = 0;
         // SAFETY: `native` and status pointer remain valid for this call.
         let json = unsafe {
-            textlens_selection_monitor_capture_current(self.native.as_ptr(), &mut status)
+            popper_selection_monitor_capture_current(self.native.as_ptr(), &mut status)
         };
         if status != 0 {
             if !json.is_null() {
-                unsafe { textlens_selection_string_free(json) };
+                unsafe { popper_selection_string_free(json) };
             }
             return Err(error_from_native_status(status));
         }
@@ -500,7 +500,7 @@ impl SelectionMonitor {
         impl Drop for NativeString {
             fn drop(&mut self) {
                 // SAFETY: This allocation came from the matching native ABI.
-                unsafe { textlens_selection_string_free(self.0.as_ptr()) };
+                unsafe { popper_selection_string_free(self.0.as_ptr()) };
             }
         }
         let json = NativeString(json);
@@ -541,7 +541,7 @@ impl SelectionMonitor {
         {
             // SAFETY: This native function takes no pointers and has no ownership
             // transfer.
-            return unsafe { textlens_accessibility_is_trusted() != 0 };
+            return unsafe { popper_accessibility_is_trusted() != 0 };
         }
         // Windows UI Automation does not use a user-granted permission like
         // macOS Accessibility. UIPI can still prevent a normal process from
@@ -562,7 +562,7 @@ impl SelectionMonitor {
         {
             // SAFETY: This native function takes no pointers and has no ownership
             // transfer.
-            return unsafe { textlens_accessibility_request() != 0 };
+            return unsafe { popper_accessibility_request() != 0 };
         }
         #[cfg(target_os = "windows")]
         {
@@ -595,7 +595,7 @@ impl SelectionMonitor {
                 .unwrap_or(std::ptr::null());
             // SAFETY: pointers are valid C strings or null for the duration of the call.
             return unsafe {
-                textlens_selection_clear_matching_text(bundle_ptr, text_c.as_ptr()) != 0
+                popper_selection_clear_matching_text(bundle_ptr, text_c.as_ptr()) != 0
             };
         }
         #[cfg(target_os = "windows")]
@@ -768,7 +768,7 @@ impl Drop for SelectionMonitor {
         // SAFETY: Destroy first stops and joins all native threads. Only then is
         // it safe to release the callback context they may reference.
         unsafe {
-            textlens_selection_monitor_destroy(self.native.as_ptr());
+            popper_selection_monitor_destroy(self.native.as_ptr());
             drop(Box::from_raw(self.callback_context.as_ptr()));
         }
     }

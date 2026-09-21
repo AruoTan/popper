@@ -34,7 +34,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows packaging or artifact verification fai
 
 $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
 $bundleDirectory = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
-foreach ($filename in @("TextLens_${version}_x64-setup.exe", 'SHA256SUMS.txt')) {
+foreach ($filename in @("Popper_${version}_x64-setup.exe", 'SHA256SUMS.txt')) {
     $artifact = Join-Path $bundleDirectory $filename
     if (-not (Test-Path -LiteralPath $artifact -PathType Leaf) -or (Get-Item -LiteralPath $artifact).Length -eq 0) {
         throw "Missing or empty build artifact: $artifact"
@@ -42,7 +42,7 @@ foreach ($filename in @("TextLens_${version}_x64-setup.exe", 'SHA256SUMS.txt')) 
 }
 
 @"
-## TextLens $version — Windows x64
+## Popper $version — Windows x64
 
 - Source commit: $env:GITHUB_SHA
 - Windows verification and installer checks passed.
