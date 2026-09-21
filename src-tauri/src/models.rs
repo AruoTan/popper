@@ -366,6 +366,10 @@ impl Default for SelectionCaptureSettings {
                 "docbox.exe",
                 "docboxrenderer.exe",
                 "emeditor.exe",
+                "zotero.exe",
+                "chrome.exe",
+                "code.exe",
+                "obsidian.exe",
             ]
             .into_iter()
             .map(|application| SelectionCaptureRule {

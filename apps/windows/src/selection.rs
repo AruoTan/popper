@@ -6617,7 +6617,10 @@ fn known_copy_compatibility_application(image_path: &str) -> bool {
     let executable = executable_name(image_path);
     pdf_accessibility_first_application(image_path)
         || docbox_suite_process(&executable)
-        || matches!(executable.as_str(), "emeditor.exe")
+        || matches!(
+            executable.as_str(),
+            "emeditor.exe" | "zotero.exe" | "chrome.exe" | "code.exe" | "obsidian.exe"
+        )
 }
 
 /// How long to wait after mouse-up before the first capture attempt.
@@ -9295,6 +9298,33 @@ mod tests {
             capture_strategy_for_application(&legacy_settings, r"C:\Windows\notepad.exe"),
             SelectionCaptureStrategy::SelectionHook
         );
+    }
+
+    #[test]
+    fn browser_and_reader_copy_defaults_preserve_explicit_overrides() {
+        for application in ["zotero.exe", "chrome.exe", "code.exe", "obsidian.exe"] {
+            let path = format!(r"C:\Apps\{}", application.to_ascii_uppercase());
+            let mut settings = SelectionCaptureSettings::default();
+            assert!(settings.applications.iter().any(|rule| {
+                rule.application == application
+                    && rule.strategy == SelectionCaptureStrategy::Clipboard
+            }));
+            settings.applications.clear();
+            assert_eq!(
+                capture_strategy_for_application(&settings, &path),
+                SelectionCaptureStrategy::Clipboard
+            );
+            for strategy in [
+                SelectionCaptureStrategy::SelectionHook,
+                SelectionCaptureStrategy::Auto,
+            ] {
+                settings.applications = vec![crate::models::SelectionCaptureRule {
+                    application: application.to_owned(),
+                    strategy,
+                }];
+                assert_eq!(capture_strategy_for_application(&settings, &path), strategy);
+            }
+        }
     }
 
     #[test]

@@ -95,7 +95,11 @@ export const DEFAULT_SELECTION_CAPTURE_SETTINGS = {
     { application: 'rdrcef.exe', strategy: 'clipboard' },
     { application: 'docbox.exe', strategy: 'clipboard' },
     { application: 'docboxrenderer.exe', strategy: 'clipboard' },
-    { application: 'emeditor.exe', strategy: 'clipboard' }
+    { application: 'emeditor.exe', strategy: 'clipboard' },
+    { application: 'zotero.exe', strategy: 'clipboard' },
+    { application: 'chrome.exe', strategy: 'clipboard' },
+    { application: 'code.exe', strategy: 'clipboard' },
+    { application: 'obsidian.exe', strategy: 'clipboard' }
   ]
 } as const
 

@@ -526,7 +526,11 @@ const DEFAULT_SELECTION_CAPTURE_RULES = [
   { application: 'rdrcef.exe', strategy: 'clipboard' as const },
   { application: 'docbox.exe', strategy: 'clipboard' as const },
   { application: 'docboxrenderer.exe', strategy: 'clipboard' as const },
-  { application: 'emeditor.exe', strategy: 'clipboard' as const }
+  { application: 'emeditor.exe', strategy: 'clipboard' as const },
+  { application: 'zotero.exe', strategy: 'clipboard' as const },
+  { application: 'chrome.exe', strategy: 'clipboard' as const },
+  { application: 'code.exe', strategy: 'clipboard' as const },
+  { application: 'obsidian.exe', strategy: 'clipboard' as const }
 ]
 
 export const selectionCaptureRuleSchema = z
