@@ -1,0 +1,54 @@
+{
+    "name": "Popper development",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": "."
+    },
+    "workspaceFolder": "/workspaces/popper",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/popper,type=bind",
+    "remoteUser": "node",
+    "updateRemoteUserUID": true,
+    "init": true,
+    "mounts": [
+        "source=popper-node-modules-${devcontainerId},target=/workspaces/popper/node_modules,type=volume",
+        "source=popper-cache-${devcontainerId},target=/home/node/.cache/popper,type=volume"
+    ],
+    "containerEnv": {
+        "CARGO_TARGET_DIR": "/home/node/.cache/popper/target",
+        "npm_config_store_dir": "/home/node/.cache/popper/pnpm-store"
+    },
+    "postCreateCommand": "bash .devcontainer/setup.sh",
+    "forwardPorts": [
+        1420
+    ],
+    "portsAttributes": {
+        "1420": {
+            "label": "Popper web preview",
+            "onAutoForward": "notify"
+        }
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "redhat.vscode-yaml",
+                "mhutchie.git-graph",
+                "donjayamanne.githistory"
+            ],
+            "settings": {
+                "rust-analyzer.linkedProjects": [
+                    "src-tauri/Cargo.toml"
+                ],
+                "rust-analyzer.cargo.extraArgs": [
+                    "--locked"
+                ],
+                "rust-analyzer.checkOnSave": false,
+                "rust-analyzer.cargo.buildScripts.enable": false,
+                "rust-analyzer.procMacro.enable": false,
+                "files.eol": "\n",
+                "terminal.integrated.defaultProfile.linux": "bash"
+            }
+        }
+    }
+}

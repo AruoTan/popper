@@ -1,0 +1,354 @@
+html,
+body,
+#root {
+  min-width: max-content;
+  min-height: max-content;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  user-select: none;
+}
+
+.toolbar-shell {
+  display: grid;
+  gap: 5px;
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  /* Keep a transparent native margin for the pill shadow. WebView2 can clip
+     shadows at the window edge, which makes the rightmost action look cut off
+     on some DPI/GPU combinations. */
+  padding: 5px 8px;
+  contain: layout;
+  -webkit-app-region: no-drag;
+}
+
+.toolbar-pill {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  width: max-content;
+  min-width: max-content;
+  min-height: 34px;
+  padding: 3px 5px;
+  overflow: visible;
+  /* Keep the surface and shadow inside the native WebView bounds. A solid
+     color also avoids the older WebView2 color-mix fallback mismatch that can
+     make the pill disappear on some GPU/driver combinations. */
+  background-color: color-mix(in srgb, var(--surface-solid) 42%, var(--surface-muted));
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: 9px;
+  box-shadow: var(--shadow-sm);
+}
+
+.toolbar-pill--ask {
+  display: block;
+  width: 450px;
+  min-width: 450px;
+  max-width: 450px;
+  padding: 0;
+  overflow: hidden;
+  background: var(--surface-solid);
+  border-color: color-mix(in srgb, var(--border-strong) 58%, transparent);
+  border-radius: 12px;
+  box-shadow: none;
+}
+
+.toolbar-ask {
+  display: grid;
+  width: 100%;
+}
+
+.toolbar-ask__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  column-gap: 8px;
+  align-items: center;
+  height: 38px;
+  padding: 0 10px 0 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 540;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.toolbar-ask__selection {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar-ask__close,
+.toolbar-ask__send {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  outline: none;
+}
+
+.toolbar-ask__close {
+  width: 24px;
+  height: 24px;
+  position: relative;
+  z-index: 1;
+}
+
+.toolbar-ask__close[data-hovered='true'] {
+  color: var(--text);
+  background: var(--surface-muted);
+}
+
+.toolbar-ask__composer {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-height: 50px;
+  padding: 7px 12px;
+}
+
+.toolbar-ask__model {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 3px;
+  align-items: center;
+  height: 28px;
+  padding: 0 6px 0 4px;
+  color: var(--text-secondary);
+  background: var(--surface-muted);
+  border-radius: 14px;
+}
+
+.toolbar-ai-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: white;
+  background: linear-gradient(135deg, #ff4fc8 4%, #8756f6 52%, #5268ff 100%);
+  border-radius: 50%;
+  box-shadow: 0 2px 6px rgb(116 73 230 / 28%);
+}
+
+.toolbar-ask__composer textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  max-height: 32px;
+  padding: 7px 0 5px;
+  overflow: hidden;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  resize: none;
+  background: transparent;
+  border: 0;
+  outline: none;
+}
+
+.toolbar-ask__composer textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.toolbar-ask__send {
+  width: 30px;
+  height: 30px;
+  color: var(--accent);
+}
+
+.toolbar-ask__send:disabled {
+  opacity: 0.42;
+}
+
+.toolbar-ask__send:not(:disabled)[data-hovered='true'] {
+  background: var(--accent-soft);
+}
+
+.toolbar-action {
+  -webkit-appearance: none;
+  appearance: none;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  min-width: 68px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 570;
+  white-space: nowrap;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  box-shadow: none;
+  outline: none;
+  transition:
+    background-color 100ms ease-out,
+    color 100ms ease-out,
+    box-shadow 100ms ease-out;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.toolbar-action--muted {
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.toolbar-action--icon-only {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+/* Toolbar actions are intentionally locked while an action request is being
+   dispatched. Keep the cursor neutral here so Windows does not show the
+   prohibited "not allowed" cursor before the result window appears. */
+.toolbar-shell button:disabled,
+.toolbar-shell input:disabled,
+.toolbar-shell select:disabled,
+.toolbar-shell textarea:disabled {
+  cursor: default;
+}
+
+.toolbar-action span {
+  min-width: max-content;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+.toolbar-action[data-hovered='true']:not(:disabled) {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 82%, var(--surface-solid));
+  box-shadow: none;
+}
+
+.toolbar-action:focus,
+.toolbar-action:focus-visible,
+.toolbar-action:active {
+  box-shadow: none;
+  outline: none;
+}
+
+.toolbar-empty {
+  padding: 0 9px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.toolbar-message {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  max-width: 560px;
+  min-height: 36px;
+  padding: 7px 9px;
+  color: var(--danger);
+  font-size: 12px;
+  background: var(--surface-solid);
+  background: color-mix(in srgb, var(--danger-soft) 60%, var(--surface-solid));
+  border: 0;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.toolbar-message__icon {
+  flex: 0 0 auto;
+}
+
+.toolbar-message__content {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.toolbar-message__content > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toolbar-message__content strong {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.toolbar-message__action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  align-items: center;
+  height: 26px;
+  padding: 0 7px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--surface-muted);
+  border: 0;
+  border-radius: 6px;
+}
+
+.toolbar-message__action[data-hovered='true'] {
+  background: color-mix(in srgb, var(--surface-muted) 88%, var(--text) 8%);
+}
+
+.spin {
+  animation: toolbar-spin 800ms linear infinite;
+}
+
+.toolbar-copy-success {
+  color: var(--success);
+  animation: toolbar-copy-pop 180ms ease-out;
+}
+
+@keyframes toolbar-copy-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.65);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes toolbar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation-duration: 1.6s;
+  }
+
+  .toolbar-action,
+  .toolbar-message__action {
+    transition: none;
+  }
+
+  .toolbar-copy-success {
+    animation: none;
+  }
+}
