@@ -1,0 +1,33 @@
+{
+  "name": "TextLens development",
+  "build": { "dockerfile": "Dockerfile", "context": "." },
+  "workspaceFolder": "/workspaces/textlens",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/textlens,type=bind",
+  "remoteUser": "node",
+  "updateRemoteUserUID": true,
+  "init": true,
+  "mounts": [
+    "source=textlens-node-modules-${devcontainerId},target=/workspaces/textlens/node_modules,type=volume",
+    "source=textlens-cache-${devcontainerId},target=/home/node/.cache/textlens,type=volume"
+  ],
+  "containerEnv": {
+    "CARGO_TARGET_DIR": "/home/node/.cache/textlens/target",
+    "npm_config_store_dir": "/home/node/.cache/textlens/pnpm-store"
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "forwardPorts": [1420],
+  "portsAttributes": {
+    "1420": { "label": "TextLens web preview", "onAutoForward": "notify" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer", "tamasfe.even-better-toml"],
+      "settings": {
+        "rust-analyzer.linkedProjects": ["src-tauri/Cargo.toml"],
+        "rust-analyzer.cargo.extraArgs": ["--locked"],
+        "files.eol": "\n",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

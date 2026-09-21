@@ -31,6 +31,8 @@ const bundleName = `TextLens-${version}-dev-source`
 const outputDirectory = join(exportRoot, bundleName)
 
 const includeEntries = [
+  '.devcontainer',
+  '.github',
   '.env.example',
   '.gitignore',
   'LICENSE.selection-hook',

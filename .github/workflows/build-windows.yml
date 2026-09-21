@@ -1,0 +1,71 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTUP_TOOLCHAIN: 1.97.1-x86_64-pc-windows-msvc
+      CARGO_INCREMENTAL: '0'
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22.22.0'
+
+      - name: Install locked JavaScript dependencies
+        run: |
+          $packageManager = (Get-Content package.json -Raw | ConvertFrom-Json).packageManager
+          if ($packageManager -notmatch '^pnpm@\d+\.\d+\.\d+$') {
+            throw "Expected an exact pnpm version in package.json"
+          }
+          npm install --global $packageManager
+          if ($LASTEXITCODE -ne 0) { throw 'pnpm installation failed' }
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
+
+      - name: Set up Rust and NASM
+        run: |
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
+          choco install nasm --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
+          $nasmDirectory = Join-Path $env:ProgramFiles 'NASM'
+          if (-not (Test-Path -LiteralPath (Join-Path $nasmDirectory 'nasm.exe'))) {
+            throw 'NASM executable was not installed at the expected location'
+          }
+          $nasmDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify and package Windows x64
+        run: ./.github/scripts/build-windows.ps1
+
+      - name: Upload installer and checksums
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: TextLens-windows-x64-${{ github.run_number }}
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_x64-setup.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

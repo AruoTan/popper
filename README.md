@@ -8,6 +8,10 @@ TextLens 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon
 
 两个平台共用 renderer、设置、动作、模型请求、流式输出和数据契约，仅选区捕获、剪贴板、窗口原生属性和系统集成使用平台实现。本地开发、可迁移源码导出与版本演进记录见 [DEVELOPMENT_HANDBOOK.md](./DEVELOPMENT_HANDBOOK.md)。
 
+可迁移、独立的容器开发环境见 [.devcontainer/README.md](./.devcontainer/README.md)：提供前端与共享 Rust 开发工具链，Windows/macOS 原生测试和打包仍需对应系统。
+
+不在 Windows 本机安装编译工具也可构建安装包：参见 [GitHub Actions 云端打包](./.github/README.md)。
+
 ## 界面预览
 
 ### 设置 · AI 服务商与模型
