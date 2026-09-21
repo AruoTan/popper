@@ -6,7 +6,5 @@ pnpm typecheck
 pnpm test
 pnpm build:web
 
-# Use the Linux host target, not the existing macOS/Windows package scripts.
-cargo check --manifest-path src-tauri/Cargo.toml --all-targets --locked
-dbus-run-session -- xvfb-run -a cargo test \
-  --manifest-path src-tauri/Cargo.toml --all-targets --locked -- --test-threads=1
+# Native Rust checks, tests and packaging run in the Windows GitHub workflow.
+echo 'Frontend verification passed. Run the GitHub Windows workflow for native verification and packaging.'

@@ -31,7 +31,10 @@
         "vscode": {
             "extensions": [
                 "rust-lang.rust-analyzer",
-                "tamasfe.even-better-toml"
+                "tamasfe.even-better-toml",
+                "redhat.vscode-yaml",
+                "mhutchie.git-graph",
+                "donjayamanne.githistory"
             ],
             "settings": {
                 "rust-analyzer.linkedProjects": [
@@ -40,6 +43,9 @@
                 "rust-analyzer.cargo.extraArgs": [
                     "--locked"
                 ],
+                "rust-analyzer.checkOnSave": false,
+                "rust-analyzer.cargo.buildScripts.enable": false,
+                "rust-analyzer.procMacro.enable": false,
                 "files.eol": "\n",
                 "terminal.integrated.defaultProfile.linux": "bash"
             }
