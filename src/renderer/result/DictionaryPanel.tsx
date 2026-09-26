@@ -191,6 +191,47 @@ export function DictionaryPanel({
               )}
             </div>
           </div>
+          {showBooks && entry && (
+            <div className="dictionary-books" role="group" aria-label="选择欧路生词本">
+              <p>
+                添加词条：<strong>{entry.word}</strong>
+              </p>
+              {booksLoading ? (
+                <p role="status">正在获取生词本…</p>
+              ) : (
+                <>
+                  <select
+                    aria-label="目标生词本"
+                    value={category}
+                    onChange={(event) => setCategory(event.target.value)}
+                    disabled={adding}
+                  >
+                    <option value="">请选择生词本</option>
+                    {books.map((book) => (
+                      <option value={book.id} key={book.id}>
+                        {book.name}
+                        {added.includes(book.id) ? "（已添加）" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {!books.length && <p>暂无可用生词本，请配置授权或在欧路创建后刷新。</p>}
+                  <button
+                    type="button"
+                    disabled={!category || adding || added.includes(category)}
+                    onClick={() => void add()}
+                  >
+                    {adding ? "正在添加…" : added.includes(category) ? "已添加" : "确认添加"}
+                  </button>
+                  <button type="button" disabled={adding} onClick={() => void loadBooks()}>
+                    刷新
+                  </button>
+                </>
+              )}
+              <button type="button" onClick={() => setShowBooks(false)}>
+                收起
+              </button>
+            </div>
+          )}
           <ul className="dictionary-definitions">
             {entry.definitions.map((definition, i) => (
               <li key={i}>{definition}</li>
@@ -221,47 +262,6 @@ export function DictionaryPanel({
         </article>
       )}
       {!entry && actions}
-      {showBooks && entry && (
-        <div className="dictionary-books" role="group" aria-label="选择欧路生词本">
-          <p>
-            添加词条：<strong>{entry.word}</strong>
-          </p>
-          {booksLoading ? (
-            <p role="status">正在获取生词本…</p>
-          ) : (
-            <>
-              <select
-                aria-label="目标生词本"
-                value={category}
-                onChange={(event) => setCategory(event.target.value)}
-                disabled={adding}
-              >
-                <option value="">请选择生词本</option>
-                {books.map((book) => (
-                  <option value={book.id} key={book.id}>
-                    {book.name}
-                    {added.includes(book.id) ? "（已添加）" : ""}
-                  </option>
-                ))}
-              </select>
-              {!books.length && <p>暂无可用生词本，请配置授权或在欧路创建后刷新。</p>}
-              <button
-                type="button"
-                disabled={!category || adding || added.includes(category)}
-                onClick={() => void add()}
-              >
-                {adding ? "正在添加…" : added.includes(category) ? "已添加" : "确认添加"}
-              </button>
-              <button type="button" disabled={adding} onClick={() => void loadBooks()}>
-                刷新
-              </button>
-            </>
-          )}
-          <button type="button" onClick={() => setShowBooks(false)}>
-            收起
-          </button>
-        </div>
-      )}
       {message && <p role="status">{message}</p>}
       {suggestions.length > 0 && (
         <ul className="dictionary-suggestions" aria-label="联想词条">
