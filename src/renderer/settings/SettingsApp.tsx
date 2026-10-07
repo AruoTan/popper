@@ -27,12 +27,18 @@ import {
   KeyRound,
   LoaderCircle,
   LockKeyhole,
+  Languages,
+  ListFilter,
+  Monitor,
+  MousePointer2,
   Pencil,
   Plus,
   RefreshCw,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   Trash2,
+  WandSparkles,
   X,
 } from "lucide-react";
 import {
@@ -101,31 +107,43 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsSectionId;
   label: string;
   blurb: string;
+  icon: typeof Sparkles;
+  caption: string;
 }> = [
   {
     id: "general",
     label: "通用",
     blurb: "",
+    icon: SlidersHorizontal,
+    caption: "服务商与选区访问",
   },
   {
     id: "actions",
     label: "动作",
     blurb: "决定工具栏显示哪些功能，可拖拽排序；启用的会出现在划词工具栏。",
+    icon: WandSparkles,
+    caption: "工具栏与自定义动作",
   },
   {
     id: "language",
     label: "语言",
     blurb: "设置 AI 默认回复语言，以及翻译的源语言与目标语言。",
+    icon: Languages,
+    caption: "回复与翻译偏好",
   },
   {
     id: "result",
     label: "结果",
     blurb: "结果窗口出现位置、默认大小，以及点击外部时如何关闭。",
+    icon: Monitor,
+    caption: "窗口外观与行为",
   },
   {
     id: "filter",
     label: "过滤",
     blurb: "可限制只在部分应用中启用划词，或排除干扰较多的应用。",
+    icon: ListFilter,
+    caption: "应用范围与排除列表",
   },
 ];
 
@@ -997,9 +1015,10 @@ export function SettingsApp(): JSX.Element {
           </div>
           <div>
             <h1>{APP_NAME} 设置</h1>
-            <p>选中文字后，长按右键快速复制、搜索或交给 AI。</p>
+            <p>让每一次划词更顺手</p>
           </div>
         </header>
+        <span className="settings-nav__label">偏好设置</span>
         <nav className="settings-nav" aria-label="设置分区">
           {SETTINGS_SECTIONS.map((section) => (
             <button
@@ -1007,9 +1026,14 @@ export function SettingsApp(): JSX.Element {
               type="button"
               className={`settings-nav__item ${activeSection === section.id ? "is-selected" : ""}`}
               aria-current={activeSection === section.id ? "page" : undefined}
+              aria-label={section.label}
               onClick={() => setActiveSection(section.id)}
             >
-              {section.label}
+              <section.icon size={19} aria-hidden="true" />
+              <span className="settings-nav__copy">
+                <span>{section.label}</span>
+                <small>{section.caption}</small>
+              </span>
             </button>
           ))}
         </nav>
@@ -1039,7 +1063,7 @@ export function SettingsApp(): JSX.Element {
                 <div className="settings-tip" role="note">
                   <span className="settings-tip__label">使用提示</span>
                   <p>
-                    选中文字后长按右键 250ms 即可弹出工具栏，短按仍是普通右键。关闭主窗口后，划词助手继续在后台运行。
+                    选中文字后长按右键 <kbd>250 ms</kbd> 唤出工具栏，短按仍是普通右键。
                   </p>
                 </div>
               </section>
@@ -1048,7 +1072,7 @@ export function SettingsApp(): JSX.Element {
                 <div className="section-heading section-heading--actions">
                   <div>
                     <h2 id="providers-title">AI 服务商与模型</h2>
-                    <p>按顺序：填写 API → 测试连接 → 获取模型 → 保存设置。</p>
+                    <p>配置 API 地址和密钥，获取可用模型。</p>
                   </div>
                   <button className="button" type="button" onClick={addProvider}>
                     <Plus size={15} />
@@ -1087,18 +1111,23 @@ export function SettingsApp(): JSX.Element {
                           <span className="provider-avatar">
                             <Sparkles size={17} />
                           </span>
-                          <input
-                            className="provider-name-input"
-                            value={provider.name}
-                            maxLength={80}
-                            aria-label="服务商名称"
-                            onChange={(event) =>
-                              changeProvider(provider.id, (current) => ({
-                                ...current,
-                                name: event.target.value,
-                              }))
-                            }
-                          />
+                          <div className="provider-card__name">
+                            <input
+                              className="provider-name-input"
+                              value={provider.name}
+                              maxLength={80}
+                              aria-label="服务商名称"
+                              onChange={(event) =>
+                                changeProvider(provider.id, (current) => ({
+                                  ...current,
+                                  name: event.target.value,
+                                }))
+                              }
+                            />
+                            <span className="provider-card__summary">
+                              {provider.models.length} 个模型 · {provider.keyConfigured ? "密钥已保存" : "未保存密钥"}
+                            </span>
+                          </div>
                         </div>
                         <div className="provider-card__header-actions">
                           <label
@@ -1168,7 +1197,7 @@ export function SettingsApp(): JSX.Element {
                             </span>
                           )}
                         </label>
-                        <label className="field">
+                        <label className="field field--wide">
                           <span className="field__label">API Key</span>
                           <div className="key-control">
                             <KeyRound size={16} aria-hidden="true" />
@@ -1780,7 +1809,10 @@ export function SettingsApp(): JSX.Element {
                 有尚未保存的更改
               </>
             ) : (
-              "所有更改均已保存"
+              <>
+                <Check size={15} aria-hidden="true" />
+                所有更改均已保存
+              </>
             )}
           </span>
           <button
@@ -1794,7 +1826,11 @@ export function SettingsApp(): JSX.Element {
                 : "当前内容与已保存设置一致，仍可再次保存"
             }
           >
-            {operation === "save" && <LoaderCircle className="settings-spin" size={15} />}
+            {operation === "save" ? (
+              <LoaderCircle className="settings-spin" size={15} />
+            ) : (
+              <Check size={15} aria-hidden="true" />
+            )}
             保存设置
           </button>
         </footer>

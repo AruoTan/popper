@@ -1,4 +1,5 @@
 import { useEffect, useState, type JSX } from "react";
+import { BookOpen, ExternalLink, KeyRound, LoaderCircle } from "lucide-react";
 import { getErrorMessage } from "../lib/errors";
 
 export function DictionarySettings(): JSX.Element {
@@ -37,14 +38,23 @@ export function DictionarySettings(): JSX.Element {
     }
   };
   return (
-    <div className="field field--wide">
-      <strong>欧路生词本 · {configured ? "已配置授权" : "未配置授权"}</strong>
-      <p>
+    <div className="dictionary-settings field field--wide">
+      <div className="dictionary-settings__heading">
+        <span className="dictionary-settings__icon" aria-hidden="true">
+          <BookOpen size={19} />
+        </span>
+        <strong>欧路生词本</strong>
+        <span className={`dictionary-settings__badge ${configured ? "is-configured" : ""}`}>
+          {configured ? "已配置授权" : "未配置授权"}
+        </span>
+      </div>
+      <p className="field__hint">
         从欧路 OpenAPI 授权页获取完整 Authorization（包含 NIS
         前缀，如页面提供）。仅在确认添加时上传当前词条。
       </p>
-      <p>
+      <div>
         <button
+          className="button button--ghost"
           type="button"
           onClick={() => {
             void window._popper_
@@ -52,31 +62,43 @@ export function DictionarySettings(): JSX.Element {
               .catch((error: unknown) => setMessage(getErrorMessage(error, "无法打开授权页")));
           }}
         >
+          <ExternalLink size={14} aria-hidden="true" />
           获取欧路授权
         </button>
-      </p>
-      <input
-        className="control"
-        aria-label="欧路 Authorization"
-        type="password"
-        autoComplete="off"
-        value={authorization}
-        placeholder="粘贴完整授权信息"
-        onChange={(event) => setAuthorization(event.target.value)}
-      />
-      <div>
+      </div>
+      <div className="key-control">
+        <KeyRound size={16} aria-hidden="true" />
+        <input
+          aria-label="欧路 Authorization"
+          type="password"
+          autoComplete="off"
+          value={authorization}
+          placeholder="粘贴完整授权信息"
+          onChange={(event) => setAuthorization(event.target.value)}
+        />
+      </div>
+      <div className="dictionary-settings__actions">
         <button
+          className="button"
           type="button"
           disabled={busy || !authorization.trim()}
           onClick={() => void save(authorization)}
         >
+          {busy && <LoaderCircle size={14} className="settings-spin" aria-hidden="true" />}
           保存欧路授权
-        </button>{" "}
-        <button type="button" disabled={busy || !configured} onClick={() => void save("")}>
+        </button>
+        <button
+          className="button button--danger"
+          type="button"
+          disabled={busy || !configured}
+          onClick={() => void save("")}
+        >
           清除授权
         </button>
       </div>
-      {message && <p role="status">{message}</p>}
+      {message && (
+        <p className="field__hint" role="status">{message}</p>
+      )}
     </div>
   );
 }
