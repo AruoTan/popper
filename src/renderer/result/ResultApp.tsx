@@ -43,6 +43,7 @@ import {
   type TranslationLanguage,
 } from "../../shared";
 import { ActionIcon } from "../components/ActionIcon";
+import { SelectionDetectionDebugPanel } from "./SelectionDetectionDebugPanel";
 import { runDetached } from "../lib/asyncEffects";
 import { getErrorMessage } from "../lib/errors";
 import {
@@ -1310,6 +1311,8 @@ function ResultSessionApp({
               {showOriginal && <div className="result-original__content">{selection.text}</div>}
             </section>
           )}
+
+          {windowsRenderer && <SelectionDetectionDebugPanel sessionId={sessionId} />}
 
           {dictionary && (
             <DictionaryPanel

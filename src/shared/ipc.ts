@@ -33,6 +33,7 @@ export const TAURI_COMMANDS = {
   runAction: "run_action",
   hideToolbar: "hide_toolbar",
   reportToolbarSize: "report_toolbar_size",
+  getSelectionDetectionDebug: "get_selection_detection_debug",
   beginResultReady: "begin_result_ready",
   ackResultReady: "ack_result_ready",
   recordResultRendererMarker: "record_result_renderer_marker",

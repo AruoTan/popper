@@ -7,15 +7,26 @@
 //! worker or later captures. All public Windows coordinates stay in physical
 //! virtual-desktop pixels so mixed-DPI monitor regions remain unambiguous.
 
+use super::right_button::{Release as RightButtonRelease, RightButtonGesture};
 use super::{
     automatic_selection_fingerprint, automatic_selection_pointer_matches_bounds,
-    direction_from_points, selection_bounds_are_reasonable,
-    union_selection_bounds, windows_text_budget, DismissEvent, SelectionBounds, SelectionDirection,
-    SelectionError, SelectionEvent, SelectionMethod, SelectionMouse, SelectionPayload,
-    SelectionPoint, SelectionTrigger, SourceApplication,
+    direction_from_points, selection_bounds_are_reasonable, union_selection_bounds,
+    windows_text_budget, DismissEvent, SelectionBounds, SelectionDirection, SelectionError,
+    SelectionEvent, SelectionMethod, SelectionMouse, SelectionPayload, SelectionPoint,
+    SelectionTrigger, SourceApplication,
 };
-use super::right_button::{Release as RightButtonRelease, RightButtonGesture};
+#[path = "selection_debug.rs"]
+mod selection_debug;
+#[path = "selection_offset.rs"]
+mod selection_offset;
+#[path = "selection_offset_uia.rs"]
+mod selection_offset_uia;
 use crate::clipboard;
+use selection_offset::{
+    MouseGesture, MouseSelectionTracker, Point as DetectorPoint, Reason as DetectionReason,
+    SelectionHealthResult, SelectionOffsetDetector, SelectionRoute, UiaAdapter,
+};
+use selection_offset_uia::{DpiContext, WindowsUiaAdapter};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     cell::{Cell, RefCell},
@@ -73,24 +84,25 @@ use windows::{
                 UIA_SelectionActiveEndAttributeId, UIA_TextPatternId, UnhookWinEvent,
             },
             Input::KeyboardAndMouse::{
-                GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-                KEYEVENTF_KEYUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, VK_C,
-                VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
-                VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V, VK_X,
+                GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE,
+                KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+                MOUSEINPUT, VK_C, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU,
+                VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V, VK_X,
             },
             WindowsAndMessaging::{
-                CallNextHookEx, DispatchMessageW, GetAncestor, GetClassNameW, GetCursorPos,
-                GetForegroundWindow, GetGUIThreadInfo, GetParent, GetWindowLongPtrW, GetWindowRect,
-                GetWindowTextW, GetWindowThreadProcessId, IsZoomed, MsgWaitForMultipleObjectsEx,
-                PeekMessageW, PostThreadMessageW, SendMessageTimeoutW, SetWindowsHookExW,
-                TranslateMessage, UnhookWindowsHookEx, WindowFromPoint, ES_PASSWORD,
-                EVENT_SYSTEM_FOREGROUND, GA_ROOT, GUITHREADINFO, GWL_STYLE, HC_ACTION,
+                CallNextHookEx, DispatchMessageW, GetAncestor, GetClassNameW, GetForegroundWindow,
+                GetGUIThreadInfo, GetParent, GetPhysicalCursorPos, GetWindowLongPtrW,
+                GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsZoomed,
+                MsgWaitForMultipleObjectsEx, PeekMessageW, PostThreadMessageW, SendMessageTimeoutW,
+                SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, WindowFromPoint,
+                ES_PASSWORD, EVENT_SYSTEM_FOREGROUND, GA_ROOT, GUITHREADINFO, GWL_STYLE, HC_ACTION,
                 KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT, MWMO_INPUTAVAILABLE,
                 OBJID_CLIENT, OBJID_NATIVEOM, OBJID_WINDOW, PM_REMOVE, QS_ALLINPUT,
                 SMTO_ABORTIFHUNG, SMTO_ERRORONEXIT, WH_KEYBOARD_LL, WH_MOUSE_LL,
                 WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_GETTEXT, WM_GETTEXTLENGTH,
                 WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MOUSEHWHEEL,
-                WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+                WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+                WM_XBUTTONDOWN,
             },
         },
     },
@@ -262,7 +274,7 @@ const CAPTURE_EXECUTOR_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const HELPER_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(1);
 const HELPER_FRAME_LIMIT: usize = 16 * 1024 * 1024;
 const SELECTION_HELPER_FLAG: &str = "--popper-selection-helper";
-const SELECTION_HELPER_PROTOCOL_VERSION: u32 = 2;
+const SELECTION_HELPER_PROTOCOL_VERSION: u32 = 3;
 const WORKER_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 const MAX_UIA_ANCESTORS: usize = 32;
 const MAX_UIA_RUNTIME_ID_VALUES: usize = 128;
@@ -456,6 +468,11 @@ enum RawInput {
         generation: u64,
         modifiers: ModifierSnapshot,
         timestamp_ms: u64,
+        target_window: isize,
+        target_pid: u32,
+        foreground_window: isize,
+        foreground_pid: u32,
+        injected: bool,
     },
     Keyboard {
         sequence: u64,
@@ -514,6 +531,8 @@ struct CaptureRequest {
     /// deserializable.
     #[serde(default)]
     press_duration_ms: u32,
+    #[serde(default)]
+    mouse_gesture: Option<MouseGesture>,
 }
 
 struct CaptureJob {
@@ -1059,6 +1078,9 @@ enum HelperEvent {
     Result {
         request_id: u64,
         result: HelperCaptureResult,
+        health: SelectionHealthResult,
+        #[serde(default)]
+        debug: Option<serde_json::Value>,
     },
 }
 
@@ -1068,6 +1090,7 @@ fn selection_worker_main(
     event_sender: Arc<Mutex<Sender<SelectionEvent>>>,
     ready_sender: SyncSender<Result<(), SelectionError>>,
 ) {
+    let _dpi = DpiContext::enter();
     let _ = ready_sender.send(Ok(()));
 
     let completion_waker = inbox.clone();
@@ -1102,18 +1125,22 @@ fn selection_worker_main(
         last_automatic_fingerprint: None,
         recent_capture: None,
         last_raw_sequence: 0,
+        mouse_selection_tracker: MouseSelectionTracker::default(),
     };
     worker.run(receiver);
 }
 
-struct ComApartment;
+struct ComApartment {
+    _dpi: DpiContext,
+}
 
 impl ComApartment {
     fn initialize() -> Result<Self, SelectionError> {
         // UI Automation requires a dedicated STA. OleInitialize establishes
         // that apartment for the isolated accessibility worker.
+        let dpi = DpiContext::enter();
         unsafe { OleInitialize(None) }.map_err(|_| SelectionError::NativeInitializationFailed)?;
-        Ok(Self)
+        Ok(Self { _dpi: dpi })
     }
 }
 
@@ -1147,6 +1174,7 @@ struct SelectionWorker {
     last_automatic_fingerprint: Option<(u64, u64, Instant)>,
     recent_capture: Option<RecentCaptureContext>,
     last_raw_sequence: u64,
+    mouse_selection_tracker: MouseSelectionTracker,
 }
 
 impl SelectionWorker {
@@ -1241,6 +1269,18 @@ impl SelectionWorker {
                 let current = current_cursor_position();
                 let foreground = unsafe { GetForegroundWindow() };
                 let source_process_id = window_process_id(foreground);
+                let gesture = self.mouse_selection_tracker.context(
+                    timestamp_ms(),
+                    root_window(foreground).0 as isize,
+                    source_process_id,
+                );
+                selection_debug::input(
+                    "manual.capture",
+                    serde_json::json!({
+                        "gesture":gesture,"sourcePid":source_process_id,"sourceWindow":format!("{:#x}",root_window(foreground).0 as usize),
+                        "dpiReady":DpiContext::ready(),"tracker":format!("{:?}",self.mouse_selection_tracker)
+                    }),
+                );
                 self.submit_capture(
                     CaptureRequest {
                         trigger: SelectionTrigger::Manual,
@@ -1250,6 +1290,7 @@ impl SelectionWorker {
                         generation: None,
                         clipboard_sequence_at_start: None,
                         press_duration_ms: 0,
+                        mouse_gesture: gesture,
                     },
                     root_window(foreground).0 as isize,
                     source_process_id,
@@ -1405,7 +1446,68 @@ impl SelectionWorker {
                 generation,
                 modifiers,
                 timestamp_ms,
-            } => self.handle_mouse(message, point, generation, modifiers, timestamp_ms),
+                target_window,
+                target_pid,
+                foreground_window,
+                foreground_pid,
+                injected,
+            } => {
+                if injected || !DpiContext::ready() {
+                    self.mouse_selection_tracker.invalidate();
+                } else {
+                    match message {
+                        WM_LBUTTONDOWN => self.mouse_selection_tracker.down(
+                            detector_point(point),
+                            timestamp_ms,
+                            target_window,
+                            target_pid,
+                            modifiers.shift,
+                            u64::from(unsafe {
+                                windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime()
+                            }),
+                            (
+                                unsafe {
+                                    windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                                        windows::Win32::UI::WindowsAndMessaging::SM_CXDOUBLECLK,
+                                    )
+                                } / 2,
+                                unsafe {
+                                    windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                                        windows::Win32::UI::WindowsAndMessaging::SM_CYDOUBLECLK,
+                                    )
+                                } / 2,
+                            ),
+                        ),
+                        WM_LBUTTONUP => {
+                            if target_window == foreground_window && target_pid == foreground_pid {
+                                self.mouse_selection_tracker.up(
+                                    detector_point(point),
+                                    timestamp_ms,
+                                    foreground_window,
+                                    foreground_pid,
+                                );
+                            } else {
+                                self.mouse_selection_tracker.invalidate();
+                            }
+                        }
+                        WM_MOUSEWHEEL | WM_MOUSEHWHEEL | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
+                            self.mouse_selection_tracker.invalidate()
+                        }
+                        _ => {}
+                    }
+                }
+                selection_debug::input(
+                    "mouse.event",
+                    serde_json::json!({
+                        "message":format!("{message:#x}"),"point":point,"eventTimestampMs":timestamp_ms,
+                        "targetWindow":format!("{target_window:#x}"),"targetPid":target_pid,
+                        "foregroundWindow":format!("{foreground_window:#x}"),"foregroundPid":foreground_pid,
+                        "injected":injected,"shift":modifiers.shift,"dpiReady":DpiContext::ready(),
+                        "tracker":format!("{:?}",self.mouse_selection_tracker)
+                    }),
+                );
+                self.handle_mouse(message, point, generation, modifiers, timestamp_ms)
+            }
             RawInput::Keyboard {
                 sequence: _,
                 message,
@@ -1432,6 +1534,12 @@ impl SelectionWorker {
         }
         let foreground_process_id = window_process_id(window);
         let foreground_root = root_window(window).0 as isize;
+        self.mouse_selection_tracker
+            .foreground(foreground_root, foreground_process_id);
+        selection_debug::input(
+            "foreground.event",
+            serde_json::json!({"window":format!("{foreground_root:#x}"),"pid":foreground_process_id,"tracker":format!("{:?}",self.mouse_selection_tracker)}),
+        );
         if self.recent_capture_matches_foreground(
             foreground_root,
             foreground_process_id,
@@ -1471,7 +1579,16 @@ impl SelectionWorker {
             }
             ForegroundInteractionDecision::Dismiss => {}
         }
+        // Existing dismissal cleanup must not erase a LEFT gesture whose
+        // target has just become foreground after mouse-down.
+        let tracker = self
+            .mouse_selection_tracker
+            .belongs_to(foreground_root, foreground_process_id)
+            .then(|| std::mem::take(&mut self.mouse_selection_tracker));
         self.reset_interaction_state_preserving_manual();
+        if let Some(tracker) = tracker {
+            self.mouse_selection_tracker = tracker;
+        }
         self.emit_dismiss(
             "foregroundChanged",
             current_cursor_position(),
@@ -1489,6 +1606,11 @@ impl SelectionWorker {
     }
 
     fn reset_interaction_state_with_manual(&mut self, preserve_manual: bool) {
+        selection_debug::input(
+            "tracker.reset",
+            serde_json::json!({"preserveManual":preserve_manual,"trackerBefore":format!("{:?}",self.mouse_selection_tracker)}),
+        );
+        self.mouse_selection_tracker.invalidate();
         // Activating a related source window is not newer user input. Preserve
         // the explicit Manual request across that foreground transition. Lifecycle
         // shutdown/stop still uses the default path and cancels every request.
@@ -1609,6 +1731,11 @@ impl SelectionWorker {
         if is_modifier_virtual_key(virtual_key as u16) {
             return;
         }
+        selection_debug::input(
+            "tracker.keyboard-invalidated",
+            serde_json::json!({"reason":"real-nonmodifier-keyboard-input"}),
+        );
+        self.mouse_selection_tracker.invalidate();
         self.cancel_active_capture_for_user_keyboard();
         self.pending_capture = None;
         self.recent_capture = None;
@@ -2166,7 +2293,7 @@ impl SelectionHelperProcess {
         // and accessibility failures actually occur. Preserve stderr only
         // for an explicitly enabled trace session; production launches remain
         // silent and do not retain any selected text or clipboard content.
-        let helper_stderr = if selection_trace_enabled() {
+        let helper_stderr = if selection_trace_enabled() || selection_detection_debug_enabled() {
             Stdio::inherit()
         } else {
             Stdio::null()
@@ -2302,6 +2429,7 @@ impl SelectionHelperProcess {
             popper_process_id: own_process_id,
         })?;
 
+        let debug_inputs = selection_debug::input_snapshot();
         let task_deadline = Instant::now() + CAPTURE_TASK_TIMEOUT;
         let mut cancel_reason = None;
         let mut cancel_deadline = None;
@@ -2348,7 +2476,10 @@ impl SelectionHelperProcess {
                 Ok(Ok(HelperEvent::Result {
                     request_id: event_request_id,
                     result,
+                    health,
+                    debug,
                 })) if event_request_id == request_id => {
+                    trace_selection_health("parent-result", &health, None);
                     if cancel_reason.is_some() {
                         return Err(CaptureExecutorError::Cancelled);
                     }
@@ -2377,6 +2508,13 @@ impl SelectionHelperProcess {
                                     provider_process_id,
                                 );
                                 selection.timestamp_ms = strict_parent_timestamp_ms();
+                                if let Some(debug) = debug {
+                                    selection_debug::publish(
+                                        selection.timestamp_ms,
+                                        debug,
+                                        &debug_inputs,
+                                    );
+                                }
                                 Ok(Some(selection))
                             } else {
                                 trace_selection_provider(
@@ -2772,7 +2910,14 @@ fn selection_helper_main() -> io::Result<()> {
                     source_process_id,
                     popper_process_id,
                 };
+                selection_debug::begin(request_id, request, &control);
                 let result = if control.is_cancelled() {
+                    engine
+                        .selection_health
+                        .replace(SelectionHealthResult::unavailable(
+                            DetectionReason::ContextChanged,
+                        ));
+                    engine.verified_range.borrow_mut().take();
                     HelperCaptureResult::Empty
                 } else {
                     match engine.capture(request, &control) {
@@ -2800,7 +2945,22 @@ fn selection_helper_main() -> io::Result<()> {
                 let mut output = writer.lock().map_err(|_| {
                     io::Error::new(io::ErrorKind::Other, "helper output lock poisoned")
                 })?;
-                write_helper_frame(&mut *output, &HelperEvent::Result { request_id, result })?;
+                let health = engine.selection_health.borrow().clone();
+                let debug = selection_debug::finish(&result, &health);
+                if selection_trace_enabled() || selection_detection_debug_enabled() {
+                    if let HelperCaptureResult::Selection { selection, .. } = &result {
+                        trace_selection_line(format!("[selection-detector-result] method={:?} selection_length={} status={:?}", selection.method, selection.text.chars().count(), health.status));
+                    }
+                }
+                write_helper_frame(
+                    &mut *output,
+                    &HelperEvent::Result {
+                        request_id,
+                        result,
+                        health,
+                        debug,
+                    },
+                )?;
                 output.flush()?;
             }
             Err(RecvTimeoutError::Timeout) => {}
@@ -2827,6 +2987,9 @@ struct CaptureEngine {
     // still publish one delayed, source-owned write after a successful restore.
     // The helper is long-lived, so this safely spans the next mouse gesture.
     clipboard_recovery: RefCell<Option<ClipboardRecovery>>,
+    selection_health: RefCell<SelectionHealthResult>,
+    verified_range: RefCell<Option<IUIAutomationTextRange>>,
+    detector_deadline: Cell<Instant>,
     _apartment: ComApartment,
 }
 
@@ -2884,7 +3047,10 @@ enum AccessibilityCapture {
 }
 
 enum TextPatternSearch {
-    Found(IUIAutomationTextPattern),
+    Found {
+        pattern: IUIAutomationTextPattern,
+        element: IUIAutomationElement,
+    },
     Protected,
     NotFound,
 }
@@ -2902,6 +3068,11 @@ impl CaptureEngine {
             deadline: Cell::new(Instant::now() + CAPTURE_ENGINE_BUDGET),
             app_route_cache: RefCell::new(HashMap::new()),
             clipboard_recovery: RefCell::new(None),
+            selection_health: RefCell::new(SelectionHealthResult::unavailable(
+                DetectionReason::NoMouseContext,
+            )),
+            verified_range: RefCell::new(None),
+            detector_deadline: Cell::new(Instant::now()),
             _apartment: apartment,
         })
     }
@@ -2916,6 +3087,37 @@ impl CaptureEngine {
         // path, including Word's native object model probe.
         self.deadline.set(Instant::now() + CAPTURE_ENGINE_BUDGET);
         self.provider.set(CaptureProvider::default());
+        self.detector_deadline
+            .set(self.deadline.get().min(Instant::now() + UIA_PHASE_BUDGET));
+        self.verified_range.borrow_mut().take();
+        self.selection_health
+            .replace(SelectionHealthResult::unavailable(
+                DetectionReason::NoMouseContext,
+            ));
+        let detector_started = Instant::now();
+        self.detect_selection_offset(request, control);
+        selection_debug::record(
+            "detector.initial",
+            serde_json::json!({
+                "health":*self.selection_health.borrow(),"durationMs":detector_started.elapsed().as_secs_f64()*1000.0,
+                "remainingPhaseMs":self.detector_deadline.get().saturating_duration_since(Instant::now()).as_secs_f64()*1000.0,
+            }),
+        );
+        if control.is_cancelled() {
+            return Ok(None);
+        }
+        let route = self.selection_health.borrow().route();
+        selection_debug::record(
+            "route.initial",
+            serde_json::json!({"route":format!("{route:?}")}),
+        );
+        match route {
+            SelectionRoute::RejectCapture => return Ok(None),
+            SelectionRoute::GuardedClipboard => {
+                return self.capture_existing_clipboard_fallback(request, control)
+            }
+            SelectionRoute::ExistingProviders => {}
+        }
         let executable_key = process_image_path(control.source_process_id)
             .map(|path| executable_name(&path))
             .filter(|name| !name.is_empty());
@@ -2988,6 +3190,176 @@ impl CaptureEngine {
         result
     }
 
+    fn detect_selection_offset(&self, request: CaptureRequest, control: &CaptureControl) {
+        let Some(gesture) = request.mouse_gesture else {
+            selection_debug::record(
+                "detector.skipped",
+                serde_json::json!({"reason":"NoMouseContext"}),
+            );
+            return;
+        };
+        selection_debug::record(
+            "detector.context",
+            serde_json::json!({"gesture":gesture,"nowMs":timestamp_ms(),"sourcePid":control.source_process_id,"sourceWindow":format!("{:#x}",root_window(control.source_window).0 as usize),"dpiReady":DpiContext::ready()}),
+        );
+        if !gesture.usable_at(
+            timestamp_ms(),
+            root_window(control.source_window).0 as isize,
+            control.source_process_id,
+        ) {
+            selection_debug::record(
+                "detector.skipped",
+                serde_json::json!({"reason":"ExpiredOrMismatchedMouseContext"}),
+            );
+            self.selection_health
+                .replace(SelectionHealthResult::unavailable(
+                    DetectionReason::NoMouseContext,
+                ));
+            return;
+        }
+        if !gesture.kind.supports_detection() {
+            selection_debug::record(
+                "detector.skipped",
+                serde_json::json!({"reason":"UnsupportedGesture","kind":gesture.kind}),
+            );
+            self.selection_health
+                .replace(SelectionHealthResult::suspicious(
+                    DetectionReason::UnsupportedGesture,
+                    false,
+                ));
+            return;
+        }
+        let overall_deadline = self.deadline.get();
+        let detector_deadline = self.detector_deadline.get();
+        self.deadline.set(detector_deadline);
+        let result = (|| {
+            if !DpiContext::ready() {
+                return Err(DetectionReason::DpiUnavailable);
+            }
+            let mut process_parents = None;
+            let mut source_app = None;
+            // Manual captures ordinarily use focus. Detection explicitly hit-tests
+            // the recorded LEFT release, never the current right-button position.
+            let detector_request = CaptureRequest {
+                trigger: SelectionTrigger::Drag,
+                start: Some(RawPoint {
+                    x: gesture.down.x,
+                    y: gesture.down.y,
+                }),
+                end: Some(RawPoint {
+                    x: gesture.up.x,
+                    y: gesture.up.y,
+                }),
+                current: RawPoint {
+                    x: gesture.up.x,
+                    y: gesture.up.y,
+                },
+                ..request
+            };
+            let target = match self.acquire_capture_target_at(
+                detector_request,
+                control,
+                &mut process_parents,
+                &mut source_app,
+                false,
+                detector_request.current,
+            ) {
+                CaptureTargetLookup::Found(target) => {
+                    selection_debug::record(
+                        "detector.target",
+                        serde_json::json!({"outcome":"found","providerHwnd":format!("{:#x}",target.provider_window.0 as usize),"providerPid":target.provider_process_id,"sourceApp":target.source_app}),
+                    );
+                    target
+                }
+                CaptureTargetLookup::Retryable => {
+                    selection_debug::record(
+                        "detector.target",
+                        serde_json::json!({"outcome":"retryable"}),
+                    );
+                    return Err(DetectionReason::UiaFailure);
+                }
+                CaptureTargetLookup::Stop => {
+                    selection_debug::record(
+                        "detector.target",
+                        serde_json::json!({"outcome":"stop","deadlineExpired":Instant::now()>=detector_deadline,"cancelled":control.is_cancelled()}),
+                    );
+                    return Err(DetectionReason::ContextChanged);
+                }
+            };
+            let (pattern, text_element) = match self.find_text_pattern(
+                &target.element,
+                control,
+                &target.source_app,
+                target.source_window,
+            ) {
+                TextPatternSearch::Found { pattern, element } => (pattern, element),
+                TextPatternSearch::Protected => return Err(DetectionReason::Protected),
+                TextPatternSearch::NotFound => {
+                    return Err(if Instant::now() >= detector_deadline {
+                        DetectionReason::BudgetExceeded
+                    } else {
+                        DetectionReason::UiaFailure
+                    })
+                }
+            };
+            let adapter = WindowsUiaAdapter::new(&pattern, control, detector_deadline);
+            let detection = SelectionOffsetDetector::analyze(&adapter, gesture);
+            // Keep an independent range snapshot, rather than a potentially
+            // live selection object which the provider can move in place.
+            self.verified_range.replace(
+                detection
+                    .selection
+                    .as_ref()
+                    .and_then(|range| adapter.clone_range(range).ok()),
+            );
+
+            if (selection_trace_enabled() || selection_detection_debug_enabled())
+                && Instant::now() < detector_deadline
+                && !control.is_cancelled()
+            {
+                trace_selection_line(format!("[selection-detector-provider] process={:?} pid={} hwnd={:#x} control_type={:?} class={:?} supports_text_pattern=true",
+                    executable_name(&target.source_app.bundle_id), target.provider_process_id, target.provider_window.0 as isize,
+                    unsafe { text_element.CurrentControlType() }.ok(),
+                    unsafe { text_element.CurrentClassName() }.ok().map(|v| bounded_detection_text(&v.to_string()))));
+            }
+            if selection_detection_debug_enabled()
+                && Instant::now() < detector_deadline
+                && !control.is_cancelled()
+            {
+                let text = detection
+                    .selection
+                    .as_ref()
+                    .and_then(|range| unsafe { range.GetText(512) }.ok())
+                    .map(|v| bounded_detection_text(&v.to_string()));
+                let nearby = |point| {
+                    adapter.range_from_point(point).ok().and_then(|range| {
+                        adapter
+                            .move_character(&range, selection_offset::Endpoint::Start, -16)
+                            .ok()?;
+                        adapter
+                            .move_character(&range, selection_offset::Endpoint::End, 16)
+                            .ok()?;
+                        unsafe { range.GetText(64) }
+                            .ok()
+                            .map(|v| bounded_detection_text(&v.to_string()))
+                    })
+                };
+                let samples = serde_json::json!({
+                    "title":bounded_detection_text(&window_title(control.source_window).unwrap_or_default()),
+                    "automationId":unsafe { text_element.CurrentAutomationId() }.ok().map(|v| bounded_detection_text(&v.to_string())),
+                    "selection":text,"downNearby":nearby(gesture.down),"upNearby":nearby(gesture.up)
+                });
+                trace_selection_line(format!("[selection-detector-debug] {samples}"));
+                selection_debug::record("uia.text-samples", samples);
+            }
+            Ok(detection.health)
+        })();
+        self.deadline.set(overall_deadline);
+        let health = result.unwrap_or_else(SelectionHealthResult::unavailable);
+        trace_selection_health("detected", &health, Some(gesture));
+        self.selection_health.replace(health);
+    }
+
     fn record_provider(&self, window: HWND, process_id: u32) {
         if process_id != 0 {
             self.provider.set(CaptureProvider { window, process_id });
@@ -3056,8 +3428,7 @@ impl CaptureEngine {
         document_accessibility_probe: Option<Duration>,
         pdf_host: bool,
     ) -> Result<Option<SelectionPayload>, SelectionError> {
-        // A reused lane gets a fresh bounded budget for every request.
-        self.deadline.set(Instant::now() + CAPTURE_ENGINE_BUDGET);
+        // capture() owns the budget, including endpoint detection.
         let mut process_parents = None;
         let mut source_app = None;
         // Native edit controls expose their active range through EM_GETSEL but
@@ -3071,7 +3442,13 @@ impl CaptureEngine {
             &mut process_parents,
             &mut source_app,
         ) {
-            AccessibilityCapture::Selection(selection) => return Ok(Some(selection)),
+            AccessibilityCapture::Selection(selection) => {
+                selection_debug::record(
+                    "provider.accepted",
+                    serde_json::json!({"provider":"native-edit","text":bounded_detection_text(&selection.text)}),
+                );
+                return Ok(Some(selection));
+            }
             AccessibilityCapture::Protected => return Ok(None),
             AccessibilityCapture::NotFound => {}
         }
@@ -3145,6 +3522,9 @@ impl CaptureEngine {
                         AccessibilityCapture::Protected => return Ok(None),
                         AccessibilityCapture::NotFound => {}
                     }
+                    if let Some(result) = self.selection_detection_gate(request, control) {
+                        return result;
+                    }
                 }
             }
 
@@ -3167,6 +3547,9 @@ impl CaptureEngine {
                 }
             }
 
+            if let Some(result) = self.selection_detection_gate(request, control) {
+                return result;
+            }
             let root_target = match self.acquire_capture_target_from_foreground_window(
                 control,
                 &mut process_parents,
@@ -3183,10 +3566,16 @@ impl CaptureEngine {
                     AccessibilityCapture::NotFound => {}
                 }
             }
+            if let Some(result) = self.selection_detection_gate(request, control) {
+                return result;
+            }
         }
 
         if Instant::now() >= self.deadline.get() || control.is_cancelled() {
             return Ok(None);
+        }
+        if let Some(result) = self.selection_detection_gate(request, control) {
+            return result;
         }
         // Legacy IAccessible is the final non-destructive accessibility
         // fallback for all hosts. It expands coverage for classic Win32,
@@ -3249,6 +3638,43 @@ impl CaptureEngine {
         if Instant::now() >= self.deadline.get() || control.is_cancelled() {
             return Ok(None);
         }
+        self.capture_existing_clipboard_fallback(request, control)
+    }
+
+    fn selection_detection_gate(
+        &self,
+        request: CaptureRequest,
+        control: &CaptureControl,
+    ) -> Option<Result<Option<SelectionPayload>, SelectionError>> {
+        let route = self.selection_health.borrow().route();
+        match route {
+            SelectionRoute::ExistingProviders => None,
+            SelectionRoute::GuardedClipboard => {
+                Some(self.capture_existing_clipboard_fallback(request, control))
+            }
+            SelectionRoute::RejectCapture => Some(Ok(None)),
+        }
+    }
+
+    fn capture_existing_clipboard_fallback(
+        &self,
+        request: CaptureRequest,
+        control: &CaptureControl,
+    ) -> Result<Option<SelectionPayload>, SelectionError> {
+        if control.is_cancelled() || Instant::now() >= self.deadline.get() {
+            return Ok(None);
+        }
+        selection_debug::record(
+            "route.clipboard",
+            serde_json::json!({"health":*self.selection_health.borrow()}),
+        );
+        trace_selection_health(
+            "route-clipboard",
+            &self.selection_health.borrow(),
+            request.mouse_gesture,
+        );
+        let mut source_app = None;
+        let mut process_parents = None;
         // Native selection providers have missed. Every application uses the
         // same guarded clipboard fallback; no per-application route overrides.
         let foreground = unsafe { GetForegroundWindow() };
@@ -3826,6 +4252,10 @@ impl CaptureEngine {
                 continue;
             }
 
+            selection_debug::record(
+                "provider.accepted",
+                serde_json::json!({"provider":"word-com","text":bounded_detection_text(&text)}),
+            );
             return Some(SelectionPayload {
                 text,
                 source_app,
@@ -4006,8 +4436,20 @@ impl CaptureEngine {
         let element = match (use_focused, request.trigger) {
             (true, _) | (_, SelectionTrigger::Keyboard | SelectionTrigger::Manual) => {
                 match unsafe { self.automation.GetFocusedElement() } {
-                    Ok(element) => element,
-                    Err(_) => return CaptureTargetLookup::Retryable,
+                    Ok(element) => {
+                        selection_debug::record(
+                            "uia.GetFocusedElement",
+                            serde_json::json!({"ok":true}),
+                        );
+                        element
+                    }
+                    Err(error) => {
+                        selection_debug::record(
+                            "uia.GetFocusedElement",
+                            serde_json::json!({"ok":false,"hresult":format!("0x{:08X}",error.code().0 as u32)}),
+                        );
+                        return CaptureTargetLookup::Retryable;
+                    }
                 }
             }
             _ => match unsafe {
@@ -4016,8 +4458,20 @@ impl CaptureEngine {
                     y: point.y,
                 })
             } {
-                Ok(element) => element,
-                Err(_) => return CaptureTargetLookup::Retryable,
+                Ok(element) => {
+                    selection_debug::record(
+                        "uia.ElementFromPoint",
+                        serde_json::json!({"ok":true,"point":point}),
+                    );
+                    element
+                }
+                Err(error) => {
+                    selection_debug::record(
+                        "uia.ElementFromPoint",
+                        serde_json::json!({"ok":false,"point":point,"hresult":format!("0x{:08X}",error.code().0 as u32)}),
+                    );
+                    return CaptureTargetLookup::Retryable;
+                }
             },
         };
         self.capture_target_for_element(
@@ -4159,6 +4613,9 @@ impl CaptureEngine {
         request: CaptureRequest,
         control: &CaptureControl,
     ) -> Result<AccessibilityCapture, SelectionError> {
+        if self.selection_health.borrow().route() != SelectionRoute::ExistingProviders {
+            return Ok(AccessibilityCapture::NotFound);
+        }
         match self.capture_accessibility(
             &target.element,
             target.source_window,
@@ -4346,7 +4803,13 @@ impl CaptureEngine {
                 request,
             );
             if legacy_accessibility_selection_is_plausible(&selection, source_window) {
-                return AccessibilityCapture::Selection(selection);
+                return {
+                    selection_debug::record(
+                        "provider.accepted",
+                        serde_json::json!({"provider":"msaa-point","text":bounded_detection_text(&selection.text)}),
+                    );
+                    AccessibilityCapture::Selection(selection)
+                };
             }
         }
 
@@ -4362,7 +4825,13 @@ impl CaptureEngine {
                     request,
                 );
                 if legacy_accessibility_selection_is_plausible(&selection, source_window) {
-                    return AccessibilityCapture::Selection(selection);
+                    return {
+                        selection_debug::record(
+                            "provider.accepted",
+                            serde_json::json!({"provider":"msaa-point","text":bounded_detection_text(&selection.text)}),
+                        );
+                        AccessibilityCapture::Selection(selection)
+                    };
                 }
             }
         }
@@ -4380,7 +4849,13 @@ impl CaptureEngine {
         let selection =
             accessibility_selection_payload(text, Some(bounds), source_app, source_window, request);
         if legacy_accessibility_selection_is_plausible(&selection, source_window) {
-            AccessibilityCapture::Selection(selection)
+            {
+                selection_debug::record(
+                    "provider.accepted",
+                    serde_json::json!({"provider":"msaa-point","text":bounded_detection_text(&selection.text)}),
+                );
+                AccessibilityCapture::Selection(selection)
+            }
         } else {
             AccessibilityCapture::NotFound
         }
@@ -4424,7 +4899,13 @@ impl CaptureEngine {
                 request,
             );
             if legacy_accessibility_selection_is_plausible(&selection, source_window) {
-                return AccessibilityCapture::Selection(selection);
+                return {
+                    selection_debug::record(
+                        "provider.accepted",
+                        serde_json::json!({"provider":"msaa-window","text":bounded_detection_text(&selection.text)}),
+                    );
+                    AccessibilityCapture::Selection(selection)
+                };
             }
         }
         AccessibilityCapture::NotFound
@@ -4440,7 +4921,7 @@ impl CaptureEngine {
         allow_document_range: bool,
     ) -> Result<AccessibilityCapture, SelectionError> {
         let pattern = match self.find_text_pattern(focused, control, &source_app, source_window) {
-            TextPatternSearch::Found(pattern) => pattern,
+            TextPatternSearch::Found { pattern, .. } => pattern,
             TextPatternSearch::Protected => return Ok(AccessibilityCapture::Protected),
             TextPatternSearch::NotFound => {
                 // A number of Win32, Java, and Office controls expose their
@@ -4482,6 +4963,77 @@ impl CaptureEngine {
             );
         }
 
+        let single_range = if range_count == 1 {
+            unsafe { ranges.GetElement(0) }.ok()
+        } else {
+            None
+        };
+        if let Some(gesture) = request.mouse_gesture.filter(|g| {
+            g.kind.supports_detection()
+                && g.usable_at(
+                    timestamp_ms(),
+                    root_window(control.source_window).0 as isize,
+                    control.source_process_id,
+                )
+        }) {
+            if range_count == 1 {
+                if let Some(range) = single_range.as_ref() {
+                    let adapter = WindowsUiaAdapter::new(
+                        &pattern,
+                        control,
+                        self.deadline.get().min(self.detector_deadline.get()),
+                    );
+                    let unchanged = self
+                        .verified_range
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|verified| {
+                            adapter
+                                .compare(
+                                    range,
+                                    selection_offset::Endpoint::Start,
+                                    verified,
+                                    selection_offset::Endpoint::Start,
+                                )
+                                .ok()
+                                == Some(0)
+                                && adapter
+                                    .compare(
+                                        range,
+                                        selection_offset::Endpoint::End,
+                                        verified,
+                                        selection_offset::Endpoint::End,
+                                    )
+                                    .ok()
+                                    == Some(0)
+                        });
+                    if !unchanged {
+                        let health =
+                            SelectionOffsetDetector::analyze_snapshot(&adapter, range, gesture);
+                        selection_debug::record(
+                            "detector.candidate-revalidated",
+                            serde_json::json!({"health":health}),
+                        );
+                        trace_selection_health("candidate-revalidated", &health, Some(gesture));
+                        self.selection_health.replace(health);
+                    }
+                }
+            } else {
+                self.selection_health
+                    .replace(SelectionHealthResult::suspicious(
+                        DetectionReason::MultipleSelections,
+                        true,
+                    ));
+            }
+            if self.selection_health.borrow().requires_clipboard() {
+                return Ok(AccessibilityCapture::NotFound);
+            }
+            if control.is_cancelled()
+                || self.selection_health.borrow().route() == SelectionRoute::RejectCapture
+            {
+                return Ok(AccessibilityCapture::NotFound);
+            }
+        }
         let mut texts = Vec::new();
         let mut total_text_chars = 0usize;
         let mut total_bounding_values = 0usize;
@@ -4491,7 +5043,13 @@ impl CaptureEngine {
             if Instant::now() >= self.deadline.get() || control.is_cancelled() {
                 return Ok(AccessibilityCapture::NotFound);
             }
-            let Ok(range) = (unsafe { ranges.GetElement(index) }) else {
+            // Read the same object that passed candidate validation.
+            let range = if range_count == 1 {
+                single_range.clone()
+            } else {
+                unsafe { ranges.GetElement(index) }.ok()
+            };
+            let Some(range) = range else {
                 continue;
             };
             let separator_chars = usize::from(!texts.is_empty());
@@ -4592,6 +5150,10 @@ impl CaptureEngine {
                 allow_document_range,
             );
         }
+        selection_debug::record(
+            "provider.accepted",
+            serde_json::json!({"provider":"uia-text-pattern","text":bounded_detection_text(&selection.text)}),
+        );
         Ok(AccessibilityCapture::Selection(selection))
     }
 
@@ -4609,6 +5171,9 @@ impl CaptureEngine {
         control: &CaptureControl,
         allow_document_range: bool,
     ) -> Result<AccessibilityCapture, SelectionError> {
+        if self.selection_health.borrow().requires_clipboard() {
+            return Ok(AccessibilityCapture::NotFound);
+        }
         let legacy = self.capture_legacy_accessibility(
             focused,
             source_window,
@@ -4703,7 +5268,13 @@ impl CaptureEngine {
             request,
         );
         if document_range_selection_is_plausible(&selection, request, source_window) {
-            Ok(AccessibilityCapture::Selection(selection))
+            Ok({
+                selection_debug::record(
+                    "provider.accepted",
+                    serde_json::json!({"provider":"uia-document-range","text":bounded_detection_text(&selection.text)}),
+                );
+                AccessibilityCapture::Selection(selection)
+            })
         } else {
             Ok(AccessibilityCapture::NotFound)
         }
@@ -4750,7 +5321,13 @@ impl CaptureEngine {
                                 &selection,
                                 source_window,
                             ) {
-                                return AccessibilityCapture::Selection(selection);
+                                return {
+                                    selection_debug::record(
+                                        "provider.accepted",
+                                        serde_json::json!({"provider":"uia-legacy-msaa","text":bounded_detection_text(&selection.text)}),
+                                    );
+                                    AccessibilityCapture::Selection(selection)
+                                };
                             }
                         }
                     }
@@ -4856,7 +5433,13 @@ impl CaptureEngine {
                             timestamp_ms: timestamp_ms(),
                         };
                         if legacy_accessibility_selection_is_plausible(&selection, source_window) {
-                            return AccessibilityCapture::Selection(selection);
+                            return {
+                                selection_debug::record(
+                                    "provider.accepted",
+                                    serde_json::json!({"provider":"uia-legacy-msaa","text":bounded_detection_text(&selection.text)}),
+                                );
+                                AccessibilityCapture::Selection(selection)
+                            };
                         }
                     }
                 }
@@ -4888,6 +5471,10 @@ impl CaptureEngine {
             let mut element = focused.clone();
             for _ in 0..MAX_UIA_ANCESTORS {
                 if Instant::now() >= self.deadline.get() || control.is_cancelled() {
+                    selection_debug::record(
+                        "uia.find-text-pattern.stopped",
+                        serde_json::json!({"deadlineExpired":Instant::now()>=self.deadline.get(),"cancelled":control.is_cancelled(),"hadDocumentCandidate":document_pattern.is_some(),"hadOtherCandidate":fallback_pattern.is_some(),"visited":visited_runtime_ids.len()}),
+                    );
                     return TextPatternSearch::NotFound;
                 }
                 // Runtime IDs turn the Control/Raw View de-duplication into a
@@ -4921,29 +5508,40 @@ impl CaptureEngine {
                     if let Ok(pattern) = unsafe {
                         element.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId)
                     } {
+                        selection_debug::record(
+                            "uia.find-text-pattern.supported",
+                            serde_json::json!({"visited":visited_runtime_ids.len()}),
+                        );
                         // A leaf can advertise TextPattern while returning an
                         // empty selection; its parent document/provider may
                         // still own the live range. Verify the pattern before
                         // stopping the ancestor walk so those hosts reach the
                         // actual selected-text provider.
-                        if text_pattern_has_nonempty_selection(
+                        let nonempty = text_pattern_has_nonempty_selection(
                             &pattern,
                             control,
                             self.deadline.get(),
-                        ) && !text_pattern_candidate_is_host_identity(
-                            &pattern,
-                            source_app,
-                            source_window,
-                            self.deadline.get(),
-                        ) {
+                        );
+                        let host_identity = nonempty
+                            && text_pattern_candidate_is_host_identity(
+                                &pattern,
+                                source_app,
+                                source_window,
+                                self.deadline.get(),
+                            );
+                        selection_debug::record(
+                            "uia.find-text-pattern.prefilter",
+                            serde_json::json!({"nonempty":nonempty,"hostIdentity":host_identity,"deadlineExpired":Instant::now()>=self.deadline.get()}),
+                        );
+                        if nonempty && !host_identity {
                             let is_document =
                                 unsafe { element.CurrentControlType() }.ok().is_some_and(
                                     |control_type| control_type == UIA_DocumentControlTypeId,
                                 );
                             if is_document {
-                                document_pattern = Some(pattern);
+                                document_pattern = Some((pattern, element.clone()));
                             } else if fallback_pattern.is_none() {
-                                fallback_pattern = Some(pattern);
+                                fallback_pattern = Some((pattern, element.clone()));
                             }
                         }
                     }
@@ -4959,7 +5557,9 @@ impl CaptureEngine {
         }
         document_pattern
             .or(fallback_pattern)
-            .map_or(TextPatternSearch::NotFound, TextPatternSearch::Found)
+            .map_or(TextPatternSearch::NotFound, |(pattern, element)| {
+                TextPatternSearch::Found { pattern, element }
+            })
     }
 }
 
@@ -4975,9 +5575,25 @@ fn text_pattern_has_nonempty_selection(
 ) -> bool {
     let ranges = match unsafe { pattern.GetSelection() } {
         Ok(ranges) => ranges,
-        Err(_) => return false,
+        Err(error) => {
+            selection_debug::record(
+                "uia.prefilter.GetSelection",
+                serde_json::json!({"ok":false,"hresult":format!("0x{:08X}",error.code().0 as u32)}),
+            );
+            return false;
+        }
     };
-    let range_count = unsafe { ranges.Length() }.unwrap_or(0);
+    let range_count = unsafe { ranges.Length() }.unwrap_or_else(|error| {
+        selection_debug::record(
+            "uia.prefilter.Length",
+            serde_json::json!({"ok":false,"hresult":format!("0x{:08X}",error.code().0 as u32)}),
+        );
+        0
+    });
+    selection_debug::record(
+        "uia.prefilter.Length",
+        serde_json::json!({"count":range_count}),
+    );
     if range_count <= 0 || range_count > MAX_UIA_SELECTION_RANGES {
         return false;
     }
@@ -6462,7 +7078,7 @@ fn raw_selection_point(point: RawPoint) -> SelectionPoint {
 
 fn current_cursor_position() -> RawPoint {
     let mut point = POINT::default();
-    if unsafe { GetCursorPos(&mut point) }.is_ok() {
+    if unsafe { GetPhysicalCursorPos(&mut point) }.is_ok() {
         RawPoint {
             x: point.x,
             y: point.y,
@@ -7095,6 +7711,44 @@ fn hook_generation() -> &'static AtomicU64 {
     &GENERATION
 }
 
+fn detector_point(point: RawPoint) -> DetectorPoint {
+    DetectorPoint {
+        x: point.x,
+        y: point.y,
+    }
+}
+
+// TODO(selection-offset-dev): remove the default-on runtime diagnostic after
+// Zotero endpoint detection has been validated on the actual desktop.
+const TEMPORARY_SELECTION_DETECTION_DEBUG: bool = true;
+
+fn selection_detection_debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("POPPER_SELECTION_DETECTION_DEBUG")
+            .map_or(TEMPORARY_SELECTION_DETECTION_DEBUG, |value| {
+                value == "1" || value.eq_ignore_ascii_case("true")
+            })
+    })
+}
+
+fn bounded_detection_text(value: &str) -> String {
+    value.chars().take(512).collect()
+}
+
+fn trace_selection_health(
+    stage: &str,
+    health: &SelectionHealthResult,
+    gesture: Option<MouseGesture>,
+) {
+    if selection_trace_enabled() || selection_detection_debug_enabled() {
+        // Debug formatting escapes newlines/control characters in text fields.
+        trace_selection_line(format!(
+            "[selection-detector] stage={stage} gesture={gesture:?} health={health:?}"
+        ));
+    }
+}
+
 fn trace_selection_capture(
     stage: &str,
     request: &CaptureRequest,
@@ -7126,6 +7780,10 @@ fn trace_selection_timing(stage: &str, duration: Duration) {
 /// only a stage, HWND and PID; it never includes the selected text, window
 /// title or clipboard contents.
 fn trace_selection_route(stage: &str, source_window: HWND, process_id: u32) {
+    selection_debug::record(
+        stage,
+        serde_json::json!({"hwnd":format!("{:#x}",source_window.0 as usize),"pid":process_id}),
+    );
     if !selection_trace_enabled() {
         return;
     }
@@ -7145,6 +7803,10 @@ fn trace_selection_provider(
     provider_window: HWND,
     provider_process_id: u32,
 ) {
+    selection_debug::record(
+        stage,
+        serde_json::json!({"sourceHwnd":format!("{:#x}",source_window.0 as usize),"sourcePid":source_process_id,"providerHwnd":format!("{:#x}",provider_window.0 as usize),"providerPid":provider_process_id}),
+    );
     if !selection_trace_enabled() {
         return;
     }
@@ -7158,12 +7820,12 @@ fn trace_selection_provider(
 fn selection_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        let environment_enabled =
-            std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
-                let value = value.to_string_lossy();
-                value == "1" || value.eq_ignore_ascii_case("true")
-            });
-        environment_enabled
+        let environment_enabled = std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
+            let value = value.to_string_lossy();
+            value == "1" || value.eq_ignore_ascii_case("true")
+        });
+        selection_detection_debug_enabled()
+            || environment_enabled
             || selection_trace_directory()
                 .is_some_and(|directory| directory.join("selection-trace.enabled").is_file())
     })
@@ -7181,6 +7843,11 @@ fn trace_selection_line(line: String) {
     else {
         return;
     };
+    if let Some(directory) = path.parent() {
+        if std::fs::create_dir_all(directory).is_err() {
+            return;
+        }
+    }
     let Ok(mut output) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -7266,7 +7933,13 @@ fn endpoint_points(
 fn bounding_rectangle_values(
     range: &windows::Win32::UI::Accessibility::IUIAutomationTextRange,
 ) -> Result<Vec<f64>, SelectionError> {
-    let array = unsafe { range.GetBoundingRectangles() }.map_err(|_| SelectionError::Internal)?;
+    let array = unsafe { range.GetBoundingRectangles() }.map_err(|error| {
+        selection_debug::record(
+            "uia.GetBoundingRectangles.failure",
+            serde_json::json!({"hresult":format!("0x{:08X}",error.code().0 as u32)}),
+        );
+        SelectionError::Internal
+    })?;
     if array.is_null() {
         return Ok(Vec::new());
     }
@@ -7898,6 +8571,7 @@ fn hook_thread_main(
     stop_requested: Arc<AtomicBool>,
     instance_id: u64,
 ) {
+    let _dpi = DpiContext::enter();
     let exit_inbox = inbox.clone();
     // Calling PeekMessage creates this thread's message queue before its ID is
     // published to the worker, eliminating the PostThreadMessage startup race.
@@ -8073,7 +8747,8 @@ fn poll_right_button_hold() {
 }
 
 fn replay_short_right_click() {
-    let clicks = RIGHT_BUTTON_HOOK.with(|state| std::mem::take(&mut state.borrow_mut().replay_clicks));
+    let clicks =
+        RIGHT_BUTTON_HOOK.with(|state| std::mem::take(&mut state.borrow_mut().replay_clicks));
     if clicks == 0 {
         return;
     }
@@ -8243,6 +8918,8 @@ unsafe extern "system" fn mouse_hook_callback(
                         state.foreground = unsafe { GetForegroundWindow() }.0 as isize;
                     });
                 }
+                let target = root_window(unsafe { WindowFromPoint(input.pt) });
+                let foreground = root_window(unsafe { GetForegroundWindow() });
                 enqueue_hook_input(RawInput::Mouse {
                     sequence: next_raw_input_sequence(),
                     message,
@@ -8253,6 +8930,11 @@ unsafe extern "system" fn mouse_hook_callback(
                     generation,
                     modifiers: current_modifiers(),
                     timestamp_ms: strict_parent_timestamp_ms(),
+                    target_window: target.0 as isize,
+                    target_pid: window_process_id(target),
+                    foreground_window: foreground.0 as isize,
+                    foreground_pid: window_process_id(foreground),
+                    injected: input.flags & 1 != 0,
                 });
             }
             if message == WM_RBUTTONDOWN {
@@ -8371,6 +9053,7 @@ mod tests {
             last_automatic_fingerprint: None,
             recent_capture: None,
             last_raw_sequence: 0,
+            mouse_selection_tracker: MouseSelectionTracker::default(),
         }
     }
 
@@ -8383,6 +9066,7 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
+            mouse_gesture: None,
         }
     }
 
@@ -8680,6 +9364,7 @@ mod tests {
                 generation: Some(7),
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
+                mouse_gesture: None,
             },
             source_root_window: 42,
             source_process_id: 100,
@@ -8709,6 +9394,7 @@ mod tests {
                 generation: Some(9),
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
+                mouse_gesture: None,
             },
             source_root_window: 42,
             source_process_id: 100,
@@ -8737,6 +9423,7 @@ mod tests {
                 generation: Some(7),
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
+                mouse_gesture: None,
             },
             source_root_window: 0,
             source_process_id: 0,
@@ -8812,6 +9499,7 @@ mod tests {
             generation: Some(generation),
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
+            mouse_gesture: None,
         };
         let selection = test_selection(SelectionTrigger::Drag);
 
@@ -8840,6 +9528,7 @@ mod tests {
             generation: Some(generation),
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
+            mouse_gesture: None,
         };
         let mut selection = test_selection(SelectionTrigger::Drag);
         selection.bounds = Some(SelectionBounds {
@@ -9188,6 +9877,7 @@ mod tests {
             generation: Some(1),
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
+            mouse_gesture: None,
         };
         assert_eq!(
             accessible_point_candidates(request),
@@ -9294,6 +9984,7 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: SLOW_PRESS_MS,
+            mouse_gesture: None,
         };
         assert_eq!(
             capture_settle_delay_for_request(&slow),
@@ -9309,6 +10000,7 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 100,
+            mouse_gesture: None,
         };
         assert_eq!(
             capture_settle_delay_for_request(&long),
@@ -9330,6 +10022,7 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
+            mouse_gesture: None,
         };
         assert_eq!(
             capture_settle_delay_for_request(&long_same_line),
@@ -9348,6 +10041,7 @@ mod tests {
             generation: Some(1),
             clipboard_sequence_at_start: None,
             press_duration_ms: 200,
+            mouse_gesture: None,
         };
         assert!(should_retry_empty_capture(&drag));
         assert_eq!(max_empty_capture_retries(&drag), 1);
@@ -9359,20 +10053,15 @@ mod tests {
             generation: Some(1),
             clipboard_sequence_at_start: None,
             press_duration_ms: 600,
+            mouse_gesture: None,
         };
         assert!(long_document_selection_needs_late_retry(&long));
         assert_eq!(
             max_empty_capture_retries(&long),
             EMPTY_CAPTURE_RETRY_DELAYS.len()
         );
-        assert_eq!(
-            empty_capture_retry_delay(1),
-            EMPTY_CAPTURE_RETRY_DELAYS[0]
-        );
-        assert_eq!(
-            empty_capture_retry_delay(2),
-            EMPTY_CAPTURE_RETRY_DELAYS[0]
-        );
+        assert_eq!(empty_capture_retry_delay(1), EMPTY_CAPTURE_RETRY_DELAYS[0]);
+        assert_eq!(empty_capture_retry_delay(2), EMPTY_CAPTURE_RETRY_DELAYS[0]);
         assert!(should_retry_empty_capture(&CaptureRequest {
             trigger: SelectionTrigger::DoubleClick,
             start: Some(RawPoint { x: 10, y: 10 }),
@@ -9381,6 +10070,7 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
+            mouse_gesture: None,
         }));
         assert!(!should_retry_empty_capture(&CaptureRequest {
             trigger: SelectionTrigger::Keyboard,
@@ -9390,6 +10080,7 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
+            mouse_gesture: None,
         }));
         assert!(!mouse_message_clears_pending_capture(WM_MOUSEWHEEL));
         assert!(!mouse_message_clears_pending_capture(WM_MOUSEHWHEEL));
@@ -9531,6 +10222,7 @@ mod tests {
                 generation: None,
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
+                mouse_gesture: None,
             },
             source_window: 123,
             source_process_id: 456,
@@ -9590,6 +10282,242 @@ mod tests {
         ));
     }
 
+    fn tracker_mouse_event(message: u32, point: RawPoint, sequence: u64) -> RawInput {
+        RawInput::Mouse {
+            sequence,
+            message,
+            point,
+            generation: sequence,
+            modifiers: ModifierSnapshot::default(),
+            timestamp_ms: sequence,
+            target_window: 42,
+            target_pid: 200,
+            foreground_window: 42,
+            foreground_pid: 200,
+            injected: false,
+        }
+    }
+
+    #[test]
+    fn manual_right_press_preserves_left_drag_but_scroll_and_keyboard_invalidate_it() {
+        let _dpi = DpiContext::enter();
+        let (sender, _receiver) = mpsc::channel();
+        let mut worker = test_worker(sender);
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_LBUTTONDOWN,
+            RawPoint { x: 100, y: 10 },
+            1,
+        ));
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_LBUTTONUP,
+            RawPoint { x: 300, y: 10 },
+            2,
+        ));
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_RBUTTONDOWN,
+            RawPoint { x: 400, y: 20 },
+            3,
+        ));
+        let gesture = worker.mouse_selection_tracker.context(3, 42, 200).unwrap();
+        assert_eq!(gesture.down, DetectorPoint { x: 100, y: 10 });
+        assert_eq!(gesture.up, DetectorPoint { x: 300, y: 10 });
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_MOUSEWHEEL,
+            RawPoint { x: 300, y: 10 },
+            4,
+        ));
+        assert!(worker.mouse_selection_tracker.context(4, 42, 200).is_none());
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_LBUTTONDOWN,
+            RawPoint { x: 100, y: 10 },
+            10,
+        ));
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_LBUTTONUP,
+            RawPoint { x: 300, y: 10 },
+            11,
+        ));
+        worker.handle_keyboard(
+            WM_KEYDOWN,
+            u32::from(VK_RIGHT.0),
+            12,
+            ModifierSnapshot::default(),
+            12,
+        );
+        assert!(worker
+            .mouse_selection_tracker
+            .context(12, 42, 200)
+            .is_none());
+    }
+
+    #[test]
+    fn injected_and_cross_window_mouse_events_do_not_supply_ground_truth() {
+        let _dpi = DpiContext::enter();
+        let (sender, _receiver) = mpsc::channel();
+        let mut worker = test_worker(sender);
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_LBUTTONDOWN,
+            RawPoint { x: 100, y: 10 },
+            1,
+        ));
+        let mut release = tracker_mouse_event(WM_LBUTTONUP, RawPoint { x: 300, y: 10 }, 2);
+        if let RawInput::Mouse { target_window, .. } = &mut release {
+            *target_window = 43;
+        }
+        worker.handle_raw_input(release);
+        assert!(worker.mouse_selection_tracker.context(2, 42, 200).is_none());
+        worker.handle_raw_input(tracker_mouse_event(
+            WM_LBUTTONDOWN,
+            RawPoint { x: 100, y: 10 },
+            3,
+        ));
+        let mut release = tracker_mouse_event(WM_LBUTTONUP, RawPoint { x: 300, y: 10 }, 4);
+        if let RawInput::Mouse { injected, .. } = &mut release {
+            *injected = true;
+        }
+        worker.handle_raw_input(release);
+        assert!(worker.mouse_selection_tracker.context(4, 42, 200).is_none());
+    }
+
+    #[test]
+    fn monitor_lifecycle_reset_drops_detector_mouse_context() {
+        let (sender, _receiver) = mpsc::channel();
+        let mut worker = test_worker(sender);
+        worker.mouse_selection_tracker.down(
+            DetectorPoint { x: 100, y: 10 },
+            1,
+            42,
+            200,
+            false,
+            500,
+            (2, 2),
+        );
+        worker
+            .mouse_selection_tracker
+            .up(DetectorPoint { x: 300, y: 10 }, 2, 42, 200);
+        worker.reset_interaction_state();
+        assert!(worker.mouse_selection_tracker.context(3, 42, 200).is_none());
+    }
+
+    #[test]
+    fn helper_protocol_round_trips_mouse_context_and_selection_health() {
+        let gesture = MouseGesture {
+            down: DetectorPoint { x: -120, y: 10 },
+            up: DetectorPoint { x: -20, y: 40 },
+            down_ms: 10,
+            up_ms: 20,
+            target_window: 42,
+            target_pid: 100,
+            kind: selection_offset::GestureKind::Drag,
+        };
+        let request = CaptureRequest {
+            mouse_gesture: Some(gesture),
+            ..test_capture_request(SelectionTrigger::Manual)
+        };
+        let command = HelperCommand::Capture {
+            request_id: 1,
+            request,
+            source_window: 42,
+            source_process_id: 100,
+            popper_process_id: 200,
+        };
+        let mut bytes = Vec::new();
+        write_helper_frame(&mut bytes, &command).unwrap();
+        let Some(HelperCommand::Capture { request, .. }) =
+            read_helper_frame::<HelperCommand>(&mut bytes.as_slice()).unwrap()
+        else {
+            panic!("capture frame");
+        };
+        assert_eq!(request.mouse_gesture, Some(gesture));
+        let health = SelectionHealthResult::suspicious(DetectionReason::MultipleSelections, true);
+        let event = HelperEvent::Result {
+            request_id: 1,
+            result: HelperCaptureResult::Empty,
+            health: health.clone(),
+            debug: Some(serde_json::json!({"captureId":1,"steps":[{"stage":"route.clipboard"}]})),
+        };
+        bytes.clear();
+        write_helper_frame(&mut bytes, &event).unwrap();
+        let Some(HelperEvent::Result {
+            health: decoded,
+            debug,
+            ..
+        }) = read_helper_frame::<HelperEvent>(&mut bytes.as_slice()).unwrap()
+        else {
+            panic!("result frame");
+        };
+        assert_eq!(decoded, health);
+        assert_eq!(debug.unwrap()["steps"][0]["stage"], "route.clipboard");
+        let mut legacy = serde_json::to_value(&event).unwrap();
+        // HelperEvent is externally tagged: the fields live inside Result.
+        let removed = legacy
+            .get_mut("Result")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("serialized Result event")
+            .remove("debug");
+        assert!(
+            removed.is_some(),
+            "legacy fixture must omit an existing debug field"
+        );
+        assert!(matches!(
+            serde_json::from_value::<HelperEvent>(legacy).unwrap(),
+            HelperEvent::Result { debug: None, .. }
+        ));
+        assert_eq!(SELECTION_HELPER_PROTOCOL_VERSION, 3);
+        assert_eq!(
+            serde_json::to_value(&health).unwrap()["status"],
+            "SUSPICIOUS"
+        );
+    }
+
+    #[test]
+    fn helper_protocol_round_trips_optional_click_validation() {
+        let point = selection_offset::ClickPointHealth {
+            point: DetectorPoint { x: 1345, y: 411 },
+            in_selection: false,
+            geometry_valid: None,
+            distance: Some(100.0),
+        };
+        let mut health = SelectionHealthResult::suspicious(
+            DetectionReason::ClickOutsideSelection,
+            true,
+        );
+        health.click_validation = Some(selection_offset::ClickValidation {
+            down: point,
+            up: point,
+            selection_rectangles: Vec::new(),
+        });
+        let event = HelperEvent::Result {
+            request_id: 1,
+            result: HelperCaptureResult::Empty,
+            health: health.clone(),
+            debug: None,
+        };
+        let mut bytes = Vec::new();
+        write_helper_frame(&mut bytes, &event).unwrap();
+        let Some(HelperEvent::Result { health: decoded, .. }) =
+            read_helper_frame::<HelperEvent>(&mut bytes.as_slice()).unwrap()
+        else {
+            panic!("result frame");
+        };
+        assert_eq!(decoded, health);
+        let mut legacy = serde_json::to_value(&health).unwrap();
+        let removed = legacy.as_object_mut().unwrap().remove("clickValidation");
+        assert!(removed.is_some());
+        let decoded: SelectionHealthResult = serde_json::from_value(legacy).unwrap();
+        assert!(decoded.click_validation.is_none());
+        assert_eq!(decoded.reason, DetectionReason::ClickOutsideSelection);
+    }
+
+    #[test]
+    fn older_capture_request_without_mouse_context_remains_deserializable() {
+        let request = test_capture_request(SelectionTrigger::Manual);
+        let mut value = serde_json::to_value(request).unwrap();
+        value.as_object_mut().unwrap().remove("mouse_gesture");
+        let decoded: CaptureRequest = serde_json::from_value(value).unwrap();
+        assert!(decoded.mouse_gesture.is_none());
+    }
+
     #[test]
     fn raw_input_sequence_is_strictly_monotonic() {
         let first = next_raw_input_sequence();
@@ -9645,4 +10573,8 @@ mod tests {
         assert!(!reap_worker(worker, Duration::from_millis(5)));
         assert!(started.elapsed() < Duration::from_millis(80));
     }
+}
+
+pub(super) fn selection_detection_debug_for(timestamp_ms: u64) -> Option<serde_json::Value> {
+    selection_debug::get(timestamp_ms)
 }

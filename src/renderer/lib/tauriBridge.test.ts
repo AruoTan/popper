@@ -91,6 +91,7 @@ describe("Tauri renderer bridge", () => {
 
     invokeMock.mockImplementation((command: string) => {
       if (command === "toolbar_ready") return Promise.resolve(null);
+      if (command === "get_selection_detection_debug") return Promise.resolve(null);
       if (command === "recover_toolbar") return Promise.resolve(true);
       if (command === "begin_result_ready") {
         return Promise.resolve(readySnapshot);
@@ -158,6 +159,8 @@ describe("Tauri renderer bridge", () => {
     installTauriBridge();
 
     await expect(window._popper_.getCurrentSelection?.()).resolves.toBeNull();
+    await expect(window._popper_.getSelectionDetectionDebug?.("session-1")).resolves.toBeNull();
+    expect(invokeMock).toHaveBeenCalledWith("get_selection_detection_debug",{sessionId:"session-1"});
     expect(selectionListenAttempts).toBe(3);
     expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain(
       "sensitive transient listener failure",

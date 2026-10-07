@@ -32,6 +32,7 @@ import {
   type ResultRendererMarker,
   type ResultSessionSnapshot,
   type RunActionResult,
+  type SelectionDetectionDebug,
   type SelectionPayload,
   type SettingsGuidance,
   type SettingsUpdate,
@@ -425,6 +426,11 @@ export function installTauriBridge(): void {
     },
     async reportToolbarSize(size: ToolbarSize, selectionId?: string) {
       await invoke(TAURI_COMMANDS.reportToolbarSize, { size, selectionId: selectionId ?? null });
+    },
+    async getSelectionDetectionDebug(sessionId: string): Promise<SelectionDetectionDebug | null> {
+      return invoke(TAURI_COMMANDS.getSelectionDetectionDebug, {
+        sessionId: requiredSessionId(sessionId),
+      });
     },
     async beginResultReady(sessionId: string): Promise<ResultSessionSnapshot> {
       await actionEvents.ready();

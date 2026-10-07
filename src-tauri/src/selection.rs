@@ -13,6 +13,10 @@ mod right_button;
 #[path = "../../apps/windows/src/selection.rs"]
 mod selection_windows;
 
+#[cfg(all(test, not(target_os = "windows")))]
+#[path = "../../apps/windows/src/selection_offset.rs"]
+mod selection_offset_tests;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::mpsc::{self, Receiver};
@@ -347,6 +351,19 @@ impl fmt::Debug for SelectionMonitor {
 unsafe impl Send for SelectionMonitor {}
 
 impl SelectionMonitor {
+    // TODO(selection-offset-dev): remove the temporary runtime diagnostics API.
+    pub fn selection_detection_debug(timestamp_ms: u64) -> Option<serde_json::Value> {
+        #[cfg(target_os = "windows")]
+        {
+            selection_windows::selection_detection_debug_for(timestamp_ms)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = timestamp_ms;
+            None
+        }
+    }
+
     #[cfg(target_os = "macos")]
     pub fn new(excluded_bundle_id: &str) -> Result<Self, SelectionError> {
         let excluded_bundle_id = CString::new(excluded_bundle_id)

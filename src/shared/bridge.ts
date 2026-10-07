@@ -68,7 +68,60 @@ export interface SettingsGuidance {
   notice?: string;
 }
 
+/** Temporary Windows runtime report; remove after desktop offset validation. */
+export interface SelectionClickPointHealth {
+  point: Point;
+  inSelection: boolean;
+  geometryValid: boolean | null;
+  distance: number | null;
+}
+
+export interface SelectionClickValidation {
+  down: SelectionClickPointHealth;
+  up: SelectionClickPointHealth;
+  selectionRectangles: { x: number; y: number; width: number; height: number }[];
+}
+
+export interface SelectionDetectionHealth {
+  status: "NORMAL" | "OFFSET_DETECTED" | "SUSPICIOUS" | "UIA_UNAVAILABLE";
+  applicable: boolean;
+  reason: string;
+  selectionDirection: string;
+  startEndpointValid: boolean | null;
+  endEndpointValid: boolean | null;
+  startGeometryValid: boolean | null;
+  endGeometryValid: boolean | null;
+  startDistance: number | null;
+  endDistance: number | null;
+  confidence: number;
+  stable: boolean;
+  clickValidation?: SelectionClickValidation | null;
+}
+
+export interface SelectionDetectionDebug {
+  version: string;
+  captureId: number;
+  selectionTimestampMs: number;
+  dpiReady: boolean;
+  gesture: { kind: string; down: { x: number; y: number }; up: { x: number; y: number } } | null;
+  fallbackAttempted: boolean;
+  copyInjected?: boolean;
+  provider: string | null;
+  method: string | null;
+  outcome: string;
+  selectionText: string | null;
+  initialHealth?: SelectionDetectionHealth;
+  health: SelectionDetectionHealth;
+  durationMs: number;
+  logPath?: string | null;
+  steps: { stage: string; elapsedMs: number; details: unknown }[];
+  inputEvents?: unknown[];
+  stepsTruncated?: boolean;
+}
+
 export interface WindowPopperApi {
+  /** Result window only, scoped to its original selection timestamp. */
+  getSelectionDetectionDebug?(sessionId: string): Promise<SelectionDetectionDebug | null>;
   submitTranslation?(sessionId: string, text: string): Promise<TranslationSubmission>;
   translationInputSuggestions?(
     sessionId: string,
