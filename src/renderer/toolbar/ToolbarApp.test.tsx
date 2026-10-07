@@ -342,7 +342,7 @@ describe("ToolbarApp", () => {
     consoleWarn.mockRestore();
   });
 
-  it("consumes rejected Escape and disabled-settings hides with sanitized diagnostics", async () => {
+  it("consumes rejected Escape hides with sanitized diagnostics and stays visible after settings updates", async () => {
     let settingsListener: ((settings: PublicSettings) => void) | undefined;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const hideToolbar = vi.fn().mockRejectedValue(new Error("selected secret text"));
@@ -365,9 +365,9 @@ describe("ToolbarApp", () => {
     await screen.findByRole("toolbar");
 
     fireEvent.keyDown(window, { key: "Escape" });
-    act(() => settingsListener?.({ ...DEFAULT_PUBLIC_SETTINGS, enabled: false }));
+    act(() => settingsListener?.({ ...DEFAULT_PUBLIC_SETTINGS }));
 
-    await waitFor(() => expect(hideToolbar).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(hideToolbar).toHaveBeenCalledTimes(1));
     await act(async () => Promise.resolve());
     expect(warn).toHaveBeenCalledWith("[Popper][renderer]", {
       scope: "toolbar",
@@ -1015,7 +1015,7 @@ describe("ToolbarApp", () => {
   it("uses the compact action sizes and has no close-control styling", () => {
     expect(toolbarCss).toMatch(/\.toolbar-pill\s*\{[^}]*min-height:\s*34px/s);
     expect(toolbarCss).toMatch(/\.toolbar-action\s*\{[^}]*height:\s*28px/s);
-    expect(toolbarCss).toMatch(/\.toolbar-action--icon-only\s*\{[^}]*width:\s*28px/s);
+    expect(toolbarCss).toMatch(/\.toolbar-action--fixed-ask\s*\{[^}]*width:\s*28px/s);
     expect(toolbarCss).not.toContain(".toolbar-close");
     expect(toolbarCss).not.toContain(".toolbar-divider");
   });

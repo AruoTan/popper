@@ -28,51 +28,14 @@ describe('settings form helpers', () => {
     }
   })
 
-  it('includes the Windows close behavior in ordinary settings updates', () => {
-    const result = buildSettingsUpdate({
-      ...DEFAULT_PUBLIC_SETTINGS,
-      application: { closeBehavior: 'quit' }
-    })
-
+  it('saves settings without retired configuration fields', () => {
+    const result = buildSettingsUpdate(DEFAULT_PUBLIC_SETTINGS)
     expect(result.valid).toBe(true)
-    if (result.valid) expect(result.value.application).toEqual({ closeBehavior: 'quit' })
-  })
-
-  it('includes per-application capture strategies in ordinary settings updates', () => {
-    const result = buildSettingsUpdate({
-      ...DEFAULT_PUBLIC_SETTINGS,
-      selectionCapture: {
-        defaultStrategy: 'selection-hook',
-        applications: [{ application: 'reader.exe', strategy: 'clipboard' }]
-      }
-    })
-
-    expect(result.valid).toBe(true)
-    if (result.valid) expect(result.value.selectionCapture).toEqual({
-      defaultStrategy: 'selection-hook',
-      applications: [{ application: 'reader.exe', strategy: 'clipboard' }]
-    })
-  })
-
-  it('rejects shortcut names that Tauri cannot register', () => {
-    expect(buildSettingsUpdate({
-      ...DEFAULT_PUBLIC_SETTINGS,
-      captureShortcut: 'Ctrl+Return'
-    })).toEqual({
-      valid: false,
-      message: '捕获快捷键格式无效，请使用例如 CommandOrControl+Shift+S 的格式'
-    })
-  })
-
-  it('requires a capture shortcut when trigger mode is shortcut', () => {
-    expect(buildSettingsUpdate({
-      ...DEFAULT_PUBLIC_SETTINGS,
-      trigger: { mode: 'shortcut' },
-      captureShortcut: ''
-    })).toEqual({
-      valid: false,
-      message: '快捷键触发模式需要设置捕获快捷键'
-    })
+    if (result.valid) {
+      for (const key of ['enabled', 'toolbar', 'application']) expect(result.value).not.toHaveProperty(key)
+      expect(result.value).not.toHaveProperty('trigger')
+      expect(result.value).not.toHaveProperty('captureShortcut')
+    }
   })
 
   it('sorts actions and rewrites their order without mutating input', () => {

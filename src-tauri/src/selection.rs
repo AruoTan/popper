@@ -6,6 +6,9 @@
 //! UI Automation/OLE calls. Native hook callbacks only enqueue raw input;
 //! selection and window work is always performed outside those callbacks.
 
+#[cfg(any(target_os = "windows", test))]
+mod right_button;
+
 #[cfg(target_os = "windows")]
 #[path = "../../apps/windows/src/selection.rs"]
 mod selection_windows;
@@ -128,6 +131,7 @@ pub struct DismissEvent {
 pub enum SelectionEvent {
     Selection(SelectionPayload),
     Dismiss(DismissEvent),
+    RightButtonHold,
 }
 
 #[derive(Debug)]
@@ -177,6 +181,7 @@ impl std::error::Error for SelectionError {}
     rename_all_fields = "camelCase"
 )]
 enum WireEvent {
+    RightButtonHold,
     Selection {
         text: String,
         source_app: SourceApplication,
@@ -204,6 +209,7 @@ enum WireEvent {
 impl From<WireEvent> for SelectionEvent {
     fn from(event: WireEvent) -> Self {
         match event {
+            WireEvent::RightButtonHold => Self::RightButtonHold,
             WireEvent::Selection {
                 text,
                 source_app,
@@ -425,17 +431,15 @@ impl SelectionMonitor {
         self.windows.start()
     }
 
-    /// Updates Windows-only capture routing and the automatic-capture gate
-    /// without restarting the global hook. The worker snapshots routing onto
-    /// each allowed gesture before forwarding it to the isolated UIA/OLE helper.
+    /// Updates the Windows automatic-capture gate without restarting the hook.
+    /// All captures read native selections before a guarded clipboard fallback.
     #[cfg(target_os = "windows")]
-    pub fn update_capture_settings(
+    pub fn set_automatic_capture_enabled(
         &self,
-        settings: crate::models::SelectionCaptureSettings,
         automatic_capture_enabled: bool,
     ) -> Result<(), SelectionError> {
         self.windows
-            .update_capture_settings(settings, automatic_capture_enabled)
+            .set_automatic_capture_enabled(automatic_capture_enabled)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -509,9 +513,11 @@ impl SelectionMonitor {
             .map_err(|error| SelectionError::MalformedNativePayload(error.to_string()))?;
         match parse_native_event(json)? {
             SelectionEvent::Selection(selection) => Ok(Some(selection)),
-            SelectionEvent::Dismiss(_) => Err(SelectionError::MalformedNativePayload(
-                "capture returned a dismiss event".to_owned(),
-            )),
+            SelectionEvent::Dismiss(_) | SelectionEvent::RightButtonHold => {
+                Err(SelectionError::MalformedNativePayload(
+                    "capture returned a non-selection event".to_owned(),
+                ))
+            }
         }
     }
 
@@ -522,7 +528,7 @@ impl SelectionMonitor {
 
     /// Enqueues a Windows manual capture without holding the Rust facade lock
     /// until the accessibility provider replies. The runtime uses this for
-    /// global-shortcut captures so a second key press can reach the native
+    /// right-button captures so a second long press can reach the native
     /// latest-wins coordinator and supersede a slow first probe.
     #[cfg(target_os = "windows")]
     pub fn capture_current_async(
@@ -858,6 +864,14 @@ mod tests {
         assert_eq!(serialized["type"], "selection");
         assert_eq!(serialized["text"], "hello");
         assert!(serialized.get("payload").is_none());
+    }
+
+    #[test]
+    fn parses_explicit_right_button_hold_event() {
+        assert_eq!(
+            parse_native_event(r#"{"type":"rightButtonHold"}"#).unwrap(),
+            SelectionEvent::RightButtonHold
+        );
     }
 
     #[test]

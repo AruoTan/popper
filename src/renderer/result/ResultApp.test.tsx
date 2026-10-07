@@ -135,7 +135,7 @@ async function renderResult(
   const failResultReveal = vi.fn().mockResolvedValue(undefined);
   const ackResultReady = vi.fn().mockResolvedValue(true);
   let settingsListener: ((next: PublicSettings) => void) | null = null;
-  let resultSelectionShortcutListener: (() => void) | null = null;
+  let resultSelectionHoldListener: (() => void) | null = null;
   const api = {
     getSettings: vi.fn().mockResolvedValue(settings),
     beginResultReady: vi.fn().mockResolvedValue(snapshot),
@@ -160,10 +160,10 @@ async function renderResult(
         if (settingsListener === listener) settingsListener = null;
       };
     }),
-    onResultSelectionShortcut: vi.fn((listener: () => void) => {
-      resultSelectionShortcutListener = listener;
+    onResultSelectionHold: vi.fn((listener: () => void) => {
+      resultSelectionHoldListener = listener;
       return () => {
-        if (resultSelectionShortcutListener === listener) resultSelectionShortcutListener = null;
+        if (resultSelectionHoldListener === listener) resultSelectionHoldListener = null;
       };
     }),
     ...apiOverrides,
@@ -206,7 +206,7 @@ async function renderResult(
     failResultReveal,
     bootstrap,
     emitSettings: (next: PublicSettings) => settingsListener?.(next),
-    emitResultSelectionShortcut: () => resultSelectionShortcutListener?.(),
+    emitResultSelectionHold: () => resultSelectionHoldListener?.(),
   };
 }
 
@@ -265,6 +265,79 @@ describe("ResultApp sessionId query", () => {
 });
 
 describe("ResultApp window interactions", () => {
+  it.each(["streaming", "completed"] as const)(
+    "shows an automatic AI fallback without the switch button or internal user turn while %s",
+    async (status) => {
+      const dictionary: DictionarySnapshot = {
+        ...dictionaryFixture(),
+        mode: "ai",
+        status: "missing",
+        entry: null,
+        suggestionError: "联想查询失败",
+      };
+      const content = status === "completed" ? "自动翻译结果" : "";
+      const result = await renderResult(
+        resultSnapshot({
+          dictionary,
+          status,
+          content,
+          conversation: content ? [{ role: "assistant", content }] : [],
+        }),
+        settingsWithFontSize(),
+        { getDictionaryState: vi.fn().mockResolvedValue(dictionary) },
+      );
+      expect(await screen.findByText("没有找到词典释义，已转为 AI 翻译。")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "改用 AI 翻译" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/联想查询失败/)).not.toBeInTheDocument();
+      expect(result.container.querySelector(".result-turn--user")).toBeNull();
+      expect(screen.getByRole("button", { name: "显示原文" })).toHaveAttribute(
+        "aria-expanded",
+        "false",
+      );
+      expect(result.container.querySelector(".result-original__content")).toBeNull();
+      if (content) {
+        expect(await screen.findByText(content)).toBeInTheDocument();
+      } else {
+        expect(await screen.findByText("正在等待模型响应…")).toBeInTheDocument();
+      }
+      expect(screen.getByRole("textbox", { name: "继续提问" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "显示原文" }));
+      expect(result.container.querySelector(".result-original__content")).toHaveTextContent("hello");
+      fireEvent.click(screen.getByRole("button", { name: "隐藏原文" }));
+      expect(result.container.querySelector(".result-original__content")).toBeNull();
+    },
+  );
+
+  it("keeps the original collapsed when a dictionary lookup automatically switches to AI", async () => {
+    const dictionary: DictionarySnapshot = {
+      ...dictionaryFixture(),
+      status: "loading",
+      entry: null,
+    };
+    let listener: ((next: DictionarySnapshot) => void) | undefined;
+    const result = await renderResult(
+      resultSnapshot({ dictionary, content: "" }),
+      settingsWithFontSize(),
+      {
+        getDictionaryState: vi.fn().mockResolvedValue(dictionary),
+        onDictionaryChanged: (fn) => {
+          listener = fn;
+          return () => {};
+        },
+      },
+    );
+    await screen.findByText("正在查询词典…");
+    expect(screen.getByRole("button", { name: "显示原文" })).toBeInTheDocument();
+
+    act(() => {
+      listener?.({ ...dictionary, revision: 3, mode: "ai", status: "missing" });
+    });
+
+    await screen.findByText("没有找到词典释义，已转为 AI 翻译。");
+    expect(screen.getByRole("button", { name: "显示原文" })).toHaveAttribute("aria-expanded", "false");
+    expect(result.container.querySelector(".result-original__content")).toBeNull();
+  });
+
   it("uses the single footer for dictionary input without AI and prevents duplicate submission", async () => {
     const dictionary = dictionaryFixture();
     const pending = deferred<{ route: "dictionary"; requestId: string }>();
@@ -596,6 +669,7 @@ describe("ResultApp window interactions", () => {
 
   it("starts native dragging only from a non-interactive primary-button header area", async () => {
     const { container } = await renderResult();
+    const translationTarget = await screen.findByRole("combobox", { name: "翻译目标语言" });
     const header = container.querySelector<HTMLElement>(".result-header")!;
 
     fireEvent.pointerDown(header, { button: 0, isPrimary: true });
@@ -605,7 +679,7 @@ describe("ResultApp window interactions", () => {
       button: 0,
       isPrimary: true,
     });
-    fireEvent.pointerDown(screen.getByRole("combobox", { name: "翻译目标语言" }), {
+    fireEvent.pointerDown(translationTarget, {
       button: 0,
       isPrimary: true,
     });
@@ -651,9 +725,19 @@ describe("ResultApp window interactions", () => {
       .spyOn(window.navigator, "userAgent", "get")
       .mockReturnValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) WebView2");
     try {
-      const { api, container } = await renderResult();
+      const pendingSession = deferred<ResultSessionSnapshot>();
+      const { api, container } = await renderResult(
+        completedSession,
+        settingsWithFontSize(),
+        {},
+        { bootstrap: { start: vi.fn(() => pendingSession.promise) } },
+      );
       const resultWindow = container.querySelector(".result-window");
       expect(resultWindow).toHaveClass("result-window--windows");
+      // The heading comes from the store before async session metadata arrives.
+      expect(container.querySelector(".translation-route")).not.toBeInTheDocument();
+      act(() => pendingSession.resolve(completedSession));
+      await screen.findByRole("combobox", { name: "翻译目标语言" });
       expect(container.querySelector(".translation-route__code")).toHaveTextContent("EN");
       expect(container.querySelector(".translation-route__target > span")).toHaveTextContent("CN");
 
@@ -680,6 +764,7 @@ describe("ResultApp window interactions", () => {
 
   it("keeps translation metadata in the compact header and applies result font size", async () => {
     const { api, container, continueAction } = await renderResult();
+    await screen.findByRole("combobox", { name: "翻译目标语言" });
     const resultWindow = container.querySelector<HTMLElement>(".result-window")!;
     const footer = container.querySelector<HTMLElement>(".result-footer")!;
     const footerActions = container.querySelector<HTMLElement>(".result-actions")!;
@@ -1065,90 +1150,49 @@ describe("ResultApp window interactions", () => {
     expect(selector).toHaveTextContent("深度模型");
   });
 
-  it("shows the app toolbar for a real text selection inside result content", async () => {
-    const { container, showResultSelection } = await renderResult();
-    expect(container.querySelector(".stream-plain-text")).toBeInTheDocument();
-
+  it("presents result selections only when a native right-button hold is received", async () => {
+    const { container, showResultSelection, emitResultSelectionHold } = await renderResult();
+    const select = (element: HTMLElement) => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.getBoundingClientRect = () => ({ left: 20, bottom: 40, width: 60 } as DOMRect);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    };
     const selected = screen.getByText("可选择的结果");
-    const range = document.createRange();
-    range.selectNodeContents(selected);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-
-    fireEvent.pointerUp(selected, {
-      button: 0,
-      isPrimary: true,
-      screenX: 320,
-      screenY: 240,
-    });
-
-    await waitFor(() => {
-      expect(showResultSelection).toHaveBeenCalledWith(
-        "session-1",
-        "可选择的结果",
-        { x: 320, y: 240 },
-        false,
-      );
-    });
-
+    select(selected);
+    fireEvent.pointerUp(selected, { button: 0, isPrimary: true, screenX: 320, screenY: 240 });
+    await waitForAnimationFrame();
+    expect(showResultSelection).not.toHaveBeenCalled();
+    // Markdown may replace the initial node while loading.
+    select(screen.getByText("可选择的结果"));
+    emitResultSelectionHold();
+    expect(showResultSelection).toHaveBeenCalledWith(
+      "session-1", "可选择的结果", { x: window.screenX + 50, y: window.screenY + 40 }, true,
+    );
     showResultSelection.mockClear();
-    const originalToggle = screen.getByRole("button", { name: "显示原文" });
-    fireEvent.pointerUp(originalToggle, { button: 0, isPrimary: true, screenX: 10, screenY: 10 });
-    await waitForAnimationFrame();
+    select(screen.getByRole("heading", { name: "翻译" }));
+    emitResultSelectionHold();
     expect(showResultSelection).not.toHaveBeenCalled();
-
-    const outsideRange = document.createRange();
-    outsideRange.selectNodeContents(screen.getByRole("heading", { name: "翻译" }));
-    selection.removeAllRanges();
-    selection.addRange(outsideRange);
-    fireEvent.pointerUp(container.querySelector(".result-content")!, {
-      button: 0,
-      isPrimary: true,
-      screenX: 20,
-      screenY: 30,
-    });
-    await waitForAnimationFrame();
-    expect(showResultSelection).not.toHaveBeenCalled();
-    // The deferred Markdown chunk may replace its initial plain-text node, so
-    // assert against the live result container instead of the stale span.
     expect(container.querySelector(".result-content")).toHaveTextContent(completedSession.content);
   });
 
-  it("does not auto-show the toolbar for result selections in shortcut mode", async () => {
-    const shortcutSettings: PublicSettings = {
-      ...settingsWithFontSize(),
-      trigger: { mode: "shortcut" },
-    };
-    const { showResultSelection, hideResultSelection, emitResultSelectionShortcut } =
-      await renderResult(completedSession, shortcutSettings);
-    const selected = screen.getByText("可选择的结果");
+  it("accepts right-button holds while the settings payload is still loading", async () => {
+    const initialSettings = deferred<PublicSettings>();
+    const { showResultSelection, emitResultSelectionHold } = await renderResult(completedSession, settingsWithFontSize(), {
+      getSettings: vi.fn(() => initialSettings.promise),
+    });
     const range = document.createRange();
-    range.selectNodeContents(selected);
-    const selection = window.getSelection()!;
-    selection.removeAllRanges();
-    selection.addRange(range);
-
-    fireEvent.pointerUp(selected, {
-      button: 0,
-      isPrimary: true,
-      screenX: 320,
-      screenY: 240,
-    });
-    await waitForAnimationFrame();
-
-    expect(showResultSelection).not.toHaveBeenCalled();
-    expect(hideResultSelection).toHaveBeenCalledWith("session-1");
-
-    emitResultSelectionShortcut();
-    await waitFor(() => {
-      expect(showResultSelection).toHaveBeenCalledWith(
-        "session-1",
-        "可选择的结果",
-        { x: 320, y: 240 },
-        true,
-      );
-    });
+    range.selectNodeContents(screen.getByText("可选择的结果"));
+    range.getBoundingClientRect = () => ({ left: 10, bottom: 20, width: 30 } as DOMRect);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    emitResultSelectionHold();
+    expect(showResultSelection).toHaveBeenCalledWith(
+      "session-1", "可选择的结果", expect.any(Object), true,
+    );
+    await act(async () => initialSettings.resolve(settingsWithFontSize()));
   });
 
   it("dismisses the in-result selection toolbar when clicking elsewhere inside the result window", async () => {
@@ -1188,37 +1232,80 @@ describe("ResultApp window interactions", () => {
       screenY: 50,
     });
     await waitForAnimationFrame();
-    expect(hideResultSelection).toHaveBeenCalledWith("session-1");
+    expect(hideResultSelection).not.toHaveBeenCalled();
     expect(showResultSelection).not.toHaveBeenCalled();
   });
 
-  it("auto-expands thinking while reasoning and collapses on manual toggle", async () => {
-    await renderResult(
-      resultSnapshot({
+  it.each(["translate", "ask-ai"])(
+    "keeps thinking collapsed with progress dots until manually opened for %s",
+    async (actionId) => {
+      const snapshot = resultSnapshot({
+        actionId,
         status: "streaming",
         content: "",
         contentScalarCount: 0,
         thinkingContent: "先拆解题意，再给出解释。",
-      }),
-    );
+        conversation: actionId === "ask-ai" ? [{ role: "assistant", content: "" }] : [],
+      });
+      const { container } = await renderResult(snapshot);
 
-    expect(screen.getByTestId("result-thinking")).toBeInTheDocument();
-    // Badge-only chrome (no「思考过程」); live state still auto-expands body.
-    expect(screen.queryByText("思考过程")).not.toBeInTheDocument();
-    expect(screen.getByText("思考")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /思考中/ })).toHaveAttribute("aria-expanded", "true");
-    const thinkingBody = screen.getByText("先拆解题意，再给出解释。");
-    expect(thinkingBody).toBeInTheDocument();
-    // Must not share .stream-plain-text (full body font-size) or the shrink CSS loses.
-    expect(thinkingBody).toHaveClass("result-thinking__body");
-    expect(thinkingBody).not.toHaveClass("stream-plain-text");
+      expect(await screen.findByTestId("result-thinking")).toHaveClass("result-thinking--live");
+      expect(screen.getByText("思考")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /思考中/ })).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByText(snapshot.thinkingContent)).not.toBeInTheDocument();
+      expect(container.querySelectorAll(".result-thinking__activity span")).toHaveLength(3);
+      expect(container.querySelector(".result-thinking__activity")).toHaveAttribute("aria-hidden", "true");
 
-    fireEvent.click(screen.getByRole("button", { name: /思考中/ }));
-    expect(screen.getByRole("button", { name: /思考中/ })).toHaveAttribute(
-      "aria-expanded",
-      "false",
-    );
-    expect(screen.queryByText("先拆解题意，再给出解释。")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /思考中/ }));
+      expect(screen.getByRole("button", { name: /思考中/ })).toHaveAttribute("aria-expanded", "true");
+      const thinkingBody = screen.getByText(snapshot.thinkingContent);
+      expect(thinkingBody).toHaveClass("result-thinking__body");
+      expect(thinkingBody).not.toHaveClass("stream-plain-text");
+
+      const store = await import("./actionEventStore");
+      act(() => {
+        store.hydrateActionEventStore({
+          ...snapshot,
+          content: "解释如下。",
+          contentScalarCount: countUnicodeScalars("解释如下。"),
+        });
+      });
+      expect(screen.getByTestId("result-thinking")).not.toHaveClass("result-thinking--live");
+      expect(screen.getByRole("button", { name: "思考，点击展开或收起" })).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByText(snapshot.thinkingContent)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "思考，点击展开或收起" }));
+      expect(screen.queryByText(snapshot.thinkingContent)).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps arriving thinking collapsed through completion and resets manual expansion on a new request", async () => {
+    const snapshot = resultSnapshot({ status: "streaming", content: "" });
+    await renderResult(snapshot);
+    expect(screen.queryByTestId("result-thinking")).not.toBeInTheDocument();
+
+    const store = await import("./actionEventStore");
+    const reasoning = { ...snapshot, thinkingContent: "正在分析问题。" };
+    act(() => store.hydrateActionEventStore(reasoning));
+    expect(screen.getByRole("button", { name: /思考中/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText(reasoning.thinkingContent)).not.toBeInTheDocument();
+
+    act(() => store.hydrateActionEventStore({ ...reasoning, status: "completed" }));
+    expect(screen.getByTestId("result-thinking")).not.toHaveClass("result-thinking--live");
+    expect(screen.getByRole("button", { name: "思考，点击展开或收起" })).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(screen.getByRole("button", { name: "思考，点击展开或收起" }));
+    expect(screen.getByText(reasoning.thinkingContent)).toBeInTheDocument();
+    act(() => {
+      store.hydrateActionEventStore({
+        ...reasoning,
+        requestId: "request-retry",
+        requestGeneration: 2,
+        thinkingContent: "重新分析问题。",
+      });
+    });
+    expect(screen.getByRole("button", { name: /思考中/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("重新分析问题。")).not.toBeInTheDocument();
   });
 
   it("shows a single-line waiting label without the streaming-hint subtitle", async () => {

@@ -14,17 +14,14 @@ use std::{
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{
-    menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
+    menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
 };
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 use tokio::sync::oneshot;
 use url::{Host, Url};
 use uuid::Uuid;
 
-#[cfg(target_os = "windows")]
-use crate::models::ApplicationCloseBehavior;
 use crate::{
     actions::{ActionBeginReady, ActionService, ActionServiceError, ConversationTurn},
     clipboard,
@@ -32,7 +29,7 @@ use crate::{
         ActionKind, ActionNotice, ActionSnapshotStatus, ConnectionTestResult, CreateProviderInput,
         EventSequence, ExecuteActionRequest, HandshakeGeneration, Point as ActionPoint,
         PublicSettings, RequestGeneration, ResultDismissMode, ResultReadyAck, SessionGeneration,
-        SettingsUpdate, SyncModelsResult, TriggerMode, UpdateProviderInput,
+        SettingsUpdate, SyncModelsResult, UpdateProviderInput,
         WindowSize as SettingsWindowSize,
     },
     selection::{
@@ -49,11 +46,9 @@ use crate::{
 
 pub const SELECTION_EVENT: &str = "popper:selection";
 pub const SETTINGS_CHANGED_EVENT: &str = "popper:settings-changed";
-pub const SHORTCUT_ERROR_EVENT: &str = "popper:shortcut-error";
-pub const SETTINGS_CLOSE_REQUEST_EVENT: &str = "popper:settings-close-requested";
 pub const SETTINGS_GUIDANCE_EVENT: &str = "popper:settings-guidance";
 pub const TOOLBAR_DISMISSED_EVENT: &str = "popper:toolbar-dismissed";
-pub const RESULT_SELECTION_SHORTCUT_EVENT: &str = "popper:result-selection-shortcut";
+pub const RESULT_SELECTION_HOLD_EVENT: &str = "popper:result-selection-hold";
 
 fn trace_toolbar_interaction(message: impl std::fmt::Display) {
     if std::env::var_os("POPPER_TOOLBAR_DIAGNOSTICS").is_some() {
@@ -64,8 +59,6 @@ fn trace_toolbar_interaction(message: impl std::fmt::Display) {
 const SELECTION_MONITOR_START_ERROR: &str =
     "无法启动系统划词监听。请重新启动 Popper；若仍然失败，请检查安全软件或系统策略。";
 const SELECTION_MONITOR_DISCONNECTED_ERROR: &str = "系统划词监听意外停止。请重新启动 Popper。";
-const GLOBAL_SHORTCUT_ERROR: &str =
-    "全局快捷键注册失败，可能已被其他应用占用。请更换快捷键后重试。";
 
 const TOOLBAR_LABEL: &str = "selection-toolbar";
 const SETTINGS_LABEL: &str = "settings";
@@ -85,7 +78,6 @@ pub struct SettingsGuidance {
 }
 const RESULT_LABEL_PREFIX: &str = "selection-result-";
 const TRAY_ID: &str = "popper-tray";
-const TRAY_TOGGLE_ID: &str = "popper-toggle";
 const TRAY_PERMISSION_ID: &str = "popper-permission";
 const TRAY_SETTINGS_ID: &str = "popper-settings";
 const TRAY_QUIT_ID: &str = "popper-quit";
@@ -94,28 +86,6 @@ const RESULT_DEFAULT_HEIGHT: f64 = 420.0;
 const RESIZE_PERSIST_DELAY_MS: u64 = 420;
 const MAX_RESULT_SESSIONS: usize = 12;
 const RESULT_REVEAL_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(target_os = "windows")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SettingsCloseAction {
-    HideToTray,
-    RequestQuitConfirmation,
-    QuitImmediately,
-}
-
-#[cfg(target_os = "windows")]
-fn settings_close_action(
-    behavior: ApplicationCloseBehavior,
-    renderer_ready: bool,
-) -> SettingsCloseAction {
-    match behavior {
-        ApplicationCloseBehavior::HideToTray => SettingsCloseAction::HideToTray,
-        ApplicationCloseBehavior::Quit if renderer_ready => {
-            SettingsCloseAction::RequestQuitConfirmation
-        }
-        ApplicationCloseBehavior::Quit => SettingsCloseAction::QuitImmediately,
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccessibilityStatus {
@@ -131,8 +101,6 @@ pub struct AccessibilityStatus {
 pub struct RuntimeDiagnostics {
     #[serde(skip_serializing_if = "Option::is_none")]
     selection_monitor_error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    shortcut_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -543,17 +511,14 @@ pub struct RuntimeState {
     result_creation: Mutex<()>,
     result_sessions: Mutex<HashMap<String, ResultSessionMeta>>,
     result_reveals: Mutex<HashMap<String, ResultRevealHandshake>>,
-    /// Generation for shortcut-triggered captures. A capture may outlive the
-    /// plugin callback, so only the newest request may publish or hide UI.
-    shortcut_capture_generation: AtomicU64,
-    shortcut_switch: Mutex<()>,
-    registered_shortcut: Mutex<Option<Shortcut>>,
+    /// Generation for right-button captures. A capture may outlive the
+    /// input event, so only the newest request may publish or hide UI.
+    manual_capture_generation: AtomicU64,
     runtime_diagnostics: Mutex<RuntimeDiagnostics>,
     pending_result_sizes: Mutex<HashMap<String, PendingResultSize>>,
     resize_revision: AtomicU64,
     latest_result_size: Mutex<Option<SettingsWindowSize>>,
     last_permission: Mutex<bool>,
-    settings_renderer_ready: AtomicBool,
     /// While the inline Ask composer owns keyboard focus, global key and
     /// foreground notifications belong to Popper itself and must not tear
     /// down the selection toolbar.
@@ -584,15 +549,12 @@ impl RuntimeState {
             result_creation: Mutex::new(()),
             result_sessions: Mutex::new(HashMap::new()),
             result_reveals: Mutex::new(HashMap::new()),
-            shortcut_capture_generation: AtomicU64::new(0),
-            shortcut_switch: Mutex::new(()),
-            registered_shortcut: Mutex::new(None),
+            manual_capture_generation: AtomicU64::new(0),
             runtime_diagnostics: Mutex::new(RuntimeDiagnostics::default()),
             pending_result_sizes: Mutex::new(HashMap::new()),
             resize_revision: AtomicU64::new(0),
             latest_result_size: Mutex::new(None),
             last_permission: Mutex::new(SelectionMonitor::is_accessibility_trusted()),
-            settings_renderer_ready: AtomicBool::new(false),
             toolbar_input_mode: AtomicBool::new(false),
             toolbar_input_switch: Mutex::new(()),
             shutting_down: AtomicBool::new(false),
@@ -683,7 +645,17 @@ impl RuntimeState {
         }
         match event {
             SelectionEvent::Selection(selection) => self.handle_selection(app, selection, false),
+            SelectionEvent::RightButtonHold => {
+                if let Some(label) = self.windows.foreground_result_label(app) {
+                    let _ = app.emit_to(&label, RESULT_SELECTION_HOLD_EVENT, ());
+                } else {
+                    self.capture_current(app);
+                }
+            }
             SelectionEvent::Dismiss(dismiss) => {
+                if matches!(dismiss.reason.as_str(), "mouseDown" | "keyDown" | "scroll") {
+                    self.invalidate_manual_capture();
+                }
                 trace_toolbar_interaction(format_args!(
                     "dismiss received reason={} input_mode={} point=({:.0},{:.0}) target_pid={} timestamp_ms={}",
                     dismiss.reason,
@@ -803,8 +775,8 @@ impl RuntimeState {
             .is_some_and(|selection| selection.id == selection_id)
     }
 
-    fn invalidate_shortcut_capture(&self) {
-        self.shortcut_capture_generation
+    fn invalidate_manual_capture(&self) {
+        self.manual_capture_generation
             .fetch_add(1, Ordering::AcqRel);
     }
 
@@ -862,20 +834,14 @@ impl RuntimeState {
 
     fn handle_selection(&self, app: &AppHandle, selection: SelectionPayload, force_capture: bool) {
         let settings = self.settings.get_settings();
-        if !settings.enabled || !SelectionMonitor::is_accessibility_trusted() {
+        if !SelectionMonitor::is_accessibility_trusted() {
             self.windows.hide_toolbar(app);
             *self.current_selection.lock() = None;
             return;
         }
-        // Shortcut mode keeps the selection monitor running so outside clicks can
-        // dismiss the toolbar, but automatic selection events must not replace or
-        // clear a shortcut-invoked toolbar.
-        if !should_present_selection_for_trigger(force_capture, settings.trigger.mode) {
-            return;
-        }
         // After copy/dismiss, ignore automatic re-captures of the same text so the
         // toolbar does not jump to the click and demand a second outside click.
-        // Shortcut force_capture still presents intentionally re-invoked captures.
+        // Explicit long presses also present intentionally re-invoked captures.
         if !force_capture
             && should_suppress_same_text_selection(
                 self.same_text_selection_suppress.lock().as_ref(),
@@ -1016,24 +982,24 @@ impl RuntimeState {
             return;
         }
         let generation = self
-            .shortcut_capture_generation
+            .manual_capture_generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
         let app = app.clone();
         let _ = thread::Builder::new()
-            .name("popper-shortcut-capture".to_owned())
+            .name("popper-right-button-capture".to_owned())
             .spawn(move || {
                 let state = app.state::<RuntimeState>();
                 let current = || {
                     !state.shutting_down.load(Ordering::Acquire)
-                        && state.shortcut_capture_generation.load(Ordering::Acquire) == generation
+                        && state.manual_capture_generation.load(Ordering::Acquire) == generation
                 };
                 if !current() {
                     return;
                 }
 
                 // Windows manual capture is enqueue-only here. Releasing the
-                // facade lock before waiting lets another shortcut request
+                // facade lock before waiting lets another long-press request
                 // reach the native latest-wins coordinator and cancel a slow
                 // provider probe instead of queueing behind it.
                 #[cfg(target_os = "windows")]
@@ -1066,27 +1032,19 @@ impl RuntimeState {
         if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
-        let settings = self.settings.get_settings();
         let trusted = SelectionMonitor::is_accessibility_trusted();
-        // Keep the native monitor running in both trigger modes while enabled:
-        // shortcut mode still needs dismiss events (outside click) after a
-        // shortcut-invoked toolbar is shown. The Windows worker receives a
-        // separate capture gate so those hooks cannot start UIA/clipboard work.
-        let should_listen = settings.enabled && trusted;
+        // The monitor emits dismiss events and explicit right-button holds.
+        let should_listen = trusted;
         #[cfg(target_os = "windows")]
-        let automatic_capture_enabled =
-            should_listen && settings.trigger.mode == TriggerMode::Selected;
+        let automatic_capture_enabled = false;
         if !should_listen {
-            self.invalidate_shortcut_capture();
+            self.invalidate_manual_capture();
         }
         let start_failed = {
             let monitor = self.selection_monitor.lock();
             #[cfg(target_os = "windows")]
             let settings_applied = monitor
-                .update_capture_settings(
-                    settings.selection_capture.clone(),
-                    automatic_capture_enabled,
-                )
+                .set_automatic_capture_enabled(automatic_capture_enabled)
                 .is_ok();
             if should_listen {
                 #[cfg(target_os = "windows")]
@@ -1106,99 +1064,8 @@ impl RuntimeState {
         };
         let diagnostic = selection_monitor_diagnostic(should_listen, start_failed);
         if self.set_selection_monitor_error(diagnostic) {
-            if let Ok(public) = self.settings.get_public_settings() {
-                refresh_tray(app, &public);
-            }
+            refresh_tray(app);
         }
-    }
-
-    pub fn reconcile_shortcut(&self, app: &AppHandle) {
-        if self.shutting_down.load(Ordering::Acquire) {
-            return;
-        }
-        let settings = self.settings.get_settings();
-        let requested = shortcut_registration_target(
-            settings.enabled,
-            settings.trigger.mode,
-            settings.capture_shortcut.as_str(),
-        );
-        if let Err(error) = self.switch_shortcut(app, &requested) {
-            // Keep the saved value so the settings page can show exactly what
-            // needs editing. The event is only a prompt; RuntimeDiagnostics is
-            // the replayable source of truth for windows opened afterwards.
-            let _ = app.emit(SHORTCUT_ERROR_EVENT, error);
-        }
-    }
-
-    fn switch_shortcut(&self, app: &AppHandle, requested: &str) -> Result<String, String> {
-        let _transaction = self.shortcut_switch.lock();
-        let requested = requested.trim();
-        let outcome = (|| {
-            let requested = if requested.is_empty() {
-                None
-            } else {
-                Some(
-                    requested
-                        .parse::<Shortcut>()
-                        .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?,
-                )
-            };
-            let current = *self.registered_shortcut.lock();
-            if current == requested {
-                if let Some(shortcut) = requested {
-                    if !app.global_shortcut().is_registered(shortcut) {
-                        app.global_shortcut()
-                            .register(shortcut)
-                            .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?;
-                    }
-                    if !app.global_shortcut().is_registered(shortcut) {
-                        return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
-                    }
-                }
-                return Ok(current
-                    .map(|shortcut| shortcut.to_string())
-                    .unwrap_or_default());
-            }
-
-            if let Some(shortcut) = requested {
-                // A previous failed rollback may have left this shortcut in the
-                // plugin registry. Adopt it instead of treating our own stale
-                // registration as a system-wide conflict.
-                if !app.global_shortcut().is_registered(shortcut) {
-                    app.global_shortcut()
-                        .register(shortcut)
-                        .map_err(|_| GLOBAL_SHORTCUT_ERROR.to_owned())?;
-                }
-            }
-
-            if let Some(shortcut) = current {
-                if app.global_shortcut().is_registered(shortcut)
-                    && app.global_shortcut().unregister(shortcut).is_err()
-                {
-                    if let Some(requested) = requested {
-                        let _ = app.global_shortcut().unregister(requested);
-                    }
-                    return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
-                }
-            }
-
-            if current.is_some_and(|shortcut| app.global_shortcut().is_registered(shortcut)) {
-                if let Some(requested) = requested {
-                    let _ = app.global_shortcut().unregister(requested);
-                }
-                return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
-            }
-            if requested.is_some_and(|shortcut| !app.global_shortcut().is_registered(shortcut)) {
-                return Err(GLOBAL_SHORTCUT_ERROR.to_owned());
-            }
-
-            *self.registered_shortcut.lock() = requested;
-            Ok(current
-                .map(|shortcut| shortcut.to_string())
-                .unwrap_or_default())
-        })();
-        self.set_shortcut_error(shortcut_registration_diagnostic(outcome.is_err()));
-        outcome
     }
 
     fn set_selection_monitor_error(&self, error: Option<String>) -> bool {
@@ -1219,7 +1086,7 @@ impl RuntimeState {
         // Clear stale UI first, then rebuild the Windows producer and receiver
         // as one lifecycle. Native error details are deliberately not logged
         // because providers may include selected text in their error messages.
-        self.invalidate_shortcut_capture();
+        self.invalidate_manual_capture();
         *self.current_selection.lock() = None;
         self.windows.hide_toolbar(app);
         self.selection_monitor.lock().shutdown();
@@ -1233,9 +1100,7 @@ impl RuntimeState {
             .is_some_and(|receiver| spawn_selection_loop(app.clone(), receiver).is_ok());
         let diagnostic = (!recovered).then(|| SELECTION_MONITOR_DISCONNECTED_ERROR.to_owned());
         if self.set_selection_monitor_error(diagnostic) {
-            if let Ok(public) = self.settings.get_public_settings() {
-                refresh_tray(app, &public);
-            }
+            refresh_tray(app);
         }
         if recovered {
             self.reconcile_capture(app);
@@ -1243,15 +1108,6 @@ impl RuntimeState {
         } else {
             eprintln!("[selection] event channel disconnected; monitor recovery failed");
         }
-    }
-
-    fn set_shortcut_error(&self, error: Option<String>) -> bool {
-        let mut diagnostics = self.runtime_diagnostics.lock();
-        if diagnostics.shortcut_error == error {
-            return false;
-        }
-        diagnostics.shortcut_error = error;
-        true
     }
 
     fn accessibility_status(&self) -> AccessibilityStatus {
@@ -1268,10 +1124,9 @@ impl RuntimeState {
     }
 
     pub fn after_settings_changed(&self, app: &AppHandle, settings: &PublicSettings) {
-        self.invalidate_shortcut_capture();
+        self.invalidate_manual_capture();
         self.reconcile_capture(app);
-        self.reconcile_shortcut(app);
-        refresh_tray(app, settings);
+        refresh_tray(app);
         self.windows.update_result_behavior(
             app,
             dismiss_mode(settings.result.dismiss_mode),
@@ -1302,7 +1157,7 @@ impl RuntimeState {
         if changed {
             self.reconcile_capture(app);
             if let Ok(settings) = self.settings.get_public_settings() {
-                refresh_tray(app, &settings);
+                refresh_tray(app);
                 let _ = app.emit(SETTINGS_CHANGED_EVENT, settings);
             }
         }
@@ -1315,7 +1170,7 @@ impl RuntimeState {
 
         // Reject new capture/action work before cancelling anything already in
         // flight. Every exit entry point funnels through this idempotent path.
-        self.invalidate_shortcut_capture();
+        self.invalidate_manual_capture();
         self.consuming_selection_ids.lock().clear();
         self.windows.hide_toolbar(app);
         *self.current_selection.lock() = None;
@@ -1328,11 +1183,6 @@ impl RuntimeState {
             .collect::<Vec<_>>();
         for session_id in &sessions {
             let _ = self.actions.cancel(app, session_id);
-        }
-
-        let shortcut = self.registered_shortcut.lock().take();
-        if let Some(shortcut) = shortcut {
-            let _ = app.global_shortcut().unregister(shortcut);
         }
 
         // On Windows this sends Shutdown to the UIA/OLE STA worker and only
@@ -1682,30 +1532,9 @@ impl RuntimeState {
                         return;
                     }
                     api.prevent_close();
-                    #[cfg(target_os = "windows")]
-                    match settings_close_action(
-                        self.settings.get_settings().application.close_behavior,
-                        self.settings_renderer_ready.load(Ordering::Acquire),
-                    ) {
-                        SettingsCloseAction::HideToTray => {
-                            if let Some(window) = app.get_webview_window(label) {
-                                let _ = window.hide();
-                            }
-                        }
-                        SettingsCloseAction::RequestQuitConfirmation => {
-                            if !request_settings_close_confirmation(app) {
-                                quit_application(app);
-                            }
-                        }
-                        SettingsCloseAction::QuitImmediately => quit_application(app),
-                    }
-                    #[cfg(not(target_os = "windows"))]
                     if let Some(window) = app.get_webview_window(label) {
                         let _ = window.hide();
                     }
-                }
-                WindowEvent::Destroyed => {
-                    self.settings_renderer_ready.store(false, Ordering::Release);
                 }
                 _ => {}
             }
@@ -1918,42 +1747,8 @@ pub fn start_permission_poll(app: AppHandle) {
     });
 }
 
-pub fn handle_global_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
-    if event.state != ShortcutState::Pressed || event.id != shortcut.id() {
-        return;
-    }
-    let state = app.state::<RuntimeState>();
-    if state.shutting_down.load(Ordering::Acquire) {
-        return;
-    }
-    let registered = *state.registered_shortcut.lock();
-    if registered != Some(*shortcut) {
-        return;
-    }
-    let settings = state.settings.get_settings();
-    if shortcut_event_is_current(
-        *shortcut,
-        event,
-        registered,
-        settings.enabled,
-        settings.trigger.mode,
-        settings.capture_shortcut.as_str(),
-    ) {
-        if let Some(label) = state.windows.foreground_result_label(app) {
-            if app
-                .emit_to(&label, RESULT_SELECTION_SHORTCUT_EVENT, ())
-                .is_ok()
-            {
-                return;
-            }
-        }
-        state.capture_current(app);
-    }
-}
-
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    let settings = app.state::<RuntimeState>().settings.get_public_settings()?;
-    let menu = build_tray_menu(app, &settings)?;
+    let menu = build_tray_menu(app)?;
     #[cfg(target_os = "macos")]
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!(
         "../../apps/macos/icons/tray-template.png"
@@ -1973,13 +1768,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn build_tray_menu(
-    app: &AppHandle,
-    settings: &PublicSettings,
-) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    let toggle = CheckMenuItemBuilder::with_id(TRAY_TOGGLE_ID, "启用划词")
-        .checked(settings.enabled)
-        .build(app)?;
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     #[cfg(not(target_os = "windows"))]
     let accessibility = app.state::<RuntimeState>().accessibility_status();
     #[cfg(not(target_os = "windows"))]
@@ -1998,48 +1787,33 @@ fn build_tray_menu(
         .enabled(false)
         .build(app)?;
     let quit = MenuItemBuilder::with_id(TRAY_QUIT_ID, "退出 Popper").build(app)?;
-    let menu = MenuBuilder::new(app).item(&toggle);
+    let menu = MenuBuilder::new(app);
     #[cfg(not(target_os = "windows"))]
-    let menu = menu.item(&permission);
-    menu.separator()
-        .item(&open_settings)
+    let menu = menu.item(&permission).separator();
+    menu.item(&open_settings)
         .item(&version)
         .separator()
         .item(&quit)
         .build()
 }
 
-fn refresh_tray(app: &AppHandle, settings: &PublicSettings) {
+fn refresh_tray(app: &AppHandle) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    if let Ok(menu) = build_tray_menu(app, settings) {
+    if let Ok(menu) = build_tray_menu(app) {
         let _ = tray.set_menu(Some(menu));
     }
 }
 
 fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     match event.id().as_ref() {
-        TRAY_TOGGLE_ID => {
-            let state = app.state::<RuntimeState>();
-            let enabled = !state.settings.get_settings().enabled;
-            if let Ok(public) = state.settings.update(SettingsUpdate {
-                enabled: Some(enabled),
-                ..Default::default()
-            }) {
-                state.after_settings_changed(app, &public);
-            }
-        }
         TRAY_PERMISSION_ID => {
             if cfg!(target_os = "macos") {
                 request_accessibility_internal(app);
             }
         }
         TRAY_SETTINGS_ID => open_settings_window(app),
-        // Keep the tray command as a reliable native escape hatch even if the
-        // settings renderer is unhealthy. The settings-page button and the
-        // close-behavior confirmation eventually enter this same controller
-        // through `quit_app`.
         TRAY_QUIT_ID => quit_application(app),
         _ => {}
     }
@@ -2051,6 +1825,7 @@ pub fn open_settings_window(app: &AppHandle) {
 
 pub fn open_settings_window_with_options(app: &AppHandle, options: Option<OpenSettingsOptions>) {
     if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        let _ = app.emit_to(SETTINGS_LABEL, "popper:settings-opened", ());
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -2108,12 +1883,6 @@ pub fn take_settings_guidance(
     Ok(state.pending_settings_guidance.lock().take())
 }
 
-#[cfg(target_os = "windows")]
-fn request_settings_close_confirmation(app: &AppHandle) -> bool {
-    app.emit_to(SETTINGS_LABEL, SETTINGS_CLOSE_REQUEST_EVENT, ())
-        .is_ok()
-}
-
 fn quit_application(app: &AppHandle) {
     app.state::<RuntimeState>().shutdown(app);
     app.exit(0);
@@ -2155,44 +1924,6 @@ fn selection_monitor_disconnect_diagnostic(shutting_down: bool) -> Option<String
     (!shutting_down).then(|| SELECTION_MONITOR_DISCONNECTED_ERROR.to_owned())
 }
 
-fn shortcut_registration_diagnostic(registration_failed: bool) -> Option<String> {
-    registration_failed.then(|| GLOBAL_SHORTCUT_ERROR.to_owned())
-}
-
-fn shortcut_registration_target(enabled: bool, mode: TriggerMode, configured: &str) -> String {
-    if enabled && mode == TriggerMode::Shortcut {
-        configured.trim().to_owned()
-    } else {
-        String::new()
-    }
-}
-
-fn shortcut_event_is_current(
-    reported: Shortcut,
-    event: ShortcutEvent,
-    registered: Option<Shortcut>,
-    enabled: bool,
-    mode: TriggerMode,
-    configured: &str,
-) -> bool {
-    if event.state != ShortcutState::Pressed
-        || event.id != reported.id()
-        || registered != Some(reported)
-    {
-        return false;
-    }
-
-    enabled
-        && mode == TriggerMode::Shortcut
-        && configured.trim().parse::<Shortcut>().ok() == Some(reported)
-}
-
-/// Automatic selection events only show the toolbar in "selected" trigger mode.
-/// Shortcut-driven capture always forces presentation via `force_capture`.
-fn should_present_selection_for_trigger(force_capture: bool, mode: TriggerMode) -> bool {
-    force_capture || mode == TriggerMode::Selected
-}
-
 fn selection_access_available(
     platform: &str,
     trusted: bool,
@@ -2229,13 +1960,6 @@ pub fn get_settings(
 }
 
 #[tauri::command]
-pub fn settings_ready(window: WebviewWindow, state: State<'_, RuntimeState>) -> Result<(), String> {
-    ensure_settings_caller(&window)?;
-    state.settings_renderer_ready.store(true, Ordering::Release);
-    Ok(())
-}
-
-#[tauri::command]
 pub fn update_settings(
     app: AppHandle,
     window: WebviewWindow,
@@ -2243,33 +1967,7 @@ pub fn update_settings(
     update: SettingsUpdate,
 ) -> Result<PublicSettings, String> {
     ensure_settings_caller(&window)?;
-    let shortcut_change_requested =
-        update.enabled.is_some() || update.capture_shortcut.is_some() || update.trigger.is_some();
-    let previous_shortcut = if shortcut_change_requested {
-        let current = state.settings.get_settings();
-        let enabled = update.enabled.unwrap_or(current.enabled);
-        let configured = update
-            .capture_shortcut
-            .as_deref()
-            .unwrap_or(current.capture_shortcut.as_str());
-        let mode = update
-            .trigger
-            .as_ref()
-            .map_or(current.trigger.mode, |trigger| trigger.mode);
-        let requested = shortcut_registration_target(enabled, mode, configured);
-        Some(state.switch_shortcut(&app, &requested)?)
-    } else {
-        None
-    };
-    let public = match state.settings.update(update) {
-        Ok(public) => public,
-        Err(error) => {
-            if let Some(previous) = previous_shortcut {
-                let _ = state.switch_shortcut(&app, &previous);
-            }
-            return Err(error.to_string());
-        }
-    };
+    let public = state.settings.update(update).map_err(|error| error.to_string())?;
     state.after_settings_changed(&app, &public);
     Ok(public)
 }
@@ -2441,13 +2139,6 @@ pub fn request_accessibility(
 ) -> Result<AccessibilityStatus, String> {
     ensure_settings_caller(&window)?;
     Ok(request_accessibility_internal(&app))
-}
-
-#[tauri::command]
-pub fn quit_app(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    ensure_settings_caller(&window)?;
-    quit_application(&app);
-    Ok(())
 }
 
 #[tauri::command]
@@ -3103,14 +2794,8 @@ pub fn show_result_selection(
     if !state.result_sessions.lock().contains_key(&session_id) {
         return Err("结果会话已结束".to_owned());
     }
-    // Result webviews submit their own selections because native monitors
-    // intentionally ignore Popper-owned windows. This is still an automatic
-    // pointer-up trigger, so it must obey the same policy as native selection
-    // events instead of bypassing shortcut-only mode.
-    if !should_present_selection_for_trigger(
-        force_capture.unwrap_or(false),
-        state.settings.get_settings().trigger.mode,
-    ) {
+    // Only explicit long-press requests may present result selections.
+    if force_capture != Some(true) {
         return Ok(());
     }
     if text.trim().is_empty() {
@@ -4040,21 +3725,14 @@ mod tests {
     }
 
     #[test]
-    fn runtime_availability_and_shortcut_diagnostics_clear_after_success() {
+    fn runtime_availability_diagnostics_clear_after_success() {
         let mut diagnostics = RuntimeDiagnostics {
             selection_monitor_error: selection_monitor_diagnostic(true, true),
-            shortcut_error: shortcut_registration_diagnostic(true),
         };
         assert!(!selection_access_available("windows", true, &diagnostics));
-        assert_eq!(
-            diagnostics.shortcut_error.as_deref(),
-            Some(GLOBAL_SHORTCUT_ERROR)
-        );
 
         diagnostics.selection_monitor_error = selection_monitor_diagnostic(true, false);
-        diagnostics.shortcut_error = shortcut_registration_diagnostic(false);
         assert!(selection_access_available("windows", true, &diagnostics));
-        assert_eq!(diagnostics.shortcut_error, None);
         assert!(!selection_access_available("darwin", false, &diagnostics));
         assert!(!selection_access_available(
             "unsupported",
@@ -4068,120 +3746,10 @@ mod tests {
         let native_error = "hook failed while reading TOP SECRET selected text";
         let diagnostics = RuntimeDiagnostics {
             selection_monitor_error: selection_monitor_diagnostic(true, !native_error.is_empty()),
-            shortcut_error: shortcut_registration_diagnostic(true),
         };
         let serialized = serde_json::to_string(&diagnostics).unwrap();
         assert!(!serialized.contains(native_error));
         assert!(!serialized.contains("TOP SECRET"));
-    }
-
-    #[test]
-    fn global_shortcut_is_registered_only_while_enabled_in_shortcut_mode() {
-        let configured = "CommandOrControl+Shift+S";
-        assert_eq!(
-            shortcut_registration_target(true, TriggerMode::Shortcut, configured),
-            configured
-        );
-        assert_eq!(
-            shortcut_registration_target(true, TriggerMode::Selected, configured),
-            ""
-        );
-        assert_eq!(
-            shortcut_registration_target(false, TriggerMode::Shortcut, configured),
-            ""
-        );
-        // Only the effective registration changes; the saved configuration is
-        // retained for a later switch back to shortcut mode.
-        assert_eq!(configured, "CommandOrControl+Shift+S");
-    }
-
-    #[test]
-    fn global_shortcut_events_match_structural_identity_and_saved_settings() {
-        let registered = "Ctrl+Shift+S".parse::<Shortcut>().unwrap();
-        let alias = "Control+Shift+S".parse::<Shortcut>().unwrap();
-        assert_eq!(registered, alias);
-
-        let pressed = ShortcutEvent {
-            id: alias.id(),
-            state: ShortcutState::Pressed,
-        };
-        assert!(shortcut_event_is_current(
-            alias,
-            pressed,
-            Some(registered),
-            true,
-            TriggerMode::Shortcut,
-            "Control+Shift+S",
-        ));
-        assert!(!shortcut_event_is_current(
-            alias,
-            pressed,
-            Some(registered),
-            false,
-            TriggerMode::Shortcut,
-            "Control+Shift+S",
-        ));
-        assert!(!shortcut_event_is_current(
-            alias,
-            ShortcutEvent {
-                id: alias.id(),
-                state: ShortcutState::Released,
-            },
-            Some(registered),
-            true,
-            TriggerMode::Shortcut,
-            "Control+Shift+S",
-        ));
-
-        let stale = "Alt+Shift+S".parse::<Shortcut>().unwrap();
-        assert!(!shortcut_event_is_current(
-            stale,
-            ShortcutEvent {
-                id: stale.id(),
-                state: ShortcutState::Pressed,
-            },
-            Some(registered),
-            true,
-            TriggerMode::Shortcut,
-            "Control+Shift+S",
-        ));
-    }
-
-    #[test]
-    fn selection_auto_present_is_gated_by_trigger_mode() {
-        assert!(should_present_selection_for_trigger(
-            false,
-            TriggerMode::Selected
-        ));
-        assert!(!should_present_selection_for_trigger(
-            false,
-            TriggerMode::Shortcut
-        ));
-        assert!(should_present_selection_for_trigger(
-            true,
-            TriggerMode::Shortcut
-        ));
-        assert!(should_present_selection_for_trigger(
-            true,
-            TriggerMode::Selected
-        ));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_close_behavior_accounts_for_renderer_readiness() {
-        assert_eq!(
-            settings_close_action(ApplicationCloseBehavior::HideToTray, false),
-            SettingsCloseAction::HideToTray
-        );
-        assert_eq!(
-            settings_close_action(ApplicationCloseBehavior::Quit, true),
-            SettingsCloseAction::RequestQuitConfirmation
-        );
-        assert_eq!(
-            settings_close_action(ApplicationCloseBehavior::Quit, false),
-            SettingsCloseAction::QuitImmediately
-        );
     }
 
     #[test]

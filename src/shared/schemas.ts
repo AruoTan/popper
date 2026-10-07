@@ -115,144 +115,6 @@ export type ActionKind = z.infer<typeof actionKindSchema>
 /** @deprecated Prefer ActionKind. */
 export type ActionType = ActionKind
 
-// Keep these aliases aligned with global-hotkey 0.8.0, which is the parser
-// used by tauri-plugin-global-shortcut 2.3.2. Keep platform-specific names out:
-// accepting them here would make the settings form pass and native
-// registration fail later.
-const TAURI_SHORTCUT_MODIFIERS = new Set([
-  'command',
-  'cmd',
-  'control',
-  'ctrl',
-  'commandorcontrol',
-  'commandorctrl',
-  'cmdorctrl',
-  'cmdorcontrol',
-  'alt',
-  'option',
-  'shift',
-  'super'
-])
-
-const TAURI_SHORTCUT_NAMED_KEYS = new Set([
-  'backquote',
-  'backslash',
-  'bracketleft',
-  'bracketright',
-  'pause',
-  'pausebreak',
-  'comma',
-  'equal',
-  'minus',
-  'period',
-  'quote',
-  'semicolon',
-  'slash',
-  'space',
-  'tab',
-  'capslock',
-  'numlock',
-  'scrolllock',
-  'backspace',
-  'delete',
-  'insert',
-  'enter',
-  'up',
-  'arrowup',
-  'down',
-  'arrowdown',
-  'left',
-  'arrowleft',
-  'right',
-  'arrowright',
-  'home',
-  'end',
-  'pageup',
-  'pagedown',
-  'escape',
-  'esc',
-  'numpadadd',
-  'numadd',
-  'numpadplus',
-  'numplus',
-  'numpaddecimal',
-  'numdecimal',
-  'numpaddivide',
-  'numdivide',
-  'numpadenter',
-  'numenter',
-  'numpadequal',
-  'numequal',
-  'numpadmultiply',
-  'nummultiply',
-  'numpadsubtract',
-  'numsubtract',
-  'audiovolumeup',
-  'volumeup',
-  'audiovolumedown',
-  'volumedown',
-  'audiovolumemute',
-  'volumemute',
-  'mediaplay',
-  'mediapause',
-  'mediaplaypause',
-  'mediastop',
-  'mediatracknext',
-  'mediatrackprev',
-  'mediatrackprevious',
-  'printscreen'
-])
-
-const TAURI_SHORTCUT_SYMBOL_KEYS = new Set([
-  '`',
-  '\\',
-  '[',
-  ']',
-  ',',
-  '=',
-  '-',
-  '.',
-  "'",
-  ';',
-  '/'
-])
-
-function isTauriShortcutKey(value: string): boolean {
-  const key = value.toLowerCase()
-  return (
-    /^[a-z0-9]$/u.test(key) ||
-    /^(?:key[a-z]|digit[0-9])$/u.test(key) ||
-    /^f(?:[1-9]|1\d|2[0-4])$/u.test(key) ||
-    /^(?:numpad|num)[0-9]$/u.test(key) ||
-    TAURI_SHORTCUT_NAMED_KEYS.has(key) ||
-    TAURI_SHORTCUT_SYMBOL_KEYS.has(key)
-  )
-}
-
-export function isValidTauriGlobalShortcut(value: string): boolean {
-  const trimmed = value.trim()
-  if (trimmed === '') return true
-
-  const tokens = trimmed.split('+').map((part) => part.trim())
-  if (tokens.some((token) => token.length === 0)) return false
-  if (tokens.length === 1) return isTauriShortcutKey(tokens[0]!)
-
-  let foundKey = false
-  for (const token of tokens) {
-    if (foundKey) return false
-    if (TAURI_SHORTCUT_MODIFIERS.has(token.toLowerCase())) continue
-    if (!isTauriShortcutKey(token)) return false
-    foundKey = true
-  }
-  return foundKey
-}
-
-export const captureShortcutSchema = z
-  .string()
-  .trim()
-  .max(128)
-  .refine(isValidTauriGlobalShortcut, '全局快捷键格式无效')
-
 export const actionIdSchema = z
   .string()
   .trim()
@@ -469,12 +331,6 @@ function providersArraySchema<T extends z.ZodTypeAny>(provider: T) {
   })
 }
 
-export const toolbarDisplayModeSchema = z.enum(['icon-label', 'icon-only'])
-export const toolbarSettingsSchema = z
-  .object({ displayMode: toolbarDisplayModeSchema })
-  .strict()
-export type ToolbarSettings = z.infer<typeof toolbarSettingsSchema>
-
 export const resultDismissModeSchema = z.enum(['manual', 'blur', 'pointer-leave'])
 export const resultSettingsSchema = z
   .object({
@@ -495,19 +351,6 @@ export const resultSettingsSchema = z
   .strict()
 export type ResultSettings = z.infer<typeof resultSettingsSchema>
 
-export const triggerSettingsSchema = z
-  .object({ mode: z.enum(['selected', 'shortcut']) })
-  .strict()
-export type TriggerSettings = z.infer<typeof triggerSettingsSchema>
-
-export const applicationCloseBehaviorSchema = z.enum(['hide-to-tray', 'quit'])
-export type ApplicationCloseBehavior = z.infer<typeof applicationCloseBehaviorSchema>
-
-export const applicationSettingsSchema = z
-  .object({ closeBehavior: applicationCloseBehaviorSchema })
-  .strict()
-export type ApplicationSettings = z.infer<typeof applicationSettingsSchema>
-
 export const filterSettingsSchema = z
   .object({
     mode: z.enum(['default', 'whitelist', 'blacklist']),
@@ -516,65 +359,12 @@ export const filterSettingsSchema = z
   .strict()
 export type FilterSettings = z.infer<typeof filterSettingsSchema>
 
-export const selectionCaptureStrategySchema = z.enum(['selection-hook', 'clipboard', 'auto'])
-export type SelectionCaptureStrategy = z.infer<typeof selectionCaptureStrategySchema>
-
-const DEFAULT_SELECTION_CAPTURE_RULES = [
-  { application: 'acrobat.exe', strategy: 'clipboard' as const },
-  { application: 'acrord32.exe', strategy: 'clipboard' as const },
-  { application: 'acrocef.exe', strategy: 'clipboard' as const },
-  { application: 'rdrcef.exe', strategy: 'clipboard' as const },
-  { application: 'docbox.exe', strategy: 'clipboard' as const },
-  { application: 'docboxrenderer.exe', strategy: 'clipboard' as const },
-  { application: 'emeditor.exe', strategy: 'clipboard' as const },
-  { application: 'zotero.exe', strategy: 'clipboard' as const },
-  { application: 'chrome.exe', strategy: 'clipboard' as const },
-  { application: 'code.exe', strategy: 'clipboard' as const },
-  { application: 'obsidian.exe', strategy: 'clipboard' as const }
-]
-
-export const selectionCaptureRuleSchema = z
-  .object({
-    application: z.string().trim().min(1).max(512),
-    strategy: selectionCaptureStrategySchema
-  })
-  .strict()
-
-export type SelectionCaptureRule = z.infer<typeof selectionCaptureRuleSchema>
-
-export const selectionCaptureSettingsSchema = z
-  .object({
-    defaultStrategy: selectionCaptureStrategySchema.default('selection-hook'),
-    applications: z.array(selectionCaptureRuleSchema).max(64).default(DEFAULT_SELECTION_CAPTURE_RULES)
-  })
-  .strict()
-  .superRefine((value, context) => {
-    const seen = new Set<string>()
-    for (const rule of value.applications) {
-      const application = rule.application.trim().replaceAll('/', '\\').toLowerCase()
-      if (seen.has(application)) {
-        context.addIssue({ code: z.ZodIssueCode.custom, message: '划词获取应用规则不能重复' })
-      }
-      seen.add(application)
-    }
-  })
-export type SelectionCaptureSettings = z.infer<typeof selectionCaptureSettingsSchema>
-
 const commonSettingsShape = {
   version: z.literal(SETTINGS_VERSION),
-  enabled: z.boolean(),
-  captureShortcut: captureShortcutSchema,
   locale: supportedLocaleSchema,
   translate: translationSettingsSchema,
-  toolbar: toolbarSettingsSchema,
   result: resultSettingsSchema,
-  trigger: triggerSettingsSchema,
-  application: applicationSettingsSchema,
   filter: filterSettingsSchema,
-  selectionCapture: selectionCaptureSettingsSchema.default({
-    defaultStrategy: 'selection-hook',
-    applications: DEFAULT_SELECTION_CAPTURE_RULES
-  }),
   actions: actionsSchema
 } as const
 
@@ -625,16 +415,10 @@ export type PublicSettings = z.infer<typeof publicSettingsSchema>
 
 export const settingsUpdateSchema = z
   .object({
-    enabled: z.boolean().optional(),
-    captureShortcut: captureShortcutSchema.optional(),
     locale: supportedLocaleSchema.optional(),
     translate: translationSettingsSchema.optional(),
-    toolbar: toolbarSettingsSchema.optional(),
     result: resultSettingsSchema.optional(),
-    trigger: triggerSettingsSchema.optional(),
-  application: applicationSettingsSchema.optional(),
-  filter: filterSettingsSchema.optional(),
-  selectionCapture: selectionCaptureSettingsSchema.optional(),
+    filter: filterSettingsSchema.optional(),
     providers: providersArraySchema(providerMetadataSchema).optional(),
     actions: actionsSchema.optional()
   })

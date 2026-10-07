@@ -26,7 +26,6 @@ export type Unsubscribe = () => void;
 
 export interface RuntimeDiagnostics {
   selectionMonitorError?: string;
-  shortcutError?: string;
 }
 
 export interface AccessibilityStatus {
@@ -92,7 +91,6 @@ export interface WindowPopperApi {
   setEudicAuthorization?(authorization: string): Promise<void>;
   onDictionaryChanged?(listener: (snapshot: DictionarySnapshot) => void): Unsubscribe;
   getSettings(): Promise<PublicSettings>;
-  settingsReady?(): Promise<void>;
   updateSettings(update: SettingsUpdate): Promise<PublicSettings>;
   resetResultSize?(): Promise<PublicSettings>;
   createProvider?(input: ProviderCreateInput): Promise<PublicSettings>;
@@ -165,14 +163,14 @@ export interface WindowPopperApi {
   takeSettingsGuidance?(): Promise<SettingsGuidance | null>;
   hideResult?(sessionId?: string): Promise<void>;
   closeResult(sessionId?: string): Promise<void>;
-  quitApp?(): Promise<void>;
   onSelection(listener: (selection: SelectionPayload) => void): Unsubscribe;
   onActionEvent(listener: (event: ActionStreamEvent) => void): Unsubscribe;
   onSettingsChanged(listener: (settings: PublicSettings) => void): Unsubscribe;
-  onSettingsCloseRequested?(listener: () => void): Unsubscribe;
+  /** Settings window only: reset transient presentation on each explicit open. */
+  onSettingsOpened?(listener: () => void): Unsubscribe;
   onSettingsGuidance?(listener: (guidance: SettingsGuidance) => void): Unsubscribe;
-  /** Result window only: native global shortcut requests the current DOM selection. */
-  onResultSelectionShortcut?(listener: () => void): Unsubscribe;
+  /** Result window only: native right-button hold requests the current DOM selection. */
+  onResultSelectionHold?(listener: () => void): Unsubscribe;
   /**
    * Native pointer movement for the non-activating selection toolbar.
    * Optional so a renderer can still hot-reload against an older backend.

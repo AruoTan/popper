@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub const SETTINGS_VERSION: u8 = 12;
+pub const SETTINGS_VERSION: u8 = 15;
 pub const TEXT_PLACEHOLDER: &str = "{{text}}";
 pub const OUTPUT_LANGUAGE_PLACEHOLDER: &str = "{{language}}";
 pub const TARGET_LANGUAGE_PLACEHOLDER: &str = "{{target_language}}";
@@ -174,69 +174,6 @@ impl TranslationLanguage {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum TriggerMode {
-    Selected,
-    Shortcut,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TriggerSettings {
-    pub mode: TriggerMode,
-}
-
-impl Default for TriggerSettings {
-    fn default() -> Self {
-        Self {
-            mode: TriggerMode::Selected,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum ApplicationCloseBehavior {
-    HideToTray,
-    Quit,
-}
-
-impl Default for ApplicationCloseBehavior {
-    fn default() -> Self {
-        Self::HideToTray
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct ApplicationSettings {
-    #[serde(default)]
-    pub close_behavior: ApplicationCloseBehavior,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ToolbarDisplayMode {
-    #[serde(rename = "icon-label")]
-    IconLabel,
-    #[serde(rename = "icon-only")]
-    IconOnly,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolbarSettings {
-    pub display_mode: ToolbarDisplayMode,
-}
-
-impl Default for ToolbarSettings {
-    fn default() -> Self {
-        Self {
-            display_mode: ToolbarDisplayMode::IconLabel,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ResultDismissMode {
     #[serde(rename = "manual")]
     Manual,
@@ -313,70 +250,6 @@ impl Default for ApplicationFilterSettings {
         Self {
             mode: FilterMode::Default,
             applications: Vec::new(),
-        }
-    }
-}
-
-/// Controls how Popper reads a selection after a verified user gesture.
-/// `SelectionHook` is the non-destructive default. Clipboard routes are
-/// limited to a short, guarded Ctrl+C transaction and always restore the
-/// previous clipboard state when no user clipboard operation intervenes.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum SelectionCaptureStrategy {
-    SelectionHook,
-    Clipboard,
-    Auto,
-}
-
-impl Default for SelectionCaptureStrategy {
-    fn default() -> Self {
-        Self::SelectionHook
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SelectionCaptureRule {
-    pub application: String,
-    pub strategy: SelectionCaptureStrategy,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SelectionCaptureSettings {
-    #[serde(default)]
-    pub default_strategy: SelectionCaptureStrategy,
-    #[serde(default)]
-    pub applications: Vec<SelectionCaptureRule>,
-}
-
-impl Default for SelectionCaptureSettings {
-    fn default() -> Self {
-        Self {
-            default_strategy: SelectionCaptureStrategy::SelectionHook,
-            // These document/canvas applications do not reliably expose their
-            // live ranges through UIA/MSAA. The rules remain visible and fully
-            // editable in Settings rather than being hidden native behavior.
-            applications: [
-                "acrobat.exe",
-                "acrord32.exe",
-                "acrocef.exe",
-                "rdrcef.exe",
-                "docbox.exe",
-                "docboxrenderer.exe",
-                "emeditor.exe",
-                "zotero.exe",
-                "chrome.exe",
-                "code.exe",
-                "obsidian.exe",
-            ]
-            .into_iter()
-            .map(|application| SelectionCaptureRule {
-                application: application.to_owned(),
-                strategy: SelectionCaptureStrategy::Clipboard,
-            })
-            .collect(),
         }
     }
 }
@@ -645,18 +518,10 @@ impl ActionDefinition {
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub version: u8,
-    pub enabled: bool,
-    pub capture_shortcut: String,
     pub locale: Locale,
     pub translate: TranslationSettings,
-    pub toolbar: ToolbarSettings,
     pub result: ResultSettings,
-    pub trigger: TriggerSettings,
-    #[serde(default)]
-    pub application: ApplicationSettings,
     pub filter: ApplicationFilterSettings,
-    #[serde(default)]
-    pub selection_capture: SelectionCaptureSettings,
     #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     pub actions: Vec<ActionDefinition>,
@@ -666,17 +531,10 @@ pub struct AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct PublicSettings {
     pub version: u8,
-    pub enabled: bool,
-    pub capture_shortcut: String,
     pub locale: Locale,
     pub translate: TranslationSettings,
-    pub toolbar: ToolbarSettings,
     pub result: ResultSettings,
-    pub trigger: TriggerSettings,
-    pub application: ApplicationSettings,
     pub filter: ApplicationFilterSettings,
-    #[serde(default)]
-    pub selection_capture: SelectionCaptureSettings,
     pub providers: Vec<PublicProviderConfig>,
     pub actions: Vec<ActionDefinition>,
 }
@@ -688,16 +546,10 @@ impl PublicSettings {
     {
         Self {
             version: SETTINGS_VERSION,
-            enabled: settings.enabled,
-            capture_shortcut: settings.capture_shortcut.clone(),
             locale: settings.locale,
             translate: settings.translate.clone(),
-            toolbar: settings.toolbar.clone(),
             result: settings.result.clone(),
-            trigger: settings.trigger.clone(),
-            application: settings.application.clone(),
             filter: settings.filter.clone(),
-            selection_capture: settings.selection_capture.clone(),
             providers: settings
                 .providers
                 .iter()
@@ -725,16 +577,10 @@ impl PublicSettings {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsUpdate {
-    pub enabled: Option<bool>,
-    pub capture_shortcut: Option<String>,
     pub locale: Option<Locale>,
     pub translate: Option<TranslationSettings>,
-    pub toolbar: Option<ToolbarSettings>,
     pub result: Option<ResultSettings>,
-    pub trigger: Option<TriggerSettings>,
-    pub application: Option<ApplicationSettings>,
     pub filter: Option<ApplicationFilterSettings>,
-    pub selection_capture: Option<SelectionCaptureSettings>,
     pub providers: Option<Vec<ProviderConfig>>,
     pub actions: Option<Vec<ActionDefinition>>,
 }
@@ -991,16 +837,10 @@ impl Default for AppSettings {
         };
         Self {
             version: SETTINGS_VERSION,
-            enabled: true,
-            capture_shortcut: String::new(),
             locale: Locale::ZhCn,
             translate: TranslationSettings::default(),
-            toolbar: ToolbarSettings::default(),
             result: ResultSettings::default(),
-            trigger: TriggerSettings::default(),
-            application: ApplicationSettings::default(),
             filter: ApplicationFilterSettings::default(),
-            selection_capture: SelectionCaptureSettings::default(),
             providers: vec![provider],
             actions: vec![
                 ai(
@@ -1082,14 +922,6 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalize_and_validate(mut self) -> Result<Self, String> {
         self.version = SETTINGS_VERSION;
-        self.capture_shortcut = self.capture_shortcut.trim().to_owned();
-
-        if self.capture_shortcut.len() > 128 || !valid_shortcut(&self.capture_shortcut) {
-            return Err("捕获快捷键格式无效".to_owned());
-        }
-        if self.trigger.mode == TriggerMode::Shortcut && self.capture_shortcut.is_empty() {
-            return Err("快捷键触发模式需要设置捕获快捷键".to_owned());
-        }
         if self.translate.primary_language == self.translate.alternate_language {
             return Err("翻译语言必须不同".to_owned());
         }
@@ -1110,22 +942,6 @@ impl AppSettings {
             }
         }
         self.filter.applications = applications;
-
-        if self.selection_capture.applications.len() > 64 {
-            return Err("划词获取应用规则最多包含 64 项".to_owned());
-        }
-        let mut capture_rules = Vec::with_capacity(self.selection_capture.applications.len());
-        let mut capture_rule_set = HashSet::new();
-        for mut rule in self.selection_capture.applications {
-            rule.application = rule.application.trim().replace('/', "\\").to_lowercase();
-            if rule.application.is_empty() || rule.application.len() > 512 {
-                return Err("划词获取应用规则包含无效程序名".to_owned());
-            }
-            if capture_rule_set.insert(rule.application.clone()) {
-                capture_rules.push(rule);
-            }
-        }
-        self.selection_capture.applications = capture_rules;
 
         if self.providers.len() > MAX_PROVIDERS {
             return Err(format!("最多只能配置 {MAX_PROVIDERS} 个 AI 服务商"));
@@ -1463,61 +1279,13 @@ fn valid_icon_name(value: &str) -> bool {
     true
 }
 
-fn valid_shortcut(value: &str) -> bool {
-    value.is_empty()
-        || value
-            .parse::<tauri_plugin_global_shortcut::Shortcut>()
-            .is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn shortcuts_use_tauri_global_hotkey_grammar() {
-        for shortcut in [
-            "",
-            "CommandOrControl+Shift+S",
-            "CommandOrCtrl+ArrowUp",
-            "CmdOrControl+NumPadSubtract",
-            "Ctrl + Alt + Space",
-            "Ctrl+Ctrl+KeyS",
-            "MediaTrackNext",
-            "F24",
-        ] {
-            assert!(
-                valid_shortcut(shortcut),
-                "expected valid shortcut: {shortcut}"
-            );
-        }
-
-        for shortcut in [
-            "Cmd++S",
-            "Cmd+NotARealKey",
-            "AltGr+S",
-            "Meta+S",
-            "Ctrl+Return",
-            "Ctrl+MediaNextTrack",
-            "Ctrl+NumSub",
-            "Ctrl+S+Alt",
-            "Ctrl+Shift",
-            "F25",
-        ] {
-            assert!(
-                !valid_shortcut(shortcut),
-                "expected invalid shortcut: {shortcut}"
-            );
-        }
-    }
-
-    #[test]
     fn defaults_are_valid_and_public_shape_has_no_key() {
         let settings = AppSettings::default().normalize_and_validate().unwrap();
-        assert_eq!(
-            settings.application.close_behavior,
-            ApplicationCloseBehavior::HideToTray
-        );
         assert_eq!(settings.result.dismiss_mode, ResultDismissMode::Blur);
         assert_eq!(settings.result.font_size, DEFAULT_RESULT_FONT_SIZE);
         assert_eq!(settings.providers.len(), 1);
@@ -1541,8 +1309,17 @@ mod tests {
             ]
         );
         let public = PublicSettings::from_settings(&settings, |_| false);
+        for key in ["enabled", "toolbar", "application"] {
+            assert!(serde_json::to_value(&settings).unwrap().get(key).is_none());
+            assert!(serde_json::to_value(&public).unwrap().get(key).is_none());
+        }
         let json = serde_json::to_string(&public).unwrap();
         assert!(!json.contains("apiKey"));
+        assert!(!json.contains("selectionCapture"));
+        assert!(serde_json::to_value(&settings)
+            .unwrap()
+            .get("selectionCapture")
+            .is_none());
         assert!(json.contains("keyConfigured"));
         assert_eq!(public.actions.len(), 6);
         assert!(public
@@ -1550,44 +1327,6 @@ mod tests {
             .iter()
             .all(|action| action.kind != ActionKind::Ask));
         assert!(!public.providers[0].key_configured);
-        assert_eq!(
-            settings.selection_capture.default_strategy,
-            SelectionCaptureStrategy::SelectionHook
-        );
-        assert!(settings.selection_capture.applications.iter().any(|rule| {
-            rule.application == "acrobat.exe"
-                && rule.strategy == SelectionCaptureStrategy::Clipboard
-        }));
-        assert_eq!(
-            public.application.close_behavior,
-            ApplicationCloseBehavior::HideToTray
-        );
-    }
-
-    #[test]
-    fn selection_capture_rules_are_normalized_and_deduplicated() {
-        let mut settings = AppSettings::default();
-        settings.selection_capture.applications = vec![
-            SelectionCaptureRule {
-                application: " C:/Tools/EmEditor.exe ".to_owned(),
-                strategy: SelectionCaptureStrategy::Clipboard,
-            },
-            SelectionCaptureRule {
-                application: "c:\\tools\\emeditor.exe".to_owned(),
-                strategy: SelectionCaptureStrategy::SelectionHook,
-            },
-        ];
-
-        let normalized = settings.normalize_and_validate().unwrap();
-        assert_eq!(normalized.selection_capture.applications.len(), 1);
-        assert_eq!(
-            normalized.selection_capture.applications[0].application,
-            "c:\\tools\\emeditor.exe"
-        );
-        assert_eq!(
-            normalized.selection_capture.applications[0].strategy,
-            SelectionCaptureStrategy::Clipboard
-        );
     }
 
     #[test]

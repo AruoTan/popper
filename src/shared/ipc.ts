@@ -12,7 +12,6 @@ export const TAURI_COMMANDS = {
   eudicConfigured: "eudic_configured",
   setEudicAuthorization: "set_eudic_authorization",
   getSettings: "get_settings",
-  settingsReady: "settings_ready",
   updateSettings: "update_settings",
   resetResultSize: "reset_result_size",
   createProvider: "create_provider",
@@ -53,7 +52,6 @@ export const TAURI_COMMANDS = {
   takeSettingsGuidance: "take_settings_guidance",
   hideResult: "hide_result",
   closeResult: "close_result",
-  quitApp: "quit_app",
 } as const;
 
 /** Live Tauri event names emitted by the native runtime and listened by the bridge. */
@@ -62,11 +60,11 @@ export const TAURI_EVENTS = {
   selection: "popper:selection",
   actionStream: "popper:action-stream",
   settingsChanged: "popper:settings-changed",
-  settingsCloseRequested: "popper:settings-close-requested",
+  settingsOpened: "popper:settings-opened",
   settingsGuidance: "popper:settings-guidance",
   toolbarPointer: "popper:toolbar-pointer",
   toolbarDismissed: "popper:toolbar-dismissed",
-  resultSelectionShortcut: "popper:result-selection-shortcut",
+  resultSelectionHold: "popper:result-selection-hold",
 } as const;
 
 export type TauriCommand = (typeof TAURI_COMMANDS)[keyof typeof TAURI_COMMANDS];

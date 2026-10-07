@@ -247,36 +247,21 @@ function ResultStreamBody({
   );
 }
 
-/**
- * Thinking panel: auto-expands while the model is still reasoning (no answer yet)
- * so users see progress; collapses once an answer arrives unless the user toggled.
- * Click always wins after the first manual interaction.
- *
- * Chrome is intentionally minimal: only the accent「思考」badge + chevron.
- */
+/** Thinking stays collapsed by default; progress never changes the user's toggle. */
 function ThinkingPanel(): JSX.Element | null {
   const thinkingContent = useResultField((state) => state.thinkingContent);
   const status = useResultField((state) => state.status);
   const requestGeneration = useResultField((state) => state.requestGeneration);
   const hasAnswer = useResultField((state) => state.content.length > 0);
   const [expanded, setExpanded] = useState(false);
-  const userToggledRef = useRef(false);
 
   const live = status === "streaming" && !hasAnswer;
   const hasThinking = thinkingContent.length > 0;
 
-  // New request (retry / continue / model switch) always restarts collapse preference.
+  // Each new request starts collapsed.
   useEffect(() => {
     setExpanded(false);
-    userToggledRef.current = false;
   }, [requestGeneration]);
-
-  // Auto open while reasoning; auto close when the answer starts (unless user toggled).
-  useEffect(() => {
-    if (!hasThinking || userToggledRef.current) return;
-    if (live) setExpanded(true);
-    else if (hasAnswer) setExpanded(false);
-  }, [hasThinking, live, hasAnswer]);
 
   if (!hasThinking) return null;
 
@@ -290,17 +275,16 @@ function ThinkingPanel(): JSX.Element | null {
         className="result-thinking__toggle"
         aria-expanded={expanded}
         aria-label={live ? "思考中，点击展开或收起" : "思考，点击展开或收起"}
-        onClick={() => {
-          userToggledRef.current = true;
-          setExpanded((current) => !current);
-        }}
+        onClick={() => setExpanded((current) => !current)}
       >
         <span className="result-thinking__title">
-          <span
-            className={`result-thinking__badge ${live ? "result-thinking__badge--live" : ""}`}
-            aria-hidden="true"
-          >
+          <span className="result-thinking__badge" aria-hidden="true">
             思考
+          </span>
+          <span className="result-thinking__activity" aria-hidden="true">
+            <span />
+            <span />
+            <span />
           </span>
         </span>
         <span className="result-thinking__meta" aria-hidden="true">
@@ -413,8 +397,6 @@ function ResultSessionApp({
   const modelSwitchRef = useRef<HTMLDivElement>(null);
   const modelToggleRef = useRef<HTMLButtonElement>(null);
   const copyResetTimer = useRef<number | null>(null);
-  const selectionFrame = useRef<number | null>(null);
-  const selectionCursor = useRef<Point | null>(null);
   const retryInFlight = useRef(false);
   const bootstrapRetryInFlight = useRef(false);
   const disposedRef = useRef(false);
@@ -443,8 +425,8 @@ function ResultSessionApp({
   );
   const resolvedActionId = actionId ?? session?.actionId;
   const isBuiltinTranslate = resolvedActionId === "translate" && action?.kind === "translate";
-  const isAsk =
-    resolvedActionId === "ask-ai" || isAskAction(action?.kind) || dictionary?.mode === "ai";
+  const isAskActionSession = resolvedActionId === "ask-ai" || isAskAction(action?.kind);
+  const isAsk = isAskActionSession || dictionary?.mode === "ai";
   // Every AI result is a resumable session. Keep the follow-up control for
   // translate/explain/summary/custom actions too; only hide it while a new
   // response is actively streaming.
@@ -873,10 +855,10 @@ function ResultSessionApp({
   }, [sessionId]);
 
   useEffect(() => {
-    if (!isAsk || askOriginalDefaulted.current) return;
+    if (!isAskActionSession || askOriginalDefaulted.current) return;
     askOriginalDefaulted.current = true;
     setShowOriginal(true);
-  }, [isAsk, sessionId]);
+  }, [isAskActionSession, sessionId]);
 
   useEffect(() => {
     if (!requestId) return;
@@ -903,7 +885,6 @@ function ResultSessionApp({
       window.removeEventListener("pagehide", onPageHide);
       dismissNativeOverlays();
       if (copyResetTimer.current !== null) window.clearTimeout(copyResetTimer.current);
-      if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current);
     };
   }, []);
 
@@ -1066,54 +1047,23 @@ function ResultSessionApp({
     dismissResultSelectionToolbar();
   };
 
-  const showSelectionToolbar = (event: ReactPointerEvent<HTMLDivElement>): void => {
-    if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return;
-    const cursor = { x: event.screenX, y: event.screenY };
-    selectionCursor.current = cursor;
-    // Result-window selections use a renderer-owned path because native hooks
-    // filter Popper's own webviews. Keep that path aligned with the global
-    // trigger policy: shortcut mode must never auto-present on pointer-up.
-    if (settings.trigger.mode !== "selected") {
-      dismissResultSelectionToolbar();
-      return;
-    }
-    if (selectionFrame.current !== null) window.cancelAnimationFrame(selectionFrame.current);
-    selectionFrame.current = window.requestAnimationFrame(() => {
-      selectionFrame.current = null;
-      const text = selectedTextWithin(contentRef.current, window.getSelection());
-      if (!text || !window._popper_.showResultSelection) {
-        // Click cleared the selection or landed outside selectable text —
-        // ensure any result-sourced toolbar is gone (pointer-down may have
-        // already done this; this covers edge cases / older backends).
-        dismissResultSelectionToolbar();
-        return;
-      }
-      void window._popper_
-        .showResultSelection(sessionId, text, cursor, false)
-        .catch((error: unknown) => {
-          setCommandMessage(getErrorMessage(error, "无法处理所选文字"));
-        });
-    });
-  };
-
   useEffect(() => {
-    if (!window._popper_.onResultSelectionShortcut) return;
-    return window._popper_.onResultSelectionShortcut(() => {
-      if (settings.trigger.mode !== "shortcut") return;
+    if (!window._popper_.onResultSelectionHold) return;
+    return window._popper_.onResultSelectionHold(() => {
       const browserSelection = window.getSelection();
       const text = selectedTextWithin(contentRef.current, browserSelection);
       if (!text || !window._popper_.showResultSelection) {
         dismissResultSelectionToolbar();
         return;
       }
-      const cursor = selectionCursor.current ?? selectedTextScreenPoint(browserSelection);
+      const cursor = selectedTextScreenPoint(browserSelection);
       runDetached(window._popper_.showResultSelection(sessionId, text, cursor, true), {
         scope: "result",
-        operation: "show-shortcut-selection",
+        operation: "show-long-press-selection",
         onError: (error) => setCommandMessage(getErrorMessage(error, "无法处理所选文字")),
       });
     });
-  }, [dismissResultSelectionToolbar, sessionId, settings.trigger.mode]);
+  }, [dismissResultSelectionToolbar, sessionId]);
 
   const selection = session?.selection;
   const translationRoute = useMemo(() => {
@@ -1345,7 +1295,6 @@ function ResultSessionApp({
         ref={contentRef}
         className={`result-content ${contentOverflow.isOverflowing ? "result-content--scrollable" : ""}`}
         onScroll={handleScroll}
-        onPointerUp={showSelectionToolbar}
       >
         <div ref={contentInnerRef} className="result-content__inner">
           {selection && (

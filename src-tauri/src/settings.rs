@@ -176,20 +176,11 @@ impl SettingsRepository {
 
     pub fn update(&self, update: SettingsUpdate) -> Result<PublicSettings, SettingsError> {
         self.transact_with_provider_cleanup(|settings| {
-            if let Some(value) = update.enabled {
-                settings.enabled = value;
-            }
-            if let Some(value) = update.capture_shortcut {
-                settings.capture_shortcut = value;
-            }
             if let Some(value) = update.locale {
                 settings.locale = value;
             }
             if let Some(value) = update.translate {
                 settings.translate = value;
-            }
-            if let Some(value) = update.toolbar {
-                settings.toolbar = value;
             }
             if let Some(mut value) = update.result {
                 // Window dimensions are runtime-owned state. A settings page
@@ -199,17 +190,8 @@ impl SettingsRepository {
                 value.last_size = settings.result.last_size;
                 settings.result = value;
             }
-            if let Some(value) = update.trigger {
-                settings.trigger = value;
-            }
-            if let Some(value) = update.application {
-                settings.application = value;
-            }
             if let Some(value) = update.filter {
                 settings.filter = value;
-            }
-            if let Some(value) = update.selection_capture {
-                settings.selection_capture = value;
             }
             if let Some(value) = update.providers {
                 settings.providers = value;
@@ -261,16 +243,10 @@ impl SettingsRepository {
             }
             *settings = AppSettings {
                 version: SETTINGS_VERSION,
-                enabled: public.enabled,
-                capture_shortcut: public.capture_shortcut,
                 locale: public.locale,
                 translate: public.translate,
-                toolbar: public.toolbar,
                 result: public.result,
-                trigger: public.trigger,
-                application: public.application,
                 filter: public.filter,
-                selection_capture: public.selection_capture,
                 providers,
                 actions,
             };
@@ -728,10 +704,19 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
     }
     let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let version = value.get("version").and_then(serde_json::Value::as_u64);
-    if version == Some(SETTINGS_VERSION as u64) {
+    // Discard retired configuration before validating.
+    let had_retired_settings = value.as_object_mut().is_some_and(|object| {
+        let mut removed = false;
+        for key in [
+            "selectionCapture", "captureShortcut", "trigger", "enabled", "toolbar", "application",
+        ] {
+            removed |= object.remove(key).is_some();
+        }
+        removed
+    });
+    if version == Some(SETTINGS_VERSION as u64) || matches!(version, Some(12 | 13 | 14)) {
         let missing_result_defaults = value.pointer("/result/dismissMode").is_none()
             || value.pointer("/result/fontSize").is_none();
-        let missing_application_defaults = value.pointer("/application/closeBehavior").is_none();
         let had_legacy_search_fields = value.pointer("/searchEngines").is_some()
             || value.pointer("/activeSearchEngineId").is_some()
             || value.pointer("/searchEngine").is_some()
@@ -746,8 +731,9 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         let normalized = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
-        let must_persist = missing_result_defaults
-            || missing_application_defaults
+        let must_persist = version != Some(SETTINGS_VERSION as u64)
+            || had_retired_settings
+            || missing_result_defaults
             || had_legacy_search_fields
             || had_quote_action
             || normalized != persisted_settings;
@@ -993,10 +979,6 @@ struct LegacyAction {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LegacySettings {
-    #[serde(default = "default_true")]
-    enabled: bool,
-    #[serde(default)]
-    capture_shortcut: String,
     #[serde(default)]
     locale: Locale,
     // Retained only so older Electron-era settings still deserialize.
@@ -1080,16 +1062,10 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
     }
     let mut settings = AppSettings {
         version: SETTINGS_VERSION,
-        enabled: legacy.enabled,
-        capture_shortcut: legacy.capture_shortcut,
         locale: legacy.locale,
         translate: legacy.translate,
-        toolbar: Default::default(),
         result: Default::default(),
-        trigger: Default::default(),
-        application: Default::default(),
         filter: Default::default(),
-        selection_capture: Default::default(),
         providers: vec![provider],
         actions,
     };
@@ -1102,10 +1078,6 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
         legacy_api_key: (!legacy.ai.api_key.trim().is_empty()).then_some(legacy.ai.api_key),
         must_persist: true,
     })
-}
-
-fn default_true() -> bool {
-    true
 }
 
 fn default_base_url() -> String {
@@ -1937,7 +1909,7 @@ mod tests {
             SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
                 .unwrap();
         let settings = repository.get_settings();
-        assert!(!settings.enabled);
+        assert!(serde_json::to_value(&settings).unwrap().get("enabled").is_none());
         assert_eq!(settings.providers[0].base_url, "https://gateway.example/v1");
         assert_eq!(settings.providers[0].models[0].id, "model-a");
         assert!(!fs::read_to_string(path)
@@ -2388,59 +2360,42 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v5_with_default_close_behavior_and_persists_v7() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-        value["version"] = serde_json::json!(5);
-        value.as_object_mut().unwrap().remove("application");
-        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    fn retired_configuration_is_removed_without_changing_other_settings() {
+        for version in [5, 11, 12, 13, 14, SETTINGS_VERSION] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let settings = AppSettings::default();
+            let mut payload = serde_json::to_value(&settings).unwrap();
+            payload["version"] = serde_json::json!(version);
+            payload["enabled"] = serde_json::json!(false);
+            payload["toolbar"] = serde_json::json!({ "displayMode": "icon-only" });
+            payload["application"] = serde_json::json!({ "closeBehavior": "quit" });
+            payload["trigger"] = serde_json::json!({ "mode": "shortcut" });
+            payload["captureShortcut"] = serde_json::json!("CommandOrControl+Shift+F12");
+            payload["selectionCapture"] = serde_json::json!({
+                "defaultStrategy": "clipboard",
+                "applications": [{ "application": "reader.exe", "strategy": "selection-hook" }]
+            });
+            fs::write(&path, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
 
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(migrated.version, SETTINGS_VERSION);
-        assert_eq!(
-            migrated.application.close_behavior,
-            crate::models::ApplicationCloseBehavior::HideToTray
-        );
-
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(persisted["version"], SETTINGS_VERSION);
-        assert_eq!(persisted["application"]["closeBehavior"], "hide-to-tray");
-    }
-
-    #[test]
-    fn close_behavior_update_round_trips() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-
-        let saved = repository
-            .update(SettingsUpdate {
-                application: Some(crate::models::ApplicationSettings {
-                    close_behavior: crate::models::ApplicationCloseBehavior::Quit,
-                }),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(
-            saved.application.close_behavior,
-            crate::models::ApplicationCloseBehavior::Quit
-        );
-
-        drop(repository);
-        let reopened =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        assert_eq!(
-            reopened.get_settings().application.close_behavior,
-            crate::models::ApplicationCloseBehavior::Quit
-        );
+            let repository =
+                SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                    .unwrap();
+            assert_eq!(repository.get_settings(), settings);
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(persisted["version"], SETTINGS_VERSION);
+            for key in ["enabled", "toolbar", "application"] {
+                assert!(persisted.get(key).is_none());
+            }
+            assert!(persisted.get("selectionCapture").is_none());
+            assert!(persisted.get("trigger").is_none());
+            assert!(persisted.get("captureShortcut").is_none());
+            assert!(serde_json::to_value(repository.get_public_settings().unwrap())
+                .unwrap()
+                .get("selectionCapture")
+                .is_none());
+        }
     }
 
     #[test]
@@ -2492,9 +2447,10 @@ mod tests {
                 .unwrap();
         let before = fs::read_to_string(&path).unwrap();
         let result = repository.update(SettingsUpdate {
-            capture_shortcut: Some("!!!invalid!!!".to_owned()),
-            trigger: Some(crate::models::TriggerSettings {
-                mode: crate::models::TriggerMode::Shortcut,
+            translate: Some(crate::models::TranslationSettings {
+                primary_language: crate::models::TranslationLanguage::ZhCn,
+                alternate_language: crate::models::TranslationLanguage::ZhCn,
+                ..Default::default()
             }),
             ..Default::default()
         });

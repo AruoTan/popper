@@ -1,7 +1,7 @@
 export const APP_NAME = "Popper";
 export const APP_ID = "com.local.popper";
 
-export const SETTINGS_VERSION = 12 as const;
+export const SETTINGS_VERSION = 15 as const;
 export const AI_TEXT_LIMIT = 20_000;
 export const AI_PROMPT_LIMIT = 50_000;
 export const AI_OUTPUT_LIMIT = 1_000_000;
@@ -49,17 +49,12 @@ export const DEFAULT_PROVIDER_ID = "openai-compatible";
 export const DEFAULT_PROVIDER_NAME = "OpenAI Compatible";
 /** @deprecated Models now live under providers. */
 export const DEFAULT_MODEL = "";
-export const DEFAULT_CAPTURE_SHORTCUT = "";
 
 export const DEFAULT_LOCALE = "zh-CN" as const;
 export const DEFAULT_TRANSLATION_PAIR = {
   dictionaryEnabled: true,
   primaryLanguage: "zh-CN",
   alternateLanguage: "en-US",
-} as const;
-
-export const DEFAULT_TOOLBAR_SETTINGS = {
-  displayMode: "icon-label",
 } as const;
 
 export const DEFAULT_RESULT_SETTINGS = {
@@ -73,34 +68,9 @@ export const DEFAULT_RESULT_SETTINGS = {
   lastSize: null,
 } as const;
 
-export const DEFAULT_TRIGGER_SETTINGS = {
-  mode: "selected",
-} as const;
-
-export const DEFAULT_APPLICATION_SETTINGS = {
-  closeBehavior: "hide-to-tray",
-} as const;
-
 export const DEFAULT_FILTER_SETTINGS = {
   mode: "default",
   applications: [],
-} as const;
-
-export const DEFAULT_SELECTION_CAPTURE_SETTINGS = {
-  defaultStrategy: "selection-hook",
-  applications: [
-    { application: "acrobat.exe", strategy: "clipboard" },
-    { application: "acrord32.exe", strategy: "clipboard" },
-    { application: "acrocef.exe", strategy: "clipboard" },
-    { application: "rdrcef.exe", strategy: "clipboard" },
-    { application: "docbox.exe", strategy: "clipboard" },
-    { application: "docboxrenderer.exe", strategy: "clipboard" },
-    { application: "emeditor.exe", strategy: "clipboard" },
-    { application: "zotero.exe", strategy: "clipboard" },
-    { application: "chrome.exe", strategy: "clipboard" },
-    { application: "code.exe", strategy: "clipboard" },
-    { application: "obsidian.exe", strategy: "clipboard" },
-  ],
 } as const;
 
 export const TOOLBAR_SCREEN_GAP = 8;

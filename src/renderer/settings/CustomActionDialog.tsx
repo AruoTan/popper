@@ -378,7 +378,7 @@ export function CustomActionDialog({
                   ))}
                 </select>
                 <span className="field__hint">
-                  已启用的服务商与其模型列在同一列表中；可在「服务商」中关闭不需要的服务商。
+                  已启用的服务商与其模型列在同一列表中；可在「通用」中关闭不需要的服务商。
                 </span>
               </label>
 

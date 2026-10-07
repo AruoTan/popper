@@ -107,6 +107,9 @@ pub(crate) enum ChatRole {
 struct ChatMessage {
     role: ChatRole,
     content: String,
+    /// Expanded action prompts are model input, not user-authored conversation turns.
+    #[serde(skip)]
+    hidden_from_transcript: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -121,6 +124,7 @@ impl ChatMessage {
         Self {
             role: ChatRole::System,
             content,
+            hidden_from_transcript: true,
         }
     }
 
@@ -128,6 +132,14 @@ impl ChatMessage {
         Self {
             role: ChatRole::User,
             content,
+            hidden_from_transcript: false,
+        }
+    }
+
+    fn instruction(content: String) -> Self {
+        Self {
+            hidden_from_transcript: true,
+            ..Self::user(content)
         }
     }
 
@@ -135,6 +147,7 @@ impl ChatMessage {
         Self {
             role: ChatRole::Assistant,
             content,
+            hidden_from_transcript: false,
         }
     }
 }
@@ -663,6 +676,7 @@ impl ActionServiceState {
         });
         let conversation = messages
             .iter()
+            .filter(|message| !message.hidden_from_transcript)
             .filter_map(|message| match message.role {
                 ChatRole::System => None,
                 ChatRole::User | ChatRole::Assistant => Some(ConversationTurn {
@@ -1911,7 +1925,7 @@ fn resolve_request_config(
                 route,
                 last_messages: vec![
                     ChatMessage::system(prompt.system),
-                    ChatMessage::user(prompt.user),
+                    ChatMessage::instruction(prompt.user),
                 ],
                 committed_messages: Vec::new(),
             }
@@ -1947,7 +1961,7 @@ fn resolve_request_config(
                 route,
                 last_messages: vec![
                     ChatMessage::system(prompt.system),
-                    ChatMessage::user(prompt.user),
+                    ChatMessage::instruction(prompt.user),
                 ],
                 committed_messages: Vec::new(),
             }
@@ -3539,6 +3553,75 @@ mod tests {
             service.commit_completed_for_test(&ticket),
             TransitionResult::Rejected,
         );
+    }
+
+    #[test]
+    fn action_instructions_stay_in_model_requests_but_out_of_restored_transcripts() {
+        let service = test_service();
+        let reservation = service.reserve_initial_for_test(initial_request()).unwrap();
+        let mut settings =
+            configured_settings("provider-fixture", "fixture-model", ThinkingMode::Off);
+        let action = settings
+            .actions
+            .iter_mut()
+            .find(|a| a.id == "translate")
+            .unwrap();
+        action.provider_id = Some("provider-fixture".into());
+        action.model_id = Some("fixture-model".into());
+        let initial = FrozenPreparationSeed::Initial {
+            request: FrozenActionRequest::from(&initial_request()),
+        };
+        let mut data = resolve_request_config(&initial, &settings, &reservation.reservation.ticket)
+            .unwrap()
+            .session_data;
+        assert!(data.last_messages[1].hidden_from_transcript);
+        assert_eq!(
+            serde_json::to_value(&data.last_messages[1]).unwrap(),
+            serde_json::json!({
+                "role": "user", "content": data.last_messages[1].content,
+            })
+        );
+        let retry = FrozenPreparationSeed::Retry {
+            request: data.frozen_request.clone(),
+            route: data.route.clone(),
+            last_messages: data.last_messages.clone(),
+            committed_messages: Vec::new(),
+            options: RetryPreparationOptions::default(),
+        };
+        data = resolve_request_config(&retry, &settings, &reservation.reservation.ticket)
+            .unwrap()
+            .session_data;
+        assert!(data.last_messages[1].hidden_from_transcript);
+        assert_eq!(
+            service.commit_prepared_for_test(&reservation.reservation.ticket, data),
+            TransitionResult::Applied
+        );
+        assert!(service
+            .begin_ready_for_test("session")
+            .unwrap()
+            .conversation
+            .is_empty());
+        service.submit_delta_for_test(&reservation.reservation.ticket, "译文");
+        assert_eq!(
+            service.commit_completed_for_test(&reservation.reservation.ticket),
+            TransitionResult::Applied
+        );
+        let restored = service.begin_ready_for_test("session").unwrap();
+        assert_eq!(restored.conversation.len(), 1);
+        assert_eq!(restored.conversation[0].role, ChatRole::Assistant);
+        assert_eq!(restored.conversation[0].content, "译文");
+
+        let history = service
+            .context_for_test("session")
+            .unwrap()
+            .committed_messages;
+        let messages = build_translation_continue_messages(None, &history, "解释一下用法").unwrap();
+        assert!(messages[0].hidden_from_transcript);
+        assert!(!messages.last().unwrap().hidden_from_transcript);
+        assert_eq!(messages.last().unwrap().content, "解释一下用法");
+        let first_question =
+            build_translation_continue_messages(Some("词典参考"), &[], "解释一下用法").unwrap();
+        assert!(!first_question.last().unwrap().hidden_from_transcript);
     }
 
     #[test]

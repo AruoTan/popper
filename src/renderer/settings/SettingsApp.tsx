@@ -18,6 +18,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Eye,
   EyeOff,
@@ -78,7 +80,6 @@ import {
   sortAndNumberActions,
 } from "./settingsForm";
 import { settingsGuidanceInbox, type SettingsGuidanceLease } from "./settingsGuidanceInbox";
-import { SUGGESTED_CAPTURE_SHORTCUT, formatKeyboardEventToTauriShortcut } from "./shortcutCapture";
 
 type Operation = string | null;
 type Banner = { kind: "success" | "error"; text: string } | null;
@@ -91,11 +92,9 @@ type ModelPickerState = {
 };
 type SettingsSectionId =
   | "general"
-  | "providers"
   | "actions"
   | "language"
   | "result"
-  | "capture"
   | "filter";
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
@@ -106,12 +105,7 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
   {
     id: "general",
     label: "通用",
-    blurb: "开关助手、选择划词或快捷键触发，并调整工具条外观。",
-  },
-  {
-    id: "providers",
-    label: "服务商",
-    blurb: "按顺序：填写 API → 测试连接 → 获取模型 → 保存设置。",
+    blurb: "",
   },
   {
     id: "actions",
@@ -127,11 +121,6 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     id: "result",
     label: "结果",
     blurb: "结果窗口出现位置、默认大小，以及点击外部时如何关闭。",
-  },
-  {
-    id: "capture",
-    label: "划词获取",
-    blurb: "为个别程序选择获取选中文本的方式。",
   },
   {
     id: "filter",
@@ -258,6 +247,7 @@ export function SettingsApp(): JSX.Element {
   const [keyBaselines, setKeyBaselines] = useState<Record<string, string>>({});
   const [keyVisible, setKeyVisible] = useState<Record<string, boolean>>({});
   const [newModelInputs, setNewModelInputs] = useState<Record<string, string>>({});
+  const [expandedProviders, setExpandedProviders] = useState<Record<string, boolean>>({});
   const [draggingModelId, setDraggingModelId] = useState<string | null>(null);
   const [accessibility, setAccessibility] = useState<AccessibilityStatus | null>(null);
   const [operation, setOperation] = useState<Operation>(null);
@@ -270,14 +260,12 @@ export function SettingsApp(): JSX.Element {
   );
   const [actionPendingDelete, setActionPendingDelete] = useState<ActionDefinition | null>(null);
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
-  const [quitConfirmationOpen, setQuitConfirmationOpen] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(restoredSettingsSection);
   const activeSectionRef = useRef(activeSection);
   activeSectionRef.current = activeSection;
   const dirtyRef = useRef(false);
   const unsavedChangesRef = useRef(false);
-  const quittingRef = useRef(false);
   // Tracks in-flight lazy key reveals so re-entry is ignored and the eye can disable.
   const keyRevealInFlightRef = useRef(new Set<string>());
   const [keyRevealInFlight, setKeyRevealInFlight] = useState<Record<string, boolean>>({});
@@ -291,6 +279,12 @@ export function SettingsApp(): JSX.Element {
   useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
+
+  useEffect(() => {
+    // The settings WebView stays mounted while hidden. Each explicit open
+    // starts with collapsed providers without discarding unsaved form values.
+    return window._popper_.onSettingsOpened?.(() => setExpandedProviders({}));
+  }, []);
 
   const pendingGuidanceLeaseRef = useRef<SettingsGuidanceLease | null>(null);
   const draftReadyRef = useRef(false);
@@ -334,7 +328,7 @@ export function SettingsApp(): JSX.Element {
     const focus = guidance.focus?.trim();
     let targetId: string | null = null;
     if (focus === "providers") {
-      setActiveSection("providers");
+      setActiveSection("general");
       targetId = "providers-title";
     } else if (focus === "actions") {
       setActiveSection("actions");
@@ -625,53 +619,6 @@ export function SettingsApp(): JSX.Element {
     setOperation(null);
   };
 
-  const quitNow = useCallback(async (operationName = "quit"): Promise<void> => {
-    if (quittingRef.current) return;
-    quittingRef.current = true;
-    setOperation(operationName);
-    setBanner(null);
-    try {
-      if (!window._popper_.quitApp) {
-        throw new Error("当前后端尚不支持安全退出");
-      }
-      await window._popper_.quitApp();
-    } catch (error) {
-      setBanner({ kind: "error", text: getErrorMessage(error, "无法退出 Popper") });
-    } finally {
-      quittingRef.current = false;
-      setOperation(null);
-    }
-  }, []);
-
-  const requestQuit = useCallback((): void => {
-    if (unsavedChangesRef.current) {
-      setQuitConfirmationOpen(true);
-      return;
-    }
-    void quitNow();
-  }, [quitNow]);
-
-  const saveAndQuit = async (): Promise<void> => {
-    setOperation("save-and-quit");
-    setBanner(null);
-    const saved = await persist();
-    if (!saved) {
-      setQuitConfirmationOpen(false);
-      setOperation(null);
-      return;
-    }
-    setQuitConfirmationOpen(false);
-    await quitNow("save-and-quit");
-  };
-
-  useEffect(() => {
-    const unsubscribe = window._popper_.onSettingsCloseRequested?.(requestQuit);
-    void window._popper_.settingsReady?.().catch((error: unknown) => {
-      setBanner({ kind: "error", text: getErrorMessage(error, "无法初始化窗口关闭处理") });
-    });
-    return unsubscribe ?? (() => undefined);
-  }, [requestQuit]);
-
   const resetResultSize = async (): Promise<void> => {
     setOperation("reset-result-size");
     setBanner(null);
@@ -720,6 +667,7 @@ export function SettingsApp(): JSX.Element {
       models: [],
     };
     changeDraft((current) => ({ ...current, providers: [...current.providers, provider] }));
+    setExpandedProviders((current) => ({ ...current, [id]: true }));
   };
 
   const changeProvider = (
@@ -736,6 +684,11 @@ export function SettingsApp(): JSX.Element {
 
   const deleteProvider = (provider: PublicProviderSettings): void => {
     changeDraft((current) => removeProviderFromSettings(current, provider.id));
+    setExpandedProviders((current) => {
+      const next = { ...current };
+      delete next[provider.id];
+      return next;
+    });
     setKeyInputs((current) => {
       const next = { ...current };
       delete next[provider.id];
@@ -1044,7 +997,7 @@ export function SettingsApp(): JSX.Element {
           </div>
           <div>
             <h1>{APP_NAME} 设置</h1>
-            <p>划词后快速复制、搜索或交给 AI。</p>
+            <p>选中文字后，长按右键快速复制、搜索或交给 AI。</p>
           </div>
         </header>
         <nav className="settings-nav" aria-label="设置分区">
@@ -1082,150 +1035,295 @@ export function SettingsApp(): JSX.Element {
         <div className="settings-shell__content" key={activeSection}>
           {activeSection === "general" && (
             <>
-              <section
-                className="settings-section settings-section--enter"
-                aria-labelledby="general-title"
-              >
-                <div className="section-heading">
-                  <div>
-                    <h2 id="general-title">{activeMeta.label}</h2>
-                    <p>{activeMeta.blurb}</p>
-                  </div>
-                </div>
+              <section className="settings-section settings-section--enter" aria-label="使用提示">
                 <div className="settings-tip" role="note">
                   <span className="settings-tip__label">使用提示</span>
                   <p>
-                    推荐先保持「划词后」触发；若与其他软件冲突，可改用快捷键。改完后点右下角
-                    <strong>保存设置</strong>才会生效。
+                    选中文字后长按右键 250ms 即可弹出工具栏，短按仍是普通右键。关闭主窗口后，划词助手继续在后台运行。
                   </p>
                 </div>
-                <div className="settings-card settings-card--rows">
-                  <SettingSwitch
-                    title="启用划词助手"
-                    description="关闭后不再监听新的文本选择，复制与搜索等动作也会暂停。"
-                    checked={draft.enabled}
-                    onChange={(enabled) => changeDraft((current) => ({ ...current, enabled }))}
-                  />
-                  <div className="setting-row setting-row--stackable">
-                    <div>
-                      <strong>触发方式</strong>
-                      <p>「划词后」自动弹出工具栏；「快捷键」仅在按下组合键时捕获选区。</p>
-                    </div>
-                    <div className="segmented-control" role="radiogroup" aria-label="触发方式">
-                      {(["selected", "shortcut"] as const).map((mode) => (
-                        <button
-                          type="button"
-                          role="radio"
-                          aria-checked={draft.trigger.mode === mode}
-                          className={draft.trigger.mode === mode ? "is-selected" : ""}
-                          key={mode}
-                          onClick={() =>
-                            changeDraft((current) => ({
-                              ...current,
-                              trigger: { mode },
-                              captureShortcut:
-                                mode === "shortcut" && current.captureShortcut.trim() === ""
-                                  ? SUGGESTED_CAPTURE_SHORTCUT
-                                  : current.captureShortcut,
-                            }))
-                          }
-                        >
-                          {mode === "selected" ? "划词后" : "快捷键"}
-                        </button>
-                      ))}
-                    </div>
+              </section>
+
+              <section className="settings-section" aria-labelledby="providers-title">
+                <div className="section-heading section-heading--actions">
+                  <div>
+                    <h2 id="providers-title">AI 服务商与模型</h2>
+                    <p>按顺序：填写 API → 测试连接 → 获取模型 → 保存设置。</p>
                   </div>
-                  {draft.trigger.mode === "shortcut" && (
-                    <div className="setting-row setting-row--stackable">
-                      <div>
-                        <strong>捕获当前选区快捷键</strong>
-                        <p>点击输入框后按下组合键即可录制；Backspace 可清除。</p>
-                      </div>
-                      <div className="shortcut-capture">
-                        <input
-                          className="control shortcut-control"
-                          value={draft.captureShortcut}
-                          maxLength={128}
-                          spellCheck={false}
-                          readOnly
-                          aria-label="捕获当前选区快捷键"
-                          placeholder="点击后按下组合键"
-                          onKeyDown={(event) => {
-                            if (event.key === "Tab") return;
-                            event.preventDefault();
-                            event.stopPropagation();
-                            if (event.key === "Backspace" || event.key === "Delete") {
-                              changeDraft((current) => ({ ...current, captureShortcut: "" }));
-                              return;
-                            }
-                            if (event.key === "Escape") {
-                              event.currentTarget.blur();
-                              return;
-                            }
-                            const shortcut = formatKeyboardEventToTauriShortcut(event);
-                            if (!shortcut) return;
-                            changeDraft((current) => ({ ...current, captureShortcut: shortcut }));
-                          }}
-                        />
-                        {draft.captureShortcut.trim() !== "" && (
+                  <button className="button" type="button" onClick={addProvider}>
+                    <Plus size={15} />
+                    添加服务商
+                  </button>
+                </div>
+                <div className="provider-stack">
+                  {draft.providers.map((provider) => (
+                    <article
+                      className={`settings-card provider-card ${provider.enabled === false ? "provider-card--disabled" : ""}`}
+                      key={provider.id}
+                    >
+                      <header
+                        className={`provider-card__header ${expandedProviders[provider.id] ? "is-expanded" : ""}`}
+                      >
+                        <div className="provider-card__identity">
                           <button
-                            className="button button--ghost shortcut-clear"
+                            className="icon-button provider-collapse-toggle"
                             type="button"
+                            aria-label={`${expandedProviders[provider.id] ? "收起" : "展开"}${provider.name}配置`}
+                            aria-expanded={Boolean(expandedProviders[provider.id])}
+                            aria-controls={`provider-config-${provider.id}`}
                             onClick={() =>
-                              changeDraft((current) => ({ ...current, captureShortcut: "" }))
+                              setExpandedProviders((current) => ({
+                                ...current,
+                                [provider.id]: !current[provider.id],
+                              }))
                             }
                           >
-                            清除
+                            {expandedProviders[provider.id] ? (
+                              <ChevronDown size={16} />
+                            ) : (
+                              <ChevronRight size={16} />
+                            )}
                           </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  <div className="setting-row">
-                    <div>
-                      <strong>工具条显示</strong>
-                      <p>仅显示图标时仍保留悬浮提示和辅助功能名称。</p>
-                    </div>
-                    <select
-                      className="control compact-control"
-                      value={draft.toolbar.displayMode}
-                      onChange={(event) =>
-                        changeDraft((current) => ({
-                          ...current,
-                          toolbar: {
-                            displayMode: event.target
-                              .value as PublicSettings["toolbar"]["displayMode"],
-                          },
-                        }))
-                      }
-                    >
-                      <option value="icon-label">图标和文字</option>
-                      <option value="icon-only">仅图标</option>
-                    </select>
-                  </div>
-                  {accessibility?.platform === "windows" && (
-                    <div className="setting-row">
-                      <div>
-                        <strong>关闭主窗口时</strong>
-                        <p>隐藏后划词功能继续运行，也可选择直接退出 Popper。</p>
-                      </div>
-                      <select
-                        className="control compact-control"
-                        aria-label="关闭主窗口时"
-                        value={draft.application.closeBehavior}
-                        onChange={(event) =>
-                          changeDraft((current) => ({
-                            ...current,
-                            application: {
-                              closeBehavior: event.target
-                                .value as PublicSettings["application"]["closeBehavior"],
-                            },
-                          }))
-                        }
+                          <span className="provider-avatar">
+                            <Sparkles size={17} />
+                          </span>
+                          <input
+                            className="provider-name-input"
+                            value={provider.name}
+                            maxLength={80}
+                            aria-label="服务商名称"
+                            onChange={(event) =>
+                              changeProvider(provider.id, (current) => ({
+                                ...current,
+                                name: event.target.value,
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="provider-card__header-actions">
+                          <label
+                            className="provider-enabled-toggle"
+                            title={
+                              provider.enabled === false
+                                ? "已关闭：动作与结果中不显示其模型"
+                                : "已启用"
+                            }
+                          >
+                            <span className="provider-enabled-toggle__label">
+                              {provider.enabled === false ? "已关闭" : "已启用"}
+                            </span>
+                            <input
+                              type="checkbox"
+                              role="switch"
+                              aria-label={`${provider.name}：${provider.enabled === false ? "启用" : "关闭"}服务商`}
+                              checked={provider.enabled !== false}
+                              onChange={(event) =>
+                                changeProvider(provider.id, (current) => ({
+                                  ...current,
+                                  enabled: event.target.checked,
+                                }))
+                              }
+                            />
+                          </label>
+                          <button
+                            className="icon-button action-delete"
+                            type="button"
+                            title="删除服务商"
+                            aria-label={`删除${provider.name}`}
+                            onClick={() => setProviderPendingDelete(provider)}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </header>
+                      <div
+                        className="provider-grid"
+                        id={`provider-config-${provider.id}`}
+                        hidden={!expandedProviders[provider.id]}
                       >
-                        <option value="hide-to-tray">隐藏到通知区域（默认）</option>
-                        <option value="quit">退出 Popper</option>
-                      </select>
+                        <label className="field field--wide">
+                          <span className="field__label">API 地址（HTTP / HTTPS）</span>
+                          <input
+                            className="control"
+                            type="url"
+                            value={provider.baseUrl}
+                            spellCheck={false}
+                            placeholder="https://api.example.com/v1 或 http://localhost:11434/v1"
+                            onChange={(event) =>
+                              changeProvider(provider.id, (current) => ({
+                                ...current,
+                                baseUrl: event.target.value,
+                              }))
+                            }
+                          />
+                          <span className="field__hint">
+                            填写到版本前缀即可，例如 <code>…/v1</code>；不要带{" "}
+                            <code>/chat/completions</code>。本地 Ollama 可用 HTTP。
+                          </span>
+                          {usesPlainHttp(provider.baseUrl) && (
+                            <span className="provider-http-warning" role="alert">
+                              <CircleAlert size={15} aria-hidden="true" />
+                              当前服务使用 HTTP，API Key
+                              将通过网络明文传输。仅在你信任的网络和服务中使用。
+                            </span>
+                          )}
+                        </label>
+                        <label className="field">
+                          <span className="field__label">API Key</span>
+                          <div className="key-control">
+                            <KeyRound size={16} aria-hidden="true" />
+                            <input
+                              type={keyVisible[provider.id] ? "text" : "password"}
+                              value={keyInputs[provider.id] ?? ""}
+                              maxLength={16_384}
+                              autoComplete="new-password"
+                              spellCheck={false}
+                              placeholder={
+                                provider.keyConfigured || (keyBaselines[provider.id] ?? "")
+                                  ? "已保存的 API Key"
+                                  : "输入 API Key"
+                              }
+                              onChange={(event) => {
+                                const value = event.target.value;
+                                // Keep ref in sync before re-render so in-flight reveal won't clobber baseline checks.
+                                keyInputsRef.current = {
+                                  ...keyInputsRef.current,
+                                  [provider.id]: value,
+                                };
+                                setKeyInputs((current) => ({ ...current, [provider.id]: value }));
+                              }}
+                            />
+                            <button
+                              className="key-visibility-toggle"
+                              type="button"
+                              disabled={Boolean(keyRevealInFlight[provider.id])}
+                              aria-label={keyVisible[provider.id] ? "隐藏 API Key" : "显示 API Key"}
+                              title={keyVisible[provider.id] ? "隐藏" : "显示"}
+                              onClick={() => void revealProviderApiKey(provider)}
+                            >
+                              {keyVisible[provider.id] ? (
+                                <EyeOff size={16} aria-hidden="true" />
+                              ) : (
+                                <Eye size={16} aria-hidden="true" />
+                              )}
+                            </button>
+                          </div>
+                        </label>
+                        <div className="provider-actions">
+                          <button
+                            className="button"
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void testProvider(provider)}
+                          >
+                            {operation === `test:${provider.id}` && (
+                              <LoaderCircle className="settings-spin" size={15} />
+                            )}
+                            测试连接
+                          </button>
+                          <button
+                            className="button"
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void openModelPicker(provider)}
+                          >
+                            {operation === `fetch:${provider.id}` ? (
+                              <LoaderCircle className="settings-spin" size={15} />
+                            ) : (
+                              <RefreshCw size={15} />
+                            )}
+                            获取模型
+                          </button>
+                          <button
+                            className="button button--danger"
+                            type="button"
+                            disabled={busy || !provider.keyConfigured}
+                            onClick={() => void clearProviderKey(provider)}
+                          >
+                            清除密钥
+                          </button>
+                        </div>
+                        <div className="field field--wide">
+                          <span className="field__label">模型（{provider.models.length}）</span>
+                          <div className="model-add-row">
+                            <input
+                              className="control"
+                              value={newModelInputs[provider.id] ?? ""}
+                              placeholder="手动添加模型 ID"
+                              spellCheck={false}
+                              onChange={(event) =>
+                                setNewModelInputs((current) => ({
+                                  ...current,
+                                  [provider.id]: event.target.value,
+                                }))
+                              }
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                  event.preventDefault();
+                                  addManualModel(provider);
+                                }
+                              }}
+                            />
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => addManualModel(provider)}
+                            >
+                              添加
+                            </button>
+                          </div>
+                          <DndContext
+                            sensors={dragSensors}
+                            collisionDetection={closestCenter}
+                            onDragStart={(event) => setDraggingModelId(String(event.active.id))}
+                            onDragCancel={() => setDraggingModelId(null)}
+                            onDragEnd={(event) => {
+                              setDraggingModelId(null);
+                              const { active, over } = event;
+                              if (!over) return;
+                              reorderProviderModels(provider.id, String(active.id), String(over.id));
+                            }}
+                          >
+                            <SortableContext
+                              items={provider.models.map((model) => model.id)}
+                              strategy={verticalListSortingStrategy}
+                            >
+                              <div className="model-row-list" role="list">
+                                {provider.models.map((model) => (
+                                  <SortableModelRow
+                                    key={model.id}
+                                    model={model}
+                                    dragging={draggingModelId === model.id}
+                                    onRemove={() =>
+                                      changeDraft((current) =>
+                                        removeProviderModelFromSettings(
+                                          current,
+                                          provider.id,
+                                          model.id,
+                                        ),
+                                      )
+                                    }
+                                  />
+                                ))}
+                                {provider.models.length === 0 && (
+                                  <span className="model-empty">
+                                    尚无模型。可点「获取模型」多选添加，或在上方手动输入模型 ID。
+                                  </span>
+                                )}
+                              </div>
+                            </SortableContext>
+                          </DndContext>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                  {draft.providers.length === 0 && (
+                    <div className="settings-card empty-card empty-card--guided">
+                      <strong>尚未配置服务商</strong>
+                      <p>
+                        本地「复制」「搜索」仍可使用。需要翻译、总结等 AI
+                        功能时，点右上角「添加服务商」开始。
+                      </p>
                     </div>
                   )}
                 </div>
@@ -1260,291 +1358,8 @@ export function SettingsApp(): JSX.Element {
                     {permission.button}
                   </button>
                 </div>
-                {accessibility?.diagnostics?.shortcutError && (
-                  <div className="notice notice--error runtime-diagnostic" role="status">
-                    <CircleAlert size={16} aria-hidden="true" />
-                    <div>
-                      <strong>全局快捷键不可用</strong>
-                      <p>{accessibility.diagnostics.shortcutError}</p>
-                    </div>
-                  </div>
-                )}
               </section>
             </>
-          )}
-
-          {activeSection === "providers" && (
-            <section
-              className="settings-section settings-section--enter"
-              aria-labelledby="providers-title"
-            >
-              <div className="section-heading section-heading--actions">
-                <div>
-                  <h2 id="providers-title">AI 服务商与模型</h2>
-                  <p>{activeMeta.blurb}</p>
-                </div>
-                <button className="button" type="button" onClick={addProvider}>
-                  <Plus size={15} />
-                  添加服务商
-                </button>
-              </div>
-              <div className="settings-tip" role="note">
-                <span className="settings-tip__label">配置顺序</span>
-                <ol className="settings-tip__steps">
-                  <li>填写 API 地址与 Key</li>
-                  <li>测试连接确认可用</li>
-                  <li>获取模型并勾选常用项</li>
-                  <li>保存设置，再到「动作」里绑定模型</li>
-                </ol>
-              </div>
-              <div className="provider-stack">
-                {draft.providers.map((provider) => (
-                  <article
-                    className={`settings-card provider-card ${provider.enabled === false ? "provider-card--disabled" : ""}`}
-                    key={provider.id}
-                  >
-                    <header className="provider-card__header">
-                      <div className="provider-card__identity">
-                        <span className="provider-avatar">
-                          <Sparkles size={17} />
-                        </span>
-                        <input
-                          className="provider-name-input"
-                          value={provider.name}
-                          maxLength={80}
-                          aria-label="服务商名称"
-                          onChange={(event) =>
-                            changeProvider(provider.id, (current) => ({
-                              ...current,
-                              name: event.target.value,
-                            }))
-                          }
-                        />
-                      </div>
-                      <div className="provider-card__header-actions">
-                        <label
-                          className="provider-enabled-toggle"
-                          title={
-                            provider.enabled === false
-                              ? "已关闭：动作与结果中不显示其模型"
-                              : "已启用"
-                          }
-                        >
-                          <span className="provider-enabled-toggle__label">
-                            {provider.enabled === false ? "已关闭" : "已启用"}
-                          </span>
-                          <input
-                            type="checkbox"
-                            role="switch"
-                            aria-label={`${provider.name}：${provider.enabled === false ? "启用" : "关闭"}服务商`}
-                            checked={provider.enabled !== false}
-                            onChange={(event) =>
-                              changeProvider(provider.id, (current) => ({
-                                ...current,
-                                enabled: event.target.checked,
-                              }))
-                            }
-                          />
-                        </label>
-                        <button
-                          className="icon-button action-delete"
-                          type="button"
-                          title="删除服务商"
-                          aria-label={`删除${provider.name}`}
-                          onClick={() => setProviderPendingDelete(provider)}
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    </header>
-                    <div className="provider-grid">
-                      <label className="field field--wide">
-                        <span className="field__label">API 地址（HTTP / HTTPS）</span>
-                        <input
-                          className="control"
-                          type="url"
-                          value={provider.baseUrl}
-                          spellCheck={false}
-                          placeholder="https://api.example.com/v1 或 http://localhost:11434/v1"
-                          onChange={(event) =>
-                            changeProvider(provider.id, (current) => ({
-                              ...current,
-                              baseUrl: event.target.value,
-                            }))
-                          }
-                        />
-                        <span className="field__hint">
-                          填写到版本前缀即可，例如 <code>…/v1</code>；不要带{" "}
-                          <code>/chat/completions</code>。本地 Ollama 可用 HTTP。
-                        </span>
-                        {usesPlainHttp(provider.baseUrl) && (
-                          <span className="provider-http-warning" role="alert">
-                            <CircleAlert size={15} aria-hidden="true" />
-                            当前服务使用 HTTP，API Key
-                            将通过网络明文传输。仅在你信任的网络和服务中使用。
-                          </span>
-                        )}
-                      </label>
-                      <label className="field">
-                        <span className="field__label">API Key</span>
-                        <div className="key-control">
-                          <KeyRound size={16} aria-hidden="true" />
-                          <input
-                            type={keyVisible[provider.id] ? "text" : "password"}
-                            value={keyInputs[provider.id] ?? ""}
-                            maxLength={16_384}
-                            autoComplete="new-password"
-                            spellCheck={false}
-                            placeholder={
-                              provider.keyConfigured || (keyBaselines[provider.id] ?? "")
-                                ? "已保存的 API Key"
-                                : "输入 API Key"
-                            }
-                            onChange={(event) => {
-                              const value = event.target.value;
-                              // Keep ref in sync before re-render so in-flight reveal won't clobber baseline checks.
-                              keyInputsRef.current = {
-                                ...keyInputsRef.current,
-                                [provider.id]: value,
-                              };
-                              setKeyInputs((current) => ({ ...current, [provider.id]: value }));
-                            }}
-                          />
-                          <button
-                            className="key-visibility-toggle"
-                            type="button"
-                            disabled={Boolean(keyRevealInFlight[provider.id])}
-                            aria-label={keyVisible[provider.id] ? "隐藏 API Key" : "显示 API Key"}
-                            title={keyVisible[provider.id] ? "隐藏" : "显示"}
-                            onClick={() => void revealProviderApiKey(provider)}
-                          >
-                            {keyVisible[provider.id] ? (
-                              <EyeOff size={16} aria-hidden="true" />
-                            ) : (
-                              <Eye size={16} aria-hidden="true" />
-                            )}
-                          </button>
-                        </div>
-                      </label>
-                      <div className="provider-actions">
-                        <button
-                          className="button"
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void testProvider(provider)}
-                        >
-                          {operation === `test:${provider.id}` && (
-                            <LoaderCircle className="settings-spin" size={15} />
-                          )}
-                          测试连接
-                        </button>
-                        <button
-                          className="button"
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void openModelPicker(provider)}
-                        >
-                          {operation === `fetch:${provider.id}` ? (
-                            <LoaderCircle className="settings-spin" size={15} />
-                          ) : (
-                            <RefreshCw size={15} />
-                          )}
-                          获取模型
-                        </button>
-                        <button
-                          className="button button--danger"
-                          type="button"
-                          disabled={busy || !provider.keyConfigured}
-                          onClick={() => void clearProviderKey(provider)}
-                        >
-                          清除密钥
-                        </button>
-                      </div>
-                      <div className="field field--wide">
-                        <span className="field__label">模型（{provider.models.length}）</span>
-                        <div className="model-add-row">
-                          <input
-                            className="control"
-                            value={newModelInputs[provider.id] ?? ""}
-                            placeholder="手动添加模型 ID"
-                            spellCheck={false}
-                            onChange={(event) =>
-                              setNewModelInputs((current) => ({
-                                ...current,
-                                [provider.id]: event.target.value,
-                              }))
-                            }
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                event.preventDefault();
-                                addManualModel(provider);
-                              }
-                            }}
-                          />
-                          <button
-                            className="button"
-                            type="button"
-                            onClick={() => addManualModel(provider)}
-                          >
-                            添加
-                          </button>
-                        </div>
-                        <DndContext
-                          sensors={dragSensors}
-                          collisionDetection={closestCenter}
-                          onDragStart={(event) => setDraggingModelId(String(event.active.id))}
-                          onDragCancel={() => setDraggingModelId(null)}
-                          onDragEnd={(event) => {
-                            setDraggingModelId(null);
-                            const { active, over } = event;
-                            if (!over) return;
-                            reorderProviderModels(provider.id, String(active.id), String(over.id));
-                          }}
-                        >
-                          <SortableContext
-                            items={provider.models.map((model) => model.id)}
-                            strategy={verticalListSortingStrategy}
-                          >
-                            <div className="model-row-list" role="list">
-                              {provider.models.map((model) => (
-                                <SortableModelRow
-                                  key={model.id}
-                                  model={model}
-                                  dragging={draggingModelId === model.id}
-                                  onRemove={() =>
-                                    changeDraft((current) =>
-                                      removeProviderModelFromSettings(
-                                        current,
-                                        provider.id,
-                                        model.id,
-                                      ),
-                                    )
-                                  }
-                                />
-                              ))}
-                              {provider.models.length === 0 && (
-                                <span className="model-empty">
-                                  尚无模型。可点「获取模型」多选添加，或在上方手动输入模型 ID。
-                                </span>
-                              )}
-                            </div>
-                          </SortableContext>
-                        </DndContext>
-                      </div>
-                    </div>
-                  </article>
-                ))}
-                {draft.providers.length === 0 && (
-                  <div className="settings-card empty-card empty-card--guided">
-                    <strong>尚未配置服务商</strong>
-                    <p>
-                      本地「复制」「搜索」仍可使用。需要翻译、总结等 AI
-                      功能时，点右上角「添加服务商」开始。
-                    </p>
-                  </div>
-                )}
-              </div>
-            </section>
           )}
 
           {activeSection === "actions" && (
@@ -1565,7 +1380,7 @@ export function SettingsApp(): JSX.Element {
               <div className="settings-card toolbar-preview-card">
                 <span className="toolbar-preview-label">实时预览</span>
                 <div
-                  className={`toolbar-preview ${draft.toolbar.displayMode === "icon-only" ? "toolbar-preview--icons" : ""}`}
+                  className="toolbar-preview"
                 >
                   <span className="toolbar-preview__logo">
                     <Sparkles size={14} />
@@ -1573,7 +1388,7 @@ export function SettingsApp(): JSX.Element {
                   {enabledActions.map((action) => (
                     <span className="toolbar-preview__action" key={action.id} title={action.name}>
                       <ActionIcon name={action.icon} size={14} />
-                      {draft.toolbar.displayMode !== "icon-only" && <span>{action.name}</span>}
+                      <span>{action.name}</span>
                     </span>
                   ))}
                 </div>
@@ -1890,156 +1705,6 @@ export function SettingsApp(): JSX.Element {
             </section>
           )}
 
-          {activeSection === "capture" && (
-            <section
-              className="settings-section settings-section--enter"
-              aria-labelledby="capture-title"
-            >
-              <div className="section-heading">
-                <div>
-                  <h2 id="capture-title">划词获取</h2>
-                  <p>{activeMeta.blurb}</p>
-                </div>
-              </div>
-              <div className="settings-card settings-card--rows">
-                <div className="setting-row setting-row--stackable">
-                  <div>
-                    <strong>默认方式</strong>
-                    <p>
-                      优先使用 Selection Hook；已知 PDF
-                      和画布程序仅在安全校验通过时使用受控复制回退。
-                    </p>
-                  </div>
-                  <select
-                    className="control compact-control"
-                    aria-label="默认划词获取方式"
-                    value={draft.selectionCapture.defaultStrategy}
-                    onChange={(event) =>
-                      changeDraft((current) => ({
-                        ...current,
-                        selectionCapture: {
-                          ...current.selectionCapture,
-                          defaultStrategy: event.target
-                            .value as PublicSettings["selectionCapture"]["defaultStrategy"],
-                        },
-                      }))
-                    }
-                  >
-                    <option value="selection-hook">Selection Hook</option>
-                    <option value="auto">自动回退</option>
-                    <option value="clipboard">受控 Ctrl+C</option>
-                  </select>
-                </div>
-                <div className="setting-row setting-row--column">
-                  <div>
-                    <strong>程序规则</strong>
-                    <p>填写可执行文件名或完整路径。受控 Ctrl+C 仅在已完成的划词手势后运行。</p>
-                  </div>
-                  <div className="capture-rule-list" role="list">
-                    {draft.selectionCapture.applications.map((rule, index) => (
-                      <div
-                        className="capture-rule"
-                        key={`${rule.application}-${index}`}
-                        role="listitem"
-                      >
-                        <input
-                          className="control"
-                          aria-label={`程序规则 ${index + 1}`}
-                          value={rule.application}
-                          placeholder="acrobat.exe"
-                          spellCheck={false}
-                          onChange={(event) =>
-                            changeDraft((current) => ({
-                              ...current,
-                              selectionCapture: {
-                                ...current.selectionCapture,
-                                applications: current.selectionCapture.applications.map(
-                                  (candidate, candidateIndex) =>
-                                    candidateIndex === index
-                                      ? { ...candidate, application: event.target.value }
-                                      : candidate,
-                                ),
-                              },
-                            }))
-                          }
-                        />
-                        <select
-                          className="control"
-                          aria-label={`${rule.application || "程序"} 的划词获取方式`}
-                          value={rule.strategy}
-                          onChange={(event) =>
-                            changeDraft((current) => ({
-                              ...current,
-                              selectionCapture: {
-                                ...current.selectionCapture,
-                                applications: current.selectionCapture.applications.map(
-                                  (candidate, candidateIndex) =>
-                                    candidateIndex === index
-                                      ? {
-                                          ...candidate,
-                                          strategy: event.target.value as typeof candidate.strategy,
-                                        }
-                                      : candidate,
-                                ),
-                              },
-                            }))
-                          }
-                        >
-                          <option value="selection-hook">Selection Hook</option>
-                          <option value="auto">自动回退</option>
-                          <option value="clipboard">受控 Ctrl+C</option>
-                        </select>
-                        <button
-                          className="icon-button action-delete"
-                          type="button"
-                          title="移除程序规则"
-                          aria-label={`移除 ${rule.application || "程序"} 规则`}
-                          onClick={() =>
-                            changeDraft((current) => ({
-                              ...current,
-                              selectionCapture: {
-                                ...current.selectionCapture,
-                                applications: current.selectionCapture.applications.filter(
-                                  (_, candidateIndex) => candidateIndex !== index,
-                                ),
-                              },
-                            }))
-                          }
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="setting-row__end">
-                    <button
-                      className="button button--quiet"
-                      type="button"
-                      onClick={() =>
-                        changeDraft((current) => ({
-                          ...current,
-                          selectionCapture: {
-                            ...current.selectionCapture,
-                            applications: [
-                              ...current.selectionCapture.applications,
-                              {
-                                application: "",
-                                strategy: "clipboard",
-                              },
-                            ],
-                          },
-                        }))
-                      }
-                    >
-                      <Plus size={15} />
-                      添加程序
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
-
           {activeSection === "filter" && (
             <section
               className="settings-section settings-section--enter"
@@ -2157,17 +1822,6 @@ export function SettingsApp(): JSX.Element {
           onConfirm={() => deleteAction(actionPendingDelete)}
         />
       )}
-      {quitConfirmationOpen && (
-        <QuitConfirmationDialog
-          busy={busy}
-          onCancel={() => setQuitConfirmationOpen(false)}
-          onDiscard={() => {
-            setQuitConfirmationOpen(false);
-            void quitNow();
-          }}
-          onSave={() => void saveAndQuit()}
-        />
-      )}
       {modelPicker && (
         <ModelPickerDialog
           providerName={modelPicker.providerName}
@@ -2179,76 +1833,6 @@ export function SettingsApp(): JSX.Element {
         />
       )}
     </main>
-  );
-}
-
-export function QuitConfirmationDialog({
-  busy,
-  onCancel,
-  onDiscard,
-  onSave,
-}: {
-  busy: boolean;
-  onCancel: () => void;
-  onDiscard: () => void;
-  onSave: () => void;
-}): JSX.Element {
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape" && !busy) onCancel();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, onCancel]);
-
-  return (
-    <div
-      className="dialog-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && !busy) onCancel();
-      }}
-    >
-      <section
-        className="dialog-card quit-confirmation-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`退出 ${APP_NAME}？`}
-      >
-        <header className="dialog-header">
-          <div>
-            <h2>退出 {APP_NAME}？</h2>
-            <p>当前有尚未保存的更改。退出前可以先保存，或放弃这些更改。</p>
-          </div>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label="关闭退出确认"
-            disabled={busy}
-            onClick={onCancel}
-          >
-            <X size={18} aria-hidden="true" />
-          </button>
-        </header>
-        <footer className="dialog-actions quit-confirmation-dialog__actions">
-          <button className="button" type="button" disabled={busy} onClick={onCancel}>
-            取消
-          </button>
-          <button
-            className="button button--danger"
-            type="button"
-            disabled={busy}
-            onClick={onDiscard}
-          >
-            放弃更改并退出
-          </button>
-          <button className="button button--primary" type="button" disabled={busy} onClick={onSave}>
-            {busy && <LoaderCircle className="settings-spin" size={15} />}
-            保存并退出
-          </button>
-        </footer>
-      </section>
-    </div>
   );
 }
 

@@ -35,6 +35,13 @@ async function goToSettingsSection(label: string): Promise<void> {
   fireEvent.click(screen.getByRole("button", { name: label }));
 }
 
+async function openProviderConfigurations(): Promise<void> {
+  await goToSettingsSection("通用");
+  for (const toggle of screen.getAllByRole("button", { name: /^展开.*配置$/ })) {
+    fireEvent.click(toggle);
+  }
+}
+
 function withoutDefaultProvider(): PublicSettings {
   return {
     ...DEFAULT_PUBLIC_SETTINGS,
@@ -56,7 +63,6 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
     })),
     requestAccessibility: vi.fn(),
     onSettingsChanged: vi.fn(() => () => undefined),
-    onSettingsCloseRequested: vi.fn(() => () => undefined),
     ...overrides,
   } as unknown as WindowPopperApi;
 }
@@ -77,7 +83,6 @@ describe("SettingsApp provider deletion", () => {
       requestAccessibility: vi.fn(),
       takeSettingsGuidance,
       onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
 
     render(
@@ -92,7 +97,7 @@ describe("SettingsApp provider deletion", () => {
     expect(await screen.findByText("请配置服务商")).toBeInTheDocument();
     expect(screen.getAllByText("请配置服务商")).toHaveLength(1);
     expect(await screen.findByRole("heading", { name: "AI 服务商与模型" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "服务商" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: "通用" })).toHaveAttribute("aria-current", "page");
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
   });
 
@@ -116,7 +121,6 @@ describe("SettingsApp provider deletion", () => {
       requestAccessibility: vi.fn(),
       takeSettingsGuidance,
       onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
@@ -137,21 +141,110 @@ describe("SettingsApp provider deletion", () => {
     installDefaultBridge();
     render(<SettingsApp />);
 
-    expect(await screen.findByRole("heading", { name: "通用" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "启用划词助手" })).toBeInTheDocument();
+    expect(await screen.findByText("使用提示")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "通用" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "启用划词助手" })).not.toBeInTheDocument();
+    expect(screen.queryByText("工具条显示")).not.toBeInTheDocument();
+    expect(screen.queryByText("关闭主窗口时")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "划词获取" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("默认划词获取方式")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "通用" })).toHaveAttribute("aria-current", "page");
-    expect(screen.queryByRole("heading", { name: "AI 服务商与模型" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "AI 服务商与模型" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "服务商" })).not.toBeInTheDocument();
+    expect(screen.queryByText("查看右键长按使用提示与系统选区访问状态。")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "工具栏动作" })).not.toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "使用百度" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /添加搜索引擎/ })).not.toBeInTheDocument();
 
-    await goToSettingsSection("服务商");
-    expect(await screen.findByRole("heading", { name: "AI 服务商与模型" })).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "启用划词助手" })).not.toBeInTheDocument();
-
     await goToSettingsSection("动作");
     expect(await screen.findByRole("heading", { name: "工具栏动作" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "AI 服务商与模型" })).not.toBeInTheDocument();
+  });
+
+  it("places collapsed providers between usage tips and selection access", async () => {
+    installDefaultBridge();
+    render(<SettingsApp />);
+
+    const providers = await screen.findByRole("heading", { name: "AI 服务商与模型" });
+    const tips = screen.getByText("使用提示");
+    const selection = screen.getByRole("heading", { name: "Windows 选区访问" });
+    expect(tips.compareDocumentPosition(providers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(providers.compareDocumentPosition(selection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "展开OpenAI Compatible配置" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const baseUrl = screen.getByDisplayValue("https://api.openai.com/v1");
+    expect(baseUrl.closest(".provider-grid")).toHaveAttribute("hidden");
+    fireEvent.click(toggle);
+    expect(baseUrl.closest(".provider-grid")).not.toHaveAttribute("hidden");
+    fireEvent.click(screen.getByRole("button", { name: "收起OpenAI Compatible配置" }));
+    expect(baseUrl.closest(".provider-grid")).toHaveAttribute("hidden");
+  });
+
+  it("expands a new provider and collapses all providers on reopening without losing drafts", async () => {
+    let reopen: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    installDefaultBridge({
+      onSettingsOpened: vi.fn((listener) => {
+        reopen = listener;
+        return unsubscribe;
+      }),
+    });
+    const view = render(<SettingsApp />);
+    await openProviderConfigurations();
+    fireEvent.click(screen.getByRole("button", { name: "添加服务商" }));
+    expect(screen.getByRole("button", { name: "收起服务商 2配置" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    const inputs = screen.getAllByRole("textbox", { name: /^API 地址（HTTP \/ HTTPS）/ });
+    fireEvent.change(inputs[1]!, { target: { value: "https://new.example.com/v1" } });
+    const key = document.querySelectorAll<HTMLInputElement>('input[type="password"]')[1]!;
+    fireEvent.change(key, { target: { value: "sk-unsaved" } });
+
+    await goToSettingsSection("动作");
+    await goToSettingsSection("通用");
+    expect(screen.getByRole("button", { name: "收起服务商 2配置" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    act(() => reopen?.());
+    expect(screen.getAllByRole("button", { name: /^展开.*配置$/ })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /^收起.*配置$/ })).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://new.example.com/v1")).toBeInTheDocument();
+    expect(document.querySelectorAll<HTMLInputElement>('input[type="password"]')[1]).toHaveValue(
+      "sk-unsaved",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "展开服务商 2配置" }));
+    expect(
+      screen.getByDisplayValue("https://new.example.com/v1").closest(".provider-grid"),
+    ).not.toHaveAttribute("hidden");
+    view.unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("collapses saved providers when the settings renderer is recreated", async () => {
+    const settings: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: [
+        ...DEFAULT_PUBLIC_SETTINGS.providers,
+        {
+          id: "new-provider",
+          name: "服务商 2",
+          baseUrl: "https://new.example.com/v1",
+          keyConfigured: false,
+          enabled: true,
+          models: [],
+        },
+      ],
+    };
+    installDefaultBridge({ getSettings: vi.fn(async () => settings) });
+    const view = render(<SettingsApp />);
+    await openProviderConfigurations();
+    view.unmount();
+    render(<SettingsApp />);
+    await screen.findByRole("heading", { name: "AI 服务商与模型" });
+    expect(screen.getAllByRole("button", { name: /^展开.*配置$/ })).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: /^收起.*配置$/ })).not.toBeInTheDocument();
   });
 
   it("shows AI default reply language under the language section", async () => {
@@ -180,44 +273,6 @@ describe("SettingsApp provider deletion", () => {
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
   });
 
-  it("shows and persists the Windows close behavior without a settings-page quit button", async () => {
-    const updateSettings = vi.fn(
-      async (update: SettingsUpdate): Promise<PublicSettings> => ({
-        ...DEFAULT_PUBLIC_SETTINGS,
-        application: update.application ?? DEFAULT_PUBLIC_SETTINGS.application,
-        providers: (update.providers ?? DEFAULT_PUBLIC_SETTINGS.providers).map((provider) => ({
-          ...provider,
-          keyConfigured: false,
-        })),
-        actions: update.actions ?? DEFAULT_PUBLIC_SETTINGS.actions,
-      }),
-    );
-    window._popper_ = {
-      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      updateSettings,
-      getAccessibilityStatus: vi.fn(async () => ({
-        platform: "windows",
-        trusted: true,
-        canRequest: false,
-      })),
-      requestAccessibility: vi.fn(),
-      onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined),
-    } as unknown as WindowPopperApi;
-
-    render(<SettingsApp />);
-
-    const closeBehavior = await screen.findByRole("combobox", { name: "关闭主窗口时" });
-    expect(closeBehavior).toHaveValue("hide-to-tray");
-    fireEvent.change(closeBehavior, { target: { value: "quit" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
-
-    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
-    expect(updateSettings.mock.calls[0]?.[0].application).toEqual({ closeBehavior: "quit" });
-
-    expect(screen.queryByRole("button", { name: "退出 Popper" })).not.toBeInTheDocument();
-  });
-
   it("fades a successful save after 1.4 seconds and removes it after 2 seconds", async () => {
     const updateSettings = vi.fn(async (): Promise<PublicSettings> => DEFAULT_PUBLIC_SETTINGS);
     window._popper_ = {
@@ -230,7 +285,6 @@ describe("SettingsApp provider deletion", () => {
       })),
       requestAccessibility: vi.fn(),
       onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
@@ -267,13 +321,10 @@ describe("SettingsApp provider deletion", () => {
       })),
       requestAccessibility: vi.fn(),
       onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    fireEvent.change(await screen.findByRole("combobox", { name: "关闭主窗口时" }), {
-      target: { value: "quit" },
-    });
+    await screen.findByText("使用提示");
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
     const banner = await screen.findByText("保存失败了");
@@ -304,7 +355,6 @@ describe("SettingsApp provider deletion", () => {
       })),
       requestAccessibility: vi.fn(),
       onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
@@ -323,94 +373,12 @@ describe("SettingsApp provider deletion", () => {
       }),
       requestAccessibility: vi.fn(),
       onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
 
     expect(await screen.findByRole("button", { name: "保存设置" })).toBeEnabled();
     expect(screen.getByText("diagnostic unavailable")).toBeInTheDocument();
-  });
-
-  it("offers cancel and discard choices for a native close request with unsaved changes", async () => {
-    let requestClose: (() => void) | undefined;
-    const quitApp = vi.fn(async () => undefined);
-    window._popper_ = {
-      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      updateSettings: vi.fn(),
-      quitApp,
-      getAccessibilityStatus: vi.fn(async () => ({
-        platform: "windows",
-        trusted: true,
-        canRequest: false,
-      })),
-      requestAccessibility: vi.fn(),
-      onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn((listener: () => void) => {
-        requestClose = listener;
-        return () => undefined;
-      }),
-    } as unknown as WindowPopperApi;
-
-    render(<SettingsApp />);
-    fireEvent.change(await screen.findByRole("combobox", { name: "关闭主窗口时" }), {
-      target: { value: "quit" },
-    });
-
-    act(() => requestClose?.());
-    expect(screen.getByRole("dialog", { name: "退出 Popper？" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "取消" }));
-    expect(screen.queryByRole("dialog", { name: "退出 Popper？" })).not.toBeInTheDocument();
-    expect(quitApp).not.toHaveBeenCalled();
-
-    act(() => requestClose?.());
-    fireEvent.click(screen.getByRole("button", { name: "放弃更改并退出" }));
-    await waitFor(() => expect(quitApp).toHaveBeenCalledTimes(1));
-  });
-
-  it("saves before quitting when requested from the unsaved-changes dialog", async () => {
-    let requestClose: (() => void) | undefined;
-    const quitApp = vi.fn(async () => undefined);
-    const updateSettings = vi.fn(
-      async (update: SettingsUpdate): Promise<PublicSettings> => ({
-        ...DEFAULT_PUBLIC_SETTINGS,
-        application: update.application ?? DEFAULT_PUBLIC_SETTINGS.application,
-        providers: (update.providers ?? DEFAULT_PUBLIC_SETTINGS.providers).map((provider) => ({
-          ...provider,
-          keyConfigured: false,
-        })),
-        actions: update.actions ?? DEFAULT_PUBLIC_SETTINGS.actions,
-      }),
-    );
-    window._popper_ = {
-      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      updateSettings,
-      quitApp,
-      getAccessibilityStatus: vi.fn(async () => ({
-        platform: "windows",
-        trusted: true,
-        canRequest: false,
-      })),
-      requestAccessibility: vi.fn(),
-      onSettingsChanged: vi.fn(() => () => undefined),
-      onSettingsCloseRequested: vi.fn((listener: () => void) => {
-        requestClose = listener;
-        return () => undefined;
-      }),
-    } as unknown as WindowPopperApi;
-
-    render(<SettingsApp />);
-    fireEvent.change(await screen.findByRole("combobox", { name: "关闭主窗口时" }), {
-      target: { value: "quit" },
-    });
-    act(() => requestClose?.());
-    fireEvent.click(screen.getByRole("button", { name: "保存并退出" }));
-
-    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(quitApp).toHaveBeenCalledTimes(1));
-    expect(updateSettings.mock.invocationCallOrder[0]).toBeLessThan(
-      quitApp.mock.invocationCallOrder[0]!,
-    );
   });
 
   it("shows Windows selection access without macOS permission instructions", async () => {
@@ -433,7 +401,7 @@ describe("SettingsApp provider deletion", () => {
     expect(screen.queryByText(/隐私与安全性/)).not.toBeInTheDocument();
   });
 
-  it("shows replayed Windows listener and global-shortcut failures", async () => {
+  it("shows replayed Windows listener failures", async () => {
     window._popper_ = {
       getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
       updateSettings: vi.fn(),
@@ -444,7 +412,6 @@ describe("SettingsApp provider deletion", () => {
         available: false,
         diagnostics: {
           selectionMonitorError: "无法启动系统划词监听。请重新启动 Popper。",
-          shortcutError: "全局快捷键注册失败，可能已被其他应用占用。",
         },
       })),
       requestAccessibility: vi.fn(),
@@ -455,105 +422,38 @@ describe("SettingsApp provider deletion", () => {
 
     expect(await screen.findByText("选区访问不可用")).toBeInTheDocument();
     expect(screen.getByText("无法启动系统划词监听。请重新启动 Popper。")).toBeInTheDocument();
-    expect(screen.getByText("全局快捷键不可用")).toBeInTheDocument();
-    expect(screen.getByText("全局快捷键注册失败，可能已被其他应用占用。")).toBeInTheDocument();
     expect(screen.queryByText("选区访问可用")).not.toBeInTheDocument();
   });
 
-  it("records a capture shortcut from keyboard input instead of free typing", async () => {
-    const updateSettings = vi.fn(async (update: SettingsUpdate) => ({
-      ...DEFAULT_PUBLIC_SETTINGS,
-      ...update,
-      trigger: update.trigger ?? DEFAULT_PUBLIC_SETTINGS.trigger,
-      captureShortcut: update.captureShortcut ?? DEFAULT_PUBLIC_SETTINGS.captureShortcut,
-    }));
+  it("shows long-press guidance without trigger or capture-shortcut controls", async () => {
     window._popper_ = {
       getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      updateSettings,
       getAccessibilityStatus: vi.fn(async () => ({
-        platform: "darwin" as const,
-        trusted: true,
-        canRequest: true,
-        available: true,
-        diagnostics: {},
+        platform: "windows", trusted: true, canRequest: false, available: true, diagnostics: {},
       })),
-      requestAccessibility: vi.fn(),
       onSettingsChanged: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
-
     render(<SettingsApp />);
-    fireEvent.click(await screen.findByRole("radio", { name: "快捷键" }));
-
-    const input = screen.getByLabelText("捕获当前选区快捷键");
-    expect(input).toHaveValue("CommandOrControl+Shift+S");
-
-    fireEvent.keyDown(input, {
-      key: "k",
-      code: "KeyK",
-      metaKey: true,
-      altKey: true,
-      bubbles: true,
-    });
-    // macOS maps Meta → CommandOrControl; Linux/Windows map Meta → Super.
-    const platform = `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`.toLowerCase();
-    const isMac = platform.includes("mac") || platform.includes("darwin");
-    const recorded = isMac ? "CommandOrControl+Alt+K" : "Super+Alt+K";
-    expect(input).toHaveValue(recorded);
-
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
-    await waitFor(() => {
-      expect(updateSettings).toHaveBeenCalledWith(
-        expect.objectContaining({
-          trigger: { mode: "shortcut" },
-          captureShortcut: recorded,
-        }),
-      );
-    });
-
-    fireEvent.keyDown(input, { key: "Backspace", code: "Backspace", bubbles: true });
-    expect(input).toHaveValue("");
+    expect(await screen.findByText(/长按右键 250ms/)).toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "触发方式" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("捕获当前选区快捷键")).not.toBeInTheDocument();
   });
 
-  it("refreshes the replayable shortcut diagnostic immediately after save fails", async () => {
-    const updateSettings = vi.fn(async () => {
-      throw new Error("无法注册快捷键");
-    });
-    const getAccessibilityStatus = vi.fn(async () =>
-      updateSettings.mock.calls.length > 0
-        ? {
-            platform: "windows" as const,
-            trusted: true,
-            canRequest: false,
-            available: true,
-            diagnostics: {
-              shortcutError: "全局快捷键注册失败，可能已被其他应用占用。",
-            },
-          }
-        : {
-            platform: "windows" as const,
-            trusted: true,
-            canRequest: false,
-            available: true,
-            diagnostics: {},
-          },
-    );
+  it("refreshes listener diagnostics immediately after save fails", async () => {
+    const updateSettings = vi.fn(async () => { throw new Error("保存设置失败"); });
+    const getAccessibilityStatus = vi.fn(async () => ({
+      platform: "windows", trusted: true, canRequest: false,
+      available: updateSettings.mock.calls.length === 0,
+      diagnostics: updateSettings.mock.calls.length > 0
+        ? { selectionMonitorError: "无法启动系统划词监听。请重新启动 Popper。" } : {},
+    }));
     window._popper_ = {
-      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS),
-      updateSettings,
-      getAccessibilityStatus,
-      requestAccessibility: vi.fn(),
+      getSettings: vi.fn(async () => DEFAULT_PUBLIC_SETTINGS), updateSettings, getAccessibilityStatus,
       onSettingsChanged: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
-
     render(<SettingsApp />);
-
-    fireEvent.click(await screen.findByRole("radio", { name: "快捷键" }));
-    // Switching to shortcut mode seeds a valid default capture chord.
-    expect(screen.getByLabelText("捕获当前选区快捷键")).toHaveValue("CommandOrControl+Shift+S");
-    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
-
-    expect(await screen.findByText("全局快捷键不可用")).toBeInTheDocument();
-    expect(screen.getByText("全局快捷键注册失败，可能已被其他应用占用。")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "保存设置" }));
+    expect(await screen.findByText("无法启动系统划词监听。请重新启动 Popper。")).toBeInTheDocument();
     expect(getAccessibilityStatus).toHaveBeenCalledTimes(2);
   });
 
@@ -665,7 +565,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     const baseUrl = await screen.findByDisplayValue("https://api.openai.com/v1");
     expect(screen.queryByText(/API Key 将通过网络明文传输/)).not.toBeInTheDocument();
@@ -743,7 +643,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     const removeButton = await screen.findByRole("button", { name: /删除OpenAI Compatible/ });
     fireEvent.click(removeButton);
@@ -800,7 +700,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     const baseUrl = await screen.findByDisplayValue("https://api.openai.com/v1");
     fireEvent.change(baseUrl, { target: { value: "https://gateway.example/v1" } });
@@ -883,7 +783,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     await screen.findByDisplayValue("OpenAI Compatible");
     fireEvent.click(screen.getByRole("button", { name: "添加服务商" }));
@@ -926,7 +826,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     await waitFor(() => {
       expect(screen.getByText(/AI 服务商/)).toBeInTheDocument();
@@ -957,7 +857,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     const toggle = await screen.findByRole("button", { name: /显示 API Key/ });
     fireEvent.click(toggle);
@@ -992,7 +892,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     expect(await screen.findByRole("button", { name: "获取模型" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "同步模型" })).not.toBeInTheDocument();
@@ -1057,7 +957,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     fireEvent.click(await screen.findByRole("button", { name: "获取模型" }));
     expect(await screen.findByRole("dialog", { name: "选择模型" })).toBeInTheDocument();
@@ -1117,7 +1017,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
     fireEvent.click(await screen.findByRole("button", { name: "获取模型" }));
     expect(await screen.findByRole("dialog", { name: "选择模型" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("checkbox", { name: /gpt-4o$/i }));
@@ -1154,7 +1054,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
     fireEvent.click(await screen.findByRole("button", { name: "获取模型" }));
     expect(await screen.findByText("无法连接服务商")).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "选择模型" })).not.toBeInTheDocument();
@@ -1221,7 +1121,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await goToSettingsSection("服务商");
+    await openProviderConfigurations();
 
     const handle = await screen.findByRole("button", { name: "拖动模型 gpt-4o-mini" });
     handle.focus();

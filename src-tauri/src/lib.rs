@@ -29,12 +29,6 @@ static WINDOWS_RUNTIME_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
-        .with_handler(|app, shortcut, event| {
-            runtime::handle_global_shortcut(app, shortcut, event);
-        })
-        .build();
-
     let builder = tauri::Builder::default();
     // Windows allows launching the same executable repeatedly from the Start
     // menu. Register this before every other plugin so only the first process
@@ -59,7 +53,6 @@ pub fn run() {
         // an Edit menu, WKWebView text fields accept typing but those keyboard
         // shortcuts do not reach the active input in packaged builds.
         .enable_macos_default_menu(true)
-        .plugin(shortcut_plugin)
         .setup(|app| {
             #[cfg(target_os = "windows")]
             windows::initialize_windows_ui_thread();
@@ -88,7 +81,6 @@ pub fn run() {
 
             let state = handle.state::<RuntimeState>();
             state.reconcile_capture(&handle);
-            state.reconcile_shortcut(&handle);
             runtime::start_permission_poll(handle.clone());
             #[cfg(target_os = "macos")]
             if !SelectionMonitor::is_accessibility_trusted() {
@@ -117,7 +109,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             runtime::get_settings,
-            runtime::settings_ready,
             runtime::update_settings,
             runtime::reset_result_size,
             runtime::create_provider,
@@ -133,7 +124,6 @@ pub fn run() {
             runtime::request_accessibility,
             runtime::open_settings,
             runtime::take_settings_guidance,
-            runtime::quit_app,
             runtime::toolbar_ready,
             runtime::present_toolbar,
             runtime::recover_toolbar,
