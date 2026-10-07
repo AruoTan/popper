@@ -434,7 +434,7 @@ describe("SettingsApp provider deletion", () => {
       onSettingsChanged: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
     render(<SettingsApp />);
-    expect(await screen.findByText(/长按右键 250ms/)).toBeInTheDocument();
+    expect(await screen.findByRole("note")).toHaveTextContent(/长按右键 250 ms/);
     expect(screen.queryByRole("radiogroup", { name: "触发方式" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("捕获当前选区快捷键")).not.toBeInTheDocument();
   });
