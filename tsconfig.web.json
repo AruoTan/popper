@@ -13,11 +13,10 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
-    "baseUrl": ".",
     "paths": {
-      "@shared": ["src/shared/index.ts"],
-      "@shared/*": ["src/shared/*"],
-      "@renderer/*": ["src/renderer/*"]
+      "@shared": ["./src/shared/index.ts"],
+      "@shared/*": ["./src/shared/*"],
+      "@renderer/*": ["./src/renderer/*"]
     },
     "forceConsistentCasingInFileNames": true,
     "noUncheckedIndexedAccess": true

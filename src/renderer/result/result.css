@@ -1483,3 +1483,68 @@ body,
 .dictionary-actions { justify-content: flex-start; font-size: .85em; }
 .dictionary-books { margin-top: 12px; padding: 12px; border: 1px solid #8884; border-radius: 10px; }
 .dictionary-books button, .dictionary-books select { margin: 4px; }
+
+/* TODO(selection-offset-dev): remove after Windows/Zotero desktop validation. */
+.result-selection-debug {
+  margin: 10px 0;
+  border: 1px solid #c69b48;
+  border-radius: 8px;
+  background: var(--surface, transparent);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.result-selection-debug > summary {
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.result-selection-debug > summary span {
+  display: block;
+  margin: 4px 0 0 14px;
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+
+.result-selection-debug__body {
+  padding: 0 10px 10px;
+}
+
+.result-selection-debug dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 10px;
+}
+
+.result-selection-debug dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.result-selection-debug__note,
+.result-selection-debug__path {
+  opacity: 0.75;
+  overflow-wrap: anywhere;
+}
+
+.result-selection-debug button {
+  padding: 5px 9px;
+  border: 1px solid #c69b48;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.result-selection-debug [role="status"] {
+  margin-left: 8px;
+}
+
+.result-selection-debug pre {
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  font: 11px/1.5 ui-monospace, monospace;
+}

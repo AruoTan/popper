@@ -2642,6 +2642,23 @@ pub fn report_toolbar_size(
         .map_err(|error| error.to_string())
 }
 
+// TODO(selection-offset-dev): remove after Windows/Zotero offset validation.
+#[tauri::command]
+pub fn get_selection_detection_debug(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    ensure_result_caller(&window, &session_id)?;
+    let timestamp_ms = state
+        .result_sessions
+        .lock()
+        .get(&session_id)
+        .map(|meta| meta.selection.payload.timestamp_ms)
+        .ok_or_else(|| "结果会话已结束".to_owned())?;
+    Ok(SelectionMonitor::selection_detection_debug(timestamp_ms))
+}
+
 #[tauri::command]
 pub fn begin_result_ready(
     window: WebviewWindow,

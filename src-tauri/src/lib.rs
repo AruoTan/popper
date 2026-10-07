@@ -143,6 +143,7 @@ pub fn run() {
             runtime::eudic_configured,
             runtime::hide_toolbar,
             runtime::report_toolbar_size,
+            runtime::get_selection_detection_debug,
             runtime::begin_result_ready,
             runtime::ack_result_ready,
             runtime::prepare_result_reveal,
