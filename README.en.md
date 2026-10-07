@@ -35,7 +35,7 @@ Popper does not declare its own open-source license. Materials adapted from Cher
 Core selection-assistant workflow:
 
 - Selection toolbar: copy, search, translate, summarize, explain, polish, Ask AI, and custom actions.
-- Actions can be enabled/disabled, renamed, reordered, and re-iconed; icon-only mode is supported. Search can use Google / Bing / Baidu; URLs, domains, and IPs open directly when possible.
+- Actions can be enabled/disabled, renamed, reordered, and re-iconed; the toolbar shows icons and labels. Search can use Google / Bing / Baidu; URLs, domains, and IPs open directly when possible.
 - Multiple OpenAI-compatible providers and models; providers can be enabled or disabled; each action can bind its own model and prompt; fetch models, multi-select merge, and reorder are supported.
 - Streaming results with Markdown / tables / math; drag, resize, pin, and several dismiss modes; text in the result body can be selected again for a new toolbar.
 
@@ -153,7 +153,7 @@ Windows builds target Windows 10/11 x64 with standard-user, current-user NSIS in
 1. Run the NSIS installer; if WebView2 Runtime is missing, the bootstrapper is launched automatically.
 2. Unsigned test builds may trigger Microsoft Defender SmartScreen; after verifying SHA-256 you can choose “More info → Run anyway”.
 3. On first launch the app stays in the notification area and does not open Settings automatically; use the tray menu.
-4. Closing Settings with X hides to the tray by default; this can be changed to quit. Full quit is available from the tray menu (“Quit Popper”).
+4. Closing Settings with X hides it to the tray. Full quit is available from the tray menu (“Quit Popper”).
 5. Popper does not elevate, so it cannot read selections from admin-elevated apps; normal-privilege apps are fine.
 
 The Windows installer is still an unsigned test build and may trigger SmartScreen. Automated checks do not replace real-world app, privilege, and DPI testing. Not suitable for public distribution before code signing and full compatibility acceptance.

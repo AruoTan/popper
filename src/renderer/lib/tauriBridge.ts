@@ -190,9 +190,6 @@ function parseAccessibility(value: unknown): AccessibilityStatus {
     ...(typeof diagnosticsRecord.selectionMonitorError === "string"
       ? { selectionMonitorError: diagnosticsRecord.selectionMonitorError }
       : {}),
-    ...(typeof diagnosticsRecord.shortcutError === "string"
-      ? { shortcutError: diagnosticsRecord.shortcutError }
-      : {}),
   };
   return {
     platform,
@@ -257,14 +254,11 @@ export function installTauriBridge(): void {
   const settingsEvents = new EventHub<PublicSettings>(EVENTS.settingsChanged, (payload) =>
     publicSettingsSchema.parse(payload),
   );
-  const settingsCloseRequestEvents = new EventHub<void>(
-    EVENTS.settingsCloseRequested,
-    () => undefined,
-  );
   const settingsGuidanceEvents = new EventHub<SettingsGuidance>(
     EVENTS.settingsGuidance,
     parseSettingsGuidance,
   );
+  const settingsOpenedEvents = new EventHub<void>(EVENTS.settingsOpened, () => undefined);
   const toolbarPointerEvents = new EventHub<ToolbarPointerEvent>(EVENTS.toolbarPointer, (payload) =>
     toolbarPointerEventSchema.parse(payload),
   );
@@ -272,8 +266,8 @@ export function installTauriBridge(): void {
     EVENTS.toolbarDismissed,
     (payload) => toolbarDismissedEventSchema.parse(payload),
   );
-  const resultSelectionShortcutEvents = new EventHub<void>(
-    EVENTS.resultSelectionShortcut,
+  const resultSelectionHoldEvents = new EventHub<void>(
+    EVENTS.resultSelectionHold,
     () => undefined,
   );
 
@@ -336,10 +330,6 @@ export function installTauriBridge(): void {
     },
     async getSettings() {
       return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.getSettings));
-    },
-    async settingsReady() {
-      await settingsCloseRequestEvents.ready();
-      await invoke(TAURI_COMMANDS.settingsReady);
     },
     async updateSettings(update: SettingsUpdate) {
       return publicSettingsSchema.parse(await invoke(TAURI_COMMANDS.updateSettings, { update }));
@@ -536,9 +526,6 @@ export function installTauriBridge(): void {
     async closeResult(sessionId?: string) {
       await invoke(TAURI_COMMANDS.closeResult, { sessionId: requiredSessionId(sessionId) });
     },
-    async quitApp() {
-      await invoke(TAURI_COMMANDS.quitApp);
-    },
     onSelection(listener) {
       return selectionEvents.subscribe(listener);
     },
@@ -548,14 +535,14 @@ export function installTauriBridge(): void {
     onSettingsChanged(listener) {
       return settingsEvents.subscribe(listener);
     },
-    onSettingsCloseRequested(listener) {
-      return settingsCloseRequestEvents.subscribe(listener);
-    },
     onSettingsGuidance(listener) {
       return settingsGuidanceEvents.subscribe(listener);
     },
-    onResultSelectionShortcut(listener) {
-      return resultSelectionShortcutEvents.subscribe(listener);
+    onSettingsOpened(listener) {
+      return settingsOpenedEvents.subscribe(listener);
+    },
+    onResultSelectionHold(listener) {
+      return resultSelectionHoldEvents.subscribe(listener);
     },
     onToolbarPointer(listener) {
       return toolbarPointerEvents.subscribe(listener);

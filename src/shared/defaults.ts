@@ -1,18 +1,13 @@
 import {
   BUILTIN_SEARCH_ENGINE_IDS,
-  DEFAULT_CAPTURE_SHORTCUT,
-  DEFAULT_APPLICATION_SETTINGS,
   DEFAULT_FILTER_SETTINGS,
-  DEFAULT_SELECTION_CAPTURE_SETTINGS,
   DEFAULT_LOCALE,
   DEFAULT_OPENAI_BASE_URL,
   DEFAULT_PROVIDER_ID,
   DEFAULT_PROVIDER_NAME,
   DEFAULT_RESULT_SETTINGS,
   DEFAULT_SEARCH_ENGINE_ID,
-  DEFAULT_TOOLBAR_SETTINGS,
   DEFAULT_TRANSLATION_PAIR,
-  DEFAULT_TRIGGER_SETTINGS,
   RESULT_FONT_SIZE_MAX,
   RESULT_FONT_SIZE_MIN,
   SETTINGS_VERSION,
@@ -202,16 +197,10 @@ export const DEFAULT_ACTIONS: readonly ActionDefinition[] = Object.freeze([
 export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = Object.freeze(
   appSettingsSchema.parse({
     version: SETTINGS_VERSION,
-    enabled: true,
-    captureShortcut: DEFAULT_CAPTURE_SHORTCUT,
     locale: DEFAULT_LOCALE,
     translate: DEFAULT_TRANSLATION_PAIR,
-    toolbar: DEFAULT_TOOLBAR_SETTINGS,
     result: DEFAULT_RESULT_SETTINGS,
-    trigger: DEFAULT_TRIGGER_SETTINGS,
-    application: DEFAULT_APPLICATION_SETTINGS,
     filter: DEFAULT_FILTER_SETTINGS,
-    selectionCapture: DEFAULT_SELECTION_CAPTURE_SETTINGS,
     providers: [
       {
         id: DEFAULT_PROVIDER_ID,
@@ -229,16 +218,10 @@ export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = Object.freeze(
 export function toPublicSettings(settings: AppSettings): PublicSettings {
   return publicSettingsSchema.parse({
     version: settings.version,
-    enabled: settings.enabled,
-    captureShortcut: settings.captureShortcut,
     locale: settings.locale,
     translate: settings.translate,
-    toolbar: settings.toolbar,
     result: settings.result,
-    trigger: settings.trigger,
-    application: settings.application,
     filter: settings.filter,
-    selectionCapture: settings.selectionCapture,
     providers: settings.providers.map(({ apiKey, ...provider }) => ({
       ...provider,
       keyConfigured: apiKey.trim().length > 0
@@ -274,7 +257,6 @@ function migrateV2Candidate(candidate: UnknownRecord): UnknownRecord {
       : DEFAULT_RESULT_SETTINGS.fontSize
   return migratePromptDefaultsCandidate({
     ...candidate,
-    application: candidate.application ?? DEFAULT_APPLICATION_SETTINGS,
     result: {
       ...DEFAULT_RESULT_SETTINGS,
       ...result,
@@ -286,14 +268,6 @@ function migrateV2Candidate(candidate: UnknownRecord): UnknownRecord {
     }
   })
 }
-
-function migrateV3ToV5Candidate(candidate: UnknownRecord): UnknownRecord {
-  return migratePromptDefaultsCandidate({
-    ...candidate,
-    application: candidate.application ?? DEFAULT_APPLICATION_SETTINGS
-  })
-}
-
 
 function parseBuiltinSearchEngineId(value: unknown): SearchEngineId {
   const parsed = searchEngineIdSchema.safeParse(
@@ -595,17 +569,10 @@ function migrateLegacyCommon(input: UnknownRecord) {
   })
   return {
     version: SETTINGS_VERSION,
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : defaults.enabled,
-    captureShortcut:
-      typeof input.captureShortcut === 'string' ? input.captureShortcut : defaults.captureShortcut,
     locale: input.locale ?? defaults.locale,
     translate: input.translate ?? defaults.translate,
-    toolbar: input.toolbar ?? defaults.toolbar,
     result: input.result ?? defaults.result,
-    trigger: input.trigger ?? defaults.trigger,
-    application: input.application ?? defaults.application,
     filter: input.filter ?? defaults.filter,
-    selectionCapture: input.selectionCapture ?? defaults.selectionCapture,
     actions: withSearch.actions as ActionDefinition[],
     ai
   }
@@ -613,9 +580,20 @@ function migrateLegacyCommon(input: UnknownRecord) {
 
 /** Converts persisted internal settings into the current version. */
 export function migrateAppSettings(input: unknown): AppSettings {
-  const candidate = asRecord(input)
+  const {
+    selectionCapture: _legacySelectionCapture,
+    trigger: _legacyTrigger,
+    captureShortcut: _legacyShortcut,
+    enabled: _legacyEnabled,
+    toolbar: _legacyToolbar,
+    application: _legacyApplication,
+    ...candidate
+  } = asRecord(input)
   if (
     candidate.version === SETTINGS_VERSION ||
+    candidate.version === 14 ||
+    candidate.version === 13 ||
+    candidate.version === 12 ||
     candidate.version === 11 ||
     candidate.version === 10 ||
     candidate.version === 9 ||
@@ -627,7 +605,7 @@ export function migrateAppSettings(input: unknown): AppSettings {
     candidate.version === 3 || candidate.version === 4 || candidate.version === 5 ||
     candidate.version === 6 || candidate.version === 7
   ) {
-    return appSettingsSchema.parse(migrateV3ToV5Candidate(candidate))
+    return appSettingsSchema.parse(migratePromptDefaultsCandidate(candidate))
   }
   if (candidate.version === 2) return appSettingsSchema.parse(migrateV2Candidate(candidate))
 
@@ -652,9 +630,20 @@ export function migrateAppSettings(input: unknown): AppSettings {
 
 /** Converts a persisted public payload; API key material is never accepted or returned. */
 export function migratePublicSettings(input: unknown): PublicSettings {
-  const candidate = asRecord(input)
+  const {
+    selectionCapture: _legacySelectionCapture,
+    trigger: _legacyTrigger,
+    captureShortcut: _legacyShortcut,
+    enabled: _legacyEnabled,
+    toolbar: _legacyToolbar,
+    application: _legacyApplication,
+    ...candidate
+  } = asRecord(input)
   if (
     candidate.version === SETTINGS_VERSION ||
+    candidate.version === 14 ||
+    candidate.version === 13 ||
+    candidate.version === 12 ||
     candidate.version === 11 ||
     candidate.version === 10 ||
     candidate.version === 9 ||
@@ -666,7 +655,7 @@ export function migratePublicSettings(input: unknown): PublicSettings {
     candidate.version === 3 || candidate.version === 4 || candidate.version === 5 ||
     candidate.version === 6 || candidate.version === 7
   ) {
-    return publicSettingsSchema.parse(migrateV3ToV5Candidate(candidate))
+    return publicSettingsSchema.parse(migratePromptDefaultsCandidate(candidate))
   }
   if (candidate.version === 2) return publicSettingsSchema.parse(migrateV2Candidate(candidate))
 

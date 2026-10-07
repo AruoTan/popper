@@ -48,6 +48,32 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("dictionary panel", () => {
+  it("hides dictionary-only controls and hints after fallback and restores them for a new lookup", () => {
+    const input = {
+      ...props(),
+      snapshot: { ...snapshot, suggestionError: "联想查询失败" },
+    };
+    const { rerender } = render(<DictionaryPanel {...input} />);
+    expect(screen.getByRole("button", { name: "改用 AI 翻译" })).toBeInTheDocument();
+    expect(screen.getByText("联想查询失败，仍可直接查词。")).toBeInTheDocument();
+    rerender(
+      <DictionaryPanel
+        {...input}
+        snapshot={{ ...input.snapshot, mode: "ai", status: "missing", entry: null }}
+      />,
+    );
+    expect(screen.getByText("没有找到词典释义，已转为 AI 翻译。")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "改用 AI 翻译" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/联想查询失败/)).not.toBeInTheDocument();
+    rerender(<DictionaryPanel {...input} snapshot={{ ...input.snapshot, mode: "ai" }} />);
+    expect(screen.queryByRole("button", { name: "改用 AI 翻译" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/联想查询失败/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "加入欧路生词本" })).toBeInTheDocument();
+    rerender(<DictionaryPanel {...input} />);
+    expect(screen.getByRole("button", { name: "改用 AI 翻译" })).toBeInTheDocument();
+    expect(screen.getByText("联想查询失败，仍可直接查词。")).toBeInTheDocument();
+  });
+
   it("renders structured data safely without AI or automatic audio", () => {
     const { container } = render(<DictionaryPanel {...props()} />);
     expect(screen.getByRole("heading", { name: "account" })).toBeInTheDocument();

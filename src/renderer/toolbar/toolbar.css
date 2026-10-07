@@ -208,7 +208,7 @@ body {
   opacity: 0.45;
 }
 
-.toolbar-action--icon-only {
+.toolbar-action--fixed-ask {
   width: 28px;
   min-width: 28px;
   height: 28px;

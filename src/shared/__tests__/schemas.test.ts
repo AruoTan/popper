@@ -13,7 +13,6 @@ import {
   actionStreamEventSchema,
   actionsSchema,
   appSettingsSchema,
-  captureShortcutSchema,
   customActionSchema,
   migrateAppSettings,
   migratePublicSettings,
@@ -26,18 +25,11 @@ import {
 } from '..'
 
 describe('settings schemas and defaults', () => {
-  it('provides v12 defaults with search engine bound to the search action', () => {
+  it('provides v15 defaults with search engine bound to the search action', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
-    expect(DEFAULT_APP_SETTINGS.version).toBe(12)
-    expect(DEFAULT_APP_SETTINGS.enabled).toBe(true)
+    expect(DEFAULT_APP_SETTINGS.version).toBe(15)
     expect(DEFAULT_APP_SETTINGS.actions.find((action) => action.kind === 'search')).toMatchObject({
       searchEngineId: 'google'
-    })
-    expect(DEFAULT_APP_SETTINGS.application).toEqual({ closeBehavior: 'hide-to-tray' })
-    expect(DEFAULT_APP_SETTINGS.selectionCapture.defaultStrategy).toBe('selection-hook')
-    expect(DEFAULT_APP_SETTINGS.selectionCapture.applications).toContainEqual({
-      application: 'acrobat.exe',
-      strategy: 'clipboard'
     })
     expect(DEFAULT_APP_SETTINGS.providers[0]).toMatchObject({
       id: DEFAULT_PROVIDER_ID,
@@ -77,14 +69,47 @@ describe('settings schemas and defaults', () => {
     }
   })
 
-  it('migrates v11 settings to visible capture compatibility rules', () => {
-    const { selectionCapture: _selectionCapture, ...v11 } = DEFAULT_APP_SETTINGS
-    const migrated = migrateAppSettings({ ...v11, version: 11 })
-    expect(migrated.version).toBe(12)
-    expect(migrated.selectionCapture.applications).toContainEqual({
-      application: 'emeditor.exe',
-      strategy: 'clipboard'
-    })
+  it.each([11, 12, 13, 14])('discards retired capture configuration from v%s settings', (version) => {
+    const selectionCapture = {
+      defaultStrategy: 'clipboard',
+      applications: [{ application: 'reader.exe', strategy: 'selection-hook' }]
+    }
+    const migrated = migrateAppSettings({ ...DEFAULT_APP_SETTINGS, version, selectionCapture, trigger: { mode: "shortcut" }, captureShortcut: "CommandOrControl+Shift+F12" })
+    expect(migrated.version).toBe(15)
+    expect(migrated).not.toHaveProperty('selectionCapture')
+    expect(migrated).not.toHaveProperty('trigger')
+    expect(migrated).not.toHaveProperty('captureShortcut')
+    expect(migrated.actions).toEqual(DEFAULT_APP_SETTINGS.actions)
+    expect(migrated.providers).toEqual(DEFAULT_APP_SETTINGS.providers)
+    const publicSettings = migratePublicSettings({ ...DEFAULT_PUBLIC_SETTINGS, version, selectionCapture, trigger: { mode: "shortcut" }, captureShortcut: "CommandOrControl+Shift+F12" })
+    expect(publicSettings.version).toBe(15)
+    expect(publicSettings).not.toHaveProperty('selectionCapture')
+    expect(publicSettings).not.toHaveProperty('trigger')
+    expect(publicSettings).not.toHaveProperty('captureShortcut')
+  })
+
+  it('rejects retired capture configuration in settings updates', () => {
+    expect(settingsUpdateSchema.safeParse({ trigger: { mode: 'selected' } }).success).toBe(false)
+    expect(settingsUpdateSchema.safeParse({ captureShortcut: 'Ctrl+F12' }).success).toBe(false)
+    expect(settingsUpdateSchema.safeParse({ selectionCapture: { defaultStrategy: 'auto' } }).success).toBe(false)
+  })
+
+  it.each([1, 2, 5, 11, 12, 13, 14, 15])('removes fixed behavior options from v%s settings', (version) => {
+    const retired = { enabled: false, toolbar: { displayMode: 'icon-only' }, application: { closeBehavior: 'quit' } }
+    for (const settings of [
+      migrateAppSettings({ ...DEFAULT_APP_SETTINGS, version, ...retired }),
+      migratePublicSettings({ ...DEFAULT_PUBLIC_SETTINGS, version, ...retired })
+    ]) {
+      expect(settings.version).toBe(15)
+      for (const key of ['enabled', 'toolbar', 'application']) expect(settings).not.toHaveProperty(key)
+      expect(settings.result).toEqual(DEFAULT_APP_SETTINGS.result)
+    }
+  })
+
+  it('rejects removed behavior options in settings updates', () => {
+    for (const option of [{ enabled: false }, { toolbar: { displayMode: 'icon-only' } }, { application: { closeBehavior: 'quit' } }]) {
+      expect(settingsUpdateSchema.safeParse(option).success).toBe(false)
+    }
   })
 
   it('accepts ask AI actions and rejects quote local actions', () => {
@@ -119,7 +144,7 @@ describe('settings schemas and defaults', () => {
         { id: 'quote', name: '引用', icon: 'quote', kind: 'quote', enabled: true, order: 6 }
       ]
     })
-    expect(migrated.version).toBe(12)
+    expect(migrated.version).toBe(15)
     expect(migrated.actions.filter((action) => action.kind === 'ask')).toHaveLength(0)
     expect(migrated.actions.some((action) => action.id === 'ask-ai')).toBe(false)
   })
@@ -316,7 +341,7 @@ describe('settings schemas and defaults', () => {
       ]
     }
     const migrated = migrateAppSettings(legacy)
-    expect(migrated.version).toBe(12)
+    expect(migrated.version).toBe(15)
     expect(migrated.providers[0]).toMatchObject({
       baseUrl: 'https://example.com/v1',
       apiKey: 'secret',
@@ -331,36 +356,6 @@ describe('settings schemas and defaults', () => {
     const migratedPublic = migratePublicSettings({ ...legacy, keyConfigured: true })
     expect(migratedPublic.providers[0]?.keyConfigured).toBe(true)
     expect(migratedPublic.providers[0]).not.toHaveProperty('apiKey')
-  })
-
-  it('matches the Tauri global-hotkey shortcut grammar', () => {
-    for (const shortcut of [
-      '',
-      'CommandOrControl+Shift+S',
-      'CommandOrCtrl+ArrowUp',
-      'CmdOrControl+NumPadSubtract',
-      'Ctrl + Alt + Space',
-      'Ctrl+Ctrl+KeyS',
-      'MediaTrackNext',
-      'F24'
-    ]) {
-      expect(captureShortcutSchema.safeParse(shortcut).success, shortcut).toBe(true)
-    }
-
-    for (const shortcut of [
-      'Cmd++S',
-      'Cmd+NotARealKey',
-      'AltGr+S',
-      'Meta+S',
-      'Ctrl+Return',
-      'Ctrl+MediaNextTrack',
-      'Ctrl+NumSub',
-      'Ctrl+S+Alt',
-      'Ctrl+Shift',
-      'F25'
-    ]) {
-      expect(captureShortcutSchema.safeParse(shortcut).success, shortcut).toBe(false)
-    }
   })
 
   it('does not allow API keys through the ordinary settings update channel', () => {
@@ -433,7 +428,7 @@ describe('settings schemas and defaults', () => {
       actions: [...DEFAULT_APP_SETTINGS.actions, secondTranslate]
     })
 
-    expect(migrated.version).toBe(12)
+    expect(migrated.version).toBe(15)
     expect(migrated.providers[1]).toEqual({
       ...secondProvider,
       enabled: true,
@@ -478,7 +473,7 @@ describe('settings schemas and defaults', () => {
       ]
     })
 
-    expect(migrated.version).toBe(12)
+    expect(migrated.version).toBe(15)
     expect(migrated.actions.find((action) => action.id === 'translate')).toMatchObject({
       prompt: DEFAULT_ACTION_PROMPTS.translate
     })
@@ -536,7 +531,7 @@ describe('settings schemas and defaults', () => {
     const migratedPublic = migratePublicSettings(withV4Prompts(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(12)
+      expect(settings.version).toBe(15)
       expect(settings.actions.find((action) => action.id === 'summary')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.summary
       })
@@ -613,7 +608,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
     const migratedPublic = migratePublicSettings(withLegacyV11(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(12)
+      expect(settings.version).toBe(15)
       expect(settings.actions.find((action) => action.id === 'translate')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.translate
       })
@@ -660,22 +655,6 @@ Return only the translated content. Do not include explanations, labels, tags, o
     })
   })
 
-  it('migrates v5 settings to the default close behavior and preserves a current choice', () => {
-    const { application: _legacyApplication, ...legacyApp } = DEFAULT_APP_SETTINGS
-    const { application: _legacyPublicApplication, ...legacyPublic } = DEFAULT_PUBLIC_SETTINGS
-
-    expect(migrateAppSettings({ ...legacyApp, version: 5 }).application).toEqual({
-      closeBehavior: 'hide-to-tray'
-    })
-    expect(migratePublicSettings({ ...legacyPublic, version: 5 }).application).toEqual({
-      closeBehavior: 'hide-to-tray'
-    })
-    expect(migrateAppSettings({
-      ...DEFAULT_APP_SETTINGS,
-      application: { closeBehavior: 'quit' }
-    }).application.closeBehavior).toBe('quit')
-  })
-
   it('migrates v8/v9 global search engine preferences onto the search action', () => {
     const fromMissing = migrateAppSettings({
       ...DEFAULT_APP_SETTINGS,
@@ -701,7 +680,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
         return rest
       })
     })
-    expect(fromV8.version).toBe(12)
+    expect(fromV8.version).toBe(15)
     expect(fromV8.actions.find((action) => action.kind === 'search')).toMatchObject({
       searchEngineId: 'baidu'
     })
@@ -721,7 +700,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
       ]
     })
 
-    expect(migrated.version).toBe(12)
+    expect(migrated.version).toBe(15)
     expect(migrated.actions.filter((action) => action.kind === 'search')).toMatchObject([
       { id: 'search', icon: 'search', searchEngineId: 'google' }
     ])

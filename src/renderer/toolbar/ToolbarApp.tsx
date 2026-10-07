@@ -221,12 +221,6 @@ export function ToolbarApp(): JSX.Element {
       resetCopySuccess();
       clearRetainedToolbarFocus();
       setSettings(nextSettings);
-      if (!nextSettings.enabled) {
-        runDetached(window._popper_.hideToolbar(), {
-          scope: "toolbar",
-          operation: "hide-disabled",
-        });
-      }
     });
     const unsubscribeToolbarPointer =
       window._popper_.onToolbarPointer?.((pointer) => {
@@ -701,8 +695,6 @@ export function ToolbarApp(): JSX.Element {
     }
   };
 
-  const iconOnly = settings?.toolbar.displayMode === "icon-only";
-
   const updateHoveredControl = (target: EventTarget | null): void => {
     const nextControlId = toolbarControlIdFromElement(
       target instanceof Element ? target : null,
@@ -783,7 +775,7 @@ export function ToolbarApp(): JSX.Element {
         ) : (
           <>
             <button
-              className="toolbar-action toolbar-action--icon-only toolbar-action--fixed-ask"
+              className="toolbar-action toolbar-action--fixed-ask"
               type="button"
               data-toolbar-control="fixed-ask"
               data-hovered={hoveredControlId === "fixed-ask" ? "true" : undefined}
@@ -802,7 +794,7 @@ export function ToolbarApp(): JSX.Element {
               const copySucceeded = action.kind === "copy" && copySuccessActionId === action.id;
               return (
                 <button
-                  className={`toolbar-action ${iconOnly ? "toolbar-action--icon-only" : ""} ${muted ? "toolbar-action--muted" : ""}`}
+                  className={`toolbar-action ${muted ? "toolbar-action--muted" : ""}`}
                   type="button"
                   key={action.id}
                   data-toolbar-control={`action:${action.id}`}
@@ -824,7 +816,7 @@ export function ToolbarApp(): JSX.Element {
                       strokeWidth={2}
                     />
                   )}
-                  {!iconOnly && <span>{action.name}</span>}
+                  <span>{action.name}</span>
                 </button>
               );
             })}

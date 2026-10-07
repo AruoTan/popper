@@ -19,7 +19,7 @@ describe("Tauri renderer bridge", () => {
     expect(TAURI_EVENTS.selection).toBe("popper:selection");
     expect(TAURI_EVENTS.actionStream).toBe("popper:action-stream");
     expect(TAURI_EVENTS.toolbarDismissed).toBe("popper:toolbar-dismissed");
-    expect(TAURI_EVENTS.resultSelectionShortcut).toBe("popper:result-selection-shortcut");
+    expect(TAURI_EVENTS.resultSelectionHold).toBe("popper:result-selection-hold");
   });
 
   it("waits for the stream listener and forwards command arguments in Tauri form", async () => {
@@ -29,8 +29,8 @@ describe("Tauri renderer bridge", () => {
     let forwardActionEvent: ((event: { payload: unknown }) => void) | undefined;
     let forwardToolbarPointer: ((event: { payload: unknown }) => void) | undefined;
     let forwardToolbarDismissed: ((event: { payload: unknown }) => void) | undefined;
-    let forwardResultSelectionShortcut: ((event: { payload: unknown }) => void) | undefined;
-    let forwardSettingsCloseRequest: ((event: { payload: unknown }) => void) | undefined;
+    let forwardResultSelectionHold: ((event: { payload: unknown }) => void) | undefined;
+    let forwardSettingsOpened: ((event: { payload: unknown }) => void) | undefined;
     let selectionListenAttempts = 0;
     listenMock.mockImplementation(
       (eventName: string, listener: (event: { payload: unknown }) => void) => {
@@ -52,11 +52,11 @@ describe("Tauri renderer bridge", () => {
         if (eventName === "popper:toolbar-dismissed") {
           forwardToolbarDismissed = listener;
         }
-        if (eventName === "popper:result-selection-shortcut") {
-          forwardResultSelectionShortcut = listener;
+        if (eventName === "popper:result-selection-hold") {
+          forwardResultSelectionHold = listener;
         }
-        if (eventName === "popper:settings-close-requested") {
-          forwardSettingsCloseRequest = listener;
+        if (eventName === "popper:settings-opened") {
+          forwardSettingsOpened = listener;
         }
         return Promise.resolve(() => undefined);
       },
@@ -149,7 +149,6 @@ describe("Tauri renderer bridge", () => {
           available: false,
           diagnostics: {
             selectionMonitorError: "无法启动系统划词监听。",
-            shortcutError: "全局快捷键注册失败。",
           },
         });
       }
@@ -224,24 +223,21 @@ describe("Tauri renderer bridge", () => {
     forwardToolbarDismissed?.({ payload: { reason: "mouseDown" } });
     expect(toolbarDismissedListener).toHaveBeenCalledTimes(2);
 
-    const resultSelectionShortcutListener = vi.fn();
-    const unsubscribeResultSelectionShortcut = window._popper_.onResultSelectionShortcut?.(
-      resultSelectionShortcutListener,
+    const resultSelectionHoldListener = vi.fn();
+    const unsubscribeResultSelectionHold = window._popper_.onResultSelectionHold?.(
+      resultSelectionHoldListener,
     );
-    forwardResultSelectionShortcut?.({ payload: null });
-    expect(resultSelectionShortcutListener).toHaveBeenCalledTimes(1);
-    unsubscribeResultSelectionShortcut?.();
+    forwardResultSelectionHold?.({ payload: null });
+    expect(resultSelectionHoldListener).toHaveBeenCalledTimes(1);
+    unsubscribeResultSelectionHold?.();
 
-    const settingsCloseListener = vi.fn();
-    const unsubscribeSettingsClose =
-      window._popper_.onSettingsCloseRequested?.(settingsCloseListener);
-    expect(listenMock).toHaveBeenCalledWith(
-      "popper:settings-close-requested",
-      expect.any(Function),
-    );
-    forwardSettingsCloseRequest?.({ payload: null });
-    expect(settingsCloseListener).toHaveBeenCalledTimes(1);
-    unsubscribeSettingsClose?.();
+    const settingsOpenedListener = vi.fn();
+    const unsubscribeSettingsOpened = window._popper_.onSettingsOpened?.(settingsOpenedListener);
+    forwardSettingsOpened?.({ payload: null });
+    expect(settingsOpenedListener).toHaveBeenCalledOnce();
+    unsubscribeSettingsOpened?.();
+    forwardSettingsOpened?.({ payload: null });
+    expect(settingsOpenedListener).toHaveBeenCalledOnce();
 
     // beginResultReady waits for the action-stream listener before invoke so
     // the native ready flush cannot race listener installation.
@@ -429,9 +425,6 @@ describe("Tauri renderer bridge", () => {
     await window._popper_.resetResultSize?.();
     expect(invokeMock).toHaveBeenCalledWith("reset_result_size");
 
-    await window._popper_.settingsReady?.();
-    expect(invokeMock).toHaveBeenCalledWith("settings_ready");
-
     await window._popper_.openSettings?.();
     expect(invokeMock).toHaveBeenCalledWith("open_settings", { options: null });
 
@@ -447,9 +440,6 @@ describe("Tauri renderer bridge", () => {
     });
     expect(invokeMock).toHaveBeenCalledWith("take_settings_guidance");
 
-    await window._popper_.quitApp?.();
-    expect(invokeMock).toHaveBeenCalledWith("quit_app");
-
     await expect(window._popper_.getAccessibilityStatus()).resolves.toEqual({
       platform: "windows",
       trusted: true,
@@ -457,7 +447,6 @@ describe("Tauri renderer bridge", () => {
       available: false,
       diagnostics: {
         selectionMonitorError: "无法启动系统划词监听。",
-        shortcutError: "全局快捷键注册失败。",
       },
     });
     consoleError.mockRestore();

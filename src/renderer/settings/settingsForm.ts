@@ -3,7 +3,6 @@ import {
   TEXT_PLACEHOLDER,
   isAiActionDefinition,
   isSearchActionDefinition,
-  isValidTauriGlobalShortcut,
   publicSettingsSchema,
   settingsUpdateSchema,
   validateOpenAiBaseUrl,
@@ -86,20 +85,6 @@ export function buildSettingsUpdate(settings: PublicSettings):
     return { valid: false, message: '主要语言和另一语言不能相同' }
   }
 
-  const captureShortcut = settings.captureShortcut.trim()
-  if (!isValidTauriGlobalShortcut(captureShortcut)) {
-    return {
-      valid: false,
-      message: '捕获快捷键格式无效，请使用例如 CommandOrControl+Shift+S 的格式'
-    }
-  }
-  if (settings.trigger.mode === 'shortcut' && captureShortcut === '') {
-    return {
-      valid: false,
-      message: '快捷键触发模式需要设置捕获快捷键'
-    }
-  }
-
   for (const provider of settings.providers) {
     const validation = validateOpenAiBaseUrl(provider.baseUrl.trim())
     if (!validation.valid) return { valid: false, message: `“${provider.name}”：${validation.reason}` }
@@ -134,22 +119,10 @@ export function buildSettingsUpdate(settings: PublicSettings):
   }
 
   const candidate: SettingsUpdate = {
-    enabled: settings.enabled,
-    captureShortcut,
     locale: settings.locale,
     translate: settings.translate,
-    toolbar: settings.toolbar,
     result: settings.result,
-    trigger: settings.trigger,
-    application: settings.application,
     filter: settings.filter,
-    selectionCapture: {
-      defaultStrategy: settings.selectionCapture.defaultStrategy,
-      applications: settings.selectionCapture.applications.map((rule) => ({
-        application: rule.application.trim(),
-        strategy: rule.strategy
-      }))
-    },
     providers: settings.providers.map(({ keyConfigured: _keyConfigured, ...provider }) => ({
       ...provider,
       baseUrl: provider.baseUrl.trim(),

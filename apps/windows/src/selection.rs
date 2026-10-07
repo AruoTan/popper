@@ -9,15 +9,13 @@
 
 use super::{
     automatic_selection_fingerprint, automatic_selection_pointer_matches_bounds,
-    classify_windows_mouse_selection, direction_from_points, selection_bounds_are_reasonable,
+    direction_from_points, selection_bounds_are_reasonable,
     union_selection_bounds, windows_text_budget, DismissEvent, SelectionBounds, SelectionDirection,
     SelectionError, SelectionEvent, SelectionMethod, SelectionMouse, SelectionPayload,
     SelectionPoint, SelectionTrigger, SourceApplication,
 };
-use crate::{
-    clipboard,
-    models::{SelectionCaptureSettings, SelectionCaptureStrategy},
-};
+use super::right_button::{Release as RightButtonRelease, RightButtonGesture};
+use crate::clipboard;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     cell::{Cell, RefCell},
@@ -75,10 +73,10 @@ use windows::{
                 UIA_SelectionActiveEndAttributeId, UIA_TextPatternId, UnhookWinEvent,
             },
             Input::KeyboardAndMouse::{
-                GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT,
-                KEYEVENTF_KEYUP, VK_A, VK_C, VK_CONTROL, VK_DOWN, VK_END, VK_HOME, VK_LCONTROL,
-                VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RCONTROL,
-                VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_UP, VK_V, VK_X,
+                GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+                KEYEVENTF_KEYUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEINPUT, VK_C,
+                VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL,
+                VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_V, VK_X,
             },
             WindowsAndMessaging::{
                 CallNextHookEx, DispatchMessageW, GetAncestor, GetClassNameW, GetCursorPos,
@@ -92,7 +90,7 @@ use windows::{
                 SMTO_ABORTIFHUNG, SMTO_ERRORONEXIT, WH_KEYBOARD_LL, WH_MOUSE_LL,
                 WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_GETTEXT, WM_GETTEXTLENGTH,
                 WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MOUSEHWHEEL,
-                WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
+                WM_MOUSEWHEEL, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN,
             },
         },
     },
@@ -191,10 +189,6 @@ const PDF_CAPTURE_SETTLE_DELAY: Duration = Duration::from_millis(16);
 // PDF multi-paragraph selections often commit after the first attempt. Retry
 // with increasing delay instead of giving up after one empty result.
 const EMPTY_CAPTURE_RETRY_DELAYS: [Duration; 1] = [Duration::from_millis(72)];
-// A direct-copy attempt has already waited for the renderer to publish text.
-// Retry it promptly on a fresh helper instead of paying the accessibility
-// provider delay intended for non-destructive selection-hook captures.
-const CLIPBOARD_EMPTY_CAPTURE_RETRY_DELAY: Duration = Duration::from_millis(24);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 // A blocked third-party accessibility provider is isolated in the helper
 // process. Keep that isolation responsive: the coordinator cancels and
@@ -365,16 +359,14 @@ impl WindowsSelectionMonitor {
         Ok(reply_receiver)
     }
 
-    pub(super) fn update_capture_settings(
+    pub(super) fn set_automatic_capture_enabled(
         &self,
-        settings: SelectionCaptureSettings,
         automatic_capture_enabled: bool,
     ) -> Result<(), SelectionError> {
         if self.shutdown_requested.load(Ordering::Acquire) {
             return Err(SelectionError::Internal);
         }
-        self.request_unit(|reply| WorkerMessage::UpdateCaptureSettings {
-            settings,
+        self.request_unit(|reply| WorkerMessage::SetAutomaticCaptureEnabled {
             automatic_capture_enabled,
             reply,
         })
@@ -438,12 +430,12 @@ fn reap_worker(worker: JoinHandle<()>, grace: Duration) -> bool {
 enum WorkerMessage {
     Start(UnitReply),
     Stop(UnitReply),
-    UpdateCaptureSettings {
-        settings: SelectionCaptureSettings,
+    SetAutomaticCaptureEnabled {
         automatic_capture_enabled: bool,
         reply: UnitReply,
     },
     Capture(CaptureReply),
+    RightButtonHold,
     /// Wakes the worker as soon as the isolated capture lane publishes a
     /// completion. The completion payload remains on its own channel so raw
     /// input and capture results cannot overtake one another.
@@ -522,11 +514,6 @@ struct CaptureRequest {
     /// deserializable.
     #[serde(default)]
     press_duration_ms: u32,
-    /// Strategy resolved by the hook worker from persisted user settings.
-    /// A request carries it into the isolated helper so a settings update can
-    /// never race a capture already tied to a user gesture.
-    #[serde(default)]
-    capture_strategy: SelectionCaptureStrategy,
 }
 
 struct CaptureJob {
@@ -948,14 +935,15 @@ fn capture_with_timeout_on_lane(
                 if let Some(capture_executor) = executor.take() {
                     capture_executor.shutdown(Duration::ZERO);
                 }
-            } else if request.capture_strategy == SelectionCaptureStrategy::Clipboard
-                && matches!(&result, Ok(None))
+            } else if matches!(&result, Ok(None))
                 && !cancelled.load(Ordering::Acquire)
                 && !user_keyboard.load(Ordering::Acquire)
                 && !superseded.load(Ordering::Acquire)
                 && request
                     .generation
                     .is_none_or(|expected| hook_generation().load(Ordering::Acquire) == expected)
+                && process_image_path(source_process_id)
+                    .is_some_and(|path| acrobat_suite_process(&executable_name(&path)))
             {
                 // Acrobat can leave its OLE clipboard proxy unusable after a
                 // few transactions while the helper process itself remains
@@ -1087,7 +1075,6 @@ fn selection_worker_main(
         inbox,
         event_sender,
         own_process_id: unsafe { GetCurrentProcessId() },
-        capture_settings: SelectionCaptureSettings::default(),
         automatic_capture_enabled: false,
         // Keep all UIA/OLE work off the hook/event state machine. A timed-out
         // helper lane can be discarded while the hook worker continues to
@@ -1140,7 +1127,6 @@ struct SelectionWorker {
     inbox: Sender<WorkerMessage>,
     event_sender: Arc<Mutex<Sender<SelectionEvent>>>,
     own_process_id: u32,
-    capture_settings: SelectionCaptureSettings,
     automatic_capture_enabled: bool,
     capture_coordinator: Option<CaptureCoordinator>,
     hook_thread: Option<HookThread>,
@@ -1234,17 +1220,22 @@ impl SelectionWorker {
                     .map_or(Ok(()), |mut thread| thread.stop());
                 let _ = reply.send(result);
             }
-            WorkerMessage::UpdateCaptureSettings {
-                settings,
+            WorkerMessage::SetAutomaticCaptureEnabled {
                 automatic_capture_enabled,
                 reply,
             } => {
-                self.capture_settings = settings;
                 self.automatic_capture_enabled = automatic_capture_enabled;
                 if !automatic_capture_enabled {
                     self.cancel_automatic_capture_state();
                 }
                 let _ = reply.send(Ok(()));
+            }
+            WorkerMessage::RightButtonHold => {
+                let _ = self
+                    .event_sender
+                    .lock()
+                    .ok()
+                    .map(|sender| sender.send(SelectionEvent::RightButtonHold));
             }
             WorkerMessage::Capture(reply) => {
                 let current = current_cursor_position();
@@ -1259,7 +1250,6 @@ impl SelectionWorker {
                         generation: None,
                         clipboard_sequence_at_start: None,
                         press_duration_ms: 0,
-                        capture_strategy: self.capture_strategy_for(source_process_id),
                     },
                     root_window(foreground).0 as isize,
                     source_process_id,
@@ -1499,9 +1489,8 @@ impl SelectionWorker {
     }
 
     fn reset_interaction_state_with_manual(&mut self, preserve_manual: bool) {
-        // A shortcut callback and its low-level key events are delivered on
-        // separate queues. Do not cancel the Manual request because its own
-        // key-up/foreground transition is not a newer selection. Lifecycle
+        // Activating a related source window is not newer user input. Preserve
+        // the explicit Manual request across that foreground transition. Lifecycle
         // shutdown/stop still uses the default path and cancels every request.
         if !preserve_manual || !self.manual_capture_active() {
             self.cancel_active_capture();
@@ -1588,121 +1577,22 @@ impl SelectionWorker {
         &mut self,
         message: u32,
         point: RawPoint,
-        generation: u64,
-        modifiers: ModifierSnapshot,
+        _generation: u64,
+        _modifiers: ModifierSnapshot,
         timestamp_ms: u64,
     ) {
-        // Wheel events after mouse-up are common on multi-paragraph PDF
-        // selections (auto-scroll bounce / trackpad inertia). They must dismiss
-        // a visible toolbar but must NOT cancel a just-scheduled capture —
-        // that was a primary cause of "long cross-paragraph never pops".
         if mouse_message_clears_pending_capture(message) {
             self.cancel_active_capture();
             self.pending_capture = None;
             self.recent_capture = None;
         }
         let target_window = window_at_point(point);
-        let target_root = root_window(target_window);
-        let target_is_self = window_process_id(target_root) == self.own_process_id;
         match message {
-            WM_LBUTTONDOWN => {
-                self.keyboard_selection_key = None;
-                if target_is_self {
-                    self.last_click = None;
-                    self.last_mouse_up = None;
-                }
-                self.mouse_down = Some(point);
-                self.mouse_down_at = Some(Instant::now());
-                self.mouse_down_on_self = target_is_self;
-                self.mouse_down_target_root = target_root.0 as isize;
-                self.mouse_down_shift =
-                    modifiers.shift && !modifiers.control && !modifiers.alt && !modifiers.windows;
-                self.mouse_down_clipboard_sequence = self
-                    .automatic_capture_enabled
-                    .then(clipboard::windows_clipboard_sequence);
-                // Self clicks still produce Dismiss so runtime can preserve a
-                // click inside the no-activate toolbar while closing it for a
-                // click elsewhere in a Popper window. Mouse-up below never
-                // schedules UIA capture for the self process.
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
                 self.emit_dismiss("mouseDown", point, target_window, timestamp_ms);
-            }
-            WM_LBUTTONUP => {
-                let start = self.mouse_down.take().unwrap_or(point);
-                let now = Instant::now();
-                let press_duration = self
-                    .mouse_down_at
-                    .take()
-                    .map(|at| now.saturating_duration_since(at));
-                let drag_duration_valid =
-                    press_duration.is_some_and(|duration| duration <= MAX_DRAG_DURATION);
-                let click_duration_valid =
-                    press_duration.is_some_and(|duration| duration <= DOUBLE_CLICK_INTERVAL);
-                let began_on_self = std::mem::take(&mut self.mouse_down_on_self);
-                let gesture_root = std::mem::take(&mut self.mouse_down_target_root);
-                let clipboard_sequence_at_start = self.mouse_down_clipboard_sequence.take();
-                let previous_mouse_up = self.last_mouse_up;
-                if began_on_self || target_is_self {
-                    return;
-                }
-                if !self.automatic_capture_enabled {
-                    self.last_mouse_up = None;
-                    self.last_click = None;
-                    return;
-                }
-                let is_double_click = self.last_click.is_some_and(|(at, previous)| {
-                    now.saturating_duration_since(at) <= DOUBLE_CLICK_INTERVAL
-                        && previous.distance_squared(point) <= DOUBLE_CLICK_DISTANCE_SQUARED
-                });
-                let start_point = raw_selection_point(start);
-                let end_point = raw_selection_point(point);
-                let trigger = classify_windows_mouse_selection(
-                    start_point,
-                    end_point,
-                    self.mouse_down_shift,
-                    is_double_click,
-                    drag_duration_valid,
-                );
-                self.last_mouse_up = Some(point);
-                if click_duration_valid
-                    && start.distance_squared(point) < DOUBLE_CLICK_DISTANCE_SQUARED
-                {
-                    self.last_click = Some((now, point));
-                } else {
-                    self.last_click = None;
-                }
-                if let Some(trigger) = trigger {
-                    let capture_start = match trigger {
-                        SelectionTrigger::DoubleClick => point,
-                        SelectionTrigger::ShiftClick => previous_mouse_up.unwrap_or(start),
-                        _ => start,
-                    };
-                    let press_duration_ms = press_duration
-                        .map(|duration| u32::try_from(duration.as_millis()).unwrap_or(u32::MAX))
-                        .unwrap_or(0);
-                    self.schedule_capture(
-                        CaptureRequest {
-                            trigger,
-                            start: Some(capture_start),
-                            end: Some(point),
-                            current: point,
-                            generation: Some(generation),
-                            clipboard_sequence_at_start,
-                            press_duration_ms,
-                            capture_strategy: SelectionCaptureStrategy::SelectionHook,
-                        },
-                        if gesture_root == 0 {
-                            target_root.0 as isize
-                        } else {
-                            gesture_root
-                        },
-                    );
-                }
             }
             WM_MOUSEWHEEL | WM_MOUSEHWHEEL => {
                 self.emit_dismiss("scroll", point, target_window, timestamp_ms);
-            }
-            WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN => {
-                self.emit_dismiss("mouseDown", point, target_window, timestamp_ms);
             }
             _ => {}
         }
@@ -1712,86 +1602,23 @@ impl SelectionWorker {
         &mut self,
         message: u32,
         virtual_key: u32,
-        generation: u64,
-        modifiers: ModifierSnapshot,
+        _generation: u64,
+        _modifiers: ModifierSnapshot,
         timestamp_ms: u64,
     ) {
-        // The configured global shortcut also reaches the low-level hook. Once
-        // its Manual capture has been queued, consuming the remaining key
-        // events prevents the shortcut from dismissing or cancelling itself.
-        // A new mouse gesture remains an explicit superseding input.
-        if self.manual_capture_active() && !is_modifier_virtual_key(virtual_key as u16) {
-            return;
-        }
-        if !is_modifier_virtual_key(virtual_key as u16) {
-            // Synthetic Popper keys are filtered in the hook callback. Any
-            // remaining non-modifier key is genuine newer input and must
-            // invalidate a capture which has not started yet.
-            self.cancel_active_capture_for_user_keyboard();
-            self.pending_capture = None;
-            self.recent_capture = None;
-        }
-        let foreground = unsafe { GetForegroundWindow() };
-        if window_process_id(foreground) == self.own_process_id {
-            if (message == WM_KEYUP || message == WM_SYSKEYUP)
-                && self.keyboard_selection_key == Some(virtual_key)
-            {
-                self.keyboard_selection_key = None;
-            }
-            return;
-        }
-        if message == WM_KEYUP || message == WM_SYSKEYUP {
-            if self.keyboard_selection_key == Some(virtual_key) {
-                self.keyboard_selection_key = None;
-                let point = current_cursor_position();
-                self.schedule_capture(
-                    CaptureRequest {
-                        trigger: SelectionTrigger::Keyboard,
-                        start: None,
-                        end: None,
-                        current: point,
-                        generation: Some(generation),
-                        clipboard_sequence_at_start: None,
-                        press_duration_ms: 0,
-                        capture_strategy: SelectionCaptureStrategy::SelectionHook,
-                    },
-                    root_window(foreground).0 as isize,
-                );
-            }
-            return;
-        }
-        if message != WM_KEYDOWN && message != WM_SYSKEYDOWN {
-            return;
-        }
         if is_modifier_virtual_key(virtual_key as u16) {
             return;
         }
-
-        let point = current_cursor_position();
-        self.emit_dismiss("keyDown", point, foreground, timestamp_ms);
-        if !self.automatic_capture_enabled {
-            self.keyboard_selection_key = None;
-            return;
-        }
-        let navigation = matches!(
-            virtual_key as u16,
-            key if key == VK_LEFT.0
-                || key == VK_RIGHT.0
-                || key == VK_UP.0
-                || key == VK_DOWN.0
-                || key == VK_HOME.0
-                || key == VK_END.0
-                || key == VK_PRIOR.0
-                || key == VK_NEXT.0
-        );
-        let select_all = modifiers.control
-            && !modifiers.alt
-            && !modifiers.windows
-            && virtual_key as u16 == VK_A.0;
-        if (modifiers.shift && navigation) || select_all {
-            self.keyboard_selection_key = Some(virtual_key);
-        } else {
-            self.keyboard_selection_key = None;
+        self.cancel_active_capture_for_user_keyboard();
+        self.pending_capture = None;
+        self.recent_capture = None;
+        if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
+            self.emit_dismiss(
+                "keyDown",
+                current_cursor_position(),
+                unsafe { GetForegroundWindow() },
+                timestamp_ms,
+            );
         }
     }
 
@@ -1801,7 +1628,7 @@ impl SelectionWorker {
 
     fn schedule_capture_with_options(
         &mut self,
-        mut request: CaptureRequest,
+        request: CaptureRequest,
         source_root_window: isize,
         empty_attempt: u8,
         process_parents: Option<Option<HashMap<u32, u32>>>,
@@ -1815,13 +1642,6 @@ impl SelectionWorker {
         let source_image_path = (empty_attempt == 0)
             .then(|| process_image_path(source_process_id))
             .flatten();
-        if empty_attempt == 0 {
-            request.capture_strategy = source_image_path
-                .as_deref()
-                .map_or(self.capture_settings.default_strategy, |image_path| {
-                    capture_strategy_for_application(&self.capture_settings, image_path)
-                });
-        }
         trace_selection_capture(
             if empty_attempt == 0 {
                 "scheduled"
@@ -1835,7 +1655,7 @@ impl SelectionWorker {
         let settle = if empty_attempt == 0 {
             capture_settle_delay_for_application(&request, source_image_path.as_deref())
         } else {
-            empty_capture_retry_delay(&request, empty_attempt)
+            empty_capture_retry_delay(empty_attempt)
         };
         self.pending_capture = Some(PendingCapture {
             due: now + settle,
@@ -1847,13 +1667,6 @@ impl SelectionWorker {
             process_parents,
             empty_attempt,
         });
-    }
-
-    fn capture_strategy_for(&self, process_id: u32) -> SelectionCaptureStrategy {
-        process_image_path(process_id)
-            .map_or(self.capture_settings.default_strategy, |image_path| {
-                capture_strategy_for_application(&self.capture_settings, &image_path)
-            })
     }
 
     fn run_pending_capture(&mut self) {
@@ -3247,41 +3060,6 @@ impl CaptureEngine {
         self.deadline.set(Instant::now() + CAPTURE_ENGINE_BUDGET);
         let mut process_parents = None;
         let mut source_app = None;
-        // Configured direct-copy hosts must receive Ctrl+C while their PDF or
-        // canvas selection is still the active range. A failed clipboard
-        // transaction has already restored the user's state and completed its
-        // bounded retries. End it here so known-broken UIA/MSAA providers do
-        // not occupy the isolated helper until the two-second engine timeout.
-        if request.capture_strategy == SelectionCaptureStrategy::Clipboard {
-            let foreground = unsafe { GetForegroundWindow() };
-            let process_id = if control.source_process_id != 0 {
-                control.source_process_id
-            } else {
-                window_process_id(foreground)
-            };
-            let source_window = if control.source_window.0 != ptr::null_mut() {
-                control.source_window
-            } else {
-                foreground
-            };
-            if let Some(application) =
-                resolve_cached_source_app(&mut source_app, process_id, source_window)
-            {
-                if let Some(selection) = self.capture_clipboard(
-                    request,
-                    process_id,
-                    source_window,
-                    application,
-                    &mut process_parents,
-                    control,
-                )? {
-                    self.record_provider(source_window, process_id);
-                    return Ok(Some(selection));
-                }
-            }
-            return Ok(None);
-        }
-
         // Native edit controls expose their active range through EM_GETSEL but
         // frequently do not implement UIA TextPattern or IAccessible. Query
         // this read-only path before the broader accessibility walk so a
@@ -3471,9 +3249,8 @@ impl CaptureEngine {
         if Instant::now() >= self.deadline.get() || control.is_cancelled() {
             return Ok(None);
         }
-        if request.capture_strategy != SelectionCaptureStrategy::Auto {
-            return Ok(None);
-        }
+        // Native selection providers have missed. Every application uses the
+        // same guarded clipboard fallback; no per-application route overrides.
         let foreground = unsafe { GetForegroundWindow() };
         let process_id = if control.source_process_id != 0 {
             control.source_process_id
@@ -6556,64 +6333,7 @@ fn executable_name(image_path: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn capture_strategy_for_application(
-    settings: &SelectionCaptureSettings,
-    image_path: &str,
-) -> SelectionCaptureStrategy {
-    let image_path = image_path.trim().replace('/', "\\").to_ascii_lowercase();
-    let executable = executable_name(&image_path);
-    let configured = settings
-        .applications
-        .iter()
-        .find(|rule| {
-            let application = rule
-                .application
-                .trim()
-                .replace('/', "\\")
-                .to_ascii_lowercase();
-            application == executable
-                || application == image_path
-                || image_path.ends_with(&format!("\\{application}"))
-        })
-        .map(|rule| rule.strategy);
-    if let Some(strategy) = configured {
-        return strategy;
-    }
-
-    // Acrobat creates version-specific renderer executables such as
-    // AcroCEF_Renderer.exe. Let those inherit the explicit AcroCEF/RdrCEF
-    // rule while preserving an exact user rule when one exists above.
-    let renderer_rule = if executable.starts_with("acrocef_") {
-        Some("acrocef.exe")
-    } else if executable.starts_with("rdrcef_") {
-        Some("rdrcef.exe")
-    } else {
-        None
-    };
-    let inherited = renderer_rule.and_then(|application| {
-        settings
-            .applications
-            .iter()
-            .find(|rule| rule.application.trim().eq_ignore_ascii_case(application))
-            .map(|rule| rule.strategy)
-    });
-    if let Some(strategy) = inherited {
-        return strategy;
-    }
-
-    // Existing installations can legitimately have an older or hand-edited
-    // empty rule list. Keep the global default non-destructive for ordinary
-    // applications, but make known PDF/canvas hosts use the same guarded copy
-    // transaction as a visible `clipboard` rule. An explicit user rule above
-    // always wins, including an explicit `selection-hook` opt-out.
-    if known_copy_compatibility_application(&image_path) {
-        SelectionCaptureStrategy::Clipboard
-    } else {
-        settings.default_strategy
-    }
-}
-
-fn known_copy_compatibility_application(image_path: &str) -> bool {
+fn fast_selection_settle_application(image_path: &str) -> bool {
     let executable = executable_name(image_path);
     pdf_accessibility_first_application(image_path)
         || docbox_suite_process(&executable)
@@ -6654,15 +6374,14 @@ fn capture_settle_delay_for_request(request: &CaptureRequest) -> Duration {
     distance_delay.max(press_delay)
 }
 
-/// Known PDF canvases expose MSAA selection shortly after mouse-up. Give them
-/// a first attempt within one frame while preserving the more conservative
-/// settle profile for Office, browsers, editors, and unknown applications.
+/// Known PDF canvases, browsers, and editors can be queried within one frame.
+/// This only adjusts timing; every application uses the same capture pipeline.
 fn capture_settle_delay_for_application(
     request: &CaptureRequest,
     image_path: Option<&str>,
 ) -> Duration {
     let delay = capture_settle_delay_for_request(request);
-    if image_path.is_some_and(known_copy_compatibility_application) {
+    if image_path.is_some_and(fast_selection_settle_application) {
         delay.min(PDF_CAPTURE_SETTLE_DELAY)
     } else {
         delay
@@ -6719,10 +6438,7 @@ fn max_empty_capture_retries(request: &CaptureRequest) -> usize {
     }
 }
 
-fn empty_capture_retry_delay(request: &CaptureRequest, empty_attempt: u8) -> Duration {
-    if request.capture_strategy == SelectionCaptureStrategy::Clipboard {
-        return CLIPBOARD_EMPTY_CAPTURE_RETRY_DELAY;
-    }
+fn empty_capture_retry_delay(empty_attempt: u8) -> Duration {
     let index = empty_attempt.saturating_sub(1) as usize;
     EMPTY_CAPTURE_RETRY_DELAYS.get(index).copied().unwrap_or(
         *EMPTY_CAPTURE_RETRY_DELAYS
@@ -8254,6 +7970,8 @@ fn hook_thread_main(
                 DispatchMessageW(&message);
             }
         }
+        poll_right_button_hold();
+        replay_short_right_click();
         if Instant::now() >= reinstall_due {
             // Install the replacement pair before retiring the old pair. This
             // keeps the input path covered while Windows refreshes the hook.
@@ -8289,12 +8007,19 @@ fn hook_thread_main(
         let _ = unsafe {
             MsgWaitForMultipleObjectsEx(
                 None,
-                HOOK_HEALTH_INTERVAL.as_millis().min(u128::from(u32::MAX)) as u32,
+                RIGHT_BUTTON_HOOK.with(|state| {
+                    if state.borrow().pressed {
+                        10
+                    } else {
+                        HOOK_HEALTH_INTERVAL.as_millis() as u32
+                    }
+                }),
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE,
             )
         };
     }
+    RIGHT_BUTTON_HOOK.with(|state| *state.borrow_mut() = RightButtonHook::default());
     if !foreground_hook.is_invalid() {
         let _ = unsafe { UnhookWinEvent(foreground_hook) };
     }
@@ -8302,6 +8027,73 @@ fn hook_thread_main(
     let _ = unsafe { UnhookWindowsHookEx(mouse_hook) };
     clear_hook_inbox(instance_id);
     let _ = exit_inbox.send(WorkerMessage::HookExited { instance_id });
+}
+
+const RIGHT_CLICK_MARKER: usize = 0x5050_5243;
+
+#[derive(Default)]
+struct RightButtonHook {
+    gesture: RightButtonGesture,
+    pressed: bool,
+    generation: u64,
+    foreground: isize,
+    replay_clicks: u32,
+}
+
+thread_local! {
+    static RIGHT_BUTTON_HOOK: RefCell<RightButtonHook> = RefCell::new(RightButtonHook::default());
+}
+
+fn enqueue_right_button_hold() {
+    let inbox = hook_inbox()
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|(_, inbox)| inbox.clone()));
+    if let Some(inbox) = inbox {
+        let _ = inbox.send(WorkerMessage::RightButtonHold);
+    }
+}
+
+fn poll_right_button_hold() {
+    let fire = RIGHT_BUTTON_HOOK.with(|state| {
+        let mut state = state.borrow_mut();
+        if !state.pressed {
+            return false;
+        }
+        if state.generation != hook_generation().load(Ordering::Acquire)
+            || state.foreground != unsafe { GetForegroundWindow() }.0 as isize
+        {
+            state.gesture.cancel();
+        }
+        state.gesture.poll(strict_parent_timestamp_ms())
+    });
+    if fire {
+        enqueue_right_button_hold();
+    }
+}
+
+fn replay_short_right_click() {
+    let clicks = RIGHT_BUTTON_HOOK.with(|state| std::mem::take(&mut state.borrow_mut().replay_clicks));
+    if clicks == 0 {
+        return;
+    }
+    let inputs = [MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP].map(|flags| INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dwFlags: flags,
+                dwExtraInfo: RIGHT_CLICK_MARKER,
+                ..Default::default()
+            },
+        },
+    });
+    for _ in 0..clicks {
+        let inserted = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+        if inserted == 1 {
+            // A partially inserted pair must not leave a synthetic button held.
+            let _ = unsafe { SendInput(&inputs[1..], std::mem::size_of::<INPUT>() as i32) };
+        }
+    }
 }
 
 fn next_hook_instance_id() -> u64 {
@@ -8390,12 +8182,38 @@ unsafe extern "system" fn mouse_hook_callback(
             WM_LBUTTONDOWN
                 | WM_LBUTTONUP
                 | WM_RBUTTONDOWN
+                | WM_RBUTTONUP
                 | WM_MBUTTONDOWN
                 | WM_XBUTTONDOWN
                 | WM_MOUSEWHEEL
                 | WM_MOUSEHWHEEL
         ) {
             let input = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+            if input.dwExtraInfo == RIGHT_CLICK_MARKER {
+                return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+            }
+            if message == WM_RBUTTONUP {
+                poll_right_button_hold();
+                let suppressed = RIGHT_BUTTON_HOOK.with(|state| {
+                    let mut state = state.borrow_mut();
+                    if !state.pressed {
+                        return false;
+                    }
+                    state.pressed = false;
+                    match state.gesture.release(strict_parent_timestamp_ms()) {
+                        RightButtonRelease::Click => {
+                            state.replay_clicks = state.replay_clicks.saturating_add(1);
+                        }
+                        RightButtonRelease::Hold => enqueue_right_button_hold(),
+                        RightButtonRelease::Consumed => {}
+                    }
+                    true
+                });
+                if suppressed {
+                    return LRESULT(1);
+                }
+                return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+            }
             let duplicate = is_duplicate_low_level_hook_event(
                 1,
                 message,
@@ -8416,6 +8234,15 @@ unsafe extern "system" fn mouse_hook_callback(
                 } else {
                     hook_generation().fetch_add(1, Ordering::AcqRel) + 1
                 };
+                if message == WM_RBUTTONDOWN {
+                    RIGHT_BUTTON_HOOK.with(|state| {
+                        let mut state = state.borrow_mut();
+                        state.gesture.press(strict_parent_timestamp_ms());
+                        state.pressed = true;
+                        state.generation = generation;
+                        state.foreground = unsafe { GetForegroundWindow() }.0 as isize;
+                    });
+                }
                 enqueue_hook_input(RawInput::Mouse {
                     sequence: next_raw_input_sequence(),
                     message,
@@ -8427,6 +8254,9 @@ unsafe extern "system" fn mouse_hook_callback(
                     modifiers: current_modifiers(),
                     timestamp_ms: strict_parent_timestamp_ms(),
                 });
+            }
+            if message == WM_RBUTTONDOWN {
+                return LRESULT(1);
             }
         }
     }
@@ -8513,6 +8343,7 @@ unsafe extern "system" fn foreground_event_callback(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_A, VK_LEFT, VK_RIGHT};
 
     fn test_worker(event_sender: Sender<SelectionEvent>) -> SelectionWorker {
         let (inbox, _receiver) = mpsc::channel();
@@ -8520,7 +8351,6 @@ mod tests {
             inbox,
             event_sender: Arc::new(Mutex::new(event_sender)),
             own_process_id: 100,
-            capture_settings: SelectionCaptureSettings::default(),
             automatic_capture_enabled: true,
             capture_coordinator: None,
             hook_thread: None,
@@ -8553,7 +8383,6 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
-            capture_strategy: SelectionCaptureStrategy::Clipboard,
         }
     }
 
@@ -8591,7 +8420,7 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_mode_allows_only_manual_capture_requests() {
+    fn automatic_capture_gate_allows_manual_requests() {
         for trigger in [
             SelectionTrigger::Drag,
             SelectionTrigger::DoubleClick,
@@ -8611,7 +8440,7 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_mode_discards_late_automatic_delivery_but_keeps_manual_delivery() {
+    fn automatic_capture_gate_discards_automatic_delivery_but_keeps_manual_delivery() {
         let (sender, receiver) = mpsc::channel();
         let mut worker = test_worker(sender);
         worker.automatic_capture_enabled = false;
@@ -8626,7 +8455,6 @@ mod tests {
         assert!(receiver.try_recv().is_err());
 
         let manual = test_capture_request(SelectionTrigger::Manual);
-        assert_eq!(manual.capture_strategy, SelectionCaptureStrategy::Clipboard);
         assert!(worker.deliver_captured_selection(
             manual,
             test_selection(SelectionTrigger::Manual),
@@ -8852,7 +8680,6 @@ mod tests {
                 generation: Some(7),
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
-                capture_strategy: SelectionCaptureStrategy::SelectionHook,
             },
             source_root_window: 42,
             source_process_id: 100,
@@ -8882,7 +8709,6 @@ mod tests {
                 generation: Some(9),
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
-                capture_strategy: SelectionCaptureStrategy::SelectionHook,
             },
             source_root_window: 42,
             source_process_id: 100,
@@ -8911,7 +8737,6 @@ mod tests {
                 generation: Some(7),
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
-                capture_strategy: SelectionCaptureStrategy::SelectionHook,
             },
             source_root_window: 0,
             source_process_id: 0,
@@ -8987,7 +8812,6 @@ mod tests {
             generation: Some(generation),
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         let selection = test_selection(SelectionTrigger::Drag);
 
@@ -9016,7 +8840,6 @@ mod tests {
             generation: Some(generation),
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         let mut selection = test_selection(SelectionTrigger::Drag);
         selection.bounds = Some(SelectionBounds {
@@ -9223,112 +9046,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_direct_copy_rules_override_the_selection_hook_default() {
-        let settings = SelectionCaptureSettings::default();
-        assert_eq!(
-            capture_strategy_for_application(
-                &settings,
-                r"C:\Program Files\Adobe\Acrobat\AcroCEF.exe"
-            ),
-            SelectionCaptureStrategy::Clipboard
-        );
-        assert_eq!(
-            capture_strategy_for_application(&settings, r"C:\Program Files\EmEditor\EmEditor.exe"),
-            SelectionCaptureStrategy::Clipboard
-        );
-        assert_eq!(
-            capture_strategy_for_application(&settings, r"C:\Windows\System32\notepad.exe"),
-            SelectionCaptureStrategy::SelectionHook
-        );
-        assert_eq!(
-            capture_strategy_for_application(
-                &settings,
-                r"C:\Program Files\Adobe\Acrobat\AcroCEF_Renderer.exe"
-            ),
-            SelectionCaptureStrategy::Clipboard
-        );
-
-        let settings = SelectionCaptureSettings {
-            default_strategy: SelectionCaptureStrategy::Auto,
-            applications: vec![crate::models::SelectionCaptureRule {
-                application: "acrobat.exe".to_owned(),
-                strategy: SelectionCaptureStrategy::SelectionHook,
-            }],
-        };
-        assert_eq!(
-            capture_strategy_for_application(
-                &settings,
-                r"C:\Program Files\Adobe\Acrobat\Acrobat.exe"
-            ),
-            SelectionCaptureStrategy::SelectionHook
-        );
-        assert_eq!(
-            capture_strategy_for_application(&settings, r"C:\Windows\System32\notepad.exe"),
-            SelectionCaptureStrategy::Auto
-        );
-
-        let legacy_settings = SelectionCaptureSettings {
-            default_strategy: SelectionCaptureStrategy::SelectionHook,
-            applications: Vec::new(),
-        };
-        // Compatibility routing heals older/hand-edited settings that predate
-        // the visible rules. Explicit rules above remain a user opt-out.
-        assert_eq!(
-            capture_strategy_for_application(
-                &legacy_settings,
-                r"C:\Program Files\Adobe\Acrobat\Acrobat.exe"
-            ),
-            SelectionCaptureStrategy::Clipboard
-        );
-        assert_eq!(
-            capture_strategy_for_application(
-                &legacy_settings,
-                r"C:\Program Files\DocBox\DocBoxHelper.exe"
-            ),
-            SelectionCaptureStrategy::Clipboard
-        );
-        assert_eq!(
-            capture_strategy_for_application(
-                &legacy_settings,
-                r"C:\Program Files\EmEditor\EmEditor.exe"
-            ),
-            SelectionCaptureStrategy::Clipboard
-        );
-        assert_eq!(
-            capture_strategy_for_application(&legacy_settings, r"C:\Windows\notepad.exe"),
-            SelectionCaptureStrategy::SelectionHook
-        );
-    }
-
-    #[test]
-    fn browser_and_reader_copy_defaults_preserve_explicit_overrides() {
-        for application in ["zotero.exe", "chrome.exe", "code.exe", "obsidian.exe"] {
-            let path = format!(r"C:\Apps\{}", application.to_ascii_uppercase());
-            let mut settings = SelectionCaptureSettings::default();
-            assert!(settings.applications.iter().any(|rule| {
-                rule.application == application
-                    && rule.strategy == SelectionCaptureStrategy::Clipboard
-            }));
-            settings.applications.clear();
-            assert_eq!(
-                capture_strategy_for_application(&settings, &path),
-                SelectionCaptureStrategy::Clipboard
-            );
-            for strategy in [
-                SelectionCaptureStrategy::SelectionHook,
-                SelectionCaptureStrategy::Auto,
-            ] {
-                settings.applications = vec![crate::models::SelectionCaptureRule {
-                    application: application.to_owned(),
-                    strategy,
-                }];
-                assert_eq!(capture_strategy_for_application(&settings, &path), strategy);
-            }
-        }
-    }
-
-    #[test]
-    fn acrobat_and_docbox_use_fast_direct_copy_profiles() {
+    fn acrobat_and_docbox_use_guarded_copy_profiles() {
         let acrobat = clipboard_capture_profile(r"C:\Program Files\Adobe\Acrobat\Acrobat.exe");
         assert_eq!(acrobat, ClipboardCaptureProfile::Acrobat);
         assert_eq!(acrobat.poll_interval(), PDF_CLIPBOARD_POLL_INTERVAL);
@@ -9470,7 +9188,6 @@ mod tests {
             generation: Some(1),
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         assert_eq!(
             accessible_point_candidates(request),
@@ -9577,7 +9294,6 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: SLOW_PRESS_MS,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         assert_eq!(
             capture_settle_delay_for_request(&slow),
@@ -9593,7 +9309,6 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 100,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         assert_eq!(
             capture_settle_delay_for_request(&long),
@@ -9615,7 +9330,6 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         assert_eq!(
             capture_settle_delay_for_request(&long_same_line),
@@ -9634,7 +9348,6 @@ mod tests {
             generation: Some(1),
             clipboard_sequence_at_start: None,
             press_duration_ms: 200,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         assert!(should_retry_empty_capture(&drag));
         assert_eq!(max_empty_capture_retries(&drag), 1);
@@ -9646,7 +9359,6 @@ mod tests {
             generation: Some(1),
             clipboard_sequence_at_start: None,
             press_duration_ms: 600,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         };
         assert!(long_document_selection_needs_late_retry(&long));
         assert_eq!(
@@ -9654,20 +9366,12 @@ mod tests {
             EMPTY_CAPTURE_RETRY_DELAYS.len()
         );
         assert_eq!(
-            empty_capture_retry_delay(&drag, 1),
+            empty_capture_retry_delay(1),
             EMPTY_CAPTURE_RETRY_DELAYS[0]
         );
         assert_eq!(
-            empty_capture_retry_delay(&drag, 2),
+            empty_capture_retry_delay(2),
             EMPTY_CAPTURE_RETRY_DELAYS[0]
-        );
-        let clipboard_drag = CaptureRequest {
-            capture_strategy: SelectionCaptureStrategy::Clipboard,
-            ..drag
-        };
-        assert_eq!(
-            empty_capture_retry_delay(&clipboard_drag, 1),
-            CLIPBOARD_EMPTY_CAPTURE_RETRY_DELAY
         );
         assert!(should_retry_empty_capture(&CaptureRequest {
             trigger: SelectionTrigger::DoubleClick,
@@ -9677,7 +9381,6 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         }));
         assert!(!should_retry_empty_capture(&CaptureRequest {
             trigger: SelectionTrigger::Keyboard,
@@ -9687,7 +9390,6 @@ mod tests {
             generation: None,
             clipboard_sequence_at_start: None,
             press_duration_ms: 0,
-            capture_strategy: SelectionCaptureStrategy::SelectionHook,
         }));
         assert!(!mouse_message_clears_pending_capture(WM_MOUSEWHEEL));
         assert!(!mouse_message_clears_pending_capture(WM_MOUSEHWHEEL));
@@ -9829,7 +9531,6 @@ mod tests {
                 generation: None,
                 clipboard_sequence_at_start: None,
                 press_duration_ms: 0,
-                capture_strategy: SelectionCaptureStrategy::SelectionHook,
             },
             source_window: 123,
             source_process_id: 456,

@@ -1,5 +1,5 @@
 {
-    "name": "Popper development",
+    "name": "Popper",
     "build": {
         "dockerfile": "Dockerfile",
         "context": "."
@@ -10,8 +10,16 @@
     "updateRemoteUserUID": true,
     "init": true,
     "mounts": [
-        "source=popper-node-modules-${devcontainerId},target=/workspaces/popper/node_modules,type=volume",
-        "source=popper-cache-${devcontainerId},target=/home/node/.cache/popper,type=volume",
+        {
+            "source": "popper-node-modules-${devcontainerId}",
+            "target": "/workspaces/popper/node_modules",
+            "type": "volume"
+        },
+        {
+            "source": "dev-cache",
+            "target": "/home/node/.cache",
+            "type": "volume"
+        },
         {
             "source": "codex-home",
             "target": "/home/node/.codex",
@@ -19,8 +27,8 @@
         }
     ],
     "containerEnv": {
-        "CARGO_TARGET_DIR": "/home/node/.cache/popper/target",
-        "npm_config_store_dir": "/home/node/.cache/popper/pnpm-store",
+        "CARGO_TARGET_DIR": "/home/node/.cache/cargo-target",
+        "npm_config_store_dir": "/home/node/.cache/pnpm-store",
         "CODEX_HOME": "/home/node/.codex"
     },
     "postCreateCommand": "bash .devcontainer/setup.sh",

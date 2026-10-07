@@ -253,15 +253,6 @@ body {
   font-weight: 650;
 }
 
-.settings-tip__steps {
-  margin: 0;
-  padding-left: 1.2em;
-}
-
-.settings-tip__steps li + li {
-  margin-top: 3px;
-}
-
 .empty-card--guided {
   display: grid;
   gap: 6px;
@@ -380,23 +371,6 @@ body {
   resize: vertical;
 }
 
-.capture-rule-list {
-  display: grid;
-  gap: 8px;
-}
-
-.capture-rule {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 148px 32px;
-  gap: 8px;
-  align-items: center;
-}
-
-.capture-rule .icon-button {
-  width: 32px;
-  height: 32px;
-}
-
 .segmented-control {
   display: inline-flex;
   padding: 3px;
@@ -423,32 +397,6 @@ body {
 
 .compact-control {
   width: 154px;
-}
-
-.shortcut-capture {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-
-.shortcut-control {
-  width: 260px;
-  max-width: min(260px, 42vw);
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.shortcut-control:focus {
-  cursor: text;
-}
-
-.shortcut-clear {
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  font-size: 12px;
 }
 
 .setting-row code {
@@ -645,7 +593,14 @@ body {
   min-height: 54px;
   padding: 9px 13px 9px 17px;
   background: color-mix(in srgb, var(--surface-muted) 72%, var(--surface-solid));
+}
+
+.provider-card__header.is-expanded {
   border-bottom: 1px solid var(--border);
+}
+
+.provider-collapse-toggle {
+  flex-shrink: 0;
 }
 
 .provider-card__header-actions {
@@ -729,6 +684,10 @@ body {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 16px;
   padding: 19px 20px 20px;
+}
+
+.provider-grid[hidden] {
+  display: none;
 }
 
 .provider-actions {
@@ -1019,10 +978,6 @@ body {
   white-space: nowrap;
 }
 
-.toolbar-preview--icons .toolbar-preview__action {
-  width: 30px;
-  padding: 0;
-}
 
 .search-behavior-note {
   margin: 0;
@@ -1487,14 +1442,7 @@ body {
   justify-content: flex-end;
 }
 
-.quit-confirmation-dialog {
-  width: min(520px, 100%);
-}
 
-.quit-confirmation-dialog__actions {
-  flex-wrap: wrap;
-  padding: 16px 20px 20px;
-}
 
 @keyframes settings-spin {
   to {
@@ -1601,15 +1549,6 @@ body {
     align-items: flex-start;
     flex-direction: column;
     padding: 14px 0;
-  }
-
-  .capture-rule {
-    grid-template-columns: minmax(0, 1fr) 32px;
-  }
-
-  .capture-rule select {
-    grid-column: 1 / -1;
-    grid-row: 2;
   }
 }
 

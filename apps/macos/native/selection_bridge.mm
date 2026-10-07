@@ -41,10 +41,6 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-constexpr double kMinimumDragDistance = 4.0;
-constexpr uint64_t kMaximumDragDurationMs = 15'000;
-constexpr uint64_t kDoubleClickDurationMs = 500;
-constexpr double kDoubleClickDistance = 4.0;
 constexpr size_t kMaximumQueuedTasks = 64;
 // Bounds every AX round-trip to a single app so one slow/hung process can't
 // stall the shared single-threaded capture worker for every other app.
@@ -108,6 +104,7 @@ struct SelectionInfo {
 };
 
 enum class TaskKind {
+    RightButtonHold,
     Capture,
     Dismiss,
 };
@@ -1131,22 +1128,6 @@ static std::string DismissJSON(const Task &task) {
     });
 }
 
-static bool IsKeyboardSelectionKey(CGKeyCode keyCode) {
-    switch (keyCode) {
-        case kVK_LeftArrow:
-        case kVK_RightArrow:
-        case kVK_UpArrow:
-        case kVK_DownArrow:
-        case kVK_Home:
-        case kVK_End:
-        case kVK_PageUp:
-        case kVK_PageDown:
-            return true;
-        default:
-            return false;
-    }
-}
-
 static bool IsModifierKey(CGKeyCode keyCode) {
     switch (keyCode) {
         case kVK_Shift:
@@ -1294,7 +1275,6 @@ struct PopperSelectionMonitor {
             std::lock_guard<std::mutex> dismissLock(dismissMutex);
             dismissTasks.clear();
         }
-        keyboardSelectionPending = false;
         running.store(true, std::memory_order_release);
 
         try {
@@ -1379,13 +1359,92 @@ struct PopperSelectionMonitor {
             return event;
         }
         if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+            monitor->rightButtonFired = true;
             if (monitor->eventTap != nullptr) {
                 CGEventTapEnable(monitor->eventTap, true);
             }
             return event;
         }
+        if (CGEventGetIntegerValueField(event, kCGEventSourceUserData) == kRightClickMarker) {
+            return event;
+        }
+        if (type == kCGEventRightMouseDown) {
+            monitor->handleEvent(type, event);
+            monitor->beginRightButton(event);
+            return nullptr;
+        }
+        if (type == kCGEventRightMouseUp && monitor->rightButtonDown != nullptr) {
+            monitor->finishRightButton(event);
+            return nullptr;
+        }
         monitor->handleEvent(type, event);
         return event;
+    }
+
+    static constexpr int64_t kRightClickMarker = 0x50505243;
+    static constexpr uint64_t kRightButtonHoldMs = 250;
+
+    void beginRightButton(CGEventRef event) {
+        if (rightButtonDown != nullptr) CFRelease(rightButtonDown);
+        rightButtonDown = CGEventCreateCopy(event);
+        rightButtonPressedAt = MonotonicMilliseconds();
+        rightButtonGeneration = captureGeneration.load(std::memory_order_acquire);
+        rightButtonForegroundPid = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+        rightButtonFired = false;
+        if (rightButtonTimer != nullptr) {
+            CFRunLoopTimerSetNextFireDate(rightButtonTimer, CFAbsoluteTimeGetCurrent() + 0.25);
+        }
+    }
+
+    void pollRightButton() {
+        if (rightButtonDown == nullptr || rightButtonFired) return;
+        if (rightButtonGeneration != captureGeneration.load(std::memory_order_acquire) ||
+            rightButtonForegroundPid != NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier) {
+            rightButtonFired = true;
+            return;
+        }
+        const uint64_t elapsed = MonotonicMilliseconds() - rightButtonPressedAt;
+        if (elapsed < kRightButtonHoldMs) {
+            if (rightButtonTimer != nullptr) {
+                CFRunLoopTimerSetNextFireDate(
+                    rightButtonTimer,
+                    CFAbsoluteTimeGetCurrent() + (kRightButtonHoldMs - elapsed) / 1000.0);
+            }
+            return;
+        }
+        rightButtonFired = true;
+        // Deliver the explicit trigger through the dismiss lane; never perform
+        // Accessibility or Rust/window work in the event-tap callback.
+        Task task;
+        task.kind = TaskKind::RightButtonHold;
+        {
+            std::lock_guard<std::mutex> lock(dismissMutex);
+            dismissTasks.push_back(std::move(task));
+        }
+        dismissCondition.notify_one();
+    }
+
+    void finishRightButton(CGEventRef event) {
+        pollRightButton();
+        if (!rightButtonFired) {
+            CGEventRef up = CGEventCreateCopy(event);
+            if (up != nullptr) {
+                CGEventSetIntegerValueField(rightButtonDown, kCGEventSourceUserData, kRightClickMarker);
+                CGEventSetIntegerValueField(up, kCGEventSourceUserData, kRightClickMarker);
+                CGEventPost(kCGSessionEventTap, rightButtonDown);
+                CGEventPost(kCGSessionEventTap, up);
+                CFRelease(up);
+            }
+        }
+        CFRelease(rightButtonDown);
+        rightButtonDown = nullptr;
+    }
+
+    static void RightButtonTimerCallback(CFRunLoopTimerRef, void *context) {
+        auto *monitor = static_cast<PopperSelectionMonitor *>(context);
+        if (monitor != nullptr && monitor->running.load(std::memory_order_acquire)) {
+            monitor->pollRightButton();
+        }
     }
 
     // Reactive re-enable in eventTapCallback only fires on the next incoming
@@ -1424,13 +1483,10 @@ struct PopperSelectionMonitor {
             return;
         }
         const CGPoint point = CGEventGetLocation(event);
-        const uint64_t now = MonotonicMilliseconds();
 
         switch (type) {
             case kCGEventLeftMouseDown: {
                 captureGeneration.fetch_add(1, std::memory_order_acq_rel);
-                mouseDown = point;
-                mouseDownTime = now;
                 enqueueDismiss("mouseDown", point, targetPid);
                 break;
             }
@@ -1443,69 +1499,12 @@ struct PopperSelectionMonitor {
                 captureGeneration.fetch_add(1, std::memory_order_acq_rel);
                 enqueueDismiss("scroll", point, targetPid);
                 break;
-            case kCGEventLeftMouseUp: {
-                uint64_t duration = now >= mouseDownTime ? now - mouseDownTime : 0;
-                double distance = std::hypot(point.x - mouseDown.x, point.y - mouseDown.y);
-                double previousDistance = std::hypot(point.x - lastMouseUp.x, point.y - lastMouseUp.y);
-                int64_t clickCount = CGEventGetIntegerValueField(event, kCGMouseEventClickState);
-                CGEventFlags flags = CGEventGetFlags(event);
-
-                Trigger trigger = Trigger::Manual;
-                bool shouldCapture = false;
-                CGPoint start = mouseDown;
-                if (duration <= kMaximumDragDurationMs && distance >= kMinimumDragDistance) {
-                    trigger = Trigger::Drag;
-                    shouldCapture = true;
-                } else if (clickCount >= 2 ||
-                    (lastClickWasValid && now - lastMouseUpTime <= kDoubleClickDurationMs &&
-                     previousDistance <= kDoubleClickDistance)) {
-                    trigger = Trigger::DoubleClick;
-                    start = point;
-                    shouldCapture = true;
-                } else {
-                    bool shiftOnly = (flags & kCGEventFlagMaskShift) != 0 &&
-                        (flags & (kCGEventFlagMaskCommand | kCGEventFlagMaskControl |
-                                  kCGEventFlagMaskAlternate)) == 0;
-                    if (shiftOnly) {
-                        trigger = Trigger::ShiftClick;
-                        start = lastMouseUp;
-                        shouldCapture = true;
-                    }
-                }
-
-                lastClickWasValid = duration <= kDoubleClickDurationMs;
-                lastMouseUp = point;
-                lastMouseUpTime = now;
-                if (shouldCapture) {
-                    enqueueCapture(trigger, start, true, point, true, point);
-                }
-                break;
-            }
             case kCGEventKeyDown: {
                 CGKeyCode keyCode = static_cast<CGKeyCode>(
                     CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode));
-                CGEventFlags flags = CGEventGetFlags(event);
-                bool extendsWithShift = (flags & kCGEventFlagMaskShift) != 0 &&
-                    IsKeyboardSelectionKey(keyCode);
-                bool selectAll = (flags & kCGEventFlagMaskCommand) != 0 &&
-                    (flags & (kCGEventFlagMaskControl | kCGEventFlagMaskAlternate)) == 0 &&
-                    keyCode == kVK_ANSI_A;
-                if (extendsWithShift || selectAll) {
-                    keyboardSelectionPending = true;
-                    keyboardSelectionKey = keyCode;
-                }
                 if (!IsModifierKey(keyCode)) {
                     captureGeneration.fetch_add(1, std::memory_order_acq_rel);
                     enqueueDismiss("keyDown", point, targetPid);
-                }
-                break;
-            }
-            case kCGEventKeyUp: {
-                CGKeyCode keyCode = static_cast<CGKeyCode>(
-                    CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode));
-                if (keyboardSelectionPending && keyCode == keyboardSelectionKey) {
-                    keyboardSelectionPending = false;
-                    enqueueCapture(Trigger::Keyboard, point, false, point, false, point);
                 }
                 break;
             }
@@ -1655,7 +1654,11 @@ struct PopperSelectionMonitor {
                 task = std::move(dismissTasks.front());
                 dismissTasks.pop_front();
             }
-            emit(DismissJSON(task));
+            if (task.kind == TaskKind::RightButtonHold) {
+                emit("{\"type\":\"rightButtonHold\"}");
+            } else {
+                emit(DismissJSON(task));
+            }
         }
     }
 
@@ -1666,6 +1669,7 @@ struct PopperSelectionMonitor {
                 CGEventMaskBit(kCGEventLeftMouseDown) |
                 CGEventMaskBit(kCGEventLeftMouseUp) |
                 CGEventMaskBit(kCGEventRightMouseDown) |
+                CGEventMaskBit(kCGEventRightMouseUp) |
                 CGEventMaskBit(kCGEventOtherMouseDown) |
                 CGEventMaskBit(kCGEventScrollWheel) |
                 CGEventMaskBit(kCGEventKeyDown) |
@@ -1674,7 +1678,7 @@ struct PopperSelectionMonitor {
             eventTap = CGEventTapCreate(
                 kCGSessionEventTap,
                 kCGTailAppendEventTap,
-                kCGEventTapOptionListenOnly,
+                kCGEventTapOptionDefault,
                 eventMask,
                 &PopperSelectionMonitor::eventTapCallback,
                 this);
@@ -1702,6 +1706,12 @@ struct PopperSelectionMonitor {
                     0,
                     &PopperSelectionMonitor::HealthCheckTimerCallback,
                     &timerContext);
+                rightButtonTimer = CFRunLoopTimerCreate(
+                    kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 86400, 86400,
+                    0, 0, &PopperSelectionMonitor::RightButtonTimerCallback, &timerContext);
+                if (rightButtonTimer != nullptr) {
+                    CFRunLoopAddTimer(runLoop, rightButtonTimer, kCFRunLoopDefaultMode);
+                }
                 if (healthTimer != nullptr) {
                     CFRunLoopAddTimer(runLoop, healthTimer, kCFRunLoopDefaultMode);
                 }
@@ -1719,6 +1729,15 @@ struct PopperSelectionMonitor {
 
             if (eventTap != nullptr) {
                 CGEventTapEnable(eventTap, false);
+            }
+            if (rightButtonTimer != nullptr) {
+                CFRunLoopRemoveTimer(runLoop, rightButtonTimer, kCFRunLoopDefaultMode);
+                CFRelease(rightButtonTimer);
+                rightButtonTimer = nullptr;
+            }
+            if (rightButtonDown != nullptr) {
+                CFRelease(rightButtonDown);
+                rightButtonDown = nullptr;
             }
             if (healthTimer != nullptr) {
                 CFRunLoopRemoveTimer(runLoop, healthTimer, kCFRunLoopDefaultMode);
@@ -1758,6 +1777,12 @@ struct PopperSelectionMonitor {
     CFMachPortRef eventTap = nullptr;
     CFRunLoopSourceRef runLoopSource = nullptr;
     CFRunLoopTimerRef healthTimer = nullptr;
+    CFRunLoopTimerRef rightButtonTimer = nullptr;
+    CGEventRef rightButtonDown = nullptr;
+    uint64_t rightButtonPressedAt = 0;
+    uint64_t rightButtonGeneration = 0;
+    pid_t rightButtonForegroundPid = 0;
+    bool rightButtonFired = false;
     CFRunLoopRef eventRunLoop = nullptr;
     std::mutex runLoopMutex;
 
@@ -1773,13 +1798,6 @@ struct PopperSelectionMonitor {
     std::condition_variable dismissCondition;
     std::deque<Task> dismissTasks;
 
-    CGPoint mouseDown = CGPointZero;
-    CGPoint lastMouseUp = CGPointZero;
-    uint64_t mouseDownTime = 0;
-    uint64_t lastMouseUpTime = 0;
-    bool lastClickWasValid = false;
-    bool keyboardSelectionPending = false;
-    CGKeyCode keyboardSelectionKey = 0;
 };
 
 extern "C" uint8_t popper_accessibility_is_trusted(void) {
