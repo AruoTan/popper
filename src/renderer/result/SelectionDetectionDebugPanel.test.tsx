@@ -16,15 +16,52 @@ const report: SelectionDetectionDebug = {
   health, durationMs: 183, steps: [{ stage: "detector.initial", elapsedMs: 180, details: { health } }],
 };
 
-function bridge(getReport?: WindowPopperApi["getSelectionDetectionDebug"]) {
+function bridge(getReport?: WindowPopperApi["getSelectionDetectionDebug"], overrides: Partial<WindowPopperApi> = {}) {
   const copyText = vi.fn().mockResolvedValue(undefined);
-  window._popper_ = { getSelectionDetectionDebug: getReport, copyText } as unknown as WindowPopperApi;
+  window._popper_ = { getSelectionDetectionDebug: getReport, getSelectionDetectionDebugEnabled: vi.fn(async () => true), copyText, ...overrides } as unknown as WindowPopperApi;
   return copyText;
 }
 
 afterEach(cleanup);
 
-describe("temporary selection detection diagnostics", () => {
+describe("runtime selection detection diagnostics", () => {
+  it("does not request reports while disabled and hides an open panel immediately on disable", async () => {
+    let change!: (enabled: boolean) => void;
+    const unsubscribe = vi.fn();
+    const get = vi.fn().mockResolvedValue(report);
+    bridge(get, {
+      getSelectionDetectionDebugEnabled: vi.fn(async () => false),
+      onSelectionDetectionDebugChanged: (listener) => { change = listener; return unsubscribe; },
+    });
+    const view = render(<SelectionDetectionDebugPanel sessionId="session-1" />);
+    await act(async () => {});
+    expect(get).not.toHaveBeenCalled();
+    expect(view.container).toBeEmptyDOMElement();
+    act(() => change(true));
+    await screen.findByText("DEV · 选区偏移诊断");
+    fireEvent.click(screen.getByText("DEV · 选区偏移诊断"));
+    act(() => change(false));
+    expect(view.container).toBeEmptyDOMElement();
+    view.unmount();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a late enabled-state read and report after diagnostics are disabled", async () => {
+    let change!: (enabled: boolean) => void;
+    let resolveState!: (enabled: boolean) => void;
+    let resolveReport!: (value: SelectionDetectionDebug) => void;
+    const get = vi.fn(() => new Promise<SelectionDetectionDebug>((resolve) => { resolveReport = resolve; }));
+    bridge(get, {
+      getSelectionDetectionDebugEnabled: () => new Promise<boolean>((resolve) => { resolveState = resolve; }),
+      onSelectionDetectionDebugChanged: (listener) => { change = listener; return () => {}; },
+    });
+    const view = render(<SelectionDetectionDebugPanel sessionId="session-1" />);
+    act(() => change(true));
+    await waitFor(() => expect(get).toHaveBeenCalledOnce());
+    act(() => change(false));
+    await act(async () => { resolveState(true); resolveReport(report); });
+    expect(view.container).toBeEmptyDOMElement();
+  });
   it("starts collapsed, retains initial and final health, and copies the exact report", async () => {
     const get = vi.fn().mockResolvedValue(report);
     const copy = bridge(get);
@@ -89,6 +126,7 @@ describe("temporary selection detection diagnostics", () => {
     const get = vi.fn().mockImplementationOnce(() => new Promise<SelectionDetectionDebug>((resolve) => { resolveOld = resolve; })).mockResolvedValueOnce(null);
     bridge(get);
     const { container, rerender } = render(<SelectionDetectionDebugPanel sessionId="old" />);
+    await waitFor(() => expect(get).toHaveBeenCalledWith("old"));
     rerender(<SelectionDetectionDebugPanel sessionId="new" />);
     await act(async () => { resolveOld(report); });
     expect(container).toBeEmptyDOMElement();

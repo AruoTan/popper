@@ -76,6 +76,7 @@ import {
 import { ActionIcon } from "../components/ActionIcon";
 import { runDetached } from "../lib/asyncEffects";
 import { getErrorMessage } from "../lib/errors";
+import { useSelectionDetectionDebug } from "../lib/useSelectionDetectionDebug";
 import { CustomActionDialog, type ActionEditorValue } from "./CustomActionDialog";
 import { mergeProviderModelsOnPick } from "./providerModels";
 import {
@@ -260,6 +261,8 @@ function accessibilityPresentation(status: AccessibilityStatus | null): {
 }
 
 export function SettingsApp(): JSX.Element {
+  const selectionDebug = useSelectionDetectionDebug();
+  const [debugUpdating, setDebugUpdating] = useState(false);
   const [draft, setDraft] = useState<PublicSettings | null>(null);
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({});
   const [keyBaselines, setKeyBaselines] = useState<Record<string, string>>({});
@@ -1006,6 +1009,19 @@ export function SettingsApp(): JSX.Element {
   const activeMeta =
     SETTINGS_SECTIONS.find((section) => section.id === activeSection) ?? SETTINGS_SECTIONS[0]!;
 
+  const toggleSelectionDebug = async (enabled: boolean): Promise<void> => {
+    const update = window._popper_.setSelectionDetectionDebugEnabled;
+    if (!update || debugUpdating) return;
+    setDebugUpdating(true);
+    try {
+      selectionDebug.setEnabled(await update(enabled));
+    } catch (error) {
+      setBanner({ kind: "error", text: `切换 DEV Debug 失败：${getErrorMessage(error)}` });
+    } finally {
+      setDebugUpdating(false);
+    }
+  };
+
   return (
     <main className="settings-page settings-page--shell">
       <aside className="settings-shell__nav">
@@ -1037,6 +1053,27 @@ export function SettingsApp(): JSX.Element {
             </button>
           ))}
         </nav>
+        {accessibility?.platform === "windows" && (
+          <div className="settings-debug">
+            <label className="settings-debug-toggle" title="记录选区及附近文本，并在结果窗口显示诊断报告">
+              <span className="settings-debug-toggle__copy">
+                <strong>DEV Debug</strong>
+                <small>选区诊断 · 重启后关闭</small>
+              </span>
+              <span className="switch switch--small">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  aria-label="DEV Debug"
+                  checked={selectionDebug.enabled}
+                  disabled={!selectionDebug.ready || debugUpdating}
+                  onChange={(event) => void toggleSelectionDebug(event.currentTarget.checked)}
+                />
+                <span aria-hidden="true" />
+              </span>
+            </label>
+          </div>
+        )}
       </aside>
 
       <div className="settings-shell__main">

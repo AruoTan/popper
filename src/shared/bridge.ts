@@ -120,6 +120,10 @@ export interface SelectionDetectionDebug {
 }
 
 export interface WindowPopperApi {
+  /** Runtime only; resets to false on every app launch. */
+  getSelectionDetectionDebugEnabled?(): Promise<boolean>;
+  setSelectionDetectionDebugEnabled?(enabled: boolean): Promise<boolean>;
+  onSelectionDetectionDebugChanged?(listener: (enabled: boolean) => void): Unsubscribe;
   /** Result window only, scoped to its original selection timestamp. */
   getSelectionDetectionDebug?(sessionId: string): Promise<SelectionDetectionDebug | null>;
   submitTranslation?(sessionId: string, text: string): Promise<TranslationSubmission>;

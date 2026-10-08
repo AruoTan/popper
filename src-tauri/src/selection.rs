@@ -351,7 +351,24 @@ impl fmt::Debug for SelectionMonitor {
 unsafe impl Send for SelectionMonitor {}
 
 impl SelectionMonitor {
-    // TODO(selection-offset-dev): remove the temporary runtime diagnostics API.
+    pub fn selection_detection_debug_enabled() -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            selection_windows::selection_detection_debug_enabled()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    }
+
+    pub fn set_selection_detection_debug_enabled(enabled: bool) {
+        #[cfg(target_os = "windows")]
+        selection_windows::set_selection_detection_debug_enabled(enabled);
+        #[cfg(not(target_os = "windows"))]
+        let _ = enabled;
+    }
+
     pub fn selection_detection_debug(timestamp_ms: u64) -> Option<serde_json::Value> {
         #[cfg(target_os = "windows")]
         {

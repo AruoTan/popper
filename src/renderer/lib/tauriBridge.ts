@@ -260,6 +260,10 @@ export function installTauriBridge(): void {
     parseSettingsGuidance,
   );
   const settingsOpenedEvents = new EventHub<void>(EVENTS.settingsOpened, () => undefined);
+  const selectionDebugEvents = new EventHub<boolean>(EVENTS.selectionDetectionDebugChanged, (payload) => {
+    if (typeof payload !== "boolean") throw new Error("Invalid selection debug state");
+    return payload;
+  });
   const toolbarPointerEvents = new EventHub<ToolbarPointerEvent>(EVENTS.toolbarPointer, (payload) =>
     toolbarPointerEventSchema.parse(payload),
   );
@@ -431,6 +435,16 @@ export function installTauriBridge(): void {
       return invoke(TAURI_COMMANDS.getSelectionDetectionDebug, {
         sessionId: requiredSessionId(sessionId),
       });
+    },
+    async getSelectionDetectionDebugEnabled() {
+      await selectionDebugEvents.ready();
+      return invoke<boolean>(TAURI_COMMANDS.getSelectionDetectionDebugEnabled);
+    },
+    async setSelectionDetectionDebugEnabled(enabled: boolean) {
+      return invoke<boolean>(TAURI_COMMANDS.setSelectionDetectionDebugEnabled, { enabled });
+    },
+    onSelectionDetectionDebugChanged(listener) {
+      return selectionDebugEvents.subscribe(listener);
     },
     async beginResultReady(sessionId: string): Promise<ResultSessionSnapshot> {
       await actionEvents.ready();

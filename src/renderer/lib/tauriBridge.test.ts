@@ -31,6 +31,7 @@ describe("Tauri renderer bridge", () => {
     let forwardToolbarDismissed: ((event: { payload: unknown }) => void) | undefined;
     let forwardResultSelectionHold: ((event: { payload: unknown }) => void) | undefined;
     let forwardSettingsOpened: ((event: { payload: unknown }) => void) | undefined;
+    let forwardSelectionDebug: ((event: { payload: unknown }) => void) | undefined;
     let selectionListenAttempts = 0;
     listenMock.mockImplementation(
       (eventName: string, listener: (event: { payload: unknown }) => void) => {
@@ -57,6 +58,9 @@ describe("Tauri renderer bridge", () => {
         }
         if (eventName === "popper:settings-opened") {
           forwardSettingsOpened = listener;
+        }
+        if (eventName === "popper:selection-detection-debug-changed") {
+          forwardSelectionDebug = listener;
         }
         return Promise.resolve(() => undefined);
       },
@@ -92,6 +96,8 @@ describe("Tauri renderer bridge", () => {
     invokeMock.mockImplementation((command: string) => {
       if (command === "toolbar_ready") return Promise.resolve(null);
       if (command === "get_selection_detection_debug") return Promise.resolve(null);
+      if (command === "get_selection_detection_debug_enabled") return Promise.resolve(false);
+      if (command === "set_selection_detection_debug_enabled") return Promise.resolve(true);
       if (command === "recover_toolbar") return Promise.resolve(true);
       if (command === "begin_result_ready") {
         return Promise.resolve(readySnapshot);
@@ -161,6 +167,17 @@ describe("Tauri renderer bridge", () => {
     await expect(window._popper_.getCurrentSelection?.()).resolves.toBeNull();
     await expect(window._popper_.getSelectionDetectionDebug?.("session-1")).resolves.toBeNull();
     expect(invokeMock).toHaveBeenCalledWith("get_selection_detection_debug",{sessionId:"session-1"});
+    await expect(window._popper_.getSelectionDetectionDebugEnabled?.()).resolves.toBe(false);
+    await expect(window._popper_.setSelectionDetectionDebugEnabled?.(true)).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_selection_detection_debug_enabled", { enabled: true });
+    const debugListener = vi.fn();
+    const stopDebug = window._popper_.onSelectionDetectionDebugChanged?.(debugListener);
+    forwardSelectionDebug?.({ payload: true });
+    forwardSelectionDebug?.({ payload: false });
+    expect(debugListener.mock.calls).toEqual([[true], [false]]);
+    stopDebug?.();
+    forwardSelectionDebug?.({ payload: true });
+    expect(debugListener).toHaveBeenCalledTimes(2);
     expect(selectionListenAttempts).toBe(3);
     expect(JSON.stringify(consoleWarn.mock.calls)).not.toContain(
       "sensitive transient listener failure",

@@ -1,6 +1,6 @@
-// TODO(selection-offset-dev): remove this panel and its IPC after Zotero validation.
 import { useEffect, useState } from "react";
 import type { SelectionDetectionDebug, SelectionDetectionHealth } from "../../shared";
+import { useSelectionDetectionDebug } from "../lib/useSelectionDetectionDebug";
 
 function healthLabel(health: SelectionDetectionHealth): string {
   const applicability = health.applicable ? "适用" : "不适用";
@@ -14,6 +14,7 @@ function routeLabel(report: SelectionDetectionDebug): string {
 }
 
 export function SelectionDetectionDebugPanel({ sessionId }: { sessionId: string }) {
+  const { enabled } = useSelectionDetectionDebug();
   const [report, setReport] = useState<SelectionDetectionDebug | null>(null);
   const [loadError, setLoadError] = useState("");
   const [copyState, setCopyState] = useState("");
@@ -24,15 +25,15 @@ export function SelectionDetectionDebugPanel({ sessionId }: { sessionId: string 
     setLoadError("");
     setCopyState("");
     const fetchReport = window._popper_?.getSelectionDetectionDebug;
-    if (!fetchReport) return;
+    if (!enabled || !fetchReport) return;
     void fetchReport(sessionId).then(
       (value) => { if (current) setReport(value); },
       (error: unknown) => { if (current) setLoadError(String(error)); },
     );
     return () => { current = false; };
-  }, [sessionId]);
+  }, [sessionId, enabled]);
 
-  if (!report && !loadError) return null;
+  if (!enabled || (!report && !loadError)) return null;
 
   const copy = async () => {
     if (!report) return;
@@ -68,7 +69,7 @@ export function SelectionDetectionDebugPanel({ sessionId }: { sessionId: string 
               <dt>左键手势</dt><dd>{report.gesture ? `${report.gesture.kind} (${report.gesture.down.x}, ${report.gesture.down.y}) → (${report.gesture.up.x}, ${report.gesture.up.y})` : "无可用鼠标上下文"}</dd>
               <dt>DPI / 耗时</dt><dd>{report.dpiReady ? "Per-Monitor V2" : "DPI 上下文不可用"} · {report.durationMs.toFixed(1)} ms</dd>
             </dl>
-            <p className="result-selection-debug__note">临时诊断，报告含选区和附近文本。确认偏移检测有效后移除。</p>
+            <p className="result-selection-debug__note">报告含选区和附近文本。可在设置左下角关闭 DEV Debug；每次启动应用默认关闭。</p>
             {report.logPath && <p className="result-selection-debug__path">日志：{report.logPath}</p>}
             <button type="button" onClick={() => void copy()}>复制诊断报告</button>
             <span role="status">{copyState}</span>
