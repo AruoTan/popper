@@ -457,10 +457,13 @@ body,
 }
 
 .translation-route select {
+  --select-chevron-size: 10px;
+  --select-chevron-offset: 3px;
+  --select-chevron-gap: 4px;
   width: 50px;
   padding: 0 17px 0 5px;
   font-size: 10.5px;
-  background: var(--surface-solid);
+  background-color: var(--surface-solid);
   border: 1px solid var(--border);
   border-radius: 5px;
   outline: 0;
@@ -1459,7 +1462,7 @@ body,
 }
 /* Dictionary entries stay selectable; controls remain inside the result window. */
 .dictionary-panel { padding: 4px 0 18px; line-height: 1.65; overflow-wrap: anywhere; }
-.dictionary-panel input, .dictionary-panel select { padding: 8px 10px; border: 1px solid #8885; border-radius: 8px; color: inherit; background: transparent; font: inherit; }
+.dictionary-panel input, .dictionary-panel select { padding: 8px 10px; border: 1px solid #8885; border-radius: 8px; color: inherit; background-color: transparent; font: inherit; }
 .dictionary-panel button, .dictionary-suggestions button { border: 1px solid #8884; border-radius: 7px; background: transparent; color: inherit; padding: 5px 9px; cursor: pointer; font: inherit; }
 .dictionary-panel button:hover, .dictionary-suggestions button:hover { background: #8881; }
 .dictionary-panel button:disabled, .dictionary-suggestions button:disabled { opacity: .5; cursor: default; }

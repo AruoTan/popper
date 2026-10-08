@@ -7,6 +7,28 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows') {
 
 Set-Location (Join-Path $PSScriptRoot '../..')
 
+function Invoke-BuildStage {
+    param(
+        [string]$Name,
+        [scriptblock]$Command
+    )
+
+    Write-Host "::group::$Name"
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    $status = 'Failed'
+    try {
+        & $Command
+        if ($LASTEXITCODE -ne 0) { throw "$Name failed (exit $LASTEXITCODE)" }
+        $status = 'Passed'
+    }
+    finally {
+        $timer.Stop()
+        Write-Host "::endgroup::"
+        $seconds = [Math]::Round($timer.Elapsed.TotalSeconds, 1)
+        "- ${Name}: ${seconds}s ($status)" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+    }
+}
+
 # Discover the runner's SDK/MSVC installation; do not hard-code SDK versions or
 # copy any environment settings from a developer's Windows machine.
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
@@ -25,12 +47,22 @@ if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain unavailable' }
 nasm -v
 if ($LASTEXITCODE -ne 0) { throw 'NASM unavailable' }
 
-pnpm verify:windows
-if ($LASTEXITCODE -ne 0) { throw 'Windows verification failed; packaging skipped' }
+Invoke-BuildStage 'Windows verification' { pnpm verify:windows }
 
-# Preserve the repository's packaging/PE/version/SHA-256 verification entry point.
-pnpm package:windows
-if ($LASTEXITCODE -ne 0) { throw 'Windows packaging or artifact verification failed' }
+# verify:windows just built these files from this checkout. Reuse them only in
+# this CI invocation; ordinary local packaging still runs beforeBuildCommand.
+foreach ($page in @('settings', 'toolbar', 'result', 'startup')) {
+    $html = Join-Path 'dist' "$page/index.html"
+    if (-not (Test-Path -LiteralPath $html -PathType Leaf) -or (Get-Item -LiteralPath $html).Length -eq 0) {
+        throw "Missing verified frontend output: $html"
+    }
+}
+Invoke-BuildStage 'Windows installer build' {
+    # Quote the separator so PowerShell shims pass it through to Tauri/Cargo.
+    pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked
+}
+# Preserve the repository's PE/version/SHA-256 verification entry point.
+Invoke-BuildStage 'Windows artifact verification' { pnpm verify:artifacts:windows }
 
 $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
 $bundleDirectory = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'

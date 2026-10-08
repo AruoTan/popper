@@ -51,6 +51,7 @@ import {
   type JSX,
 } from "react";
 import { DictionarySettings } from "./DictionarySettings";
+import appIcon from "../../../assets/popper.png";
 
 import {
   APP_NAME,
@@ -87,6 +88,7 @@ import {
   sortAndNumberActions,
 } from "./settingsForm";
 import { settingsGuidanceInbox, type SettingsGuidanceLease } from "./settingsGuidanceInbox";
+import { StyledSelect } from "./StyledSelect";
 
 type Operation = string | null;
 type Banner = { kind: "success" | "error"; text: string } | null;
@@ -1026,11 +1028,9 @@ export function SettingsApp(): JSX.Element {
     <main className="settings-page settings-page--shell">
       <aside className="settings-shell__nav">
         <header className="settings-hero">
-          <div className="settings-logo" aria-hidden="true">
-            <Sparkles size={22} />
-          </div>
+          <img className="settings-logo" src={appIcon} alt="" aria-hidden="true" />
           <div>
-            <h1>{APP_NAME} 设置</h1>
+            <h1>{APP_NAME}</h1>
             <p>让每一次划词更顺手</p>
           </div>
         </header>
@@ -1513,31 +1513,31 @@ export function SettingsApp(): JSX.Element {
                     <strong>AI 默认回复语言</strong>
                     <p>仅影响使用 {"{{language}}"} 的动作（如总结、解释），不改变设置界面语言。</p>
                   </div>
-                  <select
-                    className="control compact-control"
+                  <StyledSelect
+                    className="compact-control"
                     aria-label="AI 默认回复语言"
                     value={draft.locale}
-                    onChange={(event) =>
+                    onChange={(val) =>
                       changeDraft((current) => ({
                         ...current,
-                        locale: event.target.value as SupportedLocale,
+                        locale: val as SupportedLocale,
                       }))
                     }
-                  >
-                    <option value="zh-CN">简体中文</option>
-                    <option value="en-US">English</option>
-                  </select>
+                    options={[
+                      { value: "zh-CN", label: "简体中文" },
+                      { value: "en-US", label: "English" },
+                    ]}
+                  />
                 </div>
               </div>
               <div className="settings-card form-grid settings-card--follow">
-                <label className="field">
+                <div className="field">
                   <span className="field__label">翻译主要语言</span>
-                  <select
-                    className="control"
+                  <StyledSelect
                     aria-label="翻译主要语言"
                     value={draft.translate.primaryLanguage}
-                    onChange={(event) => {
-                      const primaryLanguage = event.target.value as TranslationLanguage;
+                    onChange={(val) => {
+                      const primaryLanguage = val as TranslationLanguage;
                       changeDraft((current) => {
                         const alternateLanguage =
                           current.translate.alternateLanguage === primaryLanguage
@@ -1551,22 +1551,19 @@ export function SettingsApp(): JSX.Element {
                         };
                       });
                     }}
-                  >
-                    {TRANSLATION_LANGUAGES.map((code) => (
-                      <option value={code} key={code}>
-                        {TRANSLATION_LANGUAGE_NAMES[code]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="field">
+                    options={TRANSLATION_LANGUAGES.map((code) => ({
+                      value: code,
+                      label: TRANSLATION_LANGUAGE_NAMES[code],
+                    }))}
+                  />
+                </div>
+                <div className="field">
                   <span className="field__label">翻译另一语言</span>
-                  <select
-                    className="control"
+                  <StyledSelect
                     aria-label="翻译另一语言"
                     value={draft.translate.alternateLanguage}
-                    onChange={(event) => {
-                      const alternateLanguage = event.target.value as TranslationLanguage;
+                    onChange={(val) => {
+                      const alternateLanguage = val as TranslationLanguage;
                       changeDraft((current) => {
                         const primaryLanguage =
                           current.translate.primaryLanguage === alternateLanguage
@@ -1580,14 +1577,12 @@ export function SettingsApp(): JSX.Element {
                         };
                       });
                     }}
-                  >
-                    {TRANSLATION_LANGUAGES.map((code) => (
-                      <option value={code} key={code}>
-                        {TRANSLATION_LANGUAGE_NAMES[code]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    options={TRANSLATION_LANGUAGES.map((code) => ({
+                      value: code,
+                      label: TRANSLATION_LANGUAGE_NAMES[code],
+                    }))}
+                  />
+                </div>
                 <div className="field--wide">
                   <SettingSwitch
                     title="英文短文本优先查词"
@@ -1700,24 +1695,25 @@ export function SettingsApp(): JSX.Element {
                     <strong>关闭方式</strong>
                     <p>仅未置顶窗口执行；置顶窗口始终忽略自动关闭。</p>
                   </div>
-                  <select
-                    className="control result-mode-control"
+                  <StyledSelect
+                    className="result-mode-control"
+                    aria-label="关闭方式"
                     value={draft.result.dismissMode}
-                    onChange={(event) =>
+                    onChange={(val) =>
                       changeDraft((current) => ({
                         ...current,
                         result: {
                           ...current.result,
-                          dismissMode: event.target
-                            .value as PublicSettings["result"]["dismissMode"],
+                          dismissMode: val as PublicSettings["result"]["dismissMode"],
                         },
                       }))
                     }
-                  >
-                    <option value="blur">失去焦点时关闭（推荐）</option>
-                    <option value="pointer-leave">鼠标移出后关闭</option>
-                    <option value="manual">手动关闭</option>
-                  </select>
+                    options={[
+                      { value: "blur", label: "失去焦点时关闭（推荐）" },
+                      { value: "pointer-leave", label: "鼠标移出后关闭" },
+                      { value: "manual", label: "手动关闭" },
+                    ]}
+                  />
                 </div>
                 {draft.result.dismissMode === "pointer-leave" && (
                   <div className="setting-row">
@@ -1788,23 +1784,25 @@ export function SettingsApp(): JSX.Element {
                     <strong>过滤模式</strong>
                     <p>选择全部应用、仅列表应用或排除列表应用。</p>
                   </div>
-                  <select
-                    className="control compact-control"
+                  <StyledSelect
+                    className="compact-control"
+                    aria-label="过滤模式"
                     value={draft.filter.mode}
-                    onChange={(event) =>
+                    onChange={(val) =>
                       changeDraft((current) => ({
                         ...current,
                         filter: {
                           ...current.filter,
-                          mode: event.target.value as PublicSettings["filter"]["mode"],
+                          mode: val as PublicSettings["filter"]["mode"],
                         },
                       }))
                     }
-                  >
-                    <option value="default">所有应用</option>
-                    <option value="whitelist">仅列表应用</option>
-                    <option value="blacklist">排除列表应用</option>
-                  </select>
+                    options={[
+                      { value: "default", label: "所有应用" },
+                      { value: "whitelist", label: "仅列表应用" },
+                      { value: "blacklist", label: "排除列表应用" },
+                    ]}
+                  />
                 </div>
                 {draft.filter.mode !== "default" && (
                   <label className="setting-row setting-row--column">

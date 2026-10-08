@@ -1,4 +1,11 @@
 fn main() {
+    // Tauri embeds the Windows icon in the executable resource table and a
+    // decoded copy in generate_context!. Track the sources themselves: the
+    // generated files alone do not invalidate a cached build after icon edits.
+    println!("cargo:rerun-if-changed=../apps/windows/icons/icon.ico");
+    println!("cargo:rerun-if-changed=../apps/windows/icons/32x32.png");
+    println!("cargo:rerun-if-changed=icons/icon.png");
+
     println!("cargo:rerun-if-changed=../apps/macos/native/selection_bridge.h");
     println!("cargo:rerun-if-changed=../apps/macos/native/selection_bridge.mm");
     println!("cargo:rerun-if-changed=../apps/macos/native/LICENSE.selection-hook");

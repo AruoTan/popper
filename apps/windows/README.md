@@ -15,6 +15,18 @@ Build entry points remain in shared locations:
 
 Shared toolbar, result window, settings UI, model requests, and most Rust runtime code remain in `src/` and `src-tauri/src/`.
 
+## Application icons
+
+`icons/icon.ico` supplies both the executable's embedded icon and Tauri's
+default window icon; `icons/32x32.png` supplies the notification-area icon.
+`src-tauri/build.rs` explicitly tracks these files so replacing an icon also
+rebuilds native resources when Cargo artifacts are reused. Installer icons
+alone do not update the executable's embedded icon.
+
+After installing a build with new icons, fully exit Popper from its tray menu
+and launch the installed version again. If an existing pinned taskbar shortcut
+still displays the old icon, unpin it and pin the newly launched app again.
+
 ## Mouse/UIA selection offset detection
 
 Windows records the latest completed left-button gesture without querying UIA

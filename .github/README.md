@@ -7,7 +7,7 @@
 1. 将源码和 `.github` 配置提交、推送到 GitHub 仓库。工作流首次必须存在于默认分支，Actions 页面才会显示手动运行按钮。
 2. 打开 **Actions → Build Windows installer → Run workflow**，选择待构建分支并运行。
 3. 成功后，在该次运行的 **Artifacts** 下载 `Popper-windows-x64-运行编号`，解压得到 `.exe` 和 `SHA256SUMS.txt`。
-4. 可用 PowerShell 的 `Get-FileHash .\Popper_0.5.3_x64-setup.exe -Algorithm SHA256` 与校验文件比对（文件名随版本变化）。
+4. 可用 PowerShell 的 `Get-FileHash .\Popper_0.5.4_x64-setup.exe -Algorithm SHA256` 与校验文件比对（文件名随版本变化）。
 
 工作流仅手动触发，不因 push/PR 自动消耗构建额度，不创建 Release、不推送提交、不需要发布令牌或签名密钥。产物保留 14 天；请及时下载。私有仓库需留意账户的 Actions 分钟数、存储额度及组织策略。
 
@@ -15,13 +15,15 @@
 
 - Node 22.22.0、Rust 1.97.1 MSVC，与开发容器版本保持一致；pnpm 精确版本从 `package.json` 读取。
 - 通过 `pnpm install --frozen-lockfile` 安装依赖，自动发现 runner 的 Visual Studio/Windows SDK；安装并优先使用 NASM，避免 Strawberry Perl 同名工具干扰。
-- 运行 `pnpm verify:windows`，成功后运行 `pnpm package:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
+- 运行完整的 `pnpm verify:windows`，成功后复用本次生成的前端产物运行 `pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked`，最后运行 `pnpm verify:artifacts:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
 - 任一步骤失败都会停止；仅成功产物上传。任务最多运行 60 分钟，同一分支的并发构建不会相互中断。
 - 第三方 Actions 固定到提交 SHA，仓库权限只有 `contents: read`。升级 Actions 时同步核对官方版本与 SHA。
-- 当前不缓存 Cargo 编译目录，优先保证干净构建；冷构建较慢。GitHub 的系统镜像和 NASM 软件包会更新，因此不承诺逐字节可复现。
+- 缓存 pnpm store，以及 Cargo 下载缓存和 `src-tauri/target` 内的依赖编译产物，覆盖验证与 release 打包。Rust 缓存由工具链、编译环境和 Cargo 清单/锁文件区分；锁文件变化时可回用旧缓存，由 Cargo 判断需要重编译的依赖。应用自身及安装包由当前源码重新生成。
+- CI 专用配置只关闭重复的 `beforeBuildCommand`，使用前先检查本次验证生成的四个 HTML 入口；本地 `pnpm package:windows` 仍自动构建前端。验证、打包和产物校验的耗时写入 Actions 运行摘要。
+- 首次构建、缓存被清理或工具链升级时仍需冷编译；后续缓存命中时才有主要收益，具体节省时间需比较云端运行。GitHub 的系统镜像和 NASM 软件包会更新，因此不承诺逐字节可复现。
 
 安装包仍是未签名测试包，可能触发 SmartScreen。云端单元测试不能替代 Zotero、Chrome 等桌面应用中的真实划词、快捷键和剪贴板回归。
 
 此配置需推送后完成首次云端运行验证；本地语法检查不等同于 CI 已通过。
 
-参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Windows runner 环境](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)。
+参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Windows runner 环境](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)、[Rust 缓存策略](https://github.com/Swatinem/rust-cache)、[GitHub Actions 缓存](https://github.com/actions/cache)。

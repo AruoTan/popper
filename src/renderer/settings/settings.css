@@ -134,15 +134,11 @@ body {
 }
 
 .settings-logo {
-  display: inline-flex;
+  display: block;
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
   width: 32px;
   height: 32px;
-  color: #ffffff;
-  background: var(--accent);
-  border-radius: 8px;
+  object-fit: contain;
 }
 
 .settings-hero h1 {
@@ -607,7 +603,7 @@ body {
   padding: 7px 12px;
   color: var(--text);
   font-size: 13px;
-  background: var(--surface-inset);
+  background-color: var(--surface-inset);
   border: 1px solid var(--border-strong);
   border-radius: 7px;
   outline: none;
@@ -621,43 +617,12 @@ body {
 .control:focus {
   border-color: var(--accent);
   box-shadow: var(--focus-ring);
-  background: var(--surface-solid);
+  background-color: var(--surface-solid);
 }
 
 .control::placeholder {
   color: var(--text-tertiary);
   opacity: 1;
-}
-
-.control::-webkit-calendar-picker-indicator {
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  margin: 0;
-  color: transparent;
-  background-color: transparent;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-  background-size: 16px 16px;
-  background-position: center;
-  background-repeat: no-repeat;
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 120ms ease;
-}
-
-.control::-webkit-calendar-picker-indicator:hover {
-  opacity: 1;
-}
-
-@media (prefers-color-scheme: dark) {
-  .control::-webkit-calendar-picker-indicator {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-  }
-}
-
-select.control {
-  padding-right: 28px;
-  cursor: pointer;
 }
 
 .compact-control {
@@ -2115,7 +2080,6 @@ select.control {
   .settings-logo {
     width: 28px;
     height: 28px;
-    border-radius: 7px;
   }
 
   .settings-nav__item {
@@ -2241,6 +2205,161 @@ select.control {
   .settings-footer {
     min-height: 50px;
     padding: 10px 14px;
+  }
+}
+
+/* ==========================================================================
+   Custom Styled Select / Dropdown
+   ========================================================================== */
+
+.styled-select {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+}
+
+.styled-select.compact-control {
+  width: 160px;
+  flex-shrink: 0;
+}
+
+.styled-select.result-mode-control {
+  width: 196px;
+  flex-shrink: 0;
+}
+
+.styled-select__trigger {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+  cursor: pointer;
+}
+
+.styled-select__trigger.is-open,
+.styled-select__input.is-open {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+  background-color: var(--surface-solid);
+}
+
+.styled-select__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.styled-select__trigger:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.styled-select__input {
+  padding-right: 36px;
+}
+
+.styled-select__toggle {
+  position: absolute;
+  inset: 1px 1px 1px auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0 6px 6px 0;
+}
+
+.styled-select__dropdown {
+  /* Render above scroll containers, modal cards and the sticky footer. */
+  position: fixed;
+  z-index: 1100;
+  margin: 0;
+  padding: 5px;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  box-shadow: var(--shadow-md);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+  animation: styled-select-enter 120ms ease-out;
+}
+
+@keyframes styled-select-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.styled-select__option {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 7px 9px;
+  color: var(--text);
+  font-size: 13px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 80ms ease;
+  user-select: none;
+}
+
+.styled-select__option.is-focused {
+  background: var(--surface-muted);
+}
+
+.styled-select__option.is-selected {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.styled-select__option.is-selected.is-focused {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-card));
+}
+
+.styled-select__option-label {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.styled-select__check {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.styled-select__group,
+.styled-select__hint {
+  padding: 8px 9px 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.styled-select__group {
+  font-weight: 600;
+}
+
+@media (max-width: 760px) {
+  .styled-select.compact-control,
+  .styled-select.result-mode-control {
+    width: 100%;
   }
 }
 

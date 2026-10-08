@@ -738,7 +738,7 @@ export function ToolbarApp(): JSX.Element {
                 <span className="toolbar-ai-mark">
                   <Sparkles size={13} />
                 </span>
-                <ChevronDown size={10} />
+                <ChevronDown className="dropdown-chevron" size={10} />
               </span>
               <textarea
                 ref={askInputRef}
