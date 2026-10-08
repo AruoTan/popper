@@ -19,6 +19,7 @@ import {
 } from '../../shared'
 import { isLucideIconName } from '../components/lucideIconRegistry'
 import { ActionIconPicker } from './ActionIconPicker'
+import { StyledSelect } from './StyledSelect'
 
 const ACTION_KIND_NAMES: Readonly<Record<ActionKind, string>> = {
   copy: '复制',
@@ -310,100 +311,81 @@ export function CustomActionDialog({
                 }}
               />
             </label>
-            <label className="field">
+            <div className="field">
               <span className="field__label">动作类型</span>
-              <select
-                className="control"
+              <StyledSelect
+                aria-label="动作类型"
                 value={kind}
-                onChange={(event) => changeKind(event.target.value as ActionKind)}
-              >
-                {Object.entries(ACTION_KIND_NAMES)
+                onChange={(value) => changeKind(value as ActionKind)}
+                options={Object.entries(ACTION_KIND_NAMES)
                   .filter(([value]) => value !== 'ask')
-                  .map(([value, label]) => (
-                  <option value={value} key={value}>{label}</option>
-                  ))}
-              </select>
-            </label>
+                  .map(([value, label]) => ({ value, label }))}
+              />
+            </div>
           </div>
 
-          <label className="field">
+          <div className="field">
             <span className="field__label">图标</span>
             <ActionIconPicker value={icon} onChange={(value) => {
               setIcon(value)
               setError('')
             }} />
-          </label>
+          </div>
 
           {kind === 'search' && (
-            <label className="field">
+            <div className="field">
               <span className="field__label">默认搜索引擎</span>
-              <select
-                className="control"
+              <StyledSelect
+                aria-label="默认搜索引擎"
                 value={searchEngineId}
-                onChange={(event) => {
-                  setSearchEngineId(event.target.value as SearchEngineId)
+                onChange={(value) => {
+                  setSearchEngineId(value as SearchEngineId)
                   setError('')
                 }}
-              >
-                {DEFAULT_SEARCH_ENGINES.map((engine) => (
-                  <option value={engine.id} key={engine.id}>{engine.name}</option>
-                ))}
-              </select>
+                options={DEFAULT_SEARCH_ENGINES.map((engine) => ({ value: engine.id, label: engine.name }))}
+              />
               <span className="field__hint">划词搜索普通文字时使用该引擎；选中网址、域名或 IP 时直接打开。</span>
-            </label>
+            </div>
           )}
 
           {isAiKind(kind) && (
             <>
-              <label className="field">
+              <div className="field">
                 <span className="field__label">模型</span>
-                <select
-                  className="control"
+                <StyledSelect
                   aria-label="模型"
                   value={modelSelectValue}
-                  onChange={(event) => changeModelRoute(event.target.value)}
-                >
-                  <option value="">尚未选择</option>
-                  {modelGroups.map((group) => (
-                    <optgroup
-                      key={group.id}
-                      label={group.keyConfigured ? group.name : `${group.name}（未配置密钥）`}
-                    >
-                      {group.choices.map((choice) => (
-                        <option key={choice.value} value={choice.value}>
-                          {choice.modelName}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
+                  onChange={changeModelRoute}
+                  options={[
+                    { value: '', label: '尚未选择' },
+                    ...modelGroups.flatMap((group) => group.choices.map((choice) => ({
+                      value: choice.value,
+                      label: choice.modelName,
+                      group: group.keyConfigured ? group.name : `${group.name}（未配置密钥）`
+                    })))
+                  ]}
+                />
                 <span className="field__hint">
                   已启用的服务商与其模型列在同一列表中；可在「通用」中关闭不需要的服务商。
                 </span>
-              </label>
+              </div>
 
               {thinkingLevels.length > 0 && (
-                <label className="field">
+                <div className="field">
                   <span className="field__label">思考强度</span>
-                  <select
-                    className="control"
+                  <StyledSelect
                     aria-label="思考强度"
                     value={thinkingMode}
-                    onChange={(event) => setThinkingMode(event.target.value as ThinkingMode)}
-                  >
-                    {showThinkingOff && (
-                      <option value="off">关闭思考（更快首字）</option>
-                    )}
-                    {thinkingLevels.map((level) => (
-                      <option key={level} value={level}>
-                        {THINKING_LEVEL_LABELS[level]}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(value) => setThinkingMode(value as ThinkingMode)}
+                    options={[
+                      ...(showThinkingOff ? [{ value: 'off', label: '关闭思考（更快首字）' }] : []),
+                      ...thinkingLevels.map((level) => ({ value: level, label: THINKING_LEVEL_LABELS[level] }))
+                    ]}
+                  />
                   <span className="field__hint">
                     已根据模型 ID 自动识别思考能力；关闭思考可缩短首字延迟。
                   </span>
-                </label>
+                </div>
               )}
 
               <label className="field">

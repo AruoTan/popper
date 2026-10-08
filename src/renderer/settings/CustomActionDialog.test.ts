@@ -66,8 +66,34 @@ describe('promptAfterKindChange', () => {
 })
 
 describe('CustomActionDialog model + thinking', () => {
-  const modelRoute = (providerId: string, modelId: string): string =>
-    JSON.stringify([providerId, modelId])
+  function choose(label: string, option: string): void {
+    fireEvent.click(screen.getByRole('combobox', { name: label }))
+    fireEvent.click(screen.getByRole('option', { name: option }))
+  }
+
+  it('closes the open dropdown before closing the dialog with Escape', () => {
+    const onCancel = vi.fn()
+    render(createElement(CustomActionDialog, { action: null, providers: [], onCancel, onSave: vi.fn() }))
+    const trigger = screen.getByRole('combobox', { name: '动作类型' })
+    fireEvent.click(trigger)
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(onCancel).not.toHaveBeenCalled()
+    fireEvent.keyDown(trigger, { key: 'Escape' })
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
+  it('saves a search action after choosing its type, engine and icon', () => {
+    const onSave = vi.fn()
+    render(createElement(CustomActionDialog, { action: null, providers: [], onCancel: vi.fn(), onSave }))
+    fireEvent.change(screen.getByLabelText('动作名称'), { target: { value: '搜索' } })
+    choose('动作类型', '搜索 / 打开网址')
+    choose('默认搜索引擎', 'Bing')
+    fireEvent.change(screen.getByRole('combobox', { name: '图标' }), { target: { value: 'book-open' } })
+    fireEvent.click(screen.getByRole('option', { name: 'book-open' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加动作' }))
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ kind: 'search', searchEngineId: 'bing-china', icon: 'book-open' }))
+  })
 
   it('uses a unified provider+model list and saves thinking mode', () => {
     const onSave = vi.fn()
@@ -90,16 +116,13 @@ describe('CustomActionDialog model + thinking', () => {
     }))
 
     fireEvent.change(screen.getByLabelText('动作名称'), { target: { value: '深度思考' } })
-    fireEvent.change(screen.getByLabelText('模型'), {
-      target: { value: modelRoute('provider-one', 'model-think') }
-    })
+    choose('模型', '思考模型')
 
     const thinkingSelect = screen.getByLabelText('思考强度')
     expect(thinkingSelect).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: '关闭思考（更快首字）' })).toBeInTheDocument()
-    expect(thinkingSelect).toHaveValue('off')
+    expect(thinkingSelect).toHaveTextContent('关闭思考（更快首字）')
 
-    fireEvent.change(thinkingSelect, { target: { value: 'medium' } })
+    choose('思考强度', '中')
     fireEvent.click(screen.getByRole('button', { name: '添加动作' }))
 
     expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
@@ -135,16 +158,10 @@ describe('CustomActionDialog model + thinking', () => {
       onSave: vi.fn()
     }))
 
-    const modelSelect = screen.getByLabelText('模型') as HTMLSelectElement
-    const optionTexts = Array.from(modelSelect.querySelectorAll('option')).map(
-      (option) => option.textContent
-    )
-    expect(optionTexts.join('\n')).not.toContain('隐藏模型')
-    expect(optionTexts.join('\n')).toContain('DeepSeek R1')
-
-    fireEvent.change(modelSelect, {
-      target: { value: modelRoute('provider-on', 'deepseek-r1') }
-    })
+    fireEvent.click(screen.getByRole('combobox', { name: '模型' }))
+    expect(screen.queryByRole('option', { name: '隐藏模型' })).not.toBeInTheDocument()
+    expect(screen.getByText('启用', { selector: '.styled-select__group' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'DeepSeek R1' }))
     expect(screen.getByLabelText('思考强度')).toBeInTheDocument()
   })
 
@@ -163,9 +180,7 @@ describe('CustomActionDialog model + thinking', () => {
       onSave: vi.fn()
     }))
 
-    fireEvent.change(screen.getByLabelText('模型'), {
-      target: { value: modelRoute('provider-one', 'model-plain') }
-    })
+    choose('模型', '普通模型')
     expect(screen.queryByLabelText('思考强度')).not.toBeInTheDocument()
   })
 })

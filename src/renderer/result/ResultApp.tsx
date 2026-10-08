@@ -1146,7 +1146,7 @@ function ResultSessionApp({
                       <span aria-hidden="true">
                         {TRANSLATION_LANGUAGE_CODES[translationRoute.target]}
                       </span>
-                      <ChevronDown size={9} aria-hidden="true" />
+                      <ChevronDown className="dropdown-chevron" size={9} aria-hidden="true" />
                       <select
                         className="translation-route__native-select"
                         aria-label="翻译目标语言"
@@ -1204,7 +1204,7 @@ function ResultSessionApp({
                   onClick={() => setModelMenuOpen((current) => !current)}
                 >
                   <span>{selectedModel?.modelName ?? "未选择模型"}</span>
-                  <ChevronDown size={13} aria-hidden="true" />
+                  <ChevronDown className="dropdown-chevron" size={12} aria-hidden="true" />
                 </button>
                 {modelMenuOpen && (
                   <div className="result-model-menu" role="listbox" aria-label="可用模型">

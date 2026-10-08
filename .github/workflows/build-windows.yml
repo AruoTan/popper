@@ -33,7 +33,8 @@ jobs:
         with:
           node-version: "22.22.0"
 
-      - name: Install locked JavaScript dependencies
+      - name: Set up pnpm
+        id: pnpm
         run: |
           $packageManager = (Get-Content package.json -Raw | ConvertFrom-Json).packageManager
           if ($packageManager -notmatch '^pnpm@\d+\.\d+\.\d+$') {
@@ -41,6 +42,21 @@ jobs:
           }
           npm install --global $packageManager
           if ($LASTEXITCODE -ne 0) { throw 'pnpm installation failed' }
+          $store = pnpm store path --silent
+          if ($LASTEXITCODE -ne 0 -or -not $store) { throw 'pnpm store lookup failed' }
+          "store=$store" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "version=$packageManager" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Cache pnpm store
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ steps.pnpm.outputs.store }}
+          key: windows-2022-x64-${{ steps.pnpm.outputs.version }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            windows-2022-x64-${{ steps.pnpm.outputs.version }}-
+
+      - name: Install locked JavaScript dependencies
+        run: |
           pnpm install --frozen-lockfile
           if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
 
@@ -55,6 +71,13 @@ jobs:
             throw 'NASM executable was not installed at the expected location'
           }
           $nasmDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Cache Rust dependencies and compilation artifacts
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: src-tauri -> target
+          key: windows-2022-x64-msvc
+          cache-bin: "false"
 
       - name: Verify and package Windows x64
         run: ./.github/scripts/build-windows.ps1

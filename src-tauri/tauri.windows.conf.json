@@ -1,13 +1,13 @@
 {
     "$schema": "https://schema.tauri.app/config/2",
     "productName": "Popper",
-    "version": "0.5.3",
+    "version": "0.5.4",
     "identifier": "com.local.popper",
     "app": {
         "windows": [
             {
                 "label": "settings",
-                "title": "Popper 设置",
+                "title": "Popper 设置面板",
                 "url": "settings/index.html",
                 "width": 960,
                 "height": 780,

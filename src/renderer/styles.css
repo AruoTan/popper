@@ -13,6 +13,7 @@
   --text: #17191d;
   --text-secondary: #626874;
   --text-tertiary: #8c929d;
+  --dropdown-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238c929d' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   --border: rgba(17, 24, 39, 0.11);
   --border-strong: rgba(17, 24, 39, 0.19);
   --accent: #356ae6;
@@ -43,6 +44,7 @@
     --text: #f2f3f5;
     --text-secondary: #b0b5bf;
     --text-tertiary: #858b96;
+    --dropdown-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23858b96' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
     --border: rgba(255, 255, 255, 0.1);
     --border-strong: rgba(255, 255, 255, 0.2);
     --accent: #78a0ff;
@@ -91,6 +93,24 @@ button,
 select {
   cursor: pointer;
   touch-action: manipulation;
+}
+
+/* Keep native selection behavior while sharing the same quiet arrow on every platform. */
+select:not([multiple]):not([size]),
+select:not([multiple])[size="1"] {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: calc(var(--select-chevron-size, 12px) + var(--select-chevron-offset, 11px) + var(--select-chevron-gap, 9px));
+  background-image: var(--dropdown-chevron);
+  background-repeat: no-repeat;
+  background-position: right var(--select-chevron-offset, 11px) center;
+  background-size: var(--select-chevron-size, 12px) var(--select-chevron-size, 12px);
+}
+
+.dropdown-chevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  stroke-width: 1.75;
 }
 
 button:disabled,
@@ -211,7 +231,7 @@ textarea:disabled {
   width: 100%;
   min-height: 38px;
   padding: 8px 11px;
-  background: var(--surface-solid);
+  background-color: var(--surface-solid);
   border: 1px solid var(--border-strong);
   border-radius: 9px;
   outline: none;

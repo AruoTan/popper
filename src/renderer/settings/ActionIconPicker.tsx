@@ -2,6 +2,9 @@ import type { JSX } from "react";
 
 import { ActionIcon } from "../components/ActionIcon";
 import { LUCIDE_ICON_NAMES, isLucideIconName } from "../components/lucideIconRegistry";
+import { StyledSelect } from "./StyledSelect";
+
+const ICON_OPTIONS = LUCIDE_ICON_NAMES.map((name) => ({ value: name, label: name }));
 
 const POPULAR_ICONS = [
   "languages",
@@ -36,21 +39,16 @@ export function ActionIconPicker({ value, onChange }: ActionIconPickerProps): JS
         <ActionIcon name={value} size={19} />
       </div>
       <div className="icon-picker__content">
-        <input
-          className="control"
+        <StyledSelect
+          editable
+          aria-label="图标"
+          options={ICON_OPTIONS}
           value={value}
-          list="popper-lucide-icons"
           maxLength={64}
-          spellCheck={false}
-          aria-invalid={!valid}
+          invalid={!valid}
           placeholder="例如 languages"
-          onChange={(event) => onChange(event.target.value.trim().toLowerCase())}
+          onChange={onChange}
         />
-        <datalist id="popper-lucide-icons">
-          {LUCIDE_ICON_NAMES.map((name) => (
-            <option value={name} key={name} />
-          ))}
-        </datalist>
         <div className="icon-picker__popular" aria-label="常用图标">
           {POPULAR_ICONS.map((name) => (
             <button

@@ -314,6 +314,30 @@ describe("SettingsApp provider deletion", () => {
     expect(screen.queryByText("默认回答语言")).not.toBeInTheDocument();
   });
 
+  it("saves language and filter selections from the styled dropdowns", async () => {
+    installDefaultBridge();
+    render(<SettingsApp />);
+    await goToSettingsSection("语言");
+    fireEvent.click(screen.getByRole("combobox", { name: "AI 默认回复语言" }));
+    fireEvent.click(screen.getByRole("option", { name: "English" }));
+    fireEvent.click(screen.getByRole("combobox", { name: "翻译主要语言" }));
+    fireEvent.click(screen.getByRole("option", { name: "English" }));
+    expect(screen.getByRole("combobox", { name: "翻译另一语言" })).toHaveTextContent("简体中文");
+    await goToSettingsSection("结果");
+    fireEvent.click(screen.getByRole("combobox", { name: "关闭方式" }));
+    fireEvent.click(screen.getByRole("option", { name: "手动关闭" }));
+    await goToSettingsSection("过滤");
+    fireEvent.click(screen.getByRole("combobox", { name: "过滤模式" }));
+    fireEvent.click(screen.getByRole("option", { name: "排除列表应用" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(window._popper_.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      locale: "en-US",
+      translate: expect.objectContaining({ primaryLanguage: "en-US", alternateLanguage: "zh-CN" }),
+      result: expect.objectContaining({ dismissMode: "manual" }),
+      filter: expect.objectContaining({ mode: "blacklist" }),
+    })));
+  });
+
   it("switches to the actions section when guidance focuses actions", async () => {
     const scrollIntoView = stubScrollIntoView();
     installDefaultBridge({
