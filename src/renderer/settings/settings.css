@@ -699,6 +699,41 @@ select.control {
 }
 
 /* Switches */
+.settings-debug {
+  margin-top: auto;
+  padding: 12px 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-debug-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.settings-debug-toggle__copy {
+  display: grid;
+  gap: 3px;
+}
+
+.settings-debug-toggle strong {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-debug-toggle small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.settings-debug-toggle:has(input:disabled) {
+  cursor: wait;
+  opacity: 0.6;
+}
+
 .switch {
   position: relative;
   display: inline-flex;
@@ -2172,6 +2207,11 @@ select.control {
 
   .settings-shell__nav .settings-hero {
     margin-bottom: 8px;
+  }
+
+  .settings-debug {
+    margin-top: 8px;
+    padding: 8px 5px 0;
   }
 
   .settings-nav__label,

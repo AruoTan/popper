@@ -1484,7 +1484,7 @@ body,
 .dictionary-books { margin-top: 12px; padding: 12px; border: 1px solid #8884; border-radius: 10px; }
 .dictionary-books button, .dictionary-books select { margin: 4px; }
 
-/* TODO(selection-offset-dev): remove after Windows/Zotero desktop validation. */
+/* Opt-in Windows selection diagnostics. */
 .result-selection-debug {
   margin: 10px 0;
   border: 1px solid #c69b48;

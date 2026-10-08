@@ -106,14 +106,18 @@ mouse endpoints, provider identity, direction, stability, endpoint validity,
 character rectangles/distances and the chosen capture method. Ordinary trace
 output does not contain selected text, nearby text, window titles or AutomationId.
 
-**Temporary runtime debug (remove after real Zotero validation):** offset
-reports are currently enabled by default in Windows development and packaged
-builds. No environment setup is required to reproduce the failed PDF selection.
-Set `POPPER_SELECTION_DETECTION_DEBUG=0` before starting Popper to disable the
-temporary panel, input history, and text-debug reports. Use `=1` to explicitly
-enable them. Ordinary trace can still be enabled independently.
+**Runtime DEV Debug:** use the **DEV Debug** switch at the bottom left of
+Windows settings. It takes effect immediately for the running app, including
+already-warmed helpers. It is never saved in settings and always starts **off**
+on a new app launch. Enabling it records input history and text-debug reports
+for subsequent captures. Disabling it stops diagnostics, clears in-memory
+reports/input history and hides existing panels; it does not delete logs already
+written to disk. Old in-flight reports are discarded even if debug is re-enabled.
+The former `POPPER_SELECTION_DETECTION_DEBUG` environment override is no longer
+used. Ordinary trace can still be enabled independently of DEV Debug.
 
-Each Windows result window includes a collapsed **DEV · 选区偏移诊断** panel.
+While enabled, result windows with a diagnostic report include a collapsed
+**DEV · 选区偏移诊断** panel.
 Expand it and click **复制诊断报告** after reproducing the incorrect selection.
 The report is scoped to that result's original selection timestamp (not the
 latest global capture); only its own result window can request it. The parent
@@ -133,7 +137,7 @@ The same report is written to
 captures can be diagnosed there even when no result window opens. Selected and
 nearby text, window title and AutomationId are bounded to 512 Unicode scalars;
 nearby probes request at most 64 UTF-16 units. JSON escapes line breaks. Selected
-text is intentionally present during this temporary diagnostic session.
+text is present only in reports collected while DEV Debug is enabled.
 
 For the reported PDF failure: drag over the word, hold the right button, then
 copy the report before making another selection. Compare the visually selected
@@ -144,13 +148,13 @@ word with `selectionText`, `initialHealth`, `health`, `provider`, and
 mapping agrees with its incorrect selection. A report is diagnostic evidence;
 `NORMAL` still does not prove visual correctness.
 
-Removal checklist after Windows/Zotero validation: remove
-`selection_debug.rs`, its instrumentation and optional helper `debug` field,
-`TEMPORARY_SELECTION_DETECTION_DEBUG`, the scoped
-`get_selection_detection_debug` command/bridge API and
-`SelectionDetectionDebugPanel` (including CSS/tests). Restore the original
-explicit `POPPER_SELECTION_DETECTION_DEBUG=1` text-debug behavior. Keep the
-production detector, health protocol, capture protections and ordinary trace.
+To verify the switch: start Popper and confirm DEV Debug is off with no panel
+or new text-debug records. Enable it without saving settings, reproduce a
+selection and copy its report. Disable it with a result window still open and
+confirm its panel disappears; make another selection and verify no new debug
+report is recorded. Reopen settings in the same app run to confirm the current
+switch state, then restart Popper to confirm it is off again. Detector health
+checks and guarded-copy routing continue to operate with DEV Debug off.
 
 The internal helper protocol is version 3 and carries mouse context and
 `SelectionHealthResult`. Renderer selection events and persisted settings are

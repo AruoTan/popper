@@ -39,7 +39,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex, OnceLock, Weak,
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -1037,6 +1037,11 @@ enum HelperCommand {
         /// so it must not use its own process identity to reject Popper UIA
         /// providers.
         popper_process_id: u32,
+        #[serde(default)]
+        debug_generation: u64,
+    },
+    SetDetectionDebug {
+        generation: u64,
     },
     Cancel {
         request_id: u64,
@@ -2281,7 +2286,7 @@ impl CaptureExecutor {
 
 struct SelectionHelperProcess {
     child: Option<Child>,
-    stdin: Option<BufWriter<ChildStdin>>,
+    stdin: Option<Arc<Mutex<BufWriter<ChildStdin>>>>,
     events: Receiver<Result<HelperEvent, ()>>,
     reader: Option<JoinHandle<()>>,
 }
@@ -2347,7 +2352,7 @@ impl SelectionHelperProcess {
         };
         let mut helper = Self {
             child: Some(child),
-            stdin: Some(BufWriter::new(stdin)),
+            stdin: Some(Arc::new(Mutex::new(BufWriter::new(stdin)))),
             events,
             reader: Some(reader),
         };
@@ -2355,6 +2360,20 @@ impl SelectionHelperProcess {
             Ok(Ok(HelperEvent::Ready { protocol_version }))
                 if protocol_version == SELECTION_HELPER_PROTOCOL_VERSION =>
             {
+                if let Some(stdin) = &helper.stdin {
+                    // Register before sampling state so a toggle during warmup
+                    // cannot leave the new helper with stale settings.
+                    let mut writers = debug_helper_writers()
+                        .lock()
+                        .map_err(|_| SelectionError::Internal)?;
+                    writers.retain(|writer| writer.strong_count() > 0);
+                    writers.push(Arc::downgrade(stdin));
+                }
+                helper
+                    .send(&HelperCommand::SetDetectionDebug {
+                        generation: selection_debug::generation(),
+                    })
+                    .map_err(|_| SelectionError::Internal)?;
                 Ok(helper)
             }
             _ => {
@@ -2369,7 +2388,8 @@ impl SelectionHelperProcess {
             .stdin
             .as_mut()
             .ok_or(CaptureExecutorError::Disconnected)?;
-        write_helper_frame(stdin, command)
+        let mut stdin = stdin.lock().map_err(|_| CaptureExecutorError::Disconnected)?;
+        write_helper_frame(&mut *stdin, command)
             .and_then(|()| stdin.flush())
             .map_err(|_| CaptureExecutorError::Disconnected)
     }
@@ -2427,6 +2447,7 @@ impl SelectionHelperProcess {
             source_window: source_window.0 as isize,
             source_process_id,
             popper_process_id: own_process_id,
+            debug_generation: selection_debug::generation(),
         })?;
 
         let debug_inputs = selection_debug::input_snapshot();
@@ -2801,6 +2822,7 @@ enum HelperWork {
         source_window: isize,
         source_process_id: u32,
         popper_process_id: u32,
+        debug_generation: u64,
     },
     Shutdown,
 }
@@ -2849,7 +2871,9 @@ fn selection_helper_main() -> io::Result<()> {
                         source_window,
                         source_process_id,
                         popper_process_id,
+                        debug_generation,
                     })) => {
+                        selection_debug::apply_generation(debug_generation);
                         if command_sender
                             .send(HelperWork::Capture {
                                 request_id,
@@ -2857,11 +2881,16 @@ fn selection_helper_main() -> io::Result<()> {
                                 source_window,
                                 source_process_id,
                                 popper_process_id,
+                                debug_generation,
                             })
                             .is_err()
                         {
                             break;
                         }
+                    }
+                    Ok(Some(HelperCommand::SetDetectionDebug { generation })) => {
+                        // Independent of COM, including during an active capture.
+                        selection_debug::apply_generation(generation);
                     }
                     Ok(Some(HelperCommand::Cancel { request_id, reason })) => {
                         reader_cancel_reason
@@ -2900,6 +2929,7 @@ fn selection_helper_main() -> io::Result<()> {
                 source_window,
                 source_process_id,
                 popper_process_id,
+                debug_generation,
             }) => {
                 let control = CaptureControl {
                     request_id,
@@ -2910,7 +2940,7 @@ fn selection_helper_main() -> io::Result<()> {
                     source_process_id,
                     popper_process_id,
                 };
-                selection_debug::begin(request_id, request, &control);
+                selection_debug::begin(request_id, request, &control, debug_generation);
                 let result = if control.is_cancelled() {
                     engine
                         .selection_health
@@ -7718,18 +7748,35 @@ fn detector_point(point: RawPoint) -> DetectorPoint {
     }
 }
 
-// TODO(selection-offset-dev): remove the default-on runtime diagnostic after
-// Zotero endpoint detection has been validated on the actual desktop.
-const TEMPORARY_SELECTION_DETECTION_DEBUG: bool = true;
+type DebugHelperWriter = Mutex<BufWriter<ChildStdin>>;
 
-fn selection_detection_debug_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("POPPER_SELECTION_DETECTION_DEBUG")
-            .map_or(TEMPORARY_SELECTION_DETECTION_DEBUG, |value| {
-                value == "1" || value.eq_ignore_ascii_case("true")
-            })
-    })
+fn debug_helper_writers() -> &'static Mutex<Vec<Weak<DebugHelperWriter>>> {
+    static WRITERS: OnceLock<Mutex<Vec<Weak<DebugHelperWriter>>>> = OnceLock::new();
+    WRITERS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub(super) fn set_selection_detection_debug_enabled(enabled: bool) {
+    let generation = selection_debug::set_enabled(enabled);
+    let writers = debug_helper_writers()
+        .lock()
+        .map(|mut writers| {
+            writers.retain(|writer| writer.strong_count() > 0);
+            writers.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for writer in writers {
+        if let Ok(mut writer) = writer.lock() {
+            let _ = write_helper_frame(
+                &mut *writer,
+                &HelperCommand::SetDetectionDebug { generation },
+            )
+            .and_then(|()| writer.flush());
+        }
+    }
+}
+
+pub(super) fn selection_detection_debug_enabled() -> bool {
+    selection_debug::enabled()
 }
 
 fn bounded_detection_text(value: &str) -> String {
@@ -7819,16 +7866,16 @@ fn trace_selection_provider(
 
 fn selection_trace_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        let environment_enabled = std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
-            let value = value.to_string_lossy();
-            value == "1" || value.eq_ignore_ascii_case("true")
-        });
-        selection_detection_debug_enabled()
-            || environment_enabled
-            || selection_trace_directory()
-                .is_some_and(|directory| directory.join("selection-trace.enabled").is_file())
-    })
+    selection_detection_debug_enabled()
+        || *ENABLED.get_or_init(|| {
+            let environment_enabled = std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
+                let value = value.to_string_lossy();
+                value == "1" || value.eq_ignore_ascii_case("true")
+            });
+            environment_enabled
+                || selection_trace_directory()
+                    .is_some_and(|directory| directory.join("selection-trace.enabled").is_file())
+        })
 }
 
 fn selection_trace_directory() -> Option<std::path::PathBuf> {
@@ -10211,6 +10258,28 @@ mod tests {
     }
 
     #[test]
+    fn helper_protocol_carries_runtime_debug_updates_and_defaults_legacy_captures_to_off() {
+        let command = HelperCommand::SetDetectionDebug { generation: 2 };
+        let mut bytes = Vec::new();
+        write_helper_frame(&mut bytes, &command).unwrap();
+        assert!(matches!(
+            read_helper_frame::<HelperCommand>(&mut bytes.as_slice()).unwrap(),
+            Some(HelperCommand::SetDetectionDebug { generation: 2 })
+        ));
+        let legacy = serde_json::json!({"Capture": {
+            "request_id": 1,
+            "request": test_capture_request(SelectionTrigger::Manual),
+            "source_window": 42,
+            "source_process_id": 100,
+            "popper_process_id": 200
+        }});
+        assert!(matches!(
+            serde_json::from_value::<HelperCommand>(legacy).unwrap(),
+            HelperCommand::Capture { debug_generation: 0, .. }
+        ));
+    }
+
+    #[test]
     fn helper_protocol_round_trips_without_starting_the_test_harness_as_a_child() {
         let command = HelperCommand::Capture {
             request_id: 7,
@@ -10227,6 +10296,7 @@ mod tests {
             source_window: 123,
             source_process_id: 456,
             popper_process_id: 789,
+            debug_generation: 3,
         };
         let mut bytes = Vec::new();
         write_helper_frame(&mut bytes, &command).expect("serialize helper command");
@@ -10240,7 +10310,9 @@ mod tests {
                 source_window,
                 source_process_id,
                 popper_process_id,
+                debug_generation,
             } => {
+                assert_eq!(debug_generation, 3);
                 assert_eq!(request_id, 7);
                 assert_eq!(request.current, RawPoint { x: 40, y: 50 });
                 assert_eq!(source_window, 123);
@@ -10420,6 +10492,7 @@ mod tests {
             source_window: 42,
             source_process_id: 100,
             popper_process_id: 200,
+            debug_generation: 0,
         };
         let mut bytes = Vec::new();
         write_helper_frame(&mut bytes, &command).unwrap();

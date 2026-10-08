@@ -2642,7 +2642,25 @@ pub fn report_toolbar_size(
         .map_err(|error| error.to_string())
 }
 
-// TODO(selection-offset-dev): remove after Windows/Zotero offset validation.
+#[tauri::command]
+pub fn get_selection_detection_debug_enabled(window: WebviewWindow) -> Result<bool, String> {
+    ensure_known_caller(&window)?;
+    Ok(SelectionMonitor::selection_detection_debug_enabled())
+}
+
+#[tauri::command]
+pub fn set_selection_detection_debug_enabled(
+    window: WebviewWindow,
+    app: AppHandle,
+    enabled: bool,
+) -> Result<bool, String> {
+    ensure_settings_caller(&window)?;
+    SelectionMonitor::set_selection_detection_debug_enabled(enabled);
+    let current = SelectionMonitor::selection_detection_debug_enabled();
+    let _ = app.emit("popper:selection-detection-debug-changed", current);
+    Ok(current)
+}
+
 #[tauri::command]
 pub fn get_selection_detection_debug(
     window: WebviewWindow,

@@ -62,12 +62,69 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
       canRequest: false,
     })),
     requestAccessibility: vi.fn(),
+    getSelectionDetectionDebugEnabled: vi.fn(async () => false),
+    setSelectionDetectionDebugEnabled: vi.fn(async (enabled: boolean) => enabled),
     onSettingsChanged: vi.fn(() => () => undefined),
     ...overrides,
   } as unknown as WindowPopperApi;
 }
 
 describe("SettingsApp provider deletion", () => {
+  it("toggles runtime diagnostics immediately without saving and keeps their state on reopening", async () => {
+    let runtimeEnabled = false;
+    const update = vi.fn(async (enabled: boolean) => { runtimeEnabled = enabled; return enabled; });
+    const save = vi.fn(async () => DEFAULT_PUBLIC_SETTINGS);
+    installDefaultBridge({
+      getSelectionDetectionDebugEnabled: vi.fn(async () => runtimeEnabled),
+      setSelectionDetectionDebugEnabled: update,
+      updateSettings: save,
+    });
+    const view = render(<SettingsApp />);
+    const toggle = await screen.findByRole("switch", { name: "DEV Debug" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).not.toBeChecked();
+    expect(toggle.closest(".settings-shell__nav")).toBeInTheDocument();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toBeChecked());
+    expect(update).toHaveBeenCalledWith(true);
+    expect(save).not.toHaveBeenCalled();
+    expect(screen.getByText("所有更改均已保存")).toBeInTheDocument();
+
+    view.unmount();
+    const reopened = render(<SettingsApp />);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "DEV Debug" })).toBeChecked());
+    fireEvent.click(screen.getByRole("switch", { name: "DEV Debug" }));
+    await waitFor(() => expect(screen.getByRole("switch", { name: "DEV Debug" })).not.toBeChecked());
+    expect(update).toHaveBeenLastCalledWith(false);
+    reopened.unmount();
+
+    // A new native process starts with the runtime state reset.
+    runtimeEnabled = false;
+    render(<SettingsApp />);
+    const restartedToggle = await screen.findByRole("switch", { name: "DEV Debug" });
+    await waitFor(() => expect(restartedToggle).toBeEnabled());
+    expect(restartedToggle).not.toBeChecked();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("keeps the previous debug state and shows a toggle failure", async () => {
+    installDefaultBridge({ setSelectionDetectionDebugEnabled: vi.fn().mockRejectedValue(new Error("failed")) });
+    render(<SettingsApp />);
+    const toggle = await screen.findByRole("switch", { name: "DEV Debug" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    fireEvent.click(toggle);
+    expect(await screen.findByRole("alert")).toHaveTextContent("切换 DEV Debug 失败");
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeEnabled();
+  });
+
+  it("does not show Windows selection debugging on macOS", async () => {
+    installDefaultBridge({ getAccessibilityStatus: vi.fn(async () => ({ platform: "darwin" as const, trusted: true, canRequest: false, available: true, diagnostics: {} })) });
+    render(<SettingsApp />);
+    await screen.findByRole("heading", { name: "辅助功能权限" });
+    expect(screen.queryByRole("switch", { name: "DEV Debug" })).not.toBeInTheDocument();
+  });
+
   it("retains guidance across StrictMode cleanup and applies it once after remount", async () => {
     const pendingGuidance = deferred<SettingsGuidance | null>();
     const takeSettingsGuidance = vi.fn(() => pendingGuidance.promise);
