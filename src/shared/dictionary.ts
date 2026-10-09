@@ -7,6 +7,7 @@ export const dictionarySuggestionSchema = z.object({ word: z.string(), explanati
 export const dictionaryEntrySchema = z.object({
   word: z.string(), ukPhone: z.string().nullable(), usPhone: z.string().nullable(),
   definitions: z.array(z.string()),
+  tags: z.array(z.string()).default([]),
   forms: z.array(z.object({ name: z.string(), value: z.string() })),
   examples: z.array(z.object({ text: z.string(), translation: z.string() }))
 })

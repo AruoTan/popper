@@ -1466,9 +1466,19 @@ body,
 .dictionary-suggestions button { display: flex; width: 100%; text-align: left; gap: 10px; align-items: baseline; }
 .dictionary-suggestions strong { flex-shrink: 0; }
 .dictionary-suggestions span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .7; font-size: .85em; }
-.dictionary-source, .dictionary-hint { font-size: .8em; opacity: .65; }
+.dictionary-source, .dictionary-hint { font-size: .8em; color: var(--text-secondary); }
+.dictionary-source { line-height: 1.5; }
+.dictionary-source__separator { padding: 0 3px; color: var(--text-tertiary); }
 .dictionary-hint { margin-top: 12px; }
-.dictionary-entry h2 { margin: 8px 0; font-size: 1.5em; }
+.dictionary-entry-header { display: flex; align-items: flex-end; gap: 12px; margin: 0 0 10px; }
+.dictionary-entry h2 { flex: 0 1 auto; min-width: 0; max-width: 40%; margin: 0; font-size: 1.5em; line-height: 1.35; letter-spacing: -.02em; }
+.dictionary-entry-meta { display: flex; flex: 1; min-width: 0; align-items: flex-end; gap: 12px; }
+.dictionary-entry-meta .dictionary-source { flex-shrink: 0; white-space: nowrap; }
+.dictionary-tags { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 4px; margin: 0 0 0 auto; padding: 0; overflow-x: auto; scrollbar-width: none; list-style: none; }
+.dictionary-tags::-webkit-scrollbar { display: none; }
+.dictionary-tag { display: inline-flex; flex-shrink: 0; align-items: center; gap: 5px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 5px; background: color-mix(in srgb, var(--surface-muted) 72%, transparent); color: var(--text-secondary); font-size: 10px; font-weight: 500; line-height: 1.6; white-space: nowrap; }
+.dictionary-tag--exam { border-color: color-mix(in srgb, var(--accent) 14%, var(--border)); background: color-mix(in srgb, var(--accent-soft) 45%, transparent); color: color-mix(in srgb, var(--accent) 72%, var(--text-secondary)); }
+.dictionary-tag__detail { padding-left: 5px; border-left: 1px solid color-mix(in srgb, currentColor 22%, transparent); font-size: 9px; font-weight: 600; letter-spacing: .02em; }
 .dictionary-entry h3 { margin: 16px 0 5px; font-size: 1em; }
 .dictionary-phones, .dictionary-actions, .dictionary-forms { display: flex; flex-wrap: wrap; gap: 8px; }
 .dictionary-phones { margin-left: auto; justify-content: flex-end; font-size: .85em; }

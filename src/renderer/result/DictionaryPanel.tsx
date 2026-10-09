@@ -2,6 +2,44 @@ import { useEffect, useRef, useState, type JSX } from "react";
 import type { DictionarySnapshot, DictionarySuggestion, StudyBook } from "../../shared";
 import { getErrorMessage } from "../lib/errors";
 
+const vocabularyLabels: Record<string, { label: string; detail?: string; title: string }> = {
+  CET4: { label: "CET", detail: "4", title: "大学英语四级词汇" },
+  CET6: { label: "CET", detail: "6", title: "大学英语六级词汇" },
+  IELTS: { label: "雅思", detail: "IELTS", title: "雅思考试词汇" },
+  TOEFL: { label: "托福", detail: "TOEFL", title: "托福考试词汇" },
+  GRE: { label: "GRE", title: "GRE 考试词汇" },
+  SAT: { label: "SAT", title: "SAT 考试词汇" },
+  "高中": { label: "高中", title: "高中英语词汇" },
+  "初中": { label: "初中", title: "初中英语词汇" },
+  "考研": { label: "考研", title: "研究生入学英语考试词汇" },
+  "专四": { label: "专四", title: "英语专业四级词汇" },
+  "专八": { label: "专八", title: "英语专业八级词汇" },
+};
+
+function VocabularyTags({ tags }: { tags: string[] }): JSX.Element | null {
+  if (!tags.length) return null;
+  return (
+    <ul className="dictionary-tags" aria-label="词汇适用范围">
+      {tags.map((tag) => {
+        const key = tag.toUpperCase().replace(/^CET-([46])$/, "CET$1");
+        const known = Object.prototype.hasOwnProperty.call(vocabularyLabels, key)
+          ? vocabularyLabels[key]
+          : undefined;
+        return (
+          <li
+            className={`dictionary-tag${known ? " dictionary-tag--exam" : ""}`}
+            key={tag}
+            title={known?.title ?? tag}
+          >
+            <span>{known?.label ?? tag}</span>
+            {known?.detail && <span className="dictionary-tag__detail">{known.detail}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 export function useDictionarySession(sessionId: string): DictionarySnapshot | null {
   const [snapshot, setSnapshot] = useState<DictionarySnapshot | null>(null);
   useEffect(() => {
@@ -132,6 +170,12 @@ export function DictionaryPanel({
     }
   };
   const entry = snapshot.entry;
+  const source = (
+    <div className="dictionary-source">
+      有道词典 <span className="dictionary-source__separator" aria-hidden="true">·</span>{" "}
+      {snapshot.mode === "ai" ? "AI 翻译 / 追问" : "英汉释义"}
+    </div>
+  );
   const actions = (
     <div className="dictionary-actions">
       {snapshot.mode === "dictionary" && (
@@ -148,9 +192,7 @@ export function DictionaryPanel({
   );
   return (
     <section className="dictionary-panel" aria-label="有道词典">
-      <div className="dictionary-source">
-        有道词典 · {snapshot.mode === "ai" ? "AI 翻译 / 追问" : "英汉释义"}
-      </div>
+      {!entry && source}
       {snapshot.status === "loading" && <p role="status">正在查询词典…</p>}
       {snapshot.status === "missing" && (
         <p>没有找到词典释义{snapshot.mode === "ai" ? "，已转为 AI 翻译。" : "。"}</p>
@@ -167,7 +209,13 @@ export function DictionaryPanel({
       )}
       {entry && (
         <article className="dictionary-entry">
-          <h2>{entry.word}</h2>
+          <header className="dictionary-entry-header">
+            <h2>{entry.word}</h2>
+            <div className="dictionary-entry-meta">
+              {source}
+              <VocabularyTags tags={entry.tags} />
+            </div>
+          </header>
           <div className="dictionary-entry-toolbar">
             {actions}
             <div className="dictionary-phones">

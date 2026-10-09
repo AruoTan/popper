@@ -693,6 +693,7 @@ mod tests {
             uk_phone: None,
             us_phone: None,
             definitions: vec!["n. 账户".into()],
+            tags: vec![],
             forms: vec![],
             examples: vec![],
         });
