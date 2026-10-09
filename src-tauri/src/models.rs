@@ -514,10 +514,16 @@ impl ActionDefinition {
     }
 }
 
+fn default_tray_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub version: u8,
+    #[serde(default = "default_tray_enabled")]
+    pub tray_enabled: bool,
     pub locale: Locale,
     pub translate: TranslationSettings,
     pub result: ResultSettings,
@@ -531,6 +537,8 @@ pub struct AppSettings {
 #[serde(rename_all = "camelCase")]
 pub struct PublicSettings {
     pub version: u8,
+    #[serde(default = "default_tray_enabled")]
+    pub tray_enabled: bool,
     pub locale: Locale,
     pub translate: TranslationSettings,
     pub result: ResultSettings,
@@ -546,6 +554,7 @@ impl PublicSettings {
     {
         Self {
             version: SETTINGS_VERSION,
+            tray_enabled: settings.tray_enabled,
             locale: settings.locale,
             translate: settings.translate.clone(),
             result: settings.result.clone(),
@@ -577,6 +586,7 @@ impl PublicSettings {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsUpdate {
+    pub tray_enabled: Option<bool>,
     pub locale: Option<Locale>,
     pub translate: Option<TranslationSettings>,
     pub result: Option<ResultSettings>,
@@ -838,6 +848,7 @@ impl Default for AppSettings {
         Self {
             version: SETTINGS_VERSION,
             locale: Locale::ZhCn,
+            tray_enabled: true,
             translate: TranslationSettings::default(),
             result: ResultSettings::default(),
             filter: ApplicationFilterSettings::default(),

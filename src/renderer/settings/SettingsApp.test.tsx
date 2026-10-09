@@ -70,6 +70,29 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
 }
 
 describe("SettingsApp provider deletion", () => {
+  it("saves the tray switch from the sidebar and retains it on reopening", async () => {
+    let saved = structuredClone(DEFAULT_PUBLIC_SETTINGS);
+    const save = vi.fn(async (update: SettingsUpdate) => {
+      saved = { ...saved, trayEnabled: update.trayEnabled ?? saved.trayEnabled };
+      return saved;
+    });
+    installDefaultBridge({ getSettings: vi.fn(async () => saved), updateSettings: save });
+    const view = render(<SettingsApp />);
+    const toggle = await screen.findByRole("switch", { name: "启用托盘" });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(toggle).toBeChecked();
+    expect(toggle.closest(".settings-shell__nav")).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).not.toBeChecked();
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ trayEnabled: false })));
+    await waitFor(() => expect(screen.getByText("所有更改均已保存")).toBeInTheDocument());
+    view.unmount();
+    render(<SettingsApp />);
+    await waitFor(() => expect(screen.getByRole("switch", { name: "启用托盘" })).not.toBeChecked());
+  });
+
   it("toggles runtime diagnostics immediately without saving and keeps their state on reopening", async () => {
     let runtimeEnabled = false;
     const update = vi.fn(async (enabled: boolean) => { runtimeEnabled = enabled; return enabled; });

@@ -361,6 +361,7 @@ export type FilterSettings = z.infer<typeof filterSettingsSchema>
 
 const commonSettingsShape = {
   version: z.literal(SETTINGS_VERSION),
+  trayEnabled: z.boolean().default(true),
   locale: supportedLocaleSchema,
   translate: translationSettingsSchema,
   result: resultSettingsSchema,
@@ -415,6 +416,7 @@ export type PublicSettings = z.infer<typeof publicSettingsSchema>
 
 export const settingsUpdateSchema = z
   .object({
+    trayEnabled: z.boolean().optional(),
     locale: supportedLocaleSchema.optional(),
     translate: translationSettingsSchema.optional(),
     result: resultSettingsSchema.optional(),

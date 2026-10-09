@@ -1054,27 +1054,49 @@ export function SettingsApp(): JSX.Element {
             </button>
           ))}
         </nav>
-        {accessibility?.platform === "windows" && (
-          <div className="settings-debug">
-            <label className="settings-debug-toggle" title="记录选区及附近文本，并在结果窗口显示诊断报告">
-              <span className="settings-debug-toggle__copy">
-                <strong>DEV Debug</strong>
-                <small>选区诊断 · 重启后关闭</small>
-              </span>
-              <span className="switch switch--small">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  aria-label="DEV Debug"
-                  checked={selectionDebug.enabled}
-                  disabled={!selectionDebug.ready || debugUpdating}
-                  onChange={(event) => void toggleSelectionDebug(event.currentTarget.checked)}
-                />
-                <span aria-hidden="true" />
-              </span>
-            </label>
-          </div>
-        )}
+        <div className="settings-sidebar-controls">
+          <label className="settings-debug-toggle settings-tray-toggle">
+            <span className="settings-debug-toggle__copy">
+              <strong>启用托盘</strong>
+              <small>再次运行 Popper 可打开设置</small>
+            </span>
+            <span className="switch switch--small">
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label="启用托盘"
+                checked={draft?.trayEnabled ?? true}
+                disabled={!draft || operation !== null}
+                onChange={(event) => {
+                  const enabled = event.currentTarget.checked;
+                  changeDraft((current) => ({ ...current, trayEnabled: enabled }));
+                }}
+              />
+              <span aria-hidden="true" />
+            </span>
+          </label>
+          {accessibility?.platform === "windows" && (
+            <div className="settings-debug">
+              <label className="settings-debug-toggle" title="记录选区及附近文本，并在结果窗口显示诊断报告">
+                <span className="settings-debug-toggle__copy">
+                  <strong>DEV Debug</strong>
+                  <small>选区诊断 · 重启后关闭</small>
+                </span>
+                <span className="switch switch--small">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label="DEV Debug"
+                    checked={selectionDebug.enabled}
+                    disabled={!selectionDebug.ready || debugUpdating}
+                    onChange={(event) => void toggleSelectionDebug(event.currentTarget.checked)}
+                  />
+                  <span aria-hidden="true" />
+                </span>
+              </label>
+            </div>
+          )}
+        </div>
       </aside>
 
       <div className="settings-shell__main">

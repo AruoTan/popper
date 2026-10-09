@@ -1748,6 +1748,24 @@ pub fn start_permission_poll(app: AppHandle) {
 }
 
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    // Menu listeners are global and survive tray removal. Register just once,
+    // otherwise toggling the tray would dispatch each menu action repeatedly.
+    app.on_menu_event(handle_tray_menu_event);
+    set_tray_enabled(
+        app,
+        app.state::<RuntimeState>().settings.get_settings().tray_enabled,
+    )
+}
+
+fn set_tray_enabled(app: &AppHandle, enabled: bool) -> Result<(), Box<dyn std::error::Error>> {
+    if !enabled {
+        // Release Tauri's resource rather than merely hiding a live tray icon.
+        drop(app.remove_tray_by_id(TRAY_ID));
+        return Ok(());
+    }
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
     let menu = build_tray_menu(app)?;
     #[cfg(target_os = "macos")]
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!(
@@ -1760,8 +1778,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .menu(&menu)
         .tooltip("Popper")
         .icon(tray_icon)
-        .show_menu_on_left_click(true)
-        .on_menu_event(handle_tray_menu_event);
+        .show_menu_on_left_click(true);
     #[cfg(target_os = "macos")]
     let tray = tray.icon_as_template(true);
     tray.build(app)?;
@@ -1967,7 +1984,21 @@ pub fn update_settings(
     update: SettingsUpdate,
 ) -> Result<PublicSettings, String> {
     ensure_settings_caller(&window)?;
+    let previous_tray_enabled = state.settings.get_settings().tray_enabled;
     let public = state.settings.update(update).map_err(|error| error.to_string())?;
+    if let Err(error) = set_tray_enabled(&app, public.tray_enabled) {
+        let message = format!("无法更新托盘：{error}");
+        // Keep the persisted switch consistent when native tray creation fails.
+        let restored = state
+            .settings
+            .update(SettingsUpdate {
+                tray_enabled: Some(previous_tray_enabled),
+                ..Default::default()
+            })
+            .map_err(|rollback| format!("{message}；恢复托盘设置失败：{rollback}"))?;
+        state.after_settings_changed(&app, &restored);
+        return Err(message);
+    }
     state.after_settings_changed(&app, &public);
     Ok(public)
 }

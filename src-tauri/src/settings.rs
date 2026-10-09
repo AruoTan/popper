@@ -176,6 +176,9 @@ impl SettingsRepository {
 
     pub fn update(&self, update: SettingsUpdate) -> Result<PublicSettings, SettingsError> {
         self.transact_with_provider_cleanup(|settings| {
+            if let Some(value) = update.tray_enabled {
+                settings.tray_enabled = value;
+            }
             if let Some(value) = update.locale {
                 settings.locale = value;
             }
@@ -243,6 +246,7 @@ impl SettingsRepository {
             }
             *settings = AppSettings {
                 version: SETTINGS_VERSION,
+                tray_enabled: public.tray_enabled,
                 locale: public.locale,
                 translate: public.translate,
                 result: public.result,
@@ -715,6 +719,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         removed
     });
     if version == Some(SETTINGS_VERSION as u64) || matches!(version, Some(12 | 13 | 14)) {
+        let missing_tray_default = value.get("trayEnabled").is_none();
         let missing_result_defaults = value.pointer("/result/dismissMode").is_none()
             || value.pointer("/result/fontSize").is_none();
         let had_legacy_search_fields = value.pointer("/searchEngines").is_some()
@@ -732,6 +737,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
         let must_persist = version != Some(SETTINGS_VERSION as u64)
+            || missing_tray_default
             || had_retired_settings
             || missing_result_defaults
             || had_legacy_search_fields
@@ -1062,6 +1068,7 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
     }
     let mut settings = AppSettings {
         version: SETTINGS_VERSION,
+        tray_enabled: true,
         locale: legacy.locale,
         translate: legacy.translate,
         result: Default::default(),
@@ -1397,6 +1404,34 @@ mod tests {
         repository
             .set_provider_api_key(DEFAULT_PROVIDER_ID, api_key)
             .unwrap();
+    }
+
+    #[test]
+    fn tray_preference_defaults_for_existing_settings_and_survives_restart() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut legacy = serde_json::to_value(AppSettings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("trayEnabled");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let secrets = Arc::new(MemorySecrets::default());
+        let repository = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
+        assert!(repository.get_public_settings().unwrap().tray_enabled);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["trayEnabled"], true);
+        let public = repository
+            .update(SettingsUpdate {
+                tray_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!public.tray_enabled);
+        drop(repository);
+        let reopened = SettingsRepository::with_secret_store(&path, secrets).unwrap();
+        assert!(!reopened.get_settings().tray_enabled);
+        let mut public = reopened.get_public_settings().unwrap();
+        public.tray_enabled = true;
+        assert!(reopened.replace_public(public).unwrap().tray_enabled);
     }
 
     #[test]
