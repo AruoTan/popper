@@ -42,7 +42,7 @@ import {
   type ResultSessionSnapshot,
   type TranslationLanguage,
 } from "../../shared";
-import { ActionIcon } from "../components/ActionIcon";
+import { PopperIcon } from "../components/PopperIcon";
 import { SelectionDetectionDebugPanel } from "./SelectionDetectionDebugPanel";
 import { runDetached } from "../lib/asyncEffects";
 import { getErrorMessage } from "../lib/errors";
@@ -1127,7 +1127,7 @@ function ResultSessionApp({
       <header className="result-header" onPointerDown={startWindowDrag}>
         <div className="result-heading">
           <span className="result-heading__icon">
-            <ActionIcon name={action?.icon ?? "sparkles"} size={16} />
+            <PopperIcon />
           </span>
           <div className="result-heading__line">
             <h1>{action?.name ?? "AI 结果"}</h1>

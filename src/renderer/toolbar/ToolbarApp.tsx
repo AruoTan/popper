@@ -1,10 +1,8 @@
 import {
-  ChevronDown,
   CircleAlert,
   LoaderCircle,
   SendHorizontal,
   Settings2,
-  Sparkles,
   X,
 } from "lucide-react";
 import {
@@ -17,8 +15,9 @@ import {
   type MouseEvent,
 } from "react";
 
-import { MAX_ENABLED_ACTIONS, type PublicSettings, type SelectionPayload } from "../../shared";
-import { ActionIcon } from "../components/ActionIcon";
+import type { PublicSettings, SelectionPayload } from "../../shared";
+import { PopperIcon } from "../components/PopperIcon";
+import { getToolbarActions, ToolbarActions } from "../components/ToolbarActions";
 import { runDetached } from "../lib/asyncEffects";
 import { getErrorMessage } from "../lib/errors";
 
@@ -288,11 +287,7 @@ export function ToolbarApp(): JSX.Element {
   }, []);
 
   const visibleActions = useMemo(
-    () =>
-      [...(settings?.actions ?? [])]
-        .filter((action) => action.enabled && action.kind !== "ask")
-        .sort((left, right) => left.order - right.order)
-        .slice(0, MAX_ENABLED_ACTIONS),
+    () => getToolbarActions(settings?.actions ?? []),
     [settings],
   );
 
@@ -734,11 +729,8 @@ export function ToolbarApp(): JSX.Element {
               </button>
             </div>
             <div className="toolbar-ask__composer">
-              <span className="toolbar-ask__model" aria-hidden="true">
-                <span className="toolbar-ai-mark">
-                  <Sparkles size={13} />
-                </span>
-                <ChevronDown className="dropdown-chevron" size={10} />
+              <span className="toolbar-ask__identity" aria-hidden="true">
+                <PopperIcon />
               </span>
               <textarea
                 ref={askInputRef}
@@ -773,54 +765,14 @@ export function ToolbarApp(): JSX.Element {
             </div>
           </div>
         ) : (
-          <>
-            <button
-              className="toolbar-action toolbar-action--fixed-ask"
-              type="button"
-              data-toolbar-control="fixed-ask"
-              data-hovered={hoveredControlId === "fixed-ask" ? "true" : undefined}
-              title="问 AI"
-              aria-label="问 AI"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={(event) => void openAsk(event)}
-            >
-              <span className="toolbar-ai-mark">
-                <Sparkles size={13} />
-              </span>
-            </button>
-            {visibleActions.map((action) => {
-              const busy = busyActionId === action.id;
-              const muted = busyActionId !== null && !busy;
-              const copySucceeded = action.kind === "copy" && copySuccessActionId === action.id;
-              return (
-                <button
-                  className={`toolbar-action ${muted ? "toolbar-action--muted" : ""}`}
-                  type="button"
-                  key={action.id}
-                  data-toolbar-control={`action:${action.id}`}
-                  data-hovered={hoveredControlId === `action:${action.id}` ? "true" : undefined}
-                  title={action.name}
-                  aria-label={action.name}
-                  disabled={busy}
-                  aria-disabled={muted ? "true" : undefined}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={(event) => void runAction(action.id, event)}
-                >
-                  {busy ? (
-                    <LoaderCircle className="spin" size={16} aria-hidden="true" />
-                  ) : (
-                    <ActionIcon
-                      className={copySucceeded ? "toolbar-copy-success" : undefined}
-                      name={copySucceeded ? "clipboard-check" : action.icon}
-                      size={16}
-                      strokeWidth={2}
-                    />
-                  )}
-                  <span>{action.name}</span>
-                </button>
-              );
-            })}
-          </>
+          <ToolbarActions
+            actions={visibleActions}
+            busyActionId={busyActionId}
+            copySuccessActionId={copySuccessActionId}
+            hoveredControlId={hoveredControlId}
+            onAsk={openAsk}
+            onAction={(actionId, event) => void runAction(actionId, event)}
+          />
         )}
       </div>
       {message && (

@@ -75,6 +75,7 @@ import {
   type TranslationLanguage,
 } from "../../shared";
 import { ActionIcon } from "../components/ActionIcon";
+import { getToolbarActions, ToolbarActions } from "../components/ToolbarActions";
 import { runDetached } from "../lib/asyncEffects";
 import { getErrorMessage } from "../lib/errors";
 import { useSelectionDetectionDebug } from "../lib/useSelectionDetectionDebug";
@@ -1445,18 +1446,10 @@ export function SettingsApp(): JSX.Element {
               </div>
               <div className="settings-card toolbar-preview-card">
                 <span className="toolbar-preview-label">实时预览</span>
-                <div
-                  className="toolbar-preview"
-                >
-                  <span className="toolbar-preview__logo">
-                    <Sparkles size={14} />
-                  </span>
-                  {enabledActions.map((action) => (
-                    <span className="toolbar-preview__action" key={action.id} title={action.name}>
-                      <ActionIcon name={action.icon} size={14} />
-                      <span>{action.name}</span>
-                    </span>
-                  ))}
+                <div className="toolbar-preview" role="toolbar" aria-label="工具栏实时预览">
+                  <div className="toolbar-pill">
+                    <ToolbarActions actions={getToolbarActions(draft.actions)} preview />
+                  </div>
                 </div>
                 <p className="search-behavior-note">
                   问 AI 是固定在工具栏最前方的内置功能，不计入动作数量；搜索动作遇到 HTTP(S)
