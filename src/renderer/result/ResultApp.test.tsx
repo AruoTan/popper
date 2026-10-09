@@ -74,6 +74,7 @@ function dictionaryFixture(): DictionarySnapshot {
       ukPhone: null,
       usPhone: null,
       definitions: ["你好"],
+      tags: [],
       forms: [],
       examples: [],
     },

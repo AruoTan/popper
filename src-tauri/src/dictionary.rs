@@ -29,6 +29,8 @@ pub struct DictionaryEntry {
     pub uk_phone: Option<String>,
     pub us_phone: Option<String>,
     pub definitions: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub forms: Vec<WordForm>,
     pub examples: Vec<Example>,
 }
@@ -208,6 +210,7 @@ pub fn parse_entry(value: &Value, query: &str) -> Result<Option<DictionaryEntry>
         uk_phone: phone("ukphone"),
         us_phone: phone("usphone"),
         definitions,
+        tags: parse_tags(value),
         forms: word
             .get("wfs")
             .and_then(Value::as_array)
@@ -236,6 +239,32 @@ pub fn parse_entry(value: &Value, query: &str) -> Result<Option<DictionaryEntry>
     };
     Ok(Some(entry))
 }
+
+fn parse_tags(value: &Value) -> Vec<String> {
+    let mut tags: Vec<String> = Vec::new();
+    for label in value
+        .pointer("/ec/exam_type")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let label = label.trim();
+        if label.is_empty()
+            || label.chars().count() > 40
+            || label.chars().any(char::is_control)
+            || tags.iter().any(|tag| tag.eq_ignore_ascii_case(label))
+        {
+            continue;
+        }
+        tags.push(label.to_owned());
+        if tags.len() == 12 {
+            break;
+        }
+    }
+    tags
+}
+
 pub async fn lookup(client: &Client, query: &str) -> Result<Option<DictionaryEntry>, String> {
     let value = json_response(client.get(query_url(
         "https://dict.youdao.com/jsonapi",
@@ -311,6 +340,36 @@ mod tests {
         let entry = parse_entry(&value, "cat").unwrap().unwrap();
         assert_eq!(entry.us_phone.as_deref(), Some("kat"));
         assert_eq!(entry.definitions, vec!["n. 猫"]);
+        assert!(entry.tags.is_empty());
+    }
+    #[test]
+    fn extracts_vocabulary_tags_from_ec_and_round_trips_them() {
+        let value = json!({
+            "input": "account",
+            "ec": {
+                "exam_type": ["高中", " CET4 ", "CET6", "考研", "IELTS", "TOEFL", "商务英语", "cet4", "", null, 4, "bad\nlabel"],
+                "word": [{"trs": [{"tr": [{"l": {"i": ["n. 账户"]}}]}]}]
+            }
+        });
+        let entry = parse_entry(&value, "account").unwrap().unwrap();
+        assert_eq!(entry.tags, ["高中", "CET4", "CET6", "考研", "IELTS", "TOEFL", "商务英语"]);
+        let mut encoded = serde_json::to_value(&entry).unwrap();
+        assert_eq!(serde_json::from_value::<DictionaryEntry>(encoded.clone()).unwrap(), entry);
+        encoded.as_object_mut().unwrap().remove("tags");
+        assert!(serde_json::from_value::<DictionaryEntry>(encoded).unwrap().tags.is_empty());
+    }
+    #[test]
+    fn optional_vocabulary_metadata_is_bounded_and_does_not_break_lookup() {
+        for invalid in [Value::Null, json!("CET4"), json!({"type": "CET4"})] {
+            assert!(parse_tags(&json!({"ec": {"exam_type": invalid}})).is_empty());
+        }
+        let labels: Vec<String> = std::iter::once("x".repeat(41))
+            .chain((0..20).map(|i| format!("领域{i}")))
+            .collect();
+        let tags = parse_tags(&json!({"ec": {"exam_type": labels}}));
+        assert_eq!(tags.len(), 12);
+        assert_eq!(tags[0], "领域0");
+        assert_eq!(tags[11], "领域11");
     }
     #[test]
     fn suggestion_is_not_a_correction() {

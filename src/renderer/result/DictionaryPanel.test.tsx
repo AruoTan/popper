@@ -1,4 +1,4 @@
-import { act, fireEvent, render, renderHook, screen } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DictionarySnapshot, WindowPopperApi } from "../../shared";
 import { DictionaryPanel, useDictionarySession } from "./DictionaryPanel";
@@ -15,6 +15,7 @@ const snapshot: DictionarySnapshot = {
     ukPhone: "əˈkaʊnt",
     usPhone: null,
     definitions: ["n. 账户", "<img src=x onerror=alert(1)>"],
+    tags: [],
     forms: [{ name: "复数", value: "accounts" }],
     examples: [{ text: "I have an account.", translation: "我有一个账户。" }],
   },
@@ -48,6 +49,35 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("dictionary panel", () => {
+  it("groups the source and styled vocabulary labels beside the word without duplicating the source", () => {
+    const { container, rerender } = render(
+      <DictionaryPanel
+        {...props()}
+        snapshot={{
+          ...snapshot,
+          entry: { ...snapshot.entry!, tags: ["CET4", "CET6", "IELTS", "商务英语", "<img src=x>"] },
+        }}
+      />,
+    );
+    const header = container.querySelector(".dictionary-entry-header")!;
+    expect(within(header as HTMLElement).getByRole("heading", { name: "account" })).toBeInTheDocument();
+    expect(header.querySelector(".dictionary-source")).toHaveTextContent("有道词典 · 英汉释义");
+    expect(container.querySelectorAll(".dictionary-source")).toHaveLength(1);
+    const labels = screen.getByRole("list", { name: "词汇适用范围" });
+    expect(header).toContainElement(labels);
+    expect(within(labels).getByTitle("大学英语四级词汇")).toHaveTextContent("CET4");
+    expect(within(labels).getByTitle("大学英语六级词汇")).toHaveTextContent("CET6");
+    expect(within(labels).getByTitle("雅思考试词汇")).toHaveTextContent("雅思IELTS");
+    expect(within(labels).getByText("商务英语").closest("li")).not.toHaveClass("dictionary-tag--exam");
+    expect(within(labels).getByText("<img src=x>")).toBeInTheDocument();
+    expect(container.querySelector("img")).toBeNull();
+    rerender(<DictionaryPanel {...props()} />);
+    expect(screen.queryByRole("list", { name: "词汇适用范围" })).not.toBeInTheDocument();
+    rerender(<DictionaryPanel {...props()} snapshot={{ ...snapshot, status: "loading", entry: null }} />);
+    expect(container.querySelector(".dictionary-source")).toHaveTextContent("有道词典 · 英汉释义");
+    expect(screen.getByRole("status")).toHaveTextContent("正在查询词典");
+  });
+
   it("hides dictionary-only controls and hints after fallback and restores them for a new lookup", () => {
     const input = {
       ...props(),
