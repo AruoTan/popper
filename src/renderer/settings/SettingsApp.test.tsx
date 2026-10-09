@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 
 import {
@@ -216,6 +216,36 @@ describe("SettingsApp provider deletion", () => {
     await goToSettingsSection("动作");
     expect(await screen.findByRole("heading", { name: "工具栏动作" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "AI 服务商与模型" })).not.toBeInTheDocument();
+  });
+
+  it("previews the toolbar controls and updates unsaved action visibility without running actions", async () => {
+    const runAction = vi.fn();
+    const save = vi.fn();
+    installDefaultBridge({ runAction, updateSettings: save });
+    render(<SettingsApp />);
+    await goToSettingsSection("动作");
+
+    const preview = screen.getByRole("toolbar", { name: "工具栏实时预览" });
+    const controls = within(preview);
+    expect(controls.getAllByRole("button").map((button) => button.getAttribute("aria-label")))
+      .toEqual(["问 AI", "翻译", "解释", "总结", "搜索", "复制"]);
+    expect(controls.queryByRole("button", { name: "润色" })).not.toBeInTheDocument();
+    const translate = controls.getByRole("button", { name: "翻译" });
+    expect(translate).toHaveClass("toolbar-action");
+    expect(translate.closest(".toolbar-pill")).toBeInTheDocument();
+    expect(translate.querySelector("svg")).toHaveAttribute("width", "16");
+
+    fireEvent.mouseEnter(translate);
+    expect(translate).toHaveAttribute("data-hovered", "true");
+    fireEvent.mouseLeave(translate);
+    expect(translate).not.toHaveAttribute("data-hovered");
+    fireEvent.click(translate);
+    fireEvent.click(controls.getByRole("button", { name: "问 AI" }));
+    expect(runAction).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "启用润色" }));
+    expect(controls.getByRole("button", { name: "润色" })).toBeInTheDocument();
+    expect(save).not.toHaveBeenCalled();
   });
 
   it("places collapsed providers between usage tips and selection access", async () => {

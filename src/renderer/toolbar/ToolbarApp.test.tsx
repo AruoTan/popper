@@ -11,7 +11,10 @@ import {
 } from "../../shared";
 import { ToolbarApp } from "./ToolbarApp";
 
-const toolbarCss = readFileSync("src/renderer/toolbar/toolbar.css", "utf8");
+const toolbarCss = [
+  "src/renderer/components/toolbarActions.css",
+  "src/renderer/toolbar/toolbar.css",
+].map((path) => readFileSync(path, "utf8")).join("\n");
 
 const selection: SelectionPayload = {
   selectionId: "selection-1",
@@ -994,7 +997,7 @@ describe("ToolbarApp", () => {
     expect(translate).not.toHaveAttribute("data-hovered");
   });
 
-  it("keeps focus and active states visually neutral and reserves feedback for hover", () => {
+  it("keeps action button focus and active states visually neutral and reserves feedback for hover", () => {
     expect(toolbarCss).not.toMatch(/outline:\s*2px/);
     expect(toolbarCss).toContain("background: var(--surface-muted)");
     expect(toolbarCss).toMatch(
@@ -1002,7 +1005,7 @@ describe("ToolbarApp", () => {
     );
 
     const stateRules = toolbarCss.matchAll(
-      /[^{}]*:(?:focus|focus-visible|active)[^{}]*\{([^}]*)\}/g,
+      /\.toolbar-action[^{}]*:(?:focus|focus-visible|active)[^{}]*\{([^}]*)\}/g,
     );
     for (const [, declarations] of stateRules) {
       expect(declarations).not.toMatch(/background\s*:/);

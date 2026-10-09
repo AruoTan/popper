@@ -25,24 +25,6 @@ body {
   -webkit-app-region: no-drag;
 }
 
-.toolbar-pill {
-  display: flex;
-  gap: 2px;
-  align-items: center;
-  width: max-content;
-  min-width: max-content;
-  min-height: 34px;
-  padding: 3px 5px;
-  overflow: visible;
-  /* Keep the surface and shadow inside the native WebView bounds. A solid
-     color also avoids the older WebView2 color-mix fallback mismatch that can
-     make the pill disappear on some GPU/driver combinations. */
-  background-color: color-mix(in srgb, var(--surface-solid) 42%, var(--surface-muted));
-  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
-  border-radius: 9px;
-  box-shadow: var(--shadow-sm);
-}
-
 .toolbar-pill--ask {
   display: block;
   width: 450px;
@@ -110,35 +92,26 @@ body {
 
 .toolbar-ask__composer {
   display: flex;
-  gap: 9px;
+  gap: 8px;
   align-items: center;
-  min-height: 50px;
-  padding: 7px 12px;
+  min-height: 42px;
+  margin: 8px 10px 10px;
+  padding: 5px 6px 5px 10px;
+  background: color-mix(in srgb, var(--surface-muted) 55%, var(--surface-solid));
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  transition: border-color 120ms ease-out;
 }
 
-.toolbar-ask__model {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 3px;
-  align-items: center;
-  height: 28px;
-  padding: 0 6px 0 4px;
-  color: var(--text-secondary);
-  background: var(--surface-muted);
-  border-radius: 14px;
+.toolbar-ask__composer:focus-within {
+  border-color: var(--accent);
 }
 
-.toolbar-ai-mark {
+.toolbar-ask__identity {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  color: white;
-  background: linear-gradient(135deg, #ff4fc8 4%, #8756f6 52%, #5268ff 100%);
-  border-radius: 50%;
-  box-shadow: 0 2px 6px rgb(116 73 230 / 28%);
+  pointer-events: none;
 }
 
 .toolbar-ask__composer textarea {
@@ -146,8 +119,9 @@ body {
   min-width: 0;
   height: 32px;
   max-height: 32px;
-  padding: 7px 0 5px;
-  overflow: hidden;
+  padding: 6px 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   color: var(--text);
   font: inherit;
   font-size: 13px;
@@ -163,56 +137,20 @@ body {
 }
 
 .toolbar-ask__send {
+  flex: 0 0 auto;
   width: 30px;
   height: 30px;
-  color: var(--accent);
+  color: white;
+  background: var(--accent);
 }
 
 .toolbar-ask__send:disabled {
-  opacity: 0.42;
+  color: var(--text-tertiary);
+  background: transparent;
 }
 
 .toolbar-ask__send:not(:disabled)[data-hovered='true'] {
-  background: var(--accent-soft);
-}
-
-.toolbar-action {
-  -webkit-appearance: none;
-  appearance: none;
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: 5px;
-  align-items: center;
-  justify-content: center;
-  min-width: 68px;
-  height: 28px;
-  padding: 0 10px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  font-weight: 570;
-  white-space: nowrap;
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  box-shadow: none;
-  outline: none;
-  transition:
-    background-color 100ms ease-out,
-    color 100ms ease-out,
-    box-shadow 100ms ease-out;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.toolbar-action--muted {
-  pointer-events: none;
-  opacity: 0.45;
-}
-
-.toolbar-action--fixed-ask {
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  padding: 0;
+  background: color-mix(in srgb, var(--accent) 88%, var(--text));
 }
 
 /* Toolbar actions are intentionally locked while an action request is being
@@ -223,25 +161,6 @@ body {
 .toolbar-shell select:disabled,
 .toolbar-shell textarea:disabled {
   cursor: default;
-}
-
-.toolbar-action span {
-  min-width: max-content;
-  overflow: visible;
-  text-overflow: clip;
-}
-
-.toolbar-action[data-hovered='true']:not(:disabled) {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent-soft) 82%, var(--surface-solid));
-  box-shadow: none;
-}
-
-.toolbar-action:focus,
-.toolbar-action:focus-visible,
-.toolbar-action:active {
-  box-shadow: none;
-  outline: none;
 }
 
 .toolbar-empty {
@@ -339,11 +258,14 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .toolbar-ask__composer {
+    transition: none;
+  }
+
   .spin {
     animation-duration: 1.6s;
   }
 
-  .toolbar-action,
   .toolbar-message__action {
     transition: none;
   }

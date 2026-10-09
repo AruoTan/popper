@@ -1288,55 +1288,10 @@ body {
   text-transform: uppercase;
 }
 
-/* Desktop Floating Island Toolbar */
 .toolbar-preview {
-  display: inline-flex;
-  gap: 2px;
-  align-items: center;
-  min-height: 38px;
   max-width: 100%;
-  padding: 4px 6px;
+  padding: 5px 8px;
   overflow-x: auto;
-  background: #18181b;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 9999px;
-}
-
-@media (prefers-color-scheme: dark) {
-  .toolbar-preview {
-    background: #27272a;
-    border-color: rgba(255, 255, 255, 0.1);
-  }
-}
-
-.toolbar-preview__logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  color: #ffffff;
-  background: var(--accent);
-  border-radius: 50%;
-}
-
-.toolbar-preview__action {
-  display: inline-flex;
-  gap: 5px;
-  align-items: center;
-  padding: 4px 8px;
-  color: #d4d4d8;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  background: transparent;
-  border-radius: 9999px;
-  transition: all 100ms ease;
-}
-
-.toolbar-preview__action:hover {
-  color: #ffffff;
-  background: rgba(255, 255, 255, 0.08);
 }
 
 .search-behavior-note {

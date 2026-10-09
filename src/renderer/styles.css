@@ -66,6 +66,14 @@
   box-sizing: border-box;
 }
 
+.popper-icon {
+  display: block;
+  flex: 0 0 auto;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
 html,
 body,
 #root {
