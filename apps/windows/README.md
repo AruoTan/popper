@@ -27,6 +27,24 @@ After installing a build with new icons, fully exit Popper from its tray menu
 and launch the installed version again. If an existing pinned taskbar shortcut
 still displays the old icon, unpin it and pin the newly launched app again.
 
+## Optional tray and reopening settings
+
+The sidebar's **启用托盘** switch defaults to on, including for existing settings
+files. Save settings to apply it immediately; the preference persists across
+restarts. When off, startup skips tray creation and saving removes any existing
+tray resource. Closing settings still keeps selection assistance running.
+
+Launching `Popper.exe` again opens, restores, and focuses the running instance's
+settings panel, regardless of the tray preference. An early second launch is
+queued until the primary instance has finished setting up its windows.
+
+Windows acceptance: disable and save, confirm the notification-area icon
+disappears, close settings, and launch the executable again. Confirm settings
+opens with the switch off and only one Popper process owns the selection hooks.
+Restart to check no tray is created; re-enable and save to check it returns.
+Repeat toggling and check a tray menu action fires only once. Also verify a
+minimized settings window is restored by another launch.
+
 ## Mouse/UIA selection offset detection
 
 Windows records the latest completed left-button gesture without querying UIA

@@ -664,8 +664,15 @@ body {
 }
 
 /* Switches */
-.settings-debug {
+.settings-sidebar-controls {
   margin-top: auto;
+}
+
+.settings-tray-toggle {
+  padding: 12px 8px;
+}
+
+.settings-debug {
   padding: 12px 8px 0;
   border-top: 1px solid var(--border);
 }
@@ -2128,8 +2135,11 @@ body {
     margin-bottom: 8px;
   }
 
-  .settings-debug {
+  .settings-sidebar-controls {
     margin-top: 8px;
+  }
+
+  .settings-debug {
     padding: 8px 5px 0;
   }
 

@@ -119,6 +119,7 @@ export function buildSettingsUpdate(settings: PublicSettings):
   }
 
   const candidate: SettingsUpdate = {
+    trayEnabled: settings.trayEnabled,
     locale: settings.locale,
     translate: settings.translate,
     result: settings.result,

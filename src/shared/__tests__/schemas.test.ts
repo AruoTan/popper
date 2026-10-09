@@ -25,6 +25,17 @@ import {
 } from '..'
 
 describe('settings schemas and defaults', () => {
+  it('defaults missing tray preferences to enabled and preserves an explicit opt-out', () => {
+    const { trayEnabled: _tray, ...legacy } = DEFAULT_APP_SETTINGS
+    const { trayEnabled: _publicTray, ...legacyPublic } = DEFAULT_PUBLIC_SETTINGS
+    expect(migrateAppSettings(legacy).trayEnabled).toBe(true)
+    expect(migratePublicSettings(legacyPublic).trayEnabled).toBe(true)
+    expect(toPublicSettings({ ...DEFAULT_APP_SETTINGS, trayEnabled: false }).trayEnabled).toBe(false)
+    expect(migratePublicSettings({ ...legacyPublic, trayEnabled: false }).trayEnabled).toBe(false)
+    expect(settingsUpdateSchema.parse({ trayEnabled: false })).toEqual({ trayEnabled: false })
+    expect(settingsUpdateSchema.safeParse({ trayEnabled: 'false' }).success).toBe(false)
+  })
+
   it('provides v15 defaults with search engine bound to the search action', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
     expect(DEFAULT_APP_SETTINGS.version).toBe(15)

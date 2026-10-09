@@ -198,6 +198,7 @@ export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = Object.freeze(
   appSettingsSchema.parse({
     version: SETTINGS_VERSION,
     locale: DEFAULT_LOCALE,
+    trayEnabled: true,
     translate: DEFAULT_TRANSLATION_PAIR,
     result: DEFAULT_RESULT_SETTINGS,
     filter: DEFAULT_FILTER_SETTINGS,
@@ -218,6 +219,7 @@ export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = Object.freeze(
 export function toPublicSettings(settings: AppSettings): PublicSettings {
   return publicSettingsSchema.parse({
     version: settings.version,
+    trayEnabled: settings.trayEnabled,
     locale: settings.locale,
     translate: settings.translate,
     result: settings.result,

@@ -23,7 +23,7 @@ use settings::SettingsRepository;
 use tauri::Manager;
 
 #[cfg(target_os = "windows")]
-static PENDING_RUNNING_NOTICE: AtomicBool = AtomicBool::new(false);
+static PENDING_SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static WINDOWS_RUNTIME_READY: AtomicBool = AtomicBool::new(false);
 
@@ -32,18 +32,18 @@ pub fn run() {
     let builder = tauri::Builder::default();
     // Windows allows launching the same executable repeatedly from the Start
     // menu. Register this before every other plugin so only the first process
-    // owns the tray, hooks and settings repository; another launch brings the
-    // existing process to show a short, non-activating status notice instead.
+    // owns the tray, hooks and settings repository; another launch opens the
+    // existing process's settings even when its tray is disabled.
     #[cfg(target_os = "windows")]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         // The single-instance plugin initializes before configured webviews.
         // Remember an exceptionally early second launch and consume it at the
         // end of the primary process setup instead of losing the request.
-        PENDING_RUNNING_NOTICE.store(true, Ordering::Release);
+        PENDING_SETTINGS_OPEN.store(true, Ordering::Release);
         if WINDOWS_RUNTIME_READY.load(Ordering::Acquire)
-            && windows::show_startup_notice(app, windows::StartupNoticeKind::AlreadyRunning).is_ok()
+            && PENDING_SETTINGS_OPEN.swap(false, Ordering::AcqRel)
         {
-            PENDING_RUNNING_NOTICE.store(false, Ordering::Release);
+            runtime::open_settings_window(app);
         }
     }));
 
@@ -88,16 +88,17 @@ pub fn run() {
             }
             #[cfg(target_os = "windows")]
             {
+                if !PENDING_SETTINGS_OPEN.load(Ordering::Acquire) {
+                    if let Err(error) = windows::show_startup_notice(
+                        &handle,
+                        windows::StartupNoticeKind::Started,
+                    ) {
+                        eprintln!("failed to show Windows startup notice: {error}");
+                    }
+                }
                 WINDOWS_RUNTIME_READY.store(true, Ordering::Release);
-                if let Err(error) = windows::show_startup_notice(
-                    &handle,
-                    if PENDING_RUNNING_NOTICE.swap(false, Ordering::AcqRel) {
-                        windows::StartupNoticeKind::AlreadyRunning
-                    } else {
-                        windows::StartupNoticeKind::Started
-                    },
-                ) {
-                    eprintln!("failed to show Windows startup notice: {error}");
+                if PENDING_SETTINGS_OPEN.swap(false, Ordering::AcqRel) {
+                    runtime::open_settings_window(&handle);
                 }
             }
             Ok(())
@@ -166,6 +167,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build Popper")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if matches!(event, tauri::RunEvent::Reopen { .. }) {
+                runtime::open_settings_window(app);
+            }
             if matches!(
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
