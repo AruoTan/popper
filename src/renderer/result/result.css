@@ -116,6 +116,7 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-width: 0;
   min-height: 36px;
   padding: 4px 8px 4px 10px;
   cursor: default;
@@ -143,6 +144,38 @@ body,
   flex: 0 0 auto;
   gap: 2px;
   align-items: center;
+}
+
+.result-original-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 7px;
+  margin-right: 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.result-original-toggle:hover,
+.result-original-toggle[aria-expanded="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.result-original-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.result-window--windows .result-original-toggle {
+  height: 24px;
+  border-radius: 6px;
 }
 
 .result-window--windows .result-header {
@@ -545,33 +578,9 @@ body,
   margin-bottom: 8px;
 }
 
-.result-original > button {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-  padding: 3px 1px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  background: transparent;
-  border: 0;
-}
-
-.result-original > button:hover {
-  color: var(--accent);
-}
-
-.result-original > button svg {
-  transition: transform 140ms ease;
-}
-
-.result-original > button svg.is-expanded {
-  transform: rotate(180deg);
-}
-
 .result-original__content {
   max-height: 150px;
   padding: 9px 10px;
-  margin-top: 5px;
   overflow: auto;
   color: var(--text-secondary);
   font-size: max(12px, calc(var(--result-font-size, 14px) * 0.86));
@@ -1392,7 +1401,6 @@ body,
     animation: none;
   }
 
-  .result-original > button svg,
   .result-thinking,
   .result-thinking__toggle svg,
   .result-model-switch__trigger svg,

@@ -266,6 +266,48 @@ describe("ResultApp sessionId query", () => {
 });
 
 describe("ResultApp window interactions", () => {
+  it.each(["Windows NT 10.0", "Macintosh"])(
+    "toggles the original from the header before settings without reserving body space on %s",
+    async (platform) => {
+      const userAgent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue(platform);
+      try {
+        const openSettings = vi.fn().mockResolvedValue(undefined);
+        const snapshot = resultSnapshot({
+          selection: { ...completedSession.selection!, text: "first line\nsecond line" },
+        });
+        const { container } = await renderResult(snapshot, settingsWithFontSize(), { openSettings });
+        const toggle = await screen.findByRole("button", { name: "显示原文" });
+        const settings = screen.getByRole("button", { name: "打开设置" });
+        const content = container.querySelector(".result-content__inner")!;
+
+        expect(container.querySelector(".result-header")).toContainElement(toggle);
+        expect(toggle.nextElementSibling).toBe(settings);
+        expect(toggle).toHaveAttribute("aria-expanded", "false");
+        expect(content.querySelector(".result-original")).toBeNull();
+
+        fireEvent.pointerDown(toggle, { button: 0, isPrimary: true });
+        expect(startDragging).not.toHaveBeenCalled();
+        fireEvent.click(toggle);
+        expect(screen.getByRole("button", { name: "隐藏原文" })).toHaveAttribute("aria-expanded", "true");
+        const original = screen.getByRole("region", { name: "原文" });
+        expect(content.firstElementChild).toBe(original);
+        expect(document.getElementById(toggle.getAttribute("aria-controls")!)).toHaveTextContent(
+          "first line second line",
+        );
+        expect(content.querySelector(".result-original__content")?.textContent).toBe(snapshot.selection!.text);
+        expect(original.querySelector("button")).toBeNull();
+
+        fireEvent.click(toggle);
+        expect(content.querySelector(".result-original")).toBeNull();
+        expect(toggle).toHaveAttribute("aria-expanded", "false");
+        fireEvent.click(settings);
+        await waitFor(() => expect(openSettings).toHaveBeenCalledWith());
+      } finally {
+        userAgent.mockRestore();
+      }
+    },
+  );
+
   it.each(["streaming", "completed"] as const)(
     "shows an automatic AI fallback without the switch button or internal user turn while %s",
     async (status) => {
@@ -745,6 +787,7 @@ describe("ResultApp window interactions", () => {
       const actions = container.querySelector(".result-window-actions")!;
       const buttons = [...actions.querySelectorAll("button")];
       expect(buttons.map((button) => button.getAttribute("aria-label"))).toEqual([
+        "显示原文",
         "置顶结果窗口",
         "关闭结果窗口",
       ]);

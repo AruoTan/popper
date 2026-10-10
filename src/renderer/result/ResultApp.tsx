@@ -1253,6 +1253,19 @@ function ResultSessionApp({
           </div>
         </div>
         <div className="result-window-actions" data-no-drag>
+          {selection && (
+            <button
+              className="result-original-toggle"
+              type="button"
+              aria-label={showOriginal ? "隐藏原文" : "显示原文"}
+              aria-expanded={showOriginal}
+              aria-controls="result-original-content"
+              title={showOriginal ? "隐藏原文" : "显示原文"}
+              onClick={() => setShowOriginal((current) => !current)}
+            >
+              {showOriginal ? "隐藏原文" : "显示原文"}
+            </button>
+          )}
           {window._popper_.openSettings && (
             <button
               className="icon-button result-settings"
@@ -1298,17 +1311,11 @@ function ResultSessionApp({
         onScroll={handleScroll}
       >
         <div ref={contentInnerRef} className="result-content__inner">
-          {selection && (
-            <section className="result-original">
-              <button
-                type="button"
-                onClick={() => setShowOriginal((current) => !current)}
-                aria-expanded={showOriginal}
-              >
-                <span>{showOriginal ? "隐藏原文" : "显示原文"}</span>
-                <ChevronDown size={14} className={showOriginal ? "is-expanded" : ""} />
-              </button>
-              {showOriginal && <div className="result-original__content">{selection.text}</div>}
+          {selection && showOriginal && (
+            <section className="result-original" aria-label="原文">
+              <div id="result-original-content" className="result-original__content">
+                {selection.text}
+              </div>
             </section>
           )}
 
