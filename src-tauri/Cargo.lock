@@ -2694,7 +2694,7 @@ dependencies = [
 
 [[package]]
 name = "popper"
-version = "0.5.8"
+version = "0.5.9"
 dependencies = [
  "base64 0.22.1",
  "bytes",

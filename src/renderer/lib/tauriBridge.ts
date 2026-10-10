@@ -412,7 +412,6 @@ export function installTauriBridge(): void {
       actionId: string,
       cursor?: Point,
       selectionId?: string,
-      searchEngineId?: string,
       initialQuestion?: string,
     ) {
       return parseRunActionResult(
@@ -420,7 +419,6 @@ export function installTauriBridge(): void {
           actionId,
           cursor: cursor ?? null,
           selectionId: selectionId ?? null,
-          searchEngineId: searchEngineId ?? null,
           initialQuestion: initialQuestion ?? null,
         }),
       );

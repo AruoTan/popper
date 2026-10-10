@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, HashSet},
-    net::IpAddr,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -19,7 +18,7 @@ use tauri::{
     AppHandle, Emitter, Manager, State, WebviewWindow, WindowEvent,
 };
 use tokio::sync::oneshot;
-use url::{Host, Url};
+use url::Url;
 use uuid::Uuid;
 
 use crate::{
@@ -2407,7 +2406,6 @@ pub async fn run_action(
     action_id: String,
     cursor: Option<CursorPoint>,
     selection_id: Option<String>,
-    search_engine_id: Option<String>,
     initial_question: Option<String>,
 ) -> Result<RunActionResult, String> {
     if let Err(message) = ensure_toolbar_caller(&window) {
@@ -2449,46 +2447,6 @@ pub async fn run_action(
     }
 
     let result = match action.kind {
-        ActionKind::Copy => match clipboard::write_text(&selection.payload.text) {
-            Ok(()) => {
-                // Keep the toolbar for the success icon, but arm same-text
-                // suppression so the next outside click's mouse-up re-capture
-                // cannot re-show the toolbar near the cursor.
-                state.arm_same_text_selection_suppress(&selection.payload.text);
-                // Quietly return key focus to the source app (no ActivateAllWindows
-                // flash). Next outside click then deselects + dismisses in one step.
-                let _ =
-                    restore_source_app_activation(&app, &selection.payload.source_app.bundle_id);
-                RunActionResult::accepted(None, None)
-            }
-            Err(message) => RunActionResult::rejected(message),
-        },
-        ActionKind::Search => {
-            let template = match crate::models::resolve_search_template(
-                action.search_engine_id.as_deref(),
-                search_engine_id.as_deref(),
-            ) {
-                Ok(value) => value,
-                Err(message) => {
-                    state
-                        .consuming_selection_ids
-                        .lock()
-                        .remove(&selection_token);
-                    return Ok(RunActionResult::rejected(message));
-                }
-            };
-            match resolve_search_target(&selection.payload.text, template) {
-                Ok(target) => match open_system_url(&target) {
-                    Ok(()) => {
-                        state.arm_same_text_selection_suppress(&selection.payload.text);
-                        state.clear_and_hide_current_selection_if(&app, &selection_token);
-                        RunActionResult::accepted(None, None)
-                    }
-                    Err(_) => RunActionResult::rejected("无法打开浏览器"),
-                },
-                Err(message) => RunActionResult::rejected(message),
-            }
-        }
         _ if action.kind.opens_result_without_generation() => {
             let initial_question = initial_question
                 .as_deref()
@@ -2577,7 +2535,6 @@ pub async fn run_action(
                             // Do NOT restore_source_app_activation here: default
                             // result dismiss is Blur; activating the source app
                             // immediately steals focus and closes the new window.
-                            // Copy may soft-restore because it has no result UI.
                             RunActionResult::accepted(Some(session_id), Some(request_id))
                         }
                         Err(message) => {
@@ -3483,64 +3440,6 @@ fn open_system_url(_value: &str) -> Result<(), ()> {
     Err(())
 }
 
-fn resolve_search_target(text: &str, template: &str) -> Result<String, String> {
-    let value = text.trim();
-    if value.is_empty() {
-        return Err("选中文本为空".to_owned());
-    }
-    if value.chars().count() > 2_000 {
-        return Err("选中文本过长，无法作为浏览器地址或搜索词打开".to_owned());
-    }
-    if !value.chars().any(char::is_whitespace) {
-        if let Some(url) = safe_http_url(value) {
-            return Ok(url.to_string());
-        }
-        if let Ok(address) = value.parse::<IpAddr>() {
-            return Ok(match address {
-                IpAddr::V4(address) => format!("https://{address}/"),
-                IpAddr::V6(address) => format!("https://[{address}]/"),
-            });
-        }
-        if let Some(url) = infer_domain_or_ip_url(value) {
-            return Ok(url.to_string());
-        }
-    }
-    if template.matches("{{text}}").count() != 1 {
-        return Err("搜索地址必须且只能包含一个 {{text}}".to_owned());
-    }
-    let encoded: String = url::form_urlencoded::byte_serialize(value.as_bytes()).collect();
-    let target = template.replace("{{text}}", &encoded);
-    safe_http_url(&target)
-        .map(|url| url.to_string())
-        .ok_or_else(|| "搜索地址无效".to_owned())
-}
-
-fn infer_domain_or_ip_url(value: &str) -> Option<Url> {
-    let url = safe_http_url(&format!("https://{value}"))?;
-    match url.host()? {
-        Host::Ipv4(_) | Host::Ipv6(_) => Some(url),
-        Host::Domain(host) => {
-            let looks_numeric = host
-                .chars()
-                .all(|character| character.is_ascii_digit() || character == '.');
-            let valid_domain = !looks_numeric
-                && host.contains('.')
-                && host.split('.').all(|label| {
-                    !label.is_empty()
-                        && label.len() <= 63
-                        && !label.starts_with('-')
-                        && !label.ends_with('-')
-                        && label
-                            .chars()
-                            .all(|character| character.is_ascii_alphanumeric() || character == '-')
-                });
-            let localhost_with_port =
-                host.eq_ignore_ascii_case("localhost") && url.port().is_some();
-            (valid_domain || localhost_with_port).then_some(url)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3818,71 +3717,9 @@ mod tests {
         assert!(!serialized.contains("TOP SECRET"));
     }
 
-    #[test]
-    fn direct_urls_domains_and_ips_take_precedence_over_search() {
-        let template = "https://www.google.com/search?q={{text}}";
-        assert_eq!(
-            resolve_search_target("https://example.com/a", template).unwrap(),
-            "https://example.com/a"
-        );
-        assert_eq!(
-            resolve_search_target("example.com/a", template).unwrap(),
-            "https://example.com/a"
-        );
-        assert_eq!(
-            resolve_search_target("192.168.1.10", template).unwrap(),
-            "https://192.168.1.10/"
-        );
-        assert_eq!(
-            resolve_search_target("2001:db8::1", template).unwrap(),
-            "https://[2001:db8::1]/"
-        );
-    }
-
-    #[test]
-    fn malformed_addresses_and_words_are_searched() {
-        let template = "https://www.google.com/search?q={{text}}";
-        assert_eq!(
-            resolve_search_target("999.168.1.10", template).unwrap(),
-            "https://www.google.com/search?q=999.168.1.10"
-        );
-        assert_eq!(
-            resolve_search_target("Tauri 划词", template).unwrap(),
-            "https://www.google.com/search?q=Tauri+%E5%88%92%E8%AF%8D"
-        );
-    }
-
-    #[test]
-    fn search_engines_use_the_expected_regional_endpoints() {
-        assert_eq!(
-            crate::models::resolve_search_template(Some("google"), None).unwrap(),
-            "https://www.google.com/search?q={{text}}"
-        );
-        assert_eq!(
-            crate::models::resolve_search_template(Some("google"), Some("bing-china")).unwrap(),
-            "https://cn.bing.com/search?q={{text}}"
-        );
-        assert_eq!(
-            crate::models::resolve_search_template(Some("google"), Some("baidu")).unwrap(),
-            "https://www.baidu.com/s?wd={{text}}"
-        );
-    }
-
-    #[test]
-    fn persisted_search_engine_is_used_unless_an_override_is_supplied() {
-        assert_eq!(
-            crate::models::resolve_search_template(Some("bing-china"), None).unwrap(),
-            "https://cn.bing.com/search?q={{text}}"
-        );
-        assert_eq!(
-            crate::models::resolve_search_template(Some("bing-china"), Some("baidu")).unwrap(),
-            "https://www.baidu.com/s?wd={{text}}"
-        );
-    }
-
     #[cfg(target_os = "windows")]
     #[test]
-    fn windows_search_uses_non_blocking_native_shell_dispatch() {
+    fn windows_external_links_use_non_blocking_native_shell_dispatch() {
         use windows::Win32::UI::Shell::{SEE_MASK_ASYNCOK, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC};
 
         let mask = windows_url_shell_execute_mask();

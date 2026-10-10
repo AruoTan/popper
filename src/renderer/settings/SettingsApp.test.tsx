@@ -251,7 +251,7 @@ describe("SettingsApp provider deletion", () => {
     const preview = screen.getByRole("toolbar", { name: "工具栏实时预览" });
     const controls = within(preview);
     expect(controls.getAllByRole("button").map((button) => button.getAttribute("aria-label")))
-      .toEqual(["问 AI", "翻译", "解释", "总结", "搜索", "复制"]);
+      .toEqual(["问 AI", "翻译", "解释", "总结"]);
     expect(controls.queryByRole("button", { name: "润色" })).not.toBeInTheDocument();
     const translate = controls.getByRole("button", { name: "翻译" });
     expect(translate).toHaveClass("toolbar-action");
@@ -646,18 +646,18 @@ describe("SettingsApp provider deletion", () => {
     render(<SettingsApp />);
     await goToSettingsSection("动作");
 
-    const handle = await screen.findByRole("button", { name: "拖动复制" });
+    const handle = await screen.findByRole("button", { name: "拖动总结" });
     handle.focus();
     fireEvent.keyDown(handle, { key: " ", code: "Space" });
     await waitFor(() => {
       expect(document.body.textContent).toContain(
-        "Draggable item copy was moved over droppable area copy",
+        "Draggable item summary was moved over droppable area summary",
       );
     });
     fireEvent.keyDown(document, { key: "ArrowUp", code: "ArrowUp" });
     await waitFor(() => {
       expect(document.body.textContent).toContain(
-        "Draggable item copy was moved over droppable area search",
+        "Draggable item summary was moved over droppable area explain",
       );
     });
     fireEvent.keyDown(document, { key: " ", code: "Space" });
@@ -668,7 +668,7 @@ describe("SettingsApp provider deletion", () => {
         [...(enabledZone?.querySelectorAll<HTMLElement>("[data-action-id]") ?? [])].map(
           (row) => row.dataset.actionId,
         ),
-      ).toEqual(["translate", "explain", "summary", "copy", "search"]);
+      ).toEqual(["translate", "summary", "explain"]);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
@@ -677,11 +677,9 @@ describe("SettingsApp provider deletion", () => {
       (updateSettings.mock.calls[0]?.[0].actions ?? []).map(({ id, order }) => ({ id, order })),
     ).toEqual([
       { id: "translate", order: 0 },
-      { id: "explain", order: 1 },
-      { id: "summary", order: 2 },
-      { id: "copy", order: 3 },
-      { id: "search", order: 4 },
-      { id: "refine", order: 5 },
+      { id: "summary", order: 1 },
+      { id: "explain", order: 2 },
+      { id: "refine", order: 3 },
     ]);
   });
 

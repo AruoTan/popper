@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub const SETTINGS_VERSION: u8 = 15;
+pub const SETTINGS_VERSION: u8 = 16;
 pub const TEXT_PLACEHOLDER: &str = "{{text}}";
 pub const OUTPUT_LANGUAGE_PLACEHOLDER: &str = "{{language}}";
 pub const TARGET_LANGUAGE_PLACEHOLDER: &str = "{{target_language}}";
@@ -14,12 +14,7 @@ pub const MAX_ENABLED_ACTIONS: usize = 8;
 pub const MAX_CUSTOM_ACTIONS: usize = 10;
 pub const MAX_ACTIONS: usize = 50;
 pub const MAX_PROVIDERS: usize = 20;
-pub const MAX_SEARCH_ENGINES: usize = 20;
 pub const DEFAULT_PROVIDER_ID: &str = "openai-compatible";
-pub const DEFAULT_SEARCH_TEMPLATE: &str = "https://www.google.com/search?q={{text}}";
-pub const BING_CHINA_SEARCH_TEMPLATE: &str = "https://cn.bing.com/search?q={{text}}";
-pub const BAIDU_SEARCH_TEMPLATE: &str = "https://www.baidu.com/s?wd={{text}}";
-pub const DEFAULT_ACTIVE_SEARCH_ENGINE_ID: &str = "google";
 pub const DEFAULT_RESULT_FONT_SIZE: u16 = 14;
 pub const RESULT_FONT_SIZE_MIN: u16 = 12;
 pub const RESULT_FONT_SIZE_MAX: u16 = 24;
@@ -401,61 +396,12 @@ impl PublicProviderConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")]
 pub enum ActionKind {
-    Copy,
-    Search,
     Translate,
     Explain,
     Summary,
     Refine,
     Ask,
     Custom,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchEngineEntry {
-    pub id: String,
-    pub name: String,
-    pub template: String,
-    #[serde(default)]
-    pub builtin: bool,
-}
-
-impl SearchEngineEntry {
-    pub fn google() -> Self {
-        Self {
-            id: "google".to_owned(),
-            name: "Google".to_owned(),
-            template: DEFAULT_SEARCH_TEMPLATE.to_owned(),
-            builtin: true,
-        }
-    }
-
-    pub fn bing() -> Self {
-        Self {
-            id: "bing-china".to_owned(),
-            name: "Bing".to_owned(),
-            template: BING_CHINA_SEARCH_TEMPLATE.to_owned(),
-            builtin: true,
-        }
-    }
-
-    pub fn baidu() -> Self {
-        Self {
-            id: "baidu".to_owned(),
-            name: "百度".to_owned(),
-            template: BAIDU_SEARCH_TEMPLATE.to_owned(),
-            builtin: true,
-        }
-    }
-}
-
-pub fn default_search_engines() -> Vec<SearchEngineEntry> {
-    vec![
-        SearchEngineEntry::google(),
-        SearchEngineEntry::bing(),
-        SearchEngineEntry::baidu(),
-    ]
 }
 
 impl ActionKind {
@@ -493,9 +439,7 @@ pub struct ActionDefinition {
     pub provider_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_engine_id: Option<String>,
-    /// Present on AI actions; omitted when Off so local action JSON stays strict-compatible.
+    /// Present on AI actions; omitted when Off.
     #[serde(default, skip_serializing_if = "is_thinking_mode_off")]
     pub thinking_mode: ThinkingMode,
 }
@@ -842,7 +786,6 @@ impl Default for AppSettings {
             prompt: Some(prompt.to_owned()),
             provider_id: Some(DEFAULT_PROVIDER_ID.to_owned()),
             model_id: Some(String::new()),
-            search_engine_id: None,
             thinking_mode: ThinkingMode::Off,
         };
         Self {
@@ -881,38 +824,12 @@ impl Default for AppSettings {
                     true,
                     DEFAULT_SUMMARY_PROMPT,
                 ),
-                ActionDefinition {
-                    id: "search".to_owned(),
-                    name: "搜索".to_owned(),
-                    icon: "search".to_owned(),
-                    kind: ActionKind::Search,
-                    enabled: true,
-                    order: 3,
-                    prompt: None,
-                    provider_id: None,
-                    model_id: None,
-                    search_engine_id: Some(DEFAULT_ACTIVE_SEARCH_ENGINE_ID.to_owned()),
-                    thinking_mode: ThinkingMode::Off,
-                },
-                ActionDefinition {
-                    id: "copy".to_owned(),
-                    name: "复制".to_owned(),
-                    icon: "clipboard-copy".to_owned(),
-                    kind: ActionKind::Copy,
-                    enabled: true,
-                    order: 4,
-                    prompt: None,
-                    provider_id: None,
-                    model_id: None,
-                    search_engine_id: None,
-                    thinking_mode: ThinkingMode::Off,
-                },
                 ai(
                     "refine",
                     "润色",
                     "wand-sparkles",
                     ActionKind::Refine,
-                    5,
+                    3,
                     false,
                     DEFAULT_REFINE_PROMPT,
                 ),
@@ -921,7 +838,7 @@ impl Default for AppSettings {
                     "问AI",
                     "message-circle-question",
                     ActionKind::Ask,
-                    6,
+                    4,
                     true,
                     DEFAULT_ASK_PROMPT,
                 ),
@@ -1056,22 +973,6 @@ impl AppSettings {
                     }
                 }
                 action.thinking_mode = clamp_thinking_mode(action.thinking_mode, model_levels);
-            } else {
-                action.prompt = None;
-                action.provider_id = None;
-                action.model_id = None;
-                action.thinking_mode = ThinkingMode::Off;
-                if action.kind == ActionKind::Search {
-                    let engine_id = action
-                        .search_engine_id
-                        .get_or_insert_with(|| DEFAULT_ACTIVE_SEARCH_ENGINE_ID.to_owned());
-                    *engine_id = engine_id.trim().to_owned();
-                    if !matches!(engine_id.as_str(), "google" | "bing-china" | "baidu") {
-                        *engine_id = DEFAULT_ACTIVE_SEARCH_ENGINE_ID.to_owned();
-                    }
-                } else {
-                    action.search_engine_id = None;
-                }
             }
         }
         if enabled_count == 0 || enabled_count > MAX_ENABLED_ACTIONS {
@@ -1100,138 +1001,6 @@ pub fn normalize_base_url(value: &str) -> Result<String, String> {
         return Err("API 地址必须是无凭据、查询参数和片段的 HTTP(S) 地址".to_owned());
     }
     Ok(trimmed.to_owned())
-}
-
-pub fn normalize_search_engines(
-    engines: &mut Vec<SearchEngineEntry>,
-    active_id: &mut String,
-) -> Result<(), String> {
-    if engines.is_empty() {
-        *engines = default_search_engines();
-    }
-    if engines.len() > MAX_SEARCH_ENGINES {
-        return Err(format!("最多只能配置 {MAX_SEARCH_ENGINES} 个搜索引擎"));
-    }
-
-    let mut seen = HashSet::new();
-    let mut normalized = Vec::with_capacity(engines.len());
-    for engine in engines.drain(..) {
-        let id = engine.id.trim().to_owned();
-        let mut name = engine.name.trim().to_owned();
-        let template = engine.template.trim().to_owned();
-        if id.is_empty() {
-            return Err("搜索引擎 ID 不能为空".to_owned());
-        }
-        validate_identifier(&id, "搜索引擎 ID")?;
-        if !seen.insert(id.clone()) {
-            return Err(format!("搜索引擎 ID 重复：{id}"));
-        }
-        let builtin = matches!(id.as_str(), "google" | "bing-china" | "baidu");
-        if builtin {
-            name = match id.as_str() {
-                "google" => {
-                    if name.is_empty() || name == "必应中国版" {
-                        "Google".to_owned()
-                    } else {
-                        name
-                    }
-                }
-                "bing-china" => "Bing".to_owned(),
-                "baidu" => {
-                    if name.is_empty() {
-                        "百度".to_owned()
-                    } else {
-                        name
-                    }
-                }
-                _ => name,
-            };
-        } else if engine.builtin {
-            return Err(format!("未知的内置搜索引擎：{id}"));
-        }
-        if name.is_empty() || name.chars().count() > 80 {
-            return Err("搜索引擎名称应为 1–80 个字符".to_owned());
-        }
-        if name == "必应中国版" && id == "bing-china" {
-            name = "Bing".to_owned();
-        }
-        validate_search_template(&template)?;
-        normalized.push(SearchEngineEntry {
-            id,
-            name,
-            template,
-            builtin,
-        });
-    }
-
-    for required in ["google", "bing-china", "baidu"] {
-        if !normalized.iter().any(|engine| engine.id == required) {
-            let builtin = match required {
-                "google" => SearchEngineEntry::google(),
-                "bing-china" => SearchEngineEntry::bing(),
-                _ => SearchEngineEntry::baidu(),
-            };
-            normalized.push(builtin);
-        }
-    }
-
-    // Force builtin flags for known ids.
-    for engine in &mut normalized {
-        if matches!(engine.id.as_str(), "google" | "bing-china" | "baidu") {
-            engine.builtin = true;
-            if engine.id == "bing-china" {
-                engine.name = "Bing".to_owned();
-            }
-        } else {
-            engine.builtin = false;
-        }
-    }
-
-    if !normalized
-        .iter()
-        .any(|engine| engine.id == active_id.as_str())
-    {
-        *active_id = DEFAULT_ACTIVE_SEARCH_ENGINE_ID.to_owned();
-    }
-    *engines = normalized;
-    Ok(())
-}
-
-pub fn resolve_builtin_search_template(engine_id: &str) -> Result<&'static str, String> {
-    match engine_id {
-        "bing-china" => Ok(BING_CHINA_SEARCH_TEMPLATE),
-        "baidu" => Ok(BAIDU_SEARCH_TEMPLATE),
-        "google" => Ok(DEFAULT_SEARCH_TEMPLATE),
-        _ => Ok(DEFAULT_SEARCH_TEMPLATE),
-    }
-}
-
-/// Prefer action/override engine id, then fall back to Google.
-pub fn resolve_search_template(
-    action_engine_id: Option<&str>,
-    override_id: Option<&str>,
-) -> Result<&'static str, String> {
-    let target = override_id
-        .filter(|value| !value.trim().is_empty())
-        .or(action_engine_id)
-        .unwrap_or(DEFAULT_ACTIVE_SEARCH_ENGINE_ID);
-    resolve_builtin_search_template(target.trim())
-}
-
-pub fn validate_search_template(value: &str) -> Result<(), String> {
-    if value.len() > 2_048 || value.matches(TEXT_PLACEHOLDER).count() != 1 {
-        return Err(format!("搜索地址必须且只能包含一个 {TEXT_PLACEHOLDER}"));
-    }
-    let sample = value.replace(TEXT_PLACEHOLDER, "selection");
-    let url = Url::parse(&sample).map_err(|_| "搜索地址无效".to_owned())?;
-    if !matches!(url.scheme(), "http" | "https")
-        || url.host_str().is_none()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        return Err("搜索地址必须是无凭据的 HTTP(S) 地址".to_owned());
-    }
-    Ok(())
 }
 
 fn validate_result_settings(result: &ResultSettings) -> Result<(), String> {
@@ -1313,8 +1082,6 @@ mod tests {
                 ("translate", true),
                 ("explain", true),
                 ("summary", true),
-                ("search", true),
-                ("copy", true),
                 ("refine", false),
                 ("ask-ai", true),
             ]
@@ -1332,7 +1099,7 @@ mod tests {
             .get("selectionCapture")
             .is_none());
         assert!(json.contains("keyConfigured"));
-        assert_eq!(public.actions.len(), 6);
+        assert_eq!(public.actions.len(), 4);
         assert!(public
             .actions
             .iter()
@@ -1396,15 +1163,6 @@ mod tests {
         assert!(normalize_base_url("http://127.0.0.1:11434/v1").is_ok());
         assert!(normalize_base_url("http://api.example.com/v1").is_ok());
         assert!(normalize_base_url("ftp://api.example.com/v1").is_err());
-    }
-
-    #[test]
-    fn search_template_requires_one_placeholder_and_no_credentials() {
-        assert!(validate_search_template(DEFAULT_SEARCH_TEMPLATE).is_ok());
-        assert!(
-            validate_search_template("https://example.com/?q={{text}}&again={{text}}").is_err()
-        );
-        assert!(validate_search_template("https://user:pass@example.com/?q={{text}}").is_err());
     }
 
     #[test]

@@ -708,31 +708,31 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
     }
     let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let version = value.get("version").and_then(serde_json::Value::as_u64);
+    let retired_actions_removed = remove_retired_actions_value(&mut value);
     // Discard retired configuration before validating.
     let had_retired_settings = value.as_object_mut().is_some_and(|object| {
         let mut removed = false;
         for key in [
-            "selectionCapture", "captureShortcut", "trigger", "enabled", "toolbar", "application",
+            "selectionCapture",
+            "captureShortcut",
+            "trigger",
+            "enabled",
+            "toolbar",
+            "application",
         ] {
             removed |= object.remove(key).is_some();
         }
         removed
     });
-    if version == Some(SETTINGS_VERSION as u64) || matches!(version, Some(12 | 13 | 14)) {
+    if version == Some(SETTINGS_VERSION as u64) || matches!(version, Some(12 | 13 | 14 | 15)) {
         let missing_tray_default = value.get("trayEnabled").is_none();
         let missing_result_defaults = value.pointer("/result/dismissMode").is_none()
             || value.pointer("/result/fontSize").is_none();
-        let had_legacy_search_fields = value.pointer("/searchEngines").is_some()
-            || value.pointer("/activeSearchEngineId").is_some()
-            || value.pointer("/searchEngine").is_some()
-            || value.pointer("/searchTemplate").is_some();
         let had_quote_action = value_has_quote_action(&value);
-        migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         let persisted_settings = settings.clone();
         migrate_default_action_prompts(&mut settings);
-        migrate_search_actions(&mut settings);
         let normalized = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -740,7 +740,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
             || missing_tray_default
             || had_retired_settings
             || missing_result_defaults
-            || had_legacy_search_fields
+            || retired_actions_removed
             || had_quote_action
             || normalized != persisted_settings;
         return Ok(LoadedSettings {
@@ -750,11 +750,9 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         });
     }
     if version == Some(11) {
-        migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
-        migrate_search_actions(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -765,11 +763,9 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         });
     }
     if version == Some(10) {
-        migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
-        migrate_search_actions(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -780,11 +776,9 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         });
     }
     if version == Some(9) {
-        migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
-        migrate_search_actions(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -795,12 +789,9 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         });
     }
     if version == Some(8) {
-        migrate_v8_search_engines_value(&mut value);
-        migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
-        migrate_search_actions(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -811,12 +802,9 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         });
     }
     if matches!(version, Some(3 | 4 | 5 | 6 | 7)) {
-        migrate_v8_search_engines_value(&mut value);
-        migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
-        migrate_search_actions(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -832,13 +820,10 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         // one-time behavior migration: old persisted `manual` becomes the new
         // default `blur`. Later versions also upgrade only untouched built-in
         // prompts.
-        migrate_v8_search_engines_value(&mut value);
-        migrate_v10_search_actions_value(&mut value);
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         settings.result.dismiss_mode = ResultDismissMode::Blur;
         migrate_default_action_prompts(&mut settings);
-        migrate_search_actions(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -933,30 +918,6 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
     }
 }
 
-fn migrate_search_actions(settings: &mut AppSettings) {
-    if let Some(search) = settings
-        .actions
-        .iter_mut()
-        .find(|action| action.id == "search" && action.kind == ActionKind::Search)
-    {
-        if search.name == "谷歌" {
-            search.name = "搜索".to_owned();
-        }
-        if search.icon == "globe" {
-            search.icon = "search".to_owned();
-        }
-    }
-    settings.actions.retain(|action| {
-        !matches!(
-            (action.id.as_str(), action.kind),
-            ("search-bing", ActionKind::Search) | ("search-baidu", ActionKind::Search)
-        )
-    });
-    for (order, action) in settings.actions.iter_mut().enumerate() {
-        action.order = order as u32;
-    }
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LegacyAiSettings {
@@ -987,10 +948,6 @@ struct LegacyAction {
 struct LegacySettings {
     #[serde(default)]
     locale: Locale,
-    // Retained only so older Electron-era settings still deserialize.
-    #[serde(default = "default_search_template")]
-    #[allow(dead_code)]
-    search_template: String,
     #[serde(default)]
     translate: TranslationSettings,
     #[serde(default)]
@@ -999,7 +956,8 @@ struct LegacySettings {
     actions: Vec<LegacyAction>,
 }
 
-fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError> {
+fn migrate_v1(mut value: serde_json::Value) -> Result<LoadedSettings, SettingsError> {
+    remove_retired_actions_value(&mut value);
     let legacy: LegacySettings = serde_json::from_value(value)?;
     let model = legacy.ai.model.trim().to_owned();
     let provider = ProviderConfig {
@@ -1048,8 +1006,6 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
                     },
                     provider_id: action.kind.is_ai().then(|| DEFAULT_PROVIDER_ID.to_owned()),
                     model_id: action.kind.is_ai().then(|| model.clone()),
-                    search_engine_id: (action.kind == ActionKind::Search)
-                        .then(|| crate::models::DEFAULT_ACTIVE_SEARCH_ENGINE_ID.to_owned()),
                     thinking_mode: crate::models::ThinkingMode::Off,
                 }
             })
@@ -1066,7 +1022,7 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
             }
         }
     }
-    let mut settings = AppSettings {
+    let settings = AppSettings {
         version: SETTINGS_VERSION,
         tray_enabled: true,
         locale: legacy.locale,
@@ -1076,7 +1032,6 @@ fn migrate_v1(value: serde_json::Value) -> Result<LoadedSettings, SettingsError>
         providers: vec![provider],
         actions,
     };
-    migrate_search_actions(&mut settings);
     let settings = settings
         .normalize_and_validate()
         .map_err(SettingsError::Validation)?;
@@ -1091,47 +1046,98 @@ fn default_base_url() -> String {
     "https://api.openai.com/v1".to_owned()
 }
 
-fn migrate_v8_search_engines_value(value: &mut serde_json::Value) {
+/// Remove retired action kinds before deserialization, including v1's type alias.
+fn remove_retired_actions_value(value: &mut serde_json::Value) -> bool {
     let Some(object) = value.as_object_mut() else {
-        return;
+        return false;
     };
-    if object.contains_key("searchEngines") && object.contains_key("activeSearchEngineId") {
-        object.remove("searchEngine");
-        object.remove("searchTemplate");
-        return;
+    let legacy_v1 = object
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .is_none_or(|version| version == 1);
+    let mut changed = false;
+    for key in [
+        "searchEngine",
+        "searchTemplate",
+        "searchEngines",
+        "activeSearchEngineId",
+    ] {
+        changed |= object.remove(key).is_some();
     }
-
-    let mut engines = crate::models::default_search_engines();
-    if let Some(template) = object
-        .get("searchTemplate")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| crate::models::validate_search_template(value).is_ok())
+    if let Some(actions) = object
+        .get_mut("actions")
+        .and_then(serde_json::Value::as_array_mut)
     {
-        if let Some(google) = engines.iter_mut().find(|engine| engine.id == "google") {
-            google.template = template.to_owned();
+        let original_len = actions.len();
+        actions.retain(|action| {
+            !matches!(
+                action
+                    .get("kind")
+                    .or_else(|| action.get("type"))
+                    .and_then(serde_json::Value::as_str),
+                Some("copy" | "search")
+            )
+        });
+        let removed = actions.len() != original_len;
+        changed |= removed;
+        let editable = |action: &serde_json::Value| {
+            !matches!(
+                action
+                    .get("kind")
+                    .or_else(|| action.get("type"))
+                    .and_then(serde_json::Value::as_str),
+                Some("ask" | "quote")
+            ) && action.get("id").and_then(serde_json::Value::as_str) != Some("ask-ai")
+        };
+        if removed && !actions.iter().any(editable) {
+            actions.extend(
+                serde_json::to_value(
+                    AppSettings::default()
+                        .actions
+                        .into_iter()
+                        .filter(|action| action.kind != ActionKind::Ask)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .cloned(),
+            );
+            // The v1 loader reads the legacy type key.
+            if legacy_v1 {
+                for action in actions.iter_mut() {
+                    let action = action.as_object_mut().unwrap();
+                    if let Some(kind) = action.remove("kind") {
+                        action.insert("type".to_owned(), kind);
+                    }
+                }
+            }
+        }
+        if removed
+            && !actions.iter().any(|action| {
+                editable(action)
+                    && action.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
+            })
+        {
+            if let Some(action) = actions
+                .iter_mut()
+                .find(|action| editable(action))
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                action.insert("enabled".to_owned(), true.into());
+            }
+        }
+        for (order, action) in actions.iter_mut().enumerate() {
+            if let Some(action) = action.as_object_mut() {
+                changed |= action.remove("searchEngineId").is_some();
+                if removed {
+                    action.insert("order".to_owned(), (order as u64).into());
+                }
+            }
         }
     }
-
-    let active = object
-        .get("searchEngine")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| engines.iter().any(|engine| engine.id == *value))
-        .unwrap_or(crate::models::DEFAULT_ACTIVE_SEARCH_ENGINE_ID)
-        .to_owned();
-
-    object.insert(
-        "searchEngines".to_owned(),
-        serde_json::to_value(engines).unwrap_or_else(|_| serde_json::json!([])),
-    );
-    object.insert(
-        "activeSearchEngineId".to_owned(),
-        serde_json::Value::String(active),
-    );
-    object.remove("searchEngine");
-    object.remove("searchTemplate");
-    object.insert("version".to_owned(), serde_json::Value::Number(9.into()));
+    changed
 }
 
 fn value_has_quote_action(value: &serde_json::Value) -> bool {
@@ -1249,77 +1255,6 @@ fn migrate_quote_to_ask_value(value: &mut serde_json::Value) {
         "version".to_owned(),
         serde_json::Value::Number(SETTINGS_VERSION.into()),
     );
-}
-
-fn migrate_v10_search_actions_value(value: &mut serde_json::Value) {
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-
-    let global_active = object
-        .get("activeSearchEngineId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| matches!(*value, "google" | "bing-china" | "baidu"))
-        .map(str::to_owned);
-    let legacy_engine = object
-        .get("searchEngine")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| matches!(*value, "google" | "bing-china" | "baidu"))
-        .map(str::to_owned);
-    // v8/v9 stored a global preference; when present it is the migration source of truth.
-    let preferred_global = global_active.or(legacy_engine);
-    let fallback = preferred_global
-        .clone()
-        .unwrap_or_else(|| crate::models::DEFAULT_ACTIVE_SEARCH_ENGINE_ID.to_owned());
-
-    if let Some(actions) = object
-        .get_mut("actions")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for action in actions {
-            let Some(action_object) = action.as_object_mut() else {
-                continue;
-            };
-            let is_search = action_object
-                .get("kind")
-                .or_else(|| action_object.get("type"))
-                .and_then(serde_json::Value::as_str)
-                == Some("search");
-            if !is_search {
-                action_object.remove("searchEngineId");
-                continue;
-            }
-            let existing = action_object
-                .get("searchEngineId")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| matches!(*value, "google" | "bing-china" | "baidu"))
-                .map(str::to_owned);
-            let engine_id = preferred_global
-                .clone()
-                .or(existing)
-                .unwrap_or_else(|| fallback.clone());
-            action_object.insert(
-                "searchEngineId".to_owned(),
-                serde_json::Value::String(engine_id),
-            );
-        }
-    }
-
-    object.remove("searchEngines");
-    object.remove("activeSearchEngineId");
-    object.remove("searchEngine");
-    object.remove("searchTemplate");
-    object.insert(
-        "version".to_owned(),
-        serde_json::Value::Number(crate::models::SETTINGS_VERSION.into()),
-    );
-}
-
-fn default_search_template() -> String {
-    crate::models::DEFAULT_SEARCH_TEMPLATE.to_owned()
 }
 
 #[cfg(test)]
@@ -1455,13 +1390,26 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let repository = SettingsRepository::new(&path).unwrap();
-        repository.set_eudic_authorization("NIS test-eudic-secret").unwrap();
-        assert!(!fs::read_to_string(&path).unwrap().contains("test-eudic-secret"));
-        assert!(!serde_json::to_string(&repository.get_public_settings().unwrap()).unwrap().contains("test-eudic-secret"));
+        repository
+            .set_eudic_authorization("NIS test-eudic-secret")
+            .unwrap();
+        assert!(!fs::read_to_string(&path)
+            .unwrap()
+            .contains("test-eudic-secret"));
+        assert!(
+            !serde_json::to_string(&repository.get_public_settings().unwrap())
+                .unwrap()
+                .contains("test-eudic-secret")
+        );
         drop(repository);
         let reopened = SettingsRepository::new(&path).unwrap();
-        assert_eq!(reopened.eudic_authorization().unwrap().as_deref(), Some("NIS test-eudic-secret"));
-        assert!(reopened.set_eudic_authorization("NIS test\r\ninjected: header").is_err());
+        assert_eq!(
+            reopened.eudic_authorization().unwrap().as_deref(),
+            Some("NIS test-eudic-secret")
+        );
+        assert!(reopened
+            .set_eudic_authorization("NIS test\r\ninjected: header")
+            .is_err());
         reopened.set_eudic_authorization("").unwrap();
         assert_eq!(reopened.eudic_authorization().unwrap(), None);
     }
@@ -1473,7 +1421,11 @@ mod tests {
         assert!(migrated.dictionary_enabled);
         let mut disabled = old;
         disabled["dictionaryEnabled"] = serde_json::json!(false);
-        assert!(!serde_json::from_value::<TranslationSettings>(disabled).unwrap().dictionary_enabled);
+        assert!(
+            !serde_json::from_value::<TranslationSettings>(disabled)
+                .unwrap()
+                .dictionary_enabled
+        );
     }
 
     #[test]
@@ -1597,44 +1549,6 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v7_by_removing_legacy_secondary_search_actions() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut settings = AppSettings::default();
-        settings.version = 7;
-        let search = settings
-            .actions
-            .iter()
-            .find(|action| action.id == "search")
-            .unwrap()
-            .clone();
-        settings.actions.push(ActionDefinition {
-            id: "search-bing".to_owned(),
-            name: "legacy-bing".to_owned(),
-            ..search.clone()
-        });
-        settings.actions.push(ActionDefinition {
-            id: "search-baidu".to_owned(),
-            name: "legacy-baidu".to_owned(),
-            ..search
-        });
-        for (order, action) in settings.actions.iter_mut().enumerate() {
-            action.order = order as u32;
-        }
-        fs::write(&path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
-
-        let migrated = SettingsRepository::new(&path).unwrap().get_settings();
-        assert_eq!(migrated.version, SETTINGS_VERSION);
-        let search_actions = migrated
-            .actions
-            .iter()
-            .filter(|action| action.kind == ActionKind::Search)
-            .map(|action| action.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(search_actions, vec!["search"]);
-    }
-
-    #[test]
     fn migrates_v1_provider_model_actions_and_plain_key() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1680,7 +1594,7 @@ mod tests {
         let settings = repository.get_settings();
         assert_eq!(settings.version, SETTINGS_VERSION);
         assert_eq!(settings.providers[0].models[0].id, "gpt-test");
-        assert_eq!(settings.actions[1].model_id.as_deref(), Some("gpt-test"));
+        assert_eq!(settings.actions[0].model_id.as_deref(), Some("gpt-test"));
         assert!(repository.get_public_settings().unwrap().providers[0].key_configured);
         assert!(!fs::read_to_string(path).unwrap().contains("legacy-secret"));
     }
@@ -1934,7 +1848,8 @@ mod tests {
                 "version": 1,
                 "enabled": false,
                 "searchTemplate": "https://example.com/?q={{text}}",
-                "ai": {"baseUrl":"https://gateway.example/v1","model":"model-a"}
+                "ai": {"baseUrl":"https://gateway.example/v1","model":"model-a"},
+                "actions": [{"id":"copy","type":"copy","name":"复制","icon":"copy","enabled":true,"order":0}]
               },
               "encryptedApiKey": "not-plaintext-and-not-migrated"
             }"#,
@@ -1944,7 +1859,10 @@ mod tests {
             SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
                 .unwrap();
         let settings = repository.get_settings();
-        assert!(serde_json::to_value(&settings).unwrap().get("enabled").is_none());
+        assert!(serde_json::to_value(&settings)
+            .unwrap()
+            .get("enabled")
+            .is_none());
         assert_eq!(settings.providers[0].base_url, "https://gateway.example/v1");
         assert_eq!(settings.providers[0].models[0].id, "model-a");
         assert!(!fs::read_to_string(path)
@@ -2395,6 +2313,85 @@ mod tests {
     }
 
     #[test]
+    fn retires_local_actions_and_persists_ai_configuration() {
+        for version in [2, 7, 8, 9, 10, 11, 15, SETTINGS_VERSION] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+            value["version"] = version.into();
+            value["searchEngines"] = serde_json::json!([]);
+            value["activeSearchEngineId"] = "baidu".into();
+            let mut ai = value["actions"][0].clone();
+            ai["id"] = "copy".into();
+            ai["prompt"] = "Custom task {{text}}".into();
+            value["actions"] = serde_json::json!([
+                {"id":"copy", "kind":"copy", "name":"复制", "icon":"copy", "enabled":true, "order":0},
+                {"id":"search-custom", "type":"search", "name":"搜索", "icon":"search", "enabled":true, "order":1, "searchEngineId":"baidu"},
+                ai
+            ]);
+            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+            let repository =
+                SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                    .unwrap();
+            let settings = repository.get_settings();
+            let ai = settings
+                .actions
+                .iter()
+                .find(|action| action.id == "copy")
+                .unwrap();
+            assert_eq!(ai.kind, ActionKind::Translate);
+            assert_eq!(ai.prompt.as_deref(), Some("Custom task {{text}}"));
+            assert_eq!(ai.provider_id.as_deref(), Some(DEFAULT_PROVIDER_ID));
+            assert_eq!(ai.model_id.as_deref(), Some(""));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert!(persisted.get("searchEngines").is_none());
+            assert!(persisted.get("activeSearchEngineId").is_none());
+            assert!(persisted["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|action| !matches!(action["kind"].as_str(), Some("copy" | "search"))));
+            assert_eq!(load_settings(&path).unwrap().settings, settings);
+            assert!(!load_settings(&path).unwrap().must_persist);
+        }
+    }
+
+    #[test]
+    fn retired_only_actions_receive_a_usable_toolbar() {
+        for version in [1, 15, SETTINGS_VERSION] {
+            for keep_disabled_ai in [false, true] {
+                let directory = tempdir().unwrap();
+                let path = directory.path().join("settings.json");
+                let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+                value["version"] = version.into();
+                if version == 1 {
+                    value["ai"] = serde_json::json!({"baseUrl":"https://api.openai.com/v1"});
+                }
+                let mut ai = value["actions"][0].clone();
+                ai["enabled"] = false.into();
+                if version == 1 {
+                    let ai = ai.as_object_mut().unwrap();
+                    let kind = ai.remove("kind").unwrap();
+                    ai.insert("type".to_owned(), kind);
+                }
+                value["actions"] = serde_json::json!([{ "id":"copy", "type":"copy", "name":"复制", "icon":"copy", "enabled":true, "order":0 }]);
+                if keep_disabled_ai {
+                    value["actions"].as_array_mut().unwrap().push(ai);
+                }
+                fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+                let loaded = load_settings(&path).unwrap();
+                assert!(loaded
+                    .settings
+                    .actions
+                    .iter()
+                    .any(|action| action.enabled && action.kind != ActionKind::Ask));
+                assert!(loaded.settings.normalize_and_validate().is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn retired_configuration_is_removed_without_changing_other_settings() {
         for version in [5, 11, 12, 13, 14, SETTINGS_VERSION] {
             let directory = tempdir().unwrap();
@@ -2426,51 +2423,13 @@ mod tests {
             assert!(persisted.get("selectionCapture").is_none());
             assert!(persisted.get("trigger").is_none());
             assert!(persisted.get("captureShortcut").is_none());
-            assert!(serde_json::to_value(repository.get_public_settings().unwrap())
-                .unwrap()
-                .get("selectionCapture")
-                .is_none());
+            assert!(
+                serde_json::to_value(repository.get_public_settings().unwrap())
+                    .unwrap()
+                    .get("selectionCapture")
+                    .is_none()
+            );
         }
-    }
-
-    #[test]
-    fn search_engine_preference_migrates_from_v9_global_to_action() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        // Seed a v9-style payload with global active engine.
-        let _repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let mut payload: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let object = payload.as_object_mut().unwrap();
-        object.insert("version".to_owned(), serde_json::Value::Number(9.into()));
-        object.insert(
-            "activeSearchEngineId".to_owned(),
-            serde_json::Value::String("baidu".to_owned()),
-        );
-        object.insert(
-            "searchEngines".to_owned(),
-            serde_json::to_value(crate::models::default_search_engines()).unwrap(),
-        );
-        std::fs::write(&path, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
-
-        let migrated =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let settings = migrated.get_settings();
-        let search = settings
-            .actions
-            .iter()
-            .find(|action| action.kind == ActionKind::Search)
-            .expect("search action");
-        assert_eq!(search.search_engine_id.as_deref(), Some("baidu"));
-        assert_eq!(settings.version, crate::models::SETTINGS_VERSION);
-        let persisted: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert!(persisted.get("activeSearchEngineId").is_none());
-        assert!(persisted.get("searchEngines").is_none());
-        assert_eq!(persisted["version"], crate::models::SETTINGS_VERSION);
     }
 
     #[test]

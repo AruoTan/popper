@@ -1301,7 +1301,7 @@ body {
   overflow-x: auto;
 }
 
-.search-behavior-note {
+.toolbar-preview-note {
   margin: 0;
   color: var(--text-tertiary);
   font-size: 11px;

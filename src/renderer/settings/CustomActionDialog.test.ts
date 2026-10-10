@@ -20,7 +20,7 @@ describe('promptAfterKindChange', () => {
   it('does not overwrite a prompt the user has customized', () => {
     const customized = '请翻译成日语：{{text}}'
     expect(promptAfterKindChange('translate', 'summary', customized)).toBe(customized)
-    expect(promptAfterKindChange('custom', 'copy', customized)).toBe(customized)
+    expect(promptAfterKindChange('custom', 'refine', customized)).toBe(customized)
   })
 
   it('restores the current action type default without saving immediately', () => {
@@ -83,16 +83,11 @@ describe('CustomActionDialog model + thinking', () => {
     expect(onCancel).toHaveBeenCalledOnce()
   })
 
-  it('saves a search action after choosing its type, engine and icon', () => {
-    const onSave = vi.fn()
-    render(createElement(CustomActionDialog, { action: null, providers: [], onCancel: vi.fn(), onSave }))
-    fireEvent.change(screen.getByLabelText('动作名称'), { target: { value: '搜索' } })
-    choose('动作类型', '搜索 / 打开网址')
-    choose('默认搜索引擎', 'Bing')
-    fireEvent.change(screen.getByRole('combobox', { name: '图标' }), { target: { value: 'book-open' } })
-    fireEvent.click(screen.getByRole('option', { name: 'book-open' }))
-    fireEvent.click(screen.getByRole('button', { name: '添加动作' }))
-    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ kind: 'search', searchEngineId: 'bing-china', icon: 'book-open' }))
+  it('offers AI action types without retired local actions', () => {
+    render(createElement(CustomActionDialog, { action: null, providers: [], onCancel: vi.fn(), onSave: vi.fn() }))
+    fireEvent.click(screen.getByRole('combobox', { name: '动作类型' }))
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['翻译', '总结', '解释', '润色', '自定义 AI'])
+    expect(screen.queryByRole('combobox', { name: '默认搜索引擎' })).not.toBeInTheDocument()
   })
 
   it('uses a unified provider+model list and saves thinking mode', () => {

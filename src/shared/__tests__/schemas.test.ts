@@ -36,12 +36,9 @@ describe('settings schemas and defaults', () => {
     expect(settingsUpdateSchema.safeParse({ trayEnabled: 'false' }).success).toBe(false)
   })
 
-  it('provides v15 defaults with search engine bound to the search action', () => {
+  it('provides v16 defaults with only AI actions', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
-    expect(DEFAULT_APP_SETTINGS.version).toBe(15)
-    expect(DEFAULT_APP_SETTINGS.actions.find((action) => action.kind === 'search')).toMatchObject({
-      searchEngineId: 'google'
-    })
+    expect(DEFAULT_APP_SETTINGS.version).toBe(16)
     expect(DEFAULT_APP_SETTINGS.providers[0]).toMatchObject({
       id: DEFAULT_PROVIDER_ID,
       enabled: true,
@@ -67,17 +64,10 @@ describe('settings schemas and defaults', () => {
       'translate',
       'explain',
       'summary',
-      'search',
-      'copy',
       'refine'
     ])
     expect(DEFAULT_ACTIONS.some((action) => action.kind === 'ask')).toBe(false)
-    expect(DEFAULT_ACTIONS.filter((action) => action.kind === 'search')).toMatchObject([
-      { id: 'search', searchEngineId: 'google' }
-    ])
-    for (const action of DEFAULT_ACTIONS.filter((candidate) => 'prompt' in candidate)) {
-      expect(action.prompt).toContain(TEXT_PLACEHOLDER)
-    }
+    for (const action of DEFAULT_ACTIONS) expect(action.prompt).toContain(TEXT_PLACEHOLDER)
   })
 
   it.each([11, 12, 13, 14])('discards retired capture configuration from v%s settings', (version) => {
@@ -86,14 +76,14 @@ describe('settings schemas and defaults', () => {
       applications: [{ application: 'reader.exe', strategy: 'selection-hook' }]
     }
     const migrated = migrateAppSettings({ ...DEFAULT_APP_SETTINGS, version, selectionCapture, trigger: { mode: "shortcut" }, captureShortcut: "CommandOrControl+Shift+F12" })
-    expect(migrated.version).toBe(15)
+    expect(migrated.version).toBe(16)
     expect(migrated).not.toHaveProperty('selectionCapture')
     expect(migrated).not.toHaveProperty('trigger')
     expect(migrated).not.toHaveProperty('captureShortcut')
     expect(migrated.actions).toEqual(DEFAULT_APP_SETTINGS.actions)
     expect(migrated.providers).toEqual(DEFAULT_APP_SETTINGS.providers)
     const publicSettings = migratePublicSettings({ ...DEFAULT_PUBLIC_SETTINGS, version, selectionCapture, trigger: { mode: "shortcut" }, captureShortcut: "CommandOrControl+Shift+F12" })
-    expect(publicSettings.version).toBe(15)
+    expect(publicSettings.version).toBe(16)
     expect(publicSettings).not.toHaveProperty('selectionCapture')
     expect(publicSettings).not.toHaveProperty('trigger')
     expect(publicSettings).not.toHaveProperty('captureShortcut')
@@ -111,7 +101,7 @@ describe('settings schemas and defaults', () => {
       migrateAppSettings({ ...DEFAULT_APP_SETTINGS, version, ...retired }),
       migratePublicSettings({ ...DEFAULT_PUBLIC_SETTINGS, version, ...retired })
     ]) {
-      expect(settings.version).toBe(15)
+      expect(settings.version).toBe(16)
       for (const key of ['enabled', 'toolbar', 'application']) expect(settings).not.toHaveProperty(key)
       expect(settings.result).toEqual(DEFAULT_APP_SETTINGS.result)
     }
@@ -155,7 +145,7 @@ describe('settings schemas and defaults', () => {
         { id: 'quote', name: '引用', icon: 'quote', kind: 'quote', enabled: true, order: 6 }
       ]
     })
-    expect(migrated.version).toBe(15)
+    expect(migrated.version).toBe(16)
     expect(migrated.actions.filter((action) => action.kind === 'ask')).toHaveLength(0)
     expect(migrated.actions.some((action) => action.id === 'ask-ai')).toBe(false)
   })
@@ -215,21 +205,6 @@ describe('settings schemas and defaults', () => {
     })
     expect(action).toMatchObject({ thinkingMode: 'off' })
 
-    for (const local of [
-      { id: 'copy', name: '复制', icon: 'clipboard-copy', kind: 'copy' as const, enabled: true, order: 0 },
-      {
-        id: 'search',
-        name: '搜索',
-        icon: 'search',
-        kind: 'search' as const,
-        enabled: true,
-        order: 1,
-        searchEngineId: 'google' as const
-      }
-    ]) {
-      const parsed = actionDefinitionSchema.parse(local)
-      expect(parsed).not.toHaveProperty('thinkingMode')
-    }
   })
 
   it('accepts thinking levels on models and modes on AI actions', () => {
@@ -321,10 +296,11 @@ describe('settings schemas and defaults', () => {
 
   it('requires one through eight enabled actions', () => {
     const enabled = Array.from({ length: MAX_ENABLED_ACTIONS }, (_, index) => ({
-      id: `copy-${index}`,
+      ...DEFAULT_ACTIONS[0]!,
+      id: `translate-${index}`,
       name: `动作 ${index}`,
       icon: 'clipboard-copy',
-      kind: 'copy' as const,
+      kind: 'translate' as const,
       enabled: true,
       order: index
     }))
@@ -352,7 +328,7 @@ describe('settings schemas and defaults', () => {
       ]
     }
     const migrated = migrateAppSettings(legacy)
-    expect(migrated.version).toBe(15)
+    expect(migrated.version).toBe(16)
     expect(migrated.providers[0]).toMatchObject({
       baseUrl: 'https://example.com/v1',
       apiKey: 'secret',
@@ -439,7 +415,7 @@ describe('settings schemas and defaults', () => {
       actions: [...DEFAULT_APP_SETTINGS.actions, secondTranslate]
     })
 
-    expect(migrated.version).toBe(15)
+    expect(migrated.version).toBe(16)
     expect(migrated.providers[1]).toEqual({
       ...secondProvider,
       enabled: true,
@@ -484,7 +460,7 @@ describe('settings schemas and defaults', () => {
       ]
     })
 
-    expect(migrated.version).toBe(15)
+    expect(migrated.version).toBe(16)
     expect(migrated.actions.find((action) => action.id === 'translate')).toMatchObject({
       prompt: DEFAULT_ACTION_PROMPTS.translate
     })
@@ -542,7 +518,7 @@ describe('settings schemas and defaults', () => {
     const migratedPublic = migratePublicSettings(withV4Prompts(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(15)
+      expect(settings.version).toBe(16)
       expect(settings.actions.find((action) => action.id === 'summary')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.summary
       })
@@ -619,7 +595,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
     const migratedPublic = migratePublicSettings(withLegacyV11(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(15)
+      expect(settings.version).toBe(16)
       expect(settings.actions.find((action) => action.id === 'translate')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.translate
       })
@@ -666,58 +642,48 @@ Return only the translated content. Do not include explanations, labels, tags, o
     })
   })
 
-  it('migrates v8/v9 global search engine preferences onto the search action', () => {
-    const fromMissing = migrateAppSettings({
-      ...DEFAULT_APP_SETTINGS,
-      version: 9,
-      actions: DEFAULT_APP_SETTINGS.actions.map((action) => {
-        if (action.kind !== 'search') return action
-        const { searchEngineId: _id, ...rest } = action
-        return rest
-      })
-    })
-    expect(fromMissing.actions.find((action) => action.kind === 'search')).toMatchObject({
-      searchEngineId: 'google'
-    })
-
-    const fromV8 = migrateAppSettings({
-      ...DEFAULT_APP_SETTINGS,
-      version: 8,
-      searchEngine: 'baidu',
-      searchTemplate: `https://www.google.com/search?q=${TEXT_PLACEHOLDER}`,
-      actions: DEFAULT_APP_SETTINGS.actions.map((action) => {
-        if (action.kind !== 'search') return action
-        const { searchEngineId: _id, ...rest } = action
-        return rest
-      })
-    })
-    expect(fromV8.version).toBe(15)
-    expect(fromV8.actions.find((action) => action.kind === 'search')).toMatchObject({
-      searchEngineId: 'baidu'
-    })
-    expect(fromV8).not.toHaveProperty('activeSearchEngineId')
-    expect(fromV8).not.toHaveProperty('searchEngines')
+  it.each([1, 2, 7, 8, 9, 10, 11, 15, 16])('retires local actions from v%s internal and public settings', (version) => {
+    const local = [
+      { id: 'copy', name: '复制', icon: 'clipboard-copy', type: 'copy', enabled: true, order: 0 },
+      { id: 'search-custom', name: '搜索', icon: 'search', kind: 'search', searchEngineId: 'baidu', enabled: true, order: 1 }
+    ]
+    const ai = { ...DEFAULT_ACTIONS[0]!, id: 'copy', name: '保留 AI', prompt: 'Custom task {{text}}', order: 2 }
+    for (const [defaults, migrate] of [
+      [DEFAULT_APP_SETTINGS, migrateAppSettings],
+      [DEFAULT_PUBLIC_SETTINGS, migratePublicSettings]
+    ] as const) {
+      const result = migrate({ ...defaults, version, actions: [...local, ai], searchEngine: 'baidu', searchTemplate: 'unused', searchEngines: [], activeSearchEngineId: 'baidu' })
+      expect(result.actions.find((action) => action.id === 'copy')).toMatchObject({ kind: 'translate', prompt: ai.prompt, enabled: true })
+      expect(result.actions.some((action) => ['copy', 'search'].includes(action.kind))).toBe(false)
+      for (const key of ['searchEngine', 'searchTemplate', 'searchEngines', 'activeSearchEngineId']) expect(result).not.toHaveProperty(key)
+      expect(migrate(result)).toEqual(result)
+    }
   })
 
-  it('removes legacy secondary search actions when migrating v7 settings', () => {
-    const search = DEFAULT_PUBLIC_SETTINGS.actions.find((action) => action.id === 'search')!
+  it('preserves provider and model bindings in v15 public snapshots', () => {
+    const action = { ...DEFAULT_ACTIONS[0]!, modelId: 'configured-model', prompt: 'Keep my prompt {{text}}' }
     const migrated = migratePublicSettings({
       ...DEFAULT_PUBLIC_SETTINGS,
-      version: 7,
-      actions: [
-        ...DEFAULT_PUBLIC_SETTINGS.actions,
-        { ...search, id: 'search-bing', enabled: false, order: 7 },
-        { ...search, id: 'search-baidu', enabled: false, order: 8 }
-      ]
+      version: 15,
+      providers: [{ ...DEFAULT_PUBLIC_SETTINGS.providers[0]!, models: [{ id: 'configured-model', name: 'Configured Model', thinkingLevels: [] }], keyConfigured: true }],
+      actions: [action, { id: 'copy', kind: 'copy', name: '复制', icon: 'copy', enabled: true, order: 1 }]
     })
+    expect(migrated.actions).toEqual([action])
+    expect(migrated.providers[0]).toMatchObject({ keyConfigured: true, models: [{ id: 'configured-model' }] })
+  })
 
-    expect(migrated.version).toBe(15)
-    expect(migrated.actions.filter((action) => action.kind === 'search')).toMatchObject([
-      { id: 'search', icon: 'search', searchEngineId: 'google' }
-    ])
-    expect(migrated.actions.map((action) => action.order)).toEqual(
-      migrated.actions.map((_, index) => index)
-    )
+  it('keeps the toolbar usable when all enabled legacy actions are retired', () => {
+    const local = { id: 'copy', name: '复制', icon: 'clipboard-copy', kind: 'copy', enabled: true, order: 0 }
+    for (const remaining of [[], [{ ...DEFAULT_ACTIONS[0]!, enabled: false }], [{ ...DEFAULT_ACTIONS[0]!, id: 'ask-ai', kind: 'ask', enabled: true }]]) {
+      const result = migratePublicSettings({ ...DEFAULT_PUBLIC_SETTINGS, version: 15, actions: [local, ...remaining] })
+      expect(result.actions.length).toBeGreaterThan(0)
+      expect(result.actions.some((action) => action.enabled)).toBe(true)
+      expect(result.actions.every((action) => !['copy', 'search'].includes(action.kind))).toBe(true)
+    }
+    for (const kind of ['copy', 'search']) {
+      expect(actionDefinitionSchema.safeParse({ ...local, kind }).success).toBe(false)
+      expect(settingsUpdateSchema.safeParse({ actions: [{ ...local, kind }] }).success).toBe(false)
+    }
   })
 
   it('validates the supported result text size range', () => {

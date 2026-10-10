@@ -2,7 +2,6 @@ import {
   MAX_ENABLED_ACTIONS,
   TEXT_PLACEHOLDER,
   isAiActionDefinition,
-  isSearchActionDefinition,
   publicSettingsSchema,
   settingsUpdateSchema,
   validateOpenAiBaseUrl,
@@ -101,9 +100,6 @@ export function buildSettingsUpdate(settings: PublicSettings):
   for (const action of actions) {
     if (!isLucideIconName(action.icon)) {
       return { valid: false, message: `“${action.name}”使用了无效的 Lucide 图标` }
-    }
-    if (isSearchActionDefinition(action) && !action.searchEngineId) {
-      return { valid: false, message: `“${action.name}”需要选择搜索引擎` }
     }
     if (!isAiActionDefinition(action)) continue
     if (!action.prompt.includes(TEXT_PLACEHOLDER)) {

@@ -16,8 +16,6 @@ import {
 
 const action = (kind: ActionKind): ActionDefinition => {
   const base = { id: kind, name: kind, icon: "sparkles", kind, enabled: true, order: 0 };
-  if (kind === "copy") return { ...base, kind };
-  if (kind === "search") return { ...base, kind, searchEngineId: "google" };
   return {
     ...base,
     kind,
@@ -210,12 +208,6 @@ Rules:
       prompt: Array.from({ length: 4 }, () => "{{text}}").join("\n"),
     };
     expect(() => buildActionPrompt(amplified, "a".repeat(20_000))).toThrowError(PromptBuildError);
-  });
-
-  it("does not construct AI prompts for local actions", () => {
-    for (const kind of ["copy", "search"] as const) {
-      expect(() => buildActionPrompt(action(kind), "text")).toThrowError(PromptBuildError);
-    }
   });
 
   it("builds ask prompts with selection placeholder expansion", () => {

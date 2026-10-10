@@ -56,7 +56,6 @@ import appIcon from "../../../assets/popper.png";
 import {
   APP_NAME,
   DEFAULT_OPENAI_BASE_URL,
-  DEFAULT_SEARCH_ENGINE_ID,
   MAX_ENABLED_ACTIONS,
   RESULT_FONT_SIZE_MAX,
   RESULT_FONT_SIZE_MIN,
@@ -64,7 +63,6 @@ import {
   TRANSLATION_LANGUAGE_NAMES,
   actionDefinitionSchema,
   isAiActionDefinition,
-  searchEngineDisplayName,
   type AccessibilityStatus,
   type ActionDefinition,
   type ProviderModel,
@@ -165,8 +163,6 @@ function restoredSettingsSection(): SettingsSectionId {
 }
 
 const ACTION_KIND_NAMES: Readonly<Record<ActionDefinition["kind"], string>> = {
-  copy: "复制",
-  search: "搜索",
   translate: "翻译",
   summary: "总结",
   explain: "解释",
@@ -246,7 +242,7 @@ function accessibilityPresentation(status: AccessibilityStatus | null): {
       heading: "选区访问",
       description: "当前操作系统尚未提供划词捕获支持。",
       state: "当前平台不受支持",
-      detail: "复制、搜索和 AI 动作需要先支持此平台的原生选区接口。",
+      detail: "划词动作需要先支持此平台的原生选区接口。",
       button: "不受支持",
     };
   }
@@ -902,33 +898,13 @@ export function SettingsApp(): JSX.Element {
         enabled: existing?.enabled ?? false,
         order: existing?.order ?? current.actions.length,
       };
-      let candidate: ActionDefinition;
-      if (
-        isAiActionDefinition({
-          ...base,
-          providerId: value.providerId ?? "",
-          modelId: value.modelId ?? "",
-          prompt: value.prompt ?? "",
-          thinkingMode: value.thinkingMode ?? "off",
-        } as ActionDefinition)
-      ) {
-        candidate = {
-          ...base,
-          providerId: value.providerId ?? "",
-          modelId: value.modelId ?? "",
-          prompt: value.prompt ?? "",
-          thinkingMode: value.thinkingMode ?? "off",
-        } as ActionDefinition;
-      } else if (value.kind === "search") {
-        candidate = {
-          ...base,
-          kind: "search",
-          searchEngineId: value.searchEngineId ?? DEFAULT_SEARCH_ENGINE_ID,
-        } as ActionDefinition;
-      } else {
-        candidate = base as ActionDefinition;
-      }
-      const action = actionDefinitionSchema.parse(candidate);
+      const action = actionDefinitionSchema.parse({
+        ...base,
+        providerId: value.providerId ?? "",
+        modelId: value.modelId ?? "",
+        prompt: value.prompt ?? "",
+        thinkingMode: value.thinkingMode ?? "off",
+      });
       const actions = existing
         ? current.actions.map((item) => (item.id === existing.id ? action : item))
         : [...current.actions, action];
@@ -1410,8 +1386,7 @@ export function SettingsApp(): JSX.Element {
                     <div className="settings-card empty-card empty-card--guided">
                       <strong>尚未配置服务商</strong>
                       <p>
-                        本地「复制」「搜索」仍可使用。需要翻译、总结等 AI
-                        功能时，点右上角「添加服务商」开始。
+                        使用翻译、总结等 AI 功能时，点右上角「添加服务商」开始。
                       </p>
                     </div>
                   )}
@@ -1473,9 +1448,8 @@ export function SettingsApp(): JSX.Element {
                     <ToolbarActions actions={getToolbarActions(draft.actions)} preview />
                   </div>
                 </div>
-                <p className="search-behavior-note">
-                  问 AI 是固定在工具栏最前方的内置功能，不计入动作数量；搜索动作遇到 HTTP(S)
-                  URL、域名或 IP 时会直接打开。
+                <p className="toolbar-preview-note">
+                  问 AI 是固定在工具栏最前方的内置功能，不计入动作数量。
                 </p>
               </div>
               <DndContext
@@ -2361,11 +2335,7 @@ function SortableActionRow({
         <strong>{action.name}</strong>
         <span>
           {ACTION_KIND_NAMES[action.kind]}
-          {action.kind === "search" && "searchEngineId" in action
-            ? ` · ${searchEngineDisplayName(action.searchEngineId)}`
-            : isAiActionDefinition(action)
-              ? ` · ${action.modelId || "未选择模型"}`
-              : ""}
+          {` · ${action.modelId || "未选择模型"}`}
         </span>
         {isAiActionDefinition(action) && (
           <span className="action-row__prompt" title={action.prompt}>
