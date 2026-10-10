@@ -1,12 +1,10 @@
 import {
-  BUILTIN_SEARCH_ENGINE_IDS,
   DEFAULT_FILTER_SETTINGS,
   DEFAULT_LOCALE,
   DEFAULT_OPENAI_BASE_URL,
   DEFAULT_PROVIDER_ID,
   DEFAULT_PROVIDER_NAME,
   DEFAULT_RESULT_SETTINGS,
-  DEFAULT_SEARCH_ENGINE_ID,
   DEFAULT_TRANSLATION_PAIR,
   RESULT_FONT_SIZE_MAX,
   RESULT_FONT_SIZE_MIN,
@@ -23,9 +21,7 @@ import {
   isAiActionDefinition,
   type ProviderModel,
   type PublicSettings,
-  publicSettingsSchema,
-  type SearchEngineId,
-  searchEngineIdSchema
+  publicSettingsSchema
 } from './schemas'
 
 export const DEFAULT_ACTION_PROMPTS = Object.freeze({
@@ -178,15 +174,13 @@ export const DEFAULT_ACTIONS: readonly ActionDefinition[] = Object.freeze([
     modelId: DEFAULT_MODEL_ID,
     thinkingMode: 'off'
   },
-  { id: 'search', name: '搜索', icon: 'search', kind: 'search', enabled: true, order: 3, searchEngineId: DEFAULT_SEARCH_ENGINE_ID },
-  { id: 'copy', name: '复制', icon: 'clipboard-copy', kind: 'copy', enabled: true, order: 4 },
   {
     id: 'refine',
     name: '润色',
     icon: 'wand-sparkles',
     kind: 'refine',
     enabled: false,
-    order: 5,
+    order: 3,
     prompt: DEFAULT_ACTION_PROMPTS.refine,
     providerId: DEFAULT_PROVIDER_ID,
     modelId: DEFAULT_MODEL_ID,
@@ -271,82 +265,36 @@ function migrateV2Candidate(candidate: UnknownRecord): UnknownRecord {
   })
 }
 
-function parseBuiltinSearchEngineId(value: unknown): SearchEngineId {
-  const parsed = searchEngineIdSchema.safeParse(
-    typeof value === 'string' ? value.trim() : value
-  )
-  return parsed.success ? parsed.data : DEFAULT_SEARCH_ENGINE_ID
-}
-
-/** Resolves the preferred engine id from v8/v9 global fields or a search action. */
-function resolveLegacyActiveSearchEngineId(candidate: UnknownRecord): SearchEngineId {
-  if (typeof candidate.activeSearchEngineId === 'string') {
-    return parseBuiltinSearchEngineId(candidate.activeSearchEngineId)
-  }
-  if (typeof candidate.searchEngine === 'string') {
-    return parseBuiltinSearchEngineId(candidate.searchEngine)
-  }
-  return DEFAULT_SEARCH_ENGINE_ID
-}
-
-/**
- * v10: drop global search engine list/settings and bind engine id onto each search action.
- * Custom engines and templates are discarded; only built-in ids are kept.
- */
-export function migrateSearchEnginesCandidate(candidate: UnknownRecord): UnknownRecord {
-  const fallbackEngine = resolveLegacyActiveSearchEngineId(candidate)
-  const actions = Array.isArray(candidate.actions)
-    ? candidate.actions.map((rawAction) => {
-      const action = asRecord(rawAction)
-      if (action.kind !== 'search') return rawAction
-      const existing = parseBuiltinSearchEngineId(action.searchEngineId)
-      // Prefer action-level id when already a valid builtin; otherwise use legacy global active.
-      const hasValidExisting =
-        typeof action.searchEngineId === 'string' &&
-        (BUILTIN_SEARCH_ENGINE_IDS as readonly string[]).includes(action.searchEngineId.trim())
-      return {
-        ...action,
-        searchEngineId: hasValidExisting ? existing : fallbackEngine
-      }
-    })
-    : candidate.actions
-
+/** Retire local actions while preserving AI actions and their model bindings. */
+function removeRetiredActionsCandidate(candidate: UnknownRecord): UnknownRecord {
   const {
-    searchEngine: _legacySearchEngine,
-    searchTemplate: _legacySearchTemplate,
-    searchEngines: _legacySearchEngines,
-    activeSearchEngineId: _legacyActive,
+    searchEngine: _engine,
+    searchTemplate: _template,
+    searchEngines: _engines,
+    activeSearchEngineId: _active,
     ...rest
   } = candidate
-
-  return {
-    ...rest,
-    actions
-  }
-}
-
-function migrateBuiltinSearchActionsCandidate(candidate: UnknownRecord): UnknownRecord {
-  if (!Array.isArray(candidate.actions)) return candidate
-  const actions = candidate.actions.flatMap((rawAction) => {
-    const action = asRecord(rawAction)
-    if (
-      action.kind === 'search' &&
-      (action.id === 'search-bing' || action.id === 'search-baidu')
-    ) return []
-    if (action.id !== 'search' || action.kind !== 'search') return [rawAction]
-    return [{
-      ...action,
-      name: action.name === '谷歌' ? '搜索' : action.name,
-      icon: action.icon === 'globe' ? 'search' : action.icon
-    }]
+  if (!Array.isArray(candidate.actions)) return rest
+  const actions = candidate.actions.filter((raw) => {
+    const action = asRecord(raw)
+    const kind = action.kind ?? action.type
+    return kind !== 'copy' && kind !== 'search'
+  }).map((raw) => {
+    const { searchEngineId: _engineId, ...action } = asRecord(raw)
+    return action
   })
-  return {
-    ...candidate,
-    actions: actions.map((rawAction, order) => ({ ...asRecord(rawAction), order }))
+  if (actions.length !== candidate.actions.length) {
+    const editable = (action: UnknownRecord) =>
+      !['ask', 'quote'].includes(String(action.kind ?? action.type)) && action.id !== 'ask-ai'
+    if (!actions.some(editable)) actions.push(...DEFAULT_ACTIONS.map((action) => ({ ...action })))
+    if (!actions.some((action) => editable(action) && action.enabled)) {
+      const index = actions.findIndex(editable)
+      actions[index] = { ...actions[index], enabled: true }
+    }
   }
+  return { ...rest, actions: actions.map((action, order) => ({ ...action, order })) }
 }
 
-/** v11: rewrite local quote clipboard actions into the ask-ai AI action. */
 function migrateQuoteToAskActions(candidate: UnknownRecord): UnknownRecord {
   if (!Array.isArray(candidate.actions)) return candidate
 
@@ -437,10 +385,8 @@ function migratePromptDefaultsCandidate(candidate: UnknownRecord): UnknownRecord
       return rawAction
     })
     : candidate.actions
-  const migrated = migrateSearchEnginesCandidate(
-    migrateBuiltinSearchActionsCandidate(
-      migrateQuoteToAskActions({ ...candidate, version: SETTINGS_VERSION, actions })
-    )
+  const migrated = removeRetiredActionsCandidate(
+    migrateQuoteToAskActions({ ...candidate, version: SETTINGS_VERSION, actions })
   )
   const editableActions = Array.isArray(migrated.actions)
     ? migrated.actions
@@ -485,8 +431,6 @@ function migrateLegacyActions(value: unknown, modelId: string): ActionDefinition
     // Accept legacy quote and rewrite below; accept ask as AI.
     if (
       ![
-        'copy',
-        'search',
         'quote',
         'ask',
         'translate',
@@ -521,18 +465,6 @@ function migrateLegacyActions(value: unknown, modelId: string): ActionDefinition
       enabled: typeof action.enabled === 'boolean' ? action.enabled : false,
       order: typeof action.order === 'number' ? action.order : index
     }
-    if (kind === 'copy') {
-      migrated.push({ ...base, kind })
-      continue
-    }
-    if (kind === 'search') {
-      migrated.push({
-        ...base,
-        kind,
-        searchEngineId: parseBuiltinSearchEngineId(action.searchEngineId)
-      })
-      continue
-    }
     const rawPrompt = typeof action.prompt === 'string' ? action.prompt.trim() : ''
     migrated.push({
       ...base,
@@ -556,16 +488,14 @@ function migrateLegacyActions(value: unknown, modelId: string): ActionDefinition
   const actions = normalized
     .filter((action) => action.kind !== 'ask' && action.id !== 'ask-ai')
     .map((action, order) => ({ ...action, order }))
-  return migrateBuiltinSearchActionsCandidate(
-    migrateQuoteToAskActions({ actions })
-  ).actions as ActionDefinition[]
+  return migrateQuoteToAskActions({ actions }).actions as ActionDefinition[]
 }
 
 function migrateLegacyCommon(input: UnknownRecord) {
   const defaults = DEFAULT_APP_SETTINGS
   const ai = asRecord(input.ai)
   const modelId = typeof ai.model === 'string' ? ai.model.trim() : ''
-  const withSearch = migrateSearchEnginesCandidate({
+  const migrated = removeRetiredActionsCandidate({
     ...input,
     actions: migrateLegacyActions(input.actions, modelId)
   })
@@ -575,7 +505,7 @@ function migrateLegacyCommon(input: UnknownRecord) {
     translate: input.translate ?? defaults.translate,
     result: input.result ?? defaults.result,
     filter: input.filter ?? defaults.filter,
-    actions: withSearch.actions as ActionDefinition[],
+    actions: migrated.actions as ActionDefinition[],
     ai
   }
 }
@@ -590,9 +520,10 @@ export function migrateAppSettings(input: unknown): AppSettings {
     toolbar: _legacyToolbar,
     application: _legacyApplication,
     ...candidate
-  } = asRecord(input)
+  } = removeRetiredActionsCandidate(asRecord(input))
   if (
     candidate.version === SETTINGS_VERSION ||
+    candidate.version === 15 ||
     candidate.version === 14 ||
     candidate.version === 13 ||
     candidate.version === 12 ||
@@ -640,9 +571,10 @@ export function migratePublicSettings(input: unknown): PublicSettings {
     toolbar: _legacyToolbar,
     application: _legacyApplication,
     ...candidate
-  } = asRecord(input)
+  } = removeRetiredActionsCandidate(asRecord(input))
   if (
     candidate.version === SETTINGS_VERSION ||
+    candidate.version === 15 ||
     candidate.version === 14 ||
     candidate.version === 13 ||
     candidate.version === 12 ||

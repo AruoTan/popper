@@ -58,200 +58,6 @@ describe("ToolbarApp", () => {
     Reflect.deleteProperty(document, "elementFromPoint");
   });
 
-  it("keeps the toolbar visible and shows a temporary success icon after copy succeeds", async () => {
-    const hideToolbar = vi.fn().mockResolvedValue(undefined);
-    const runAction = vi.fn().mockResolvedValue({ accepted: true });
-    const presentToolbar = vi.fn().mockResolvedValue(true);
-    const api = {
-      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
-      getCurrentSelection: vi.fn().mockResolvedValue(selection),
-      runAction,
-      hideToolbar,
-      reportToolbarSize: vi.fn().mockResolvedValue(undefined),
-      presentToolbar,
-      onSelection: vi.fn().mockReturnValue(() => undefined),
-      onSettingsChanged: vi.fn().mockReturnValue(() => undefined),
-    } as unknown as WindowPopperApi;
-
-    Object.defineProperty(window, "_popper_", {
-      configurable: true,
-      value: api,
-    });
-    const view = render(<ToolbarApp />);
-    const copy = await screen.findByRole("button", { name: "复制" });
-    await waitFor(() => expect(api.getCurrentSelection).toHaveBeenCalled());
-    await waitFor(() => expect(presentToolbar).toHaveBeenCalled());
-    expect(api.reportToolbarSize).not.toHaveBeenCalled();
-    const presentationsBeforeAction = presentToolbar.mock.calls.length;
-    fireEvent.click(copy);
-
-    await waitFor(() => {
-      expect(runAction).toHaveBeenCalledWith("copy", undefined, "selection-1");
-    });
-    expect(hideToolbar).not.toHaveBeenCalled();
-    await waitFor(() => expect(copy.querySelector(".toolbar-copy-success")).not.toBeNull());
-    await act(async () => Promise.resolve());
-    expect(presentToolbar).toHaveBeenCalledTimes(presentationsBeforeAction);
-
-    fireEvent.click(copy);
-    await waitFor(() => expect(runAction).toHaveBeenCalledTimes(2));
-    expect(hideToolbar).not.toHaveBeenCalled();
-    await waitFor(() => expect(copy.querySelector(".toolbar-copy-success")).toBeNull(), {
-      timeout: 2_500,
-    });
-
-    view.unmount();
-  });
-
-  it("hides after a single outside dismiss following copy success", async () => {
-    const hideToolbar = vi.fn().mockResolvedValue(undefined);
-    const runAction = vi.fn().mockResolvedValue({ accepted: true });
-    const presentToolbar = vi.fn().mockResolvedValue(true);
-    let dismissListener: ((payload: { selectionId?: string; reason: string }) => void) | undefined;
-    const unsubscribeDismiss = vi.fn();
-    const api = {
-      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
-      getCurrentSelection: vi.fn().mockResolvedValue(selection),
-      runAction,
-      hideToolbar,
-      reportToolbarSize: vi.fn().mockResolvedValue(undefined),
-      presentToolbar,
-      onSelection: vi.fn().mockReturnValue(() => undefined),
-      onSettingsChanged: vi.fn().mockReturnValue(() => undefined),
-      onToolbarDismissed: vi.fn(
-        (listener: (payload: { selectionId?: string; reason: string }) => void) => {
-          dismissListener = listener;
-          return unsubscribeDismiss;
-        },
-      ),
-    } as unknown as WindowPopperApi;
-
-    Object.defineProperty(window, "_popper_", {
-      configurable: true,
-      value: api,
-    });
-    const view = render(<ToolbarApp />);
-    const copy = await screen.findByRole("button", { name: "复制" });
-    await waitFor(() => expect(presentToolbar).toHaveBeenCalled());
-    fireEvent.click(copy);
-
-    await waitFor(() => {
-      expect(runAction).toHaveBeenCalledWith("copy", undefined, "selection-1");
-    });
-    await waitFor(() => expect(copy.querySelector(".toolbar-copy-success")).not.toBeNull());
-    expect(hideToolbar).not.toHaveBeenCalled();
-
-    act(() => {
-      dismissListener?.({ selectionId: "selection-1", reason: "mouseDown" });
-    });
-
-    // Native already hid the window; React must drop selection + copy success
-    // so a stale shell cannot re-present. Action buttons still render from
-    // settings, but the toolbar enters the no-selection empty state.
-    await waitFor(() => {
-      expect(screen.getByRole("toolbar", { name: "划词动作" })).toBeInTheDocument();
-    });
-    expect(document.querySelector(".toolbar-copy-success")).toBeNull();
-    expect(hideToolbar).not.toHaveBeenCalled();
-
-    view.unmount();
-    expect(unsubscribeDismiss).toHaveBeenCalledOnce();
-  });
-
-  it("keeps the original copy icon and toolbar when copy is rejected", async () => {
-    const hideToolbar = vi.fn().mockResolvedValue(undefined);
-    const runAction = vi.fn().mockResolvedValue({
-      accepted: false,
-      message: "无法写入系统剪贴板",
-    });
-    const api = {
-      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
-      getCurrentSelection: vi.fn().mockResolvedValue(selection),
-      runAction,
-      hideToolbar,
-      reportToolbarSize: vi.fn().mockResolvedValue(undefined),
-      presentToolbar: vi.fn().mockResolvedValue(true),
-      onSelection: vi.fn().mockReturnValue(() => undefined),
-      onSettingsChanged: vi.fn().mockReturnValue(() => undefined),
-    } as unknown as WindowPopperApi;
-
-    Object.defineProperty(window, "_popper_", { configurable: true, value: api });
-    render(<ToolbarApp />);
-
-    const copy = await screen.findByRole("button", { name: "复制" });
-    fireEvent.click(copy);
-
-    await waitFor(() => expect(runAction).toHaveBeenCalledWith("copy", undefined, "selection-1"));
-    expect(screen.getByRole("alert")).toHaveTextContent("无法写入系统剪贴板");
-    expect(copy.querySelector(".toolbar-copy-success")).toBeNull();
-    expect(hideToolbar).not.toHaveBeenCalled();
-  });
-
-  it("uses the saved search engine without adding controls to the toolbar", async () => {
-    const runAction = vi.fn().mockResolvedValue({ accepted: false, message: "search unavailable" });
-    const api = {
-      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
-      getCurrentSelection: vi.fn().mockResolvedValue(selection),
-      runAction,
-      hideToolbar: vi.fn().mockResolvedValue(undefined),
-      reportToolbarSize: vi.fn().mockResolvedValue(undefined),
-      presentToolbar: vi.fn().mockResolvedValue(true),
-      onSelection: vi.fn().mockReturnValue(() => undefined),
-      onSettingsChanged: vi.fn().mockReturnValue(() => undefined),
-    } as unknown as WindowPopperApi;
-
-    Object.defineProperty(window, "_popper_", { configurable: true, value: api });
-    render(<ToolbarApp />);
-
-    const toolbar = await screen.findByRole("toolbar");
-    const primary = toolbar.querySelector<HTMLButtonElement>(
-      '[data-toolbar-control="action:search"]',
-    );
-    expect(primary).not.toBeNull();
-    expect(toolbar.querySelector('[data-toolbar-control="search-engines"]')).toBeNull();
-    expect(document.querySelector('[data-toolbar-control^="search-engine:"]')).toBeNull();
-
-    fireEvent.click(primary!);
-    await waitFor(() => {
-      expect(runAction).toHaveBeenLastCalledWith("search", undefined, "selection-1");
-    });
-  });
-
-  it("clears copy success when a newer selection replaces the current one", async () => {
-    let selectionListener: ((payload: SelectionPayload) => void) | undefined;
-    const runAction = vi.fn().mockResolvedValue({ accepted: true });
-    const api = {
-      getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
-      getCurrentSelection: vi.fn().mockResolvedValue(selection),
-      runAction,
-      hideToolbar: vi.fn().mockResolvedValue(undefined),
-      reportToolbarSize: vi.fn().mockResolvedValue(undefined),
-      presentToolbar: vi.fn().mockResolvedValue(true),
-      onSelection: vi.fn((listener: (payload: SelectionPayload) => void) => {
-        selectionListener = listener;
-        return () => undefined;
-      }),
-      onSettingsChanged: vi.fn().mockReturnValue(() => undefined),
-    } as unknown as WindowPopperApi;
-
-    Object.defineProperty(window, "_popper_", { configurable: true, value: api });
-    render(<ToolbarApp />);
-
-    const copy = await screen.findByRole("button", { name: "复制" });
-    fireEvent.click(copy);
-    await waitFor(() => expect(copy.querySelector(".toolbar-copy-success")).not.toBeNull());
-
-    act(() => {
-      selectionListener?.({
-        ...selection,
-        selectionId: "selection-2",
-        text: "新的选中文本",
-      });
-    });
-
-    await waitFor(() => expect(copy.querySelector(".toolbar-copy-success")).toBeNull());
-  });
-
   it("presents only after selection, settings, and the committed layout are ready", async () => {
     const settings = deferred<PublicSettings>();
     const presentToolbar = vi.fn().mockResolvedValue(true);
@@ -430,13 +236,13 @@ describe("ToolbarApp", () => {
     });
 
     act(() => stalePresentation.resolve(false));
-    const copy = screen
+    const explain = screen
       .getByRole("toolbar")
-      .querySelector<HTMLButtonElement>('[data-toolbar-control="action:copy"]');
-    expect(copy).not.toBeNull();
-    fireEvent.click(copy!);
+      .querySelector<HTMLButtonElement>('[data-toolbar-control="action:explain"]');
+    expect(explain).not.toBeNull();
+    fireEvent.click(explain!);
     await waitFor(() => {
-      expect(runAction).toHaveBeenCalledWith("copy", undefined, "selection-2");
+      expect(runAction).toHaveBeenCalledWith("explain", undefined, "selection-2");
     });
   });
 
@@ -510,13 +316,13 @@ describe("ToolbarApp", () => {
         height: 38,
       });
     });
-    const copy = screen
+    const explain = screen
       .getByRole("toolbar")
-      .querySelector<HTMLButtonElement>('[data-toolbar-control="action:copy"]');
-    expect(copy).not.toBeNull();
-    fireEvent.click(copy!);
+      .querySelector<HTMLButtonElement>('[data-toolbar-control="action:explain"]');
+    expect(explain).not.toBeNull();
+    fireEvent.click(explain!);
     await waitFor(() => {
-      expect(runAction).toHaveBeenCalledWith("copy", undefined, "selection-2");
+      expect(runAction).toHaveBeenCalledWith("explain", undefined, "selection-2");
     });
     expect(hideToolbar).not.toHaveBeenCalled();
     consoleWarn.mockRestore();
@@ -691,7 +497,6 @@ describe("ToolbarApp", () => {
         "ask-ai",
         { x: 420, y: 300 },
         "selection-1",
-        undefined,
         "这段话是什么意思？",
       );
     });
@@ -804,7 +609,7 @@ describe("ToolbarApp", () => {
     Object.defineProperty(window, "_popper_", { configurable: true, value: api });
     render(<ToolbarApp />);
     const translate = await screen.findByRole("button", { name: "翻译" });
-    const copy = screen.getByRole("button", { name: "复制" });
+    const explain = screen.getByRole("button", { name: "解释" });
     await waitFor(() => expect(presentToolbar).toHaveBeenCalled());
     const presentationsBeforeAction = presentToolbar.mock.calls.length;
 
@@ -813,9 +618,9 @@ describe("ToolbarApp", () => {
     await waitFor(() => {
       expect(runAction).toHaveBeenCalledWith("translate", { x: 420, y: 300 }, "selection-1");
       expect(translate).toBeDisabled();
-      expect(copy).not.toBeDisabled();
-      expect(copy).toHaveAttribute("aria-disabled", "true");
-      expect(copy).toHaveClass("toolbar-action--muted");
+      expect(explain).not.toBeDisabled();
+      expect(explain).toHaveAttribute("aria-disabled", "true");
+      expect(explain).toHaveClass("toolbar-action--muted");
     });
     expect(translate.querySelector(".spin")).not.toBeNull();
     expect(presentToolbar).toHaveBeenCalledTimes(presentationsBeforeAction);
@@ -823,7 +628,7 @@ describe("ToolbarApp", () => {
     fireEvent.click(translate, { detail: 1, screenX: 420, screenY: 300 });
     expect(runAction).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(copy);
+    fireEvent.click(explain);
     expect(runAction).toHaveBeenCalledTimes(1);
 
     await act(async () => pending.resolve({ accepted: true }));
@@ -883,11 +688,11 @@ describe("ToolbarApp", () => {
     Object.defineProperty(window, "_popper_", { configurable: true, value: api });
     render(<ToolbarApp />);
     const toolbar = await screen.findByRole("toolbar");
-    const copy = screen.getByRole("button", { name: "复制" });
+    const explain = screen.getByRole("button", { name: "解释" });
     const translate = screen.getByRole("button", { name: "翻译" });
     expect(screen.queryByRole("button", { name: "关闭工具栏" })).not.toBeInTheDocument();
 
-    expect(copy).not.toHaveAttribute("data-hovered");
+    expect(explain).not.toHaveAttribute("data-hovered");
     expect(translate).not.toHaveAttribute("data-hovered");
     // Showing a non-activating WKWebView beneath a stationary cursor can
     // synthesize an enter/over event. It must not revive a previous action.
@@ -896,15 +701,15 @@ describe("ToolbarApp", () => {
 
     fireEvent.pointerMove(translate);
     expect(translate).toHaveAttribute("data-hovered", "true");
-    expect(copy).not.toHaveAttribute("data-hovered");
+    expect(explain).not.toHaveAttribute("data-hovered");
 
-    fireEvent.pointerMove(copy);
-    expect(copy).toHaveAttribute("data-hovered", "true");
+    fireEvent.pointerMove(explain);
+    expect(explain).toHaveAttribute("data-hovered", "true");
     expect(translate).not.toHaveAttribute("data-hovered");
 
     fireEvent.mouseMove(translate);
     expect(translate).toHaveAttribute("data-hovered", "true");
-    expect(copy).not.toHaveAttribute("data-hovered");
+    expect(explain).not.toHaveAttribute("data-hovered");
 
     fireEvent.pointerLeave(toolbar);
     expect(translate).not.toHaveAttribute("data-hovered");
@@ -938,18 +743,18 @@ describe("ToolbarApp", () => {
     });
 
     const view = render(<ToolbarApp />);
-    const copy = await screen.findByRole("button", { name: "复制" });
+    const explain = await screen.findByRole("button", { name: "解释" });
     const translate = screen.getByRole("button", { name: "翻译" });
 
     elementFromPoint.mockReturnValue(translate.querySelector("svg"));
     act(() => pointerListener?.({ x: 73.5, y: 20, inside: true }));
     expect(elementFromPoint).toHaveBeenLastCalledWith(73.5, 20);
     expect(translate).toHaveAttribute("data-hovered", "true");
-    expect(copy).not.toHaveAttribute("data-hovered");
+    expect(explain).not.toHaveAttribute("data-hovered");
 
-    elementFromPoint.mockReturnValue(copy);
+    elementFromPoint.mockReturnValue(explain);
     act(() => pointerListener?.({ x: 248, y: 20, inside: true }));
-    expect(copy).toHaveAttribute("data-hovered", "true");
+    expect(explain).toHaveAttribute("data-hovered", "true");
     expect(translate).not.toHaveAttribute("data-hovered");
 
     // A native leave clears the explicit state without consulting stale
@@ -957,7 +762,7 @@ describe("ToolbarApp", () => {
     elementFromPoint.mockClear();
     act(() => pointerListener?.({ x: 249, y: 48, inside: false }));
     expect(elementFromPoint).not.toHaveBeenCalled();
-    expect(copy).not.toHaveAttribute("data-hovered");
+    expect(explain).not.toHaveAttribute("data-hovered");
 
     view.unmount();
     expect(unsubscribePointer).toHaveBeenCalledOnce();

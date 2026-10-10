@@ -13,21 +13,6 @@ import {
 } from './settingsForm'
 
 describe('settings form helpers', () => {
-  it('includes the selected search engine in ordinary settings updates', () => {
-    const result = buildSettingsUpdate({
-      ...DEFAULT_PUBLIC_SETTINGS,
-      actions: DEFAULT_PUBLIC_SETTINGS.actions.map((action) =>
-        action.kind === 'search' ? { ...action, searchEngineId: 'bing-china' as const } : action
-      )
-    })
-
-    expect(result.valid).toBe(true)
-    if (result.valid) {
-      const search = result.value.actions?.find((action) => action.kind === 'search')
-      expect(search && 'searchEngineId' in search ? search.searchEngineId : null).toBe('bing-china')
-    }
-  })
-
   it('saves settings without retired configuration fields', () => {
     const result = buildSettingsUpdate(DEFAULT_PUBLIC_SETTINGS)
     expect(result.valid).toBe(true)
@@ -97,9 +82,7 @@ describe('settings form helpers', () => {
       'translate',
       'refine',
       'explain',
-      'summary',
-      'search',
-      'copy'
+      'summary'
     ])
     expect(moved.find((action) => action.id === 'refine')?.enabled).toBe(true)
   })

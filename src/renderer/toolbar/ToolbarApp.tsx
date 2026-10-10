@@ -23,7 +23,6 @@ import { getErrorMessage } from "../lib/errors";
 
 const SETTINGS_RETRY_DELAYS_MS = [0, 16, 64] as const;
 const TOOLBAR_PRESENTATION_ATTEMPTS = 3;
-const COPY_SUCCESS_RESET_MS = 1_500;
 const FIXED_ASK_ACTION_ID = "ask-ai";
 const AI_CONFIGURATION_MESSAGES = [
   "请先为动作选择 AI 服务商",
@@ -109,12 +108,9 @@ export function ToolbarApp(): JSX.Element {
   const askTransitionRef = useRef(false);
   const askExpandedRef = useRef(false);
   const focusClearFramesRef = useRef<number[]>([]);
-  const copySuccessTimerRef = useRef<number | null>(null);
-  const copySuccessActiveRef = useRef(false);
   const [settings, setSettings] = useState<PublicSettings | null>(null);
   const [selection, setSelection] = useState<SelectionPayload | null>(null);
   const [busyActionId, setBusyActionId] = useState<string | null>(null);
-  const [copySuccessActionId, setCopySuccessActionId] = useState<string | null>(null);
   const [hoveredControlId, setHoveredControlId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [askExpanded, setAskExpanded] = useState(false);
@@ -147,30 +143,6 @@ export function ToolbarApp(): JSX.Element {
     focusClearFramesRef.current = [firstFrame];
   };
 
-  const cancelCopySuccessReset = (): void => {
-    if (copySuccessTimerRef.current !== null) {
-      window.clearTimeout(copySuccessTimerRef.current);
-      copySuccessTimerRef.current = null;
-    }
-  };
-
-  const resetCopySuccess = (): void => {
-    copySuccessActiveRef.current = false;
-    cancelCopySuccessReset();
-    setCopySuccessActionId(null);
-  };
-
-  const confirmCopySuccess = (actionId: string): void => {
-    cancelCopySuccessReset();
-    copySuccessActiveRef.current = true;
-    setCopySuccessActionId(actionId);
-    copySuccessTimerRef.current = window.setTimeout(() => {
-      copySuccessTimerRef.current = null;
-      copySuccessActiveRef.current = false;
-      setCopySuccessActionId((current) => (current === actionId ? null : current));
-    }, COPY_SUCCESS_RESET_MS);
-  };
-
   useEffect(() => {
     let disposed = false;
     let settingsRetryTimer = 0;
@@ -194,7 +166,6 @@ export function ToolbarApp(): JSX.Element {
 
     const unsubscribeSelection = window._popper_.onSelection((nextSelection) => {
       selectionTimingStartedAtRef.current = performance.now();
-      resetCopySuccess();
       clearRetainedToolbarFocus();
       selectionGenerationRef.current += 1;
       operationGenerationRef.current += 1;
@@ -217,7 +188,6 @@ export function ToolbarApp(): JSX.Element {
         if (!disposed) logToolbarDiagnostic("selection-replay", undefined, 1, error);
       });
     const unsubscribeSettings = window._popper_.onSettingsChanged((nextSettings) => {
-      resetCopySuccess();
       clearRetainedToolbarFocus();
       setSettings(nextSettings);
     });
@@ -235,11 +205,10 @@ export function ToolbarApp(): JSX.Element {
         );
       }) ?? (() => undefined);
 
-    // Native dismiss force-hides the window; clear React selection / copy
-    // success so a single outside click does not leave a stale toolbar shell.
+    // Native dismiss force-hides the window; clear React selection so a
+    // single outside click does not leave a stale toolbar shell.
     const unsubscribeDismiss =
       window._popper_.onToolbarDismissed?.((payload) => {
-        resetCopySuccess();
         clearRetainedToolbarFocus();
         selectionGenerationRef.current += 1;
         operationGenerationRef.current += 1;
@@ -261,7 +230,6 @@ export function ToolbarApp(): JSX.Element {
           setAskQuestion("");
           return;
         }
-        resetCopySuccess();
         clearRetainedToolbarFocus();
         runDetached(window._popper_.hideToolbar(), {
           scope: "toolbar",
@@ -276,8 +244,6 @@ export function ToolbarApp(): JSX.Element {
       window.clearTimeout(settingsRetryTimer);
       focusClearFramesRef.current.forEach((frame) => cancelAnimationFrame(frame));
       focusClearFramesRef.current = [];
-      copySuccessActiveRef.current = false;
-      cancelCopySuccessReset();
       unsubscribeSelection();
       unsubscribeSettings();
       unsubscribeToolbarPointer();
@@ -555,7 +521,6 @@ export function ToolbarApp(): JSX.Element {
     const action = visibleActions.find((candidate) => candidate.id === actionId);
     const actionKind = actionId === FIXED_ASK_ACTION_ID ? "ask" : action?.kind;
     if (!actionKind) return;
-    resetCopySuccess();
     const pointerTriggered = (event?.detail ?? 0) > 0;
     const actedSelectionId = selection?.selectionId;
     const cursor = initialQuestion
@@ -580,7 +545,6 @@ export function ToolbarApp(): JSX.Element {
             actionId,
             cursor,
             actedSelectionId,
-            undefined,
             initialQuestion,
           )
         : await window._popper_.runAction(actionId, cursor, actedSelectionId);
@@ -603,10 +567,6 @@ export function ToolbarApp(): JSX.Element {
           return;
         }
         setMessage(result.message);
-        return;
-      }
-      if (actionKind === "copy" && action) {
-        confirmCopySuccess(action.id);
         return;
       }
       // Retire the consumed selection before clearing the busy state. Without
@@ -635,7 +595,6 @@ export function ToolbarApp(): JSX.Element {
       event.detail > 0 && Number.isFinite(event.screenX) && Number.isFinite(event.screenY)
         ? { x: event.screenX, y: event.screenY }
         : undefined;
-    resetCopySuccess();
     setMessage("");
     askTransitionRef.current = true;
     askExpandedRef.current = true;
@@ -655,7 +614,6 @@ export function ToolbarApp(): JSX.Element {
       await window._popper_.hideToolbar(actedSelectionId);
       selectionGenerationRef.current += 1;
       operationGenerationRef.current += 1;
-      resetCopySuccess();
       clearRetainedToolbarFocus();
       setSelection((current) => (current?.selectionId === actedSelectionId ? null : current));
       setBusyActionId(null);
@@ -768,7 +726,6 @@ export function ToolbarApp(): JSX.Element {
           <ToolbarActions
             actions={visibleActions}
             busyActionId={busyActionId}
-            copySuccessActionId={copySuccessActionId}
             hoveredControlId={hoveredControlId}
             onAsk={openAsk}
             onAction={(actionId, event) => void runAction(actionId, event)}

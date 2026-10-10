@@ -205,7 +205,7 @@ describe("Tauri renderer bridge", () => {
 
     // Invalid or expanded native payloads are rejected at the renderer
     // boundary instead of leaking into DOM hit-testing.
-    forwardToolbarPointer?.({ payload: { x: 24.5, y: 18, inside: true, control: "copy" } });
+    forwardToolbarPointer?.({ payload: { x: 24.5, y: 18, inside: true, control: "explain" } });
     expect(toolbarPointerListener).toHaveBeenCalledTimes(1);
     unsubscribeToolbarPointer?.();
     forwardToolbarPointer?.({ payload: { x: 80, y: 18, inside: true } });
@@ -348,21 +348,19 @@ describe("Tauri renderer bridge", () => {
       message: "renderer failed",
     });
 
-    await window._popper_.runAction("search", undefined, "selection-1");
+    await window._popper_.runAction("explain", undefined, "selection-1");
     expect(invokeMock).toHaveBeenCalledWith("run_action", {
-      actionId: "search",
+      actionId: "explain",
       cursor: null,
       selectionId: "selection-1",
-      searchEngineId: null,
       initialQuestion: null,
     });
-    await window._popper_.runAction("search", undefined, "selection-1", "bing-china");
+    await window._popper_.runAction("explain", undefined, "selection-1", "Explain this");
     expect(invokeMock).toHaveBeenCalledWith("run_action", {
-      actionId: "search",
+      actionId: "explain",
       cursor: null,
       selectionId: "selection-1",
-      searchEngineId: "bing-china",
-      initialQuestion: null,
+      initialQuestion: "Explain this",
     });
 
     await expect(

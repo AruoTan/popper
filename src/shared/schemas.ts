@@ -4,7 +4,6 @@ import { dictionarySnapshotSchema } from './dictionary'
 import {
   AI_OUTPUT_LIMIT,
   AI_TEXT_LIMIT,
-  BUILTIN_SEARCH_ENGINE_IDS,
   DEFAULT_RESULT_FONT_SIZE,
   MAX_ACTIONS,
   MAX_ENABLED_ACTIONS,
@@ -32,13 +31,6 @@ export type SupportedLocale = z.infer<typeof supportedLocaleSchema>
 /** Translate action target languages (result-box switcher + settings pair). */
 export const translationLanguageSchema = z.enum(TRANSLATION_LANGUAGES)
 export type { TranslationLanguage } from './languages'
-
-/** Fixed built-in search engines (templates live in constants, not user settings). */
-export const searchEngineIdSchema = z.enum(BUILTIN_SEARCH_ENGINE_IDS)
-export type SearchEngineId = z.infer<typeof searchEngineIdSchema>
-/** @deprecated Prefer searchEngineIdSchema. */
-export const legacySearchEngineIdSchema = searchEngineIdSchema
-export type LegacySearchEngineId = SearchEngineId
 
 export const pointSchema = z
   .object({ x: z.number().finite(), y: z.number().finite() })
@@ -90,7 +82,6 @@ export const selectionPayloadSchema = z
   .strict()
 export type SelectionPayload = z.infer<typeof selectionPayloadSchema>
 
-export const localActionKindSchema = z.enum(['copy', 'search'])
 export const aiActionKindSchema = z.enum([
   'translate',
   'summary',
@@ -99,16 +90,7 @@ export const aiActionKindSchema = z.enum([
   'custom',
   'ask'
 ])
-export const actionKindSchema = z.enum([
-  'copy',
-  'search',
-  'translate',
-  'summary',
-  'explain',
-  'refine',
-  'custom',
-  'ask'
-])
+export const actionKindSchema = aiActionKindSchema
 /** @deprecated Prefer ActionKind. */
 export const actionTypeSchema = actionKindSchema
 export type ActionKind = z.infer<typeof actionKindSchema>
@@ -136,26 +118,6 @@ const actionBaseShape = {
   enabled: z.boolean(),
   order: z.number().int().nonnegative().max(10_000)
 } as const
-
-export const copyActionSchema = z
-  .object({
-    ...actionBaseShape,
-    kind: z.literal('copy')
-  })
-  .strict()
-
-export const searchActionSchema = z
-  .object({
-    ...actionBaseShape,
-    kind: z.literal('search'),
-    searchEngineId: searchEngineIdSchema
-  })
-  .strict()
-
-export const localActionSchema = z.discriminatedUnion('kind', [
-  copyActionSchema,
-  searchActionSchema
-])
 
 const aiActionBaseShape = {
   ...actionBaseShape,
@@ -188,8 +150,6 @@ export const customActionSchema = z
 
 /** Actions shipped by default are editable and use the same runtime shape as user actions. */
 export const builtInActionSchema = z.discriminatedUnion('kind', [
-  copyActionSchema,
-  searchActionSchema,
   z
     .object({
       ...aiActionBaseShape,
@@ -198,24 +158,14 @@ export const builtInActionSchema = z.discriminatedUnion('kind', [
     .strict()
 ])
 
-export const actionDefinitionSchema = z.discriminatedUnion('kind', [
-  copyActionSchema,
-  searchActionSchema,
-  aiActionSchema
-])
+export const actionDefinitionSchema = aiActionSchema
 export type ActionDefinition = z.infer<typeof actionDefinitionSchema>
-export type LocalActionDefinition = z.infer<typeof localActionSchema>
-export type SearchActionDefinition = z.infer<typeof searchActionSchema>
 export type AiActionDefinition = z.infer<typeof aiActionSchema>
 export type BuiltInActionDefinition = z.infer<typeof builtInActionSchema>
 export type CustomActionDefinition = z.infer<typeof customActionSchema>
 
 export function isAiActionDefinition(action: ActionDefinition): action is AiActionDefinition {
   return aiActionKindSchema.safeParse(action.kind).success
-}
-
-export function isSearchActionDefinition(action: ActionDefinition): action is SearchActionDefinition {
-  return action.kind === 'search'
 }
 
 export const actionsSchema = z
@@ -602,7 +552,7 @@ export type ToolbarPointerEvent = z.infer<typeof toolbarPointerEventSchema>
  * Native toolbar dismiss notification.
  *
  * Emitted after the runtime force-hides the selection toolbar (outside click,
- * Escape, etc.). The renderer clears selection / copy-success UI so local
+ * Escape, etc.). The renderer clears selection UI so local
  * state cannot outlive the native window.
  */
 export const toolbarDismissedEventSchema = z

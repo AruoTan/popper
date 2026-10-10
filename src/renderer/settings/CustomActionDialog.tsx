@@ -3,8 +3,6 @@ import { Braces, RotateCcw, X } from 'lucide-react'
 
 import {
   DEFAULT_ACTION_PROMPTS,
-  DEFAULT_SEARCH_ENGINE_ID,
-  DEFAULT_SEARCH_ENGINES,
   TEXT_PLACEHOLDER,
   THINKING_LEVEL_LABELS,
   aiActionKindSchema,
@@ -14,7 +12,6 @@ import {
   type ActionDefinition,
   type ActionKind,
   type PublicProviderSettings,
-  type SearchEngineId,
   type ThinkingMode
 } from '../../shared'
 import { isLucideIconName } from '../components/lucideIconRegistry'
@@ -22,8 +19,6 @@ import { ActionIconPicker } from './ActionIconPicker'
 import { StyledSelect } from './StyledSelect'
 
 const ACTION_KIND_NAMES: Readonly<Record<ActionKind, string>> = {
-  copy: '复制',
-  search: '搜索 / 打开网址',
   translate: '翻译',
   summary: '总结',
   explain: '解释',
@@ -69,7 +64,6 @@ export interface ActionEditorValue {
   providerId?: string
   modelId?: string
   thinkingMode?: ThinkingMode
-  searchEngineId?: SearchEngineId
 }
 
 interface ModelRoute {
@@ -118,17 +112,12 @@ export function CustomActionDialog({
   onSave: (value: ActionEditorValue) => void
 }): JSX.Element {
   const initialAi = action && 'prompt' in action ? action : null
-  const initialSearchEngineId =
-    action && action.kind === 'search' && 'searchEngineId' in action
-      ? action.searchEngineId
-      : DEFAULT_SEARCH_ENGINE_ID
   const [name, setName] = useState(action?.name ?? '')
   const [icon, setIcon] = useState(action?.icon ?? 'sparkles')
   const [kind, setKind] = useState<ActionKind>(action?.kind ?? 'custom')
   const [providerId, setProviderId] = useState(initialAi?.providerId ?? '')
   const [modelId, setModelId] = useState(initialAi?.modelId ?? '')
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(initialAi?.thinkingMode ?? 'off')
-  const [searchEngineId, setSearchEngineId] = useState<SearchEngineId>(initialSearchEngineId)
   const [prompt, setPrompt] = useState(initialAi?.prompt ?? DEFAULT_ACTION_PROMPTS.custom)
   const [error, setError] = useState('')
   const nameRef = useRef<HTMLInputElement>(null)
@@ -225,11 +214,6 @@ export function CustomActionDialog({
       })
       return
     }
-    if (kind === 'search') {
-      onSave({ name: cleanName, icon, kind, searchEngineId })
-      return
-    }
-    onSave({ name: cleanName, icon, kind })
   }
 
   const insertPlaceholder = (): void => {
@@ -284,11 +268,7 @@ export function CustomActionDialog({
           <div>
             <h2 id="action-dialog-title">{action ? '编辑动作' : '添加动作'}</h2>
             <p>
-              {kind === 'search'
-                ? '搜索动作可选择默认搜索引擎；选中网址时仍会直接打开。'
-                : isAiKind(kind)
-                  ? '同一种动作可以添加多次，并分别绑定服务商、模型和提示词。'
-                  : '可调整名称、类型与图标；本地动作无需配置模型。'}
+              同一种动作可以添加多次，并分别绑定服务商、模型和提示词。
             </p>
           </div>
           <button className="icon-button" type="button" aria-label="关闭" onClick={onCancel}>
@@ -331,22 +311,6 @@ export function CustomActionDialog({
               setError('')
             }} />
           </div>
-
-          {kind === 'search' && (
-            <div className="field">
-              <span className="field__label">默认搜索引擎</span>
-              <StyledSelect
-                aria-label="默认搜索引擎"
-                value={searchEngineId}
-                onChange={(value) => {
-                  setSearchEngineId(value as SearchEngineId)
-                  setError('')
-                }}
-                options={DEFAULT_SEARCH_ENGINES.map((engine) => ({ value: engine.id, label: engine.name }))}
-              />
-              <span className="field__hint">划词搜索普通文字时使用该引擎；选中网址、域名或 IP 时直接打开。</span>
-            </div>
-          )}
 
           {isAiKind(kind) && (
             <>

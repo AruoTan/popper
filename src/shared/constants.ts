@@ -1,7 +1,7 @@
 export const APP_NAME = "Popper";
 export const APP_ID = "com.local.popper";
 
-export const SETTINGS_VERSION = 15 as const;
+export const SETTINGS_VERSION = 16 as const;
 export const AI_TEXT_LIMIT = 20_000;
 export const AI_PROMPT_LIMIT = 50_000;
 export const AI_OUTPUT_LIMIT = 1_000_000;
@@ -16,34 +16,6 @@ export const DEFAULT_RESULT_FONT_SIZE = 14;
 export const TEXT_PLACEHOLDER = "{{text}}";
 export const OUTPUT_LANGUAGE_PLACEHOLDER = "{{language}}";
 export const TARGET_LANGUAGE_PLACEHOLDER = "{{target_language}}";
-export const DEFAULT_SEARCH_TEMPLATE = `https://www.google.com/search?q=${TEXT_PLACEHOLDER}`;
-export const BING_CHINA_SEARCH_TEMPLATE = `https://cn.bing.com/search?q=${TEXT_PLACEHOLDER}`;
-export const BAIDU_SEARCH_TEMPLATE = `https://www.baidu.com/s?wd=${TEXT_PLACEHOLDER}`;
-export const BUILTIN_SEARCH_ENGINE_IDS = ["google", "bing-china", "baidu"] as const;
-export type BuiltinSearchEngineId = (typeof BUILTIN_SEARCH_ENGINE_IDS)[number];
-export const DEFAULT_SEARCH_ENGINE_ID = "google" as const;
-/** @deprecated Use DEFAULT_SEARCH_ENGINE_ID. */
-export const DEFAULT_ACTIVE_SEARCH_ENGINE_ID = DEFAULT_SEARCH_ENGINE_ID;
-export const DEFAULT_SEARCH_ENGINES = [
-  {
-    id: "google",
-    name: "Google",
-    template: DEFAULT_SEARCH_TEMPLATE,
-    builtin: true,
-  },
-  {
-    id: "bing-china",
-    name: "Bing",
-    template: BING_CHINA_SEARCH_TEMPLATE,
-    builtin: true,
-  },
-  {
-    id: "baidu",
-    name: "百度",
-    template: BAIDU_SEARCH_TEMPLATE,
-    builtin: true,
-  },
-] as const;
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const DEFAULT_PROVIDER_ID = "openai-compatible";
 export const DEFAULT_PROVIDER_NAME = "OpenAI Compatible";
@@ -75,16 +47,3 @@ export const DEFAULT_FILTER_SETTINGS = {
 
 export const TOOLBAR_SCREEN_GAP = 8;
 export const TOOLBAR_SCREEN_MARGIN = 8;
-
-export function templateForSearchEngineId(id: string): string {
-  if (id === "bing-china") return BING_CHINA_SEARCH_TEMPLATE;
-  if (id === "baidu") return BAIDU_SEARCH_TEMPLATE;
-  return DEFAULT_SEARCH_TEMPLATE;
-}
-
-export function searchEngineDisplayName(id: string): string {
-  if (id === "bing-china") return "Bing";
-  if (id === "baidu") return "百度";
-  if (id === "google") return "Google";
-  return id;
-}

@@ -15,11 +15,9 @@ import {
 } from "./languages";
 import type {
   ActionDefinition,
-  AiActionDefinition,
   SupportedLocale,
   TranslationSettings,
 } from "./schemas";
-import { isAiActionDefinition } from "./schemas";
 
 export interface ActionPrompt {
   systemPrompt: string;
@@ -44,16 +42,12 @@ export interface PromptBuildOptions {
 
 export class PromptBuildError extends Error {
   constructor(
-    readonly code: "NOT_AI_ACTION" | "TEXT_TOO_LONG" | "INVALID_CUSTOM_PROMPT",
+    readonly code: "TEXT_TOO_LONG" | "INVALID_CUSTOM_PROMPT",
     message: string,
   ) {
     super(message);
     this.name = "PromptBuildError";
   }
-}
-
-export function isAiAction(action: ActionDefinition): action is AiActionDefinition {
-  return isAiActionDefinition(action);
 }
 
 export function unicodeScalarCount(value: string): number {
@@ -110,10 +104,6 @@ export function buildActionPrompt(
   text: string,
   options: PromptBuildOptions = {},
 ): ActionPrompt {
-  if (!isAiAction(action)) {
-    throw new PromptBuildError("NOT_AI_ACTION", `${action.kind} 不是 AI 动作`);
-  }
-
   const maxTextLength = options.maxTextLength ?? AI_TEXT_LIMIT;
   assertAiTextWithinLimit(text, maxTextLength);
   const outputLocale = options.outputLocale ?? DEFAULT_LOCALE;

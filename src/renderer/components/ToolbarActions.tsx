@@ -16,7 +16,6 @@ interface ToolbarActionsProps {
   actions: readonly ActionDefinition[];
   preview?: boolean;
   busyActionId?: string | null;
-  copySuccessActionId?: string | null;
   hoveredControlId?: string | null;
   onAsk?: (event: MouseEvent<HTMLButtonElement>) => void;
   onAction?: (actionId: string, event: MouseEvent<HTMLButtonElement>) => void;
@@ -27,7 +26,6 @@ export function ToolbarActions({
   actions,
   preview = false,
   busyActionId = null,
-  copySuccessActionId = null,
   hoveredControlId = null,
   onAsk,
   onAction,
@@ -59,7 +57,6 @@ export function ToolbarActions({
       {actions.map((action) => {
         const busy = busyActionId === action.id;
         const muted = busyActionId !== null && !busy;
-        const copySucceeded = action.kind === "copy" && copySuccessActionId === action.id;
         return (
           <button
             className={`toolbar-action ${muted ? "toolbar-action--muted" : ""}`}
@@ -79,8 +76,7 @@ export function ToolbarActions({
               <LoaderCircle className="spin" size={16} aria-hidden="true" />
             ) : (
               <ActionIcon
-                className={copySucceeded ? "toolbar-copy-success" : undefined}
-                name={copySucceeded ? "clipboard-check" : action.icon}
+                name={action.icon}
                 size={16}
                 strokeWidth={2}
               />

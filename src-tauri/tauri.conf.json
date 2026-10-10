@@ -1,7 +1,7 @@
 {
     "$schema": "https://schema.tauri.app/config/2",
     "productName": "Popper",
-    "version": "0.5.8",
+    "version": "0.5.9",
     "identifier": "com.local.popper",
     "build": {
         "beforeBuildCommand": "pnpm build:web",
@@ -43,7 +43,7 @@
         },
         "category": "Productivity",
         "shortDescription": "轻量 macOS 划词助手",
-        "longDescription": "选中文本后快速复制、搜索、翻译、解释、总结和优化。",
+        "longDescription": "选中文本后快速翻译、解释、总结和优化。",
         "copyright": "Copyright © 2026 Popper contributors",
         "macOS": {
             "infoPlist": "Info.plist",
