@@ -25,6 +25,21 @@ import {
 } from '..'
 
 describe('settings schemas and defaults', () => {
+  it('round-trips DSH settings and rejects ambiguous model routes and host workspace paths', () => {
+    const settings = publicSettingsSchema.parse(structuredClone(DEFAULT_PUBLIC_SETTINGS));
+    settings.providers[0] = {
+      ...settings.providers[0]!, kind: 'dsh', baseUrl: 'http://localhost:3080', dshWorkspace: '/workspace',
+      models: [{ id: 'provider/org/model', name: 'Model', thinkingLevels: [] }]
+    };
+    expect(migratePublicSettings(settings).providers[0]).toEqual(settings.providers[0]);
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    settings.providers[0]!.models[0]!.id = 'model';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+    settings.providers[0]!.models[0]!.id = 'provider/model';
+    settings.providers[0]!.dshWorkspace = 'C:\\project';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+    expect(publicSettingsSchema.safeParse(DEFAULT_PUBLIC_SETTINGS).success).toBe(true);
+  });
   it('defaults missing tray preferences to enabled and preserves an explicit opt-out', () => {
     const { trayEnabled: _tray, ...legacy } = DEFAULT_APP_SETTINGS
     const { trayEnabled: _publicTray, ...legacyPublic } = DEFAULT_PUBLIC_SETTINGS

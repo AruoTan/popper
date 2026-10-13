@@ -4,9 +4,19 @@ import {
   buildOpenAiEndpoint,
   isSafeExternalUrl,
   validateOpenAiBaseUrl,
+  requiresProviderApiKey,
 } from '..'
 
 describe('URL helpers', () => {
+  it('allows missing keys only for DSH on exact local hosts', () => {
+    for (const baseUrl of ['http://localhost:3080', 'https://LOCALHOST:3080', 'http://127.0.0.1:3080', 'http://[::1]:3080']) {
+      expect(requiresProviderApiKey({ kind: 'dsh', baseUrl })).toBe(false)
+      expect(requiresProviderApiKey({ kind: 'openai', baseUrl })).toBe(true)
+    }
+    for (const baseUrl of ['http://localhost.example', 'http://localhost@remote.example', 'http://192.168.1.1:3080', 'http://localhost:3080/?next=remote', 'file://localhost']) {
+      expect(requiresProviderApiKey({ kind: 'dsh', baseUrl })).toBe(true)
+    }
+  })
   it('allows only HTTP(S) external links without credentials', () => {
     expect(isSafeExternalUrl('https://example.com/page')).toBe(true)
     expect(isSafeExternalUrl('file:///tmp/private')).toBe(false)

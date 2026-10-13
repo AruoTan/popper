@@ -84,6 +84,7 @@ pub struct ActionService {
 struct ActionServiceInner {
     settings: Arc<SettingsRepository>,
     client: Client,
+    dsh: crate::dsh_transport::DshService,
     state: Mutex<ActionServiceState>,
 }
 
@@ -708,6 +709,7 @@ impl ActionService {
             inner: Arc::new(ActionServiceInner {
                 settings,
                 client,
+                dsh: crate::dsh_transport::DshService::new().map_err(|_| ActionServiceError::Client)?,
                 state: Mutex::new(ActionServiceState::default()),
             }),
         })
@@ -782,6 +784,7 @@ impl ActionService {
             .settings
             .get_api_key(&route.provider.id)?
             .filter(|value| !value.trim().is_empty())
+            .or_else(|| (!route.provider.requires_api_key()).then(String::new))
             .ok_or_else(|| ActionServiceError::Validation("请先为服务商保存 API Key".to_owned()))?;
         let ask_system = build_ask_seed_system(action, &request.text, &settings)?;
         let request_id = Uuid::new_v4().to_string();
@@ -1108,6 +1111,7 @@ impl ActionService {
             .settings
             .get_api_key(&session_data.route.provider.id)?
             .filter(|value| !value.trim().is_empty())
+            .or_else(|| (!session_data.route.provider.requires_api_key()).then(String::new))
             .ok_or_else(|| ActionServiceError::Validation("请先为服务商保存 API Key".to_owned()))?;
         let config = TransportConfig::production();
         let trace = Arc::new(Mutex::new(RequestTrace::new(
@@ -1222,7 +1226,15 @@ impl ActionService {
     }
 
     pub async fn test_provider_connection(&self, provider_id: &str) -> ConnectionTestResult {
-        match self.fetch_models(provider_id).await {
+        self.provider_models_result(provider_id, true).await
+    }
+
+    async fn provider_models_result(
+        &self,
+        provider_id: &str,
+        check_stream: bool,
+    ) -> ConnectionTestResult {
+        match self.fetch_models(provider_id, check_stream).await {
             Ok(models) => ConnectionTestResult {
                 ok: true,
                 models,
@@ -1240,11 +1252,11 @@ impl ActionService {
 
     /// Fetch remote models without writing settings (for selective multi-select pick).
     pub async fn list_provider_models(&self, provider_id: &str) -> ConnectionTestResult {
-        self.test_provider_connection(provider_id).await
+        self.provider_models_result(provider_id, false).await
     }
 
     pub async fn sync_provider_models(&self, provider_id: &str) -> SyncModelsResult {
-        match self.fetch_models(provider_id).await {
+        match self.fetch_models(provider_id, false).await {
             Ok(models) => {
                 let update = self.inner.settings.update_provider(
                     provider_id,
@@ -1320,6 +1332,24 @@ impl ActionService {
             return Ok(RequestOutcome::Cancelled);
         }
         let base = build_base_body(prepared);
+        if prepared.session_data.route.provider.kind == crate::models::ProviderKind::Dsh {
+            return match self.perform_attempt(app, prepared, &base).await {
+                Ok(success) => self.complete_generated(
+                    prepared,
+                    success,
+                    1,
+                    if prepared.session_data.route.thinking.mode != ThinkingMode::Off
+                        || prepared.session_data.route.thinking.capability.as_ref()
+                            .is_some_and(|cap| cap.supports_off)
+                    {
+                        ThinkingControlStatus::Applied
+                    } else {
+                        ThinkingControlStatus::ProviderDefault
+                    },
+                ),
+                Err(error) => self.classify_transport_failure(prepared, error),
+            };
+        }
         let (controlled, applied) =
             build_controlled_body(&base, &prepared.session_data.route.thinking);
         match self.perform_attempt(app, prepared, &controlled).await {
@@ -1463,6 +1493,28 @@ impl ActionService {
             .ok_or_else(stale_transport_failure)?;
         if cancellation.is_cancelled() {
             return Err(cancelled_transport_failure());
+        }
+        if prepared.session_data.route.provider.kind == crate::models::ProviderKind::Dsh {
+            prepared.trace.lock().mark(TransportMarker::RequestSend, tokio::time::Instant::now());
+            return self.inner.dsh.generate(
+                &prepared.ticket.request_id,
+                &prepared.session_data.route.provider,
+                &prepared.api_key,
+                &prepared.session_data.route.model,
+                &prepared.session_data.route.thinking,
+                &body["messages"],
+                &cancellation,
+                &prepared.budget,
+                |delta| {
+                    let now = tokio::time::Instant::now();
+                    prepared.trace.lock().mark(TransportMarker::FirstContent, now);
+                    let control = self.submit_delta_control(app, &prepared.ticket, delta, now);
+                    if matches!(control, ControlFlow::Continue(())) { prepared.trace.lock().mark_emit_or_queue(now); }
+                    control
+                },
+                |thinking| self.submit_thinking_control(app, &prepared.ticket, thinking, tokio::time::Instant::now()),
+                |message| { let _ = self.submit_notice(app, &prepared.ticket, "DSH_INTERACTION", &message); },
+            ).await;
         }
         let endpoint = format!(
             "{}/chat/completions",
@@ -1707,7 +1759,11 @@ impl ActionService {
         Ok(transition.result)
     }
 
-    async fn fetch_models(&self, provider_id: &str) -> Result<Vec<ProviderModel>, RuntimeFailure> {
+    async fn fetch_models(
+        &self,
+        provider_id: &str,
+        check_stream: bool,
+    ) -> Result<Vec<ProviderModel>, RuntimeFailure> {
         let provider = self
             .inner
             .settings
@@ -1721,9 +1777,18 @@ impl ActionService {
                 RuntimeFailure::new("SECRET_STORAGE_ERROR", "无法读取本地加密的 API Key", false)
             })?
             .filter(|key| !key.trim().is_empty())
+            .or_else(|| (!provider.requires_api_key()).then(String::new))
             .ok_or_else(|| {
                 RuntimeFailure::new("API_KEY_MISSING", "请先为服务商保存 API Key", false)
             })?;
+        if provider.kind == crate::models::ProviderKind::Dsh {
+            let result = if check_stream {
+                self.inner.dsh.check_connection(&provider, &api_key).await
+            } else {
+                self.inner.dsh.fetch_models(&provider, &api_key).await
+            };
+            return result.map_err(runtime_failure_from_transport);
+        }
         let endpoint = format!("{}/models", provider.base_url.trim_end_matches('/'));
         let operation = async {
             let response = self
@@ -1866,6 +1931,10 @@ fn prepared_provider(
             "选择的模型不存在，请重新选择".to_owned(),
         ));
     }
+    if provider.kind == crate::models::ProviderKind::Dsh {
+        crate::dsh_transport::split_model_id(model_id)
+            .map_err(|error| ActionServiceError::Validation(error.message))?;
+    }
     Ok(provider)
 }
 
@@ -1881,12 +1950,20 @@ fn resolve_route(
         .iter()
         .find(|model| model.id == model_id)
         .expect("prepared_provider validated the selected model");
-    let thinking = thinking::resolve_thinking_for_request(
-        model_id,
-        &model.thinking_levels,
-        model.thinking_capability.as_ref(),
-        action.thinking_mode,
-    );
+    let thinking = if provider.kind == crate::models::ProviderKind::Dsh {
+        ThinkingRequestPlan {
+            capability: model.thinking_capability.clone(),
+            levels: model.thinking_levels.clone(),
+            mode: crate::models::clamp_thinking_mode(action.thinking_mode, &model.thinking_levels),
+        }
+    } else {
+        thinking::resolve_thinking_for_request(
+            model_id,
+            &model.thinking_levels,
+            model.thinking_capability.as_ref(),
+            action.thinking_mode,
+        )
+    };
     Ok(SessionRoute {
         provider,
         model: model_id.to_owned(),
@@ -2532,6 +2609,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_dsh_generation_prepares_without_a_saved_key_but_remote_dsh_requires_one() {
+        let service = test_service();
+        let mut settings = configured_settings(crate::models::DEFAULT_PROVIDER_ID, "one/same", ThinkingMode::Off);
+        settings.providers[0].kind = crate::models::ProviderKind::Dsh;
+        settings.providers[0].base_url = "http://localhost:3080".to_owned();
+        service.inner.settings.update(crate::models::SettingsUpdate {
+            providers: Some(settings.providers.clone()), actions: Some(settings.actions.clone()),
+            ..Default::default()
+        }).unwrap();
+        let request = configured_request("summary", "hello");
+        let seed = FrozenPreparationSeed::Initial { request: FrozenActionRequest::from(&request) };
+        let ticket = RequestTicket { session_id: request.session_id.clone(), session_generation: SessionGeneration(1),
+            request_generation: RequestGeneration(1), request_id: "dsh-request".to_owned(), action_id: request.action_id.clone() };
+        let resolved = resolve_request_config(&seed, &settings, &ticket).unwrap();
+        let prepared = service.prepare_with_runtime(ticket.clone(), resolved, CancellationToken::new(),
+            tokio::time::Instant::now(), ActionKind::Summary).unwrap();
+        assert!(prepared.api_key.is_empty());
+        settings.providers[0].base_url = "http://192.168.1.10:3080".to_owned();
+        let resolved = resolve_request_config(&seed, &settings, &ticket).unwrap();
+        let error = service.prepare_with_runtime(ticket, resolved, CancellationToken::new(),
+            tokio::time::Instant::now(), ActionKind::Summary).err().unwrap();
+        assert!(error.to_string().contains("API Key"));
+    }
+
     fn request_ticket(request_id: &str) -> RequestTicket {
         RequestTicket {
             session_id: "session-fixture".to_owned(),
@@ -2562,6 +2664,8 @@ mod tests {
                     provider: ProviderConfig {
                         id: "provider-fixture".to_owned(),
                         name: "Provider Fixture".to_owned(),
+                        kind: crate::models::ProviderKind::Openai,
+                        dsh_workspace: None,
                         enabled: true,
                         base_url: "http://127.0.0.1:1/v1".to_owned(),
                         models: Vec::new(),
@@ -2604,6 +2708,8 @@ mod tests {
             provider: ProviderConfig {
                 id: "provider-fixture".to_owned(),
                 name: "Provider Fixture".to_owned(),
+                kind: crate::models::ProviderKind::Openai,
+                dsh_workspace: None,
                 enabled: true,
                 base_url: "http://localhost:11434/v1".to_owned(),
                 models: vec![ProviderModel {
@@ -3663,6 +3769,8 @@ mod tests {
         settings.providers.push(ProviderConfig {
             id: "provider-two".to_owned(),
             name: "Provider Two".to_owned(),
+            kind: crate::models::ProviderKind::Openai,
+            dsh_workspace: None,
             enabled: true,
             base_url: "http://localhost:11434/v1".to_owned(),
             models: vec![ProviderModel {

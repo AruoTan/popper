@@ -222,6 +222,11 @@ const providerMetadataShape = {
     .max(64)
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u, '服务商 ID 格式无效'),
   name: z.string().trim().min(1).max(80),
+  /** Missing on legacy settings: OpenAI-compatible transport. */
+  kind: z.enum(['openai', 'dsh']).optional(),
+  /** Path inside the DSH container, not a path on this computer. */
+  dshWorkspace: z.string().trim().min(1).max(2048)
+    .refine((value) => value.startsWith('/') && !value.includes('\0'), 'DSH 工作区必须是容器内的绝对路径（如 /workspace）').optional(),
   /** When false, hidden from action model pickers and the result model switcher. */
   enabled: z.boolean().default(true),
   baseUrl: z
@@ -232,11 +237,17 @@ const providerMetadataShape = {
 } as const
 
 function validateUniqueModels(
-  value: { models: ProviderModel[] },
+  value: { kind?: 'openai' | 'dsh'; models: ProviderModel[] },
   context: z.RefinementCtx
 ): void {
   const ids = new Set<string>()
   for (const model of value.models) {
+    if (value.kind === 'dsh') {
+      const split = model.id.indexOf('/');
+      if (split < 1 || split === model.id.length - 1) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'DSH 模型 ID 格式应为 提供商ID/模型ID' });
+      }
+    }
     if (ids.has(model.id)) {
       context.addIssue({ code: z.ZodIssueCode.custom, message: `模型 ID 重复：${model.id}` })
     }
@@ -378,7 +389,8 @@ export const settingsUpdateSchema = z
 export type SettingsUpdate = z.infer<typeof settingsUpdateSchema>
 
 export const providerCreateInputSchema = z
-  .object({ name: z.string().trim().min(1).max(80), baseUrl: providerMetadataShape.baseUrl })
+  .object({ name: z.string().trim().min(1).max(80), baseUrl: providerMetadataShape.baseUrl,
+    kind: providerMetadataShape.kind, dshWorkspace: providerMetadataShape.dshWorkspace })
   .strict()
 export type ProviderCreateInput = z.infer<typeof providerCreateInputSchema>
 
@@ -386,6 +398,8 @@ export const providerUpdateInputSchema = z
   .object({
     name: z.string().trim().min(1).max(80).optional(),
     baseUrl: providerMetadataShape.baseUrl.optional(),
+    kind: providerMetadataShape.kind,
+    dshWorkspace: providerMetadataShape.dshWorkspace,
     models: z.array(providerModelSchema).max(MAX_PROVIDER_MODELS).optional()
   })
   .strict()

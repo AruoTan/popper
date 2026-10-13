@@ -70,6 +70,31 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
 }
 
 describe("SettingsApp provider deletion", () => {
+  it("saves DSH transport and container workspace while clearing the former model route", async () => {
+    const saved: PublicSettings = structuredClone(DEFAULT_PUBLIC_SETTINGS);
+    saved.providers[0]!.models = [{ id: "old-model", name: "Old", thinkingLevels: [] }];
+    saved.actions = saved.actions.map((action) => "providerId" in action
+      ? { ...action, providerId: saved.providers[0]!.id, modelId: "old-model" } : action);
+    const updateSettings = vi.fn(async (update: SettingsUpdate): Promise<PublicSettings> => ({
+      ...saved, ...update,
+      providers: update.providers?.map((provider) => ({ ...provider, keyConfigured: false })) ?? saved.providers,
+    }));
+    installDefaultBridge({ getSettings: vi.fn(async () => saved), updateSettings });
+    render(<SettingsApp />);
+    await openProviderConfigurations();
+    fireEvent.click(screen.getByRole("combobox", { name: "OpenAI Compatible接入方式" }));
+    fireEvent.click(screen.getByRole("option", { name: "DSH Docker" }));
+    expect(screen.getByDisplayValue("http://localhost:3080")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("本地自动登录，无需填写")).toBeInTheDocument();
+    expect(screen.getByText(/本地自动登录$/, { selector: '.provider-card__summary' })).toBeInTheDocument();
+    expect(screen.queryByText(/API Key 将通过网络明文传输/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("DSH 工作区"), { target: { value: "/project" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
+      providers: [expect.objectContaining({ kind: "dsh", baseUrl: "http://localhost:3080", dshWorkspace: "/project", models: [] })],
+      actions: expect.arrayContaining([expect.objectContaining({ providerId: saved.providers[0]!.id, modelId: "" })]),
+    })));
+  });
   it("saves the tray switch from the sidebar and retains it on reopening", async () => {
     let saved = structuredClone(DEFAULT_PUBLIC_SETTINGS);
     const save = vi.fn(async (update: SettingsUpdate) => {

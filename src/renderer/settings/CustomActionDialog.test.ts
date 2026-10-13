@@ -66,6 +66,22 @@ describe('promptAfterKindChange', () => {
 })
 
 describe('CustomActionDialog model + thinking', () => {
+  it('uses the DSH catalog without guessing thinking levels from a model name', () => {
+    render(createElement(CustomActionDialog, {
+      action: null,
+      providers: [{
+        id: 'dsh', name: 'DSH', kind: 'dsh', enabled: true,
+        baseUrl: 'http://localhost:3080', keyConfigured: false,
+        models: [{ id: 'custom/gpt-5', name: 'DSH Model', thinkingLevels: [] }]
+      }],
+      onCancel: vi.fn(), onSave: vi.fn()
+    }))
+    fireEvent.click(screen.getByRole('combobox', { name: '模型' }))
+    expect(screen.getByText('DSH', { selector: '.styled-select__group' })).toBeInTheDocument()
+    expect(screen.queryByText('DSH（未配置密钥）')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('option', { name: 'DSH Model' }))
+    expect(screen.queryByLabelText('思考强度')).not.toBeInTheDocument()
+  })
   function choose(label: string, option: string): void {
     fireEvent.click(screen.getByRole('combobox', { name: label }))
     fireEvent.click(screen.getByRole('option', { name: option }))

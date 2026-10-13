@@ -356,11 +356,32 @@ fn default_provider_enabled() -> bool {
     true
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    #[default]
+    Openai,
+    Dsh,
+}
+
+pub(crate) fn is_local_dsh_url(base: &str) -> bool {
+    url::Url::parse(base).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty() && url.password().is_none()
+            && url.query().is_none() && url.fragment().is_none()
+            && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConfig {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub kind: ProviderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_workspace: Option<String>,
     #[serde(default = "default_provider_enabled")]
     pub enabled: bool,
     pub base_url: String,
@@ -368,11 +389,21 @@ pub struct ProviderConfig {
     pub models: Vec<ProviderModel>,
 }
 
+impl ProviderConfig {
+    pub fn requires_api_key(&self) -> bool {
+        self.kind != ProviderKind::Dsh || !is_local_dsh_url(&self.base_url)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PublicProviderConfig {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub kind: ProviderKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_workspace: Option<String>,
     #[serde(default = "default_provider_enabled")]
     pub enabled: bool,
     pub base_url: String,
@@ -385,6 +416,8 @@ impl PublicProviderConfig {
         Self {
             id: provider.id.clone(),
             name: provider.name.clone(),
+            kind: provider.kind,
+            dsh_workspace: provider.dsh_workspace.clone(),
             enabled: provider.enabled,
             base_url: provider.base_url.clone(),
             models: provider.models.clone(),
@@ -544,6 +577,10 @@ pub struct SettingsUpdate {
 pub struct CreateProviderInput {
     pub name: String,
     pub base_url: String,
+    #[serde(default)]
+    pub kind: ProviderKind,
+    #[serde(default)]
+    pub dsh_workspace: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -551,6 +588,8 @@ pub struct CreateProviderInput {
 pub struct UpdateProviderInput {
     pub name: Option<String>,
     pub base_url: Option<String>,
+    pub kind: Option<ProviderKind>,
+    pub dsh_workspace: Option<String>,
     pub models: Option<Vec<ProviderModel>>,
 }
 
@@ -766,6 +805,8 @@ impl Default for AppSettings {
         let provider = ProviderConfig {
             id: DEFAULT_PROVIDER_ID.to_owned(),
             name: "OpenAI Compatible".to_owned(),
+            kind: crate::models::ProviderKind::Openai,
+            dsh_workspace: None,
             enabled: true,
             base_url: "https://api.openai.com/v1".to_owned(),
             models: Vec::new(),
@@ -879,6 +920,12 @@ impl AppSettings {
             provider.id = provider.id.trim().to_owned();
             provider.name = provider.name.trim().to_owned();
             provider.base_url = normalize_base_url(&provider.base_url)?;
+            if let Some(workspace) = &mut provider.dsh_workspace {
+                *workspace = workspace.trim().to_owned();
+                if !workspace.starts_with('/') || workspace.len() > 2048 || workspace.contains('\0') {
+                    return Err("DSH 工作区必须是容器内的绝对路径（如 /workspace）".to_owned());
+                }
+            }
             validate_identifier(&provider.id, "服务商 ID")?;
             if !provider_ids.insert(provider.id.clone()) {
                 return Err(format!("服务商 ID 重复：{}", provider.id));
@@ -895,6 +942,10 @@ impl AppSettings {
                 model.name = model.name.trim().to_owned();
                 if model.id.is_empty() || model.id.len() > 256 {
                     return Err("模型 ID 应为 1–256 个字符".to_owned());
+                }
+                if provider.kind == ProviderKind::Dsh && !model.id.split_once('/')
+                    .is_some_and(|(upstream, model)| !upstream.is_empty() && !model.is_empty()) {
+                    return Err("DSH 模型 ID 格式应为 提供商ID/模型ID".to_owned());
                 }
                 if model.name.is_empty() || model.name.len() > 256 {
                     return Err("模型名称应为 1–256 个字符".to_owned());

@@ -1,6 +1,6 @@
 [package]
 name = "popper"
-version = "0.5.9"
+version = "0.5.10"
 description = "Popper, a lightweight macOS and Windows selection assistant built with Tauri"
 authors = ["Popper contributors"]
 edition = "2021"
@@ -31,6 +31,7 @@ tauri = { version = "2.11.5", features = [
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 

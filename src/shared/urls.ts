@@ -2,6 +2,12 @@ export type UrlValidationResult = { valid: true } | { valid: false; reason: stri
 
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 
+export function requiresProviderApiKey(provider: { kind?: string; baseUrl: string }): boolean {
+  if (provider.kind !== "dsh" || !validateOpenAiBaseUrl(provider.baseUrl).valid) return true;
+  const hostname = new URL(provider.baseUrl).hostname;
+  return !["localhost", "127.0.0.1", "[::1]"].includes(hostname);
+}
+
 function parseHttpUrl(value: string): URL | null {
   try {
     const url = new URL(value);

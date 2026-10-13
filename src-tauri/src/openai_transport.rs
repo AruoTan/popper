@@ -94,6 +94,7 @@ pub(crate) enum TransportMarker {
 pub(crate) enum ResponseTransport {
     Sse,
     Json,
+    Dsh,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -103,6 +104,7 @@ pub(crate) enum ResponseTermination {
     FinishReason,
     CleanEofUnverified,
     Json,
+    TurnEnd,
 }
 
 #[derive(Debug)]
