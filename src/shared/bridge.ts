@@ -26,6 +26,7 @@ export type Unsubscribe = () => void;
 
 export interface RuntimeDiagnostics {
   selectionMonitorError?: string;
+  quickAskShortcutError?: string;
 }
 
 export interface AccessibilityStatus {
@@ -119,7 +120,21 @@ export interface SelectionDetectionDebug {
   stepsTruncated?: boolean;
 }
 
+export interface QuickAskAttachment {
+  name: string;
+  mime: string;
+  data: string;
+  kind: "image" | "text" | "file";
+}
+
 export interface WindowPopperApi {
+  /** Settings recorder only; prevents its own global shortcut from opening the composer. */
+  setQuickAskShortcutRecording?(recording: boolean): Promise<void>;
+  submitQuickAsk?(question: string, attachments: QuickAskAttachment[]): Promise<RunActionResult>;
+  closeQuickAsk?(): Promise<void>;
+  quickAskReady?(): Promise<void>;
+  reportQuickAskSize?(height: number): Promise<void>;
+  onQuickAskOpened?(listener: () => void): Unsubscribe;
   /** Runtime only; resets to false on every app launch. */
   getSelectionDetectionDebugEnabled?(): Promise<boolean>;
   setSelectionDetectionDebugEnabled?(enabled: boolean): Promise<boolean>;

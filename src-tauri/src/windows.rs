@@ -3400,8 +3400,150 @@ fn windows_error(error: windows::core::Error) -> tauri::Error {
     std::io::Error::other(error.to_string()).into()
 }
 
+/// A keyboard-focused composer, independent of host selection and clipboard.
+pub fn show_quick_ask_window(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("quick-ask") {
+        let size = window
+            .inner_size()?
+            .to_logical::<f64>(window.scale_factor()?);
+        position_quick_ask_window(app, &window, size.height)?;
+        window.show()?;
+        window.set_focus()?;
+        let _ = tauri::Emitter::emit_to(app, "quick-ask", "popper:quick-ask-opened", ());
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(
+        app,
+        "quick-ask",
+        WebviewUrl::App("quick-ask/index.html".into()),
+    )
+    .title("Popper 快捷提问")
+    .disable_drag_drop_handler()
+    .inner_size(560.0, 230.0)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .resizable(false)
+    .minimizable(false)
+    .maximizable(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(false)
+    .build()?;
+    position_quick_ask_window(app, &window, 230.0)?;
+    // Its renderer reveals it after installing listeners and committing the input.
+    Ok(())
+}
+
+fn quick_ask_layout_in_area(
+    area: WorkArea,
+    scale: f64,
+    height: f64,
+    anchor: Option<Point>,
+) -> WindowLayout {
+    let rect = crate::quick_ask::composer_layout(
+        crate::quick_ask::ComposerRect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+        },
+        scale,
+        height,
+        anchor.map(|point| (point.x, point.y)),
+    );
+    WindowLayout {
+        position: Point {
+            x: rect.x,
+            y: rect.y,
+        },
+        coordinate_size: WindowSize {
+            width: rect.width,
+            height: rect.height,
+        },
+    }
+}
+
+fn position_quick_ask_window(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    height: f64,
+) -> tauri::Result<()> {
+    let cursor = app
+        .cursor_position()
+        .map(|point| Point {
+            x: point.x,
+            y: point.y,
+        })
+        .unwrap_or(Point { x: 0.0, y: 0.0 });
+    if let Some(geometry) = monitor_geometry_for_point(window, cursor)? {
+        apply_window_layout(
+            window,
+            quick_ask_layout_in_area(geometry.work_area, geometry.coordinate_scale, height, None),
+        )
+    } else {
+        window.center()
+    }
+}
+
+pub fn resize_quick_ask_window(window: &WebviewWindow, height: f64) -> tauri::Result<()> {
+    let native_position = window.outer_position()?;
+    #[cfg(target_os = "windows")]
+    let position = Point {
+        x: native_position.x as f64,
+        y: native_position.y as f64,
+    };
+    #[cfg(not(target_os = "windows"))]
+    let position = {
+        let logical = native_position.to_logical::<f64>(window.scale_factor()?);
+        Point {
+            x: logical.x,
+            y: logical.y,
+        }
+    };
+    if let Some(geometry) = monitor_geometry_for_point(window, position)? {
+        apply_window_layout(
+            window,
+            quick_ask_layout_in_area(
+                geometry.work_area,
+                geometry.coordinate_scale,
+                height,
+                Some(position),
+            ),
+        )
+    } else {
+        window.set_size(tauri::LogicalSize::new(560.0, height.clamp(180.0, 480.0)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quick_ask_growth_stays_inside_negative_and_scaled_monitor_work_areas() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let area = super::WorkArea {
+                x: -1920.0,
+                y: -200.0,
+                width: 1920.0,
+                height: 900.0,
+            };
+            let layout = super::quick_ask_layout_in_area(
+                area,
+                scale,
+                470.0,
+                Some(super::Point {
+                    x: -500.0,
+                    y: 500.0,
+                }),
+            );
+            assert!(layout.position.x >= area.x);
+            assert!(layout.position.y >= area.y);
+            assert!(layout.position.x + layout.coordinate_size.width <= area.x + area.width);
+            assert!(layout.position.y + layout.coordinate_size.height <= area.y + area.height);
+        }
+    }
+
     use super::*;
 
     fn blur_result_runtime(reveal_phase: ResultRevealPhase) -> ResultRuntime {

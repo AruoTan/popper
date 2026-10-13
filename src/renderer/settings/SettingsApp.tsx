@@ -1,3 +1,4 @@
+import { ShortcutRecorder } from "./ShortcutRecorder";
 import {
   DndContext,
   KeyboardSensor,
@@ -1118,6 +1119,38 @@ export function SettingsApp(): JSX.Element {
                     选中文字后长按右键 <kbd>250 ms</kbd> 唤出工具栏，短按仍是普通右键。
                   </p>
                 </div>
+              </section>
+
+              <section className="settings-section" aria-labelledby="quick-ask-title">
+                <div className="section-heading">
+                  <div>
+                    <h2 id="quick-ask-title">快捷提问</h2>
+                    <p>无需划词，随时向 AI 提问；支持添加图片、文档和文本附件。</p>
+                  </div>
+                </div>
+                <div className="settings-card quick-ask-setting">
+                  <label className="quick-ask-setting__label" htmlFor="quick-ask-shortcut">
+                    <strong>唤出快捷键</strong>
+                    <span>修改后点击「保存设置」生效。</span>
+                  </label>
+                  <div className="quick-ask-setting__controls">
+                    <ShortcutRecorder
+                      value={draft.quickAskShortcut}
+                      disabled={busy}
+                      onChange={(shortcut) => changeDraft((current) => ({ ...current, quickAskShortcut: shortcut }))}
+                    />
+                    <button
+                      className="button button--quiet quick-ask-setting__reset"
+                      type="button"
+                      disabled={busy || draft.quickAskShortcut === "Control+Shift+Space"}
+                      onClick={() => changeDraft((current) => ({ ...current, quickAskShortcut: "Control+Shift+Space" }))}
+                    >
+                      <RefreshCw size={13} aria-hidden="true" />
+                      恢复默认
+                    </button>
+                  </div>
+                </div>
+                {accessibility?.diagnostics?.quickAskShortcutError && <p className="field-error" role="alert">{accessibility.diagnostics.quickAskShortcutError}，请更换组合键并保存。</p>}
               </section>
 
               <section className="settings-section" aria-labelledby="providers-title">

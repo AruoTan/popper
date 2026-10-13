@@ -116,6 +116,7 @@ export function buildSettingsUpdate(settings: PublicSettings):
 
   const candidate: SettingsUpdate = {
     trayEnabled: settings.trayEnabled,
+    quickAskShortcut: settings.quickAskShortcut,
     locale: settings.locale,
     translate: settings.translate,
     result: settings.result,

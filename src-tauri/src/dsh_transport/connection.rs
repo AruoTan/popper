@@ -240,6 +240,118 @@ impl Rpc {
             *cookie = None;
         }
     }
+    /// Binary uploads are a plain HTTP result, not a server-response RPC envelope.
+    pub async fn upload_file(
+        &self,
+        session_id: &str,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String, TransportFailure> {
+        let bytes = bytes::Bytes::from(bytes);
+        let mut endpoint = url::Url::parse(&format!("{}/api/session/uploadFileBinary", self.base))
+            .map_err(|_| invalid())?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("sessionId", session_id)
+            .append_pair("name", name);
+        for attempt in 0..2 {
+            let headers = self.auth_headers().await?;
+            let response = self
+                .client
+                .post(endpoint.clone())
+                .headers(headers.clone())
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .timeout(Duration::from_secs(60))
+                .body(bytes.clone())
+                .send()
+                .await
+                .map_err(|error| {
+                    let mut failure = failure(
+                        if error.is_timeout() {
+                            "DSH_ATTACHMENT_UPLOAD_TIMEOUT"
+                        } else {
+                            "DSH_ATTACHMENT_UPLOAD_NETWORK_ERROR"
+                        },
+                        if error.is_timeout() {
+                            "DSH 附件上传超时，请重试"
+                        } else {
+                            "DSH 附件上传失败，请检查网关连接"
+                        },
+                    );
+                    failure.retryable = true;
+                    failure
+                })?;
+            let status = response.status().as_u16();
+            if status == 401 && self.key.is_empty() && attempt == 0 {
+                // Authentication rejection precedes upload admission. A network
+                // failure is never automatically retried, since it may be accepted.
+                self.invalidate_cookie(headers.get(header::COOKIE)).await;
+                continue;
+            }
+            if !response.status().is_success() {
+                let message = match status {
+                    401 | 403 => "DSH 附件上传认证失败，请检查 DSH_API_KEY 或本地自动登录".into(),
+                    404 | 405 => "当前 DSH 后端未提供附件上传接口，请检查后端版本".into(),
+                    413 => "DSH 拒绝附件大小，请缩小文件后重试".into(),
+                    _ => format!("DSH 附件上传返回 HTTP {status}"),
+                };
+                let mut error = failure("DSH_ATTACHMENT_UPLOAD_HTTP_ERROR", message);
+                error.retryable = status >= 500 || matches!(status, 408 | 429);
+                error.status = Some(status);
+                return Err(error);
+            }
+            let body = read_body(response).await.map_err(|mut error| {
+                if error.code == "DSH_NETWORK_ERROR" {
+                    error.retryable = true;
+                }
+                error
+            })?;
+            let envelope: Value = serde_json::from_slice(&body).map_err(|_| {
+                failure(
+                    "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+                    "DSH 附件上传响应无效",
+                )
+            })?;
+            match envelope["ok"].as_bool() {
+                Some(true) => {
+                    let receipt = envelope["value"]["receiptId"]
+                        .as_str()
+                        .filter(|receipt| {
+                            !receipt.trim().is_empty()
+                                && receipt.len() <= 512
+                                && !receipt.chars().any(char::is_control)
+                        })
+                        .ok_or_else(|| {
+                            failure(
+                                "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+                                "DSH 未返回有效的附件上传回执",
+                            )
+                        })?;
+                    return Ok(receipt.to_owned());
+                }
+                Some(false) => {
+                    return Err(failure(
+                        "DSH_ATTACHMENT_UPLOAD_REJECTED",
+                        format!(
+                            "DSH 附件上传失败：{}",
+                            safe_message(&envelope["error"], &self.key)
+                        ),
+                    ))
+                }
+                None => {
+                    return Err(failure(
+                        "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+                        "DSH 附件上传响应缺少 ok 状态",
+                    ))
+                }
+            }
+        }
+        Err(failure(
+            "DSH_ATTACHMENT_UPLOAD_AUTH_ERROR",
+            "DSH 附件上传认证失败",
+        ))
+    }
+
     pub async fn call(&self, method: &str, args: Value) -> Result<Value, TransportFailure> {
         let rpc_id = Uuid::new_v4().to_string();
         let body = json!({"type":"client-request", "rpcId":rpc_id, "method":method, "payload":{"args":args}});
