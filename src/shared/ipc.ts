@@ -1,5 +1,10 @@
 /** Live Tauri invoke command names used by the renderer bridge. */
 export const TAURI_COMMANDS = {
+  setQuickAskShortcutRecording: "set_quick_ask_shortcut_recording",
+  submitQuickAsk: "submit_quick_ask",
+  closeQuickAsk: "close_quick_ask",
+  quickAskReady: "quick_ask_ready",
+  reportQuickAskSize: "report_quick_ask_size",
   submitTranslation: "submit_translation",
   translationInputSuggestions: "translation_input_suggestions",
   dictionaryState: "dictionary_state",
@@ -59,6 +64,7 @@ export const TAURI_COMMANDS = {
 
 /** Live Tauri event names emitted by the native runtime and listened by the bridge. */
 export const TAURI_EVENTS = {
+  quickAskOpened: "popper:quick-ask-opened",
   dictionary: "popper:dictionary",
   selection: "popper:selection",
   actionStream: "popper:action-stream",

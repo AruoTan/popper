@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub const SETTINGS_VERSION: u8 = 16;
+pub const SETTINGS_VERSION: u8 = 17;
 pub const TEXT_PLACEHOLDER: &str = "{{text}}";
 pub const OUTPUT_LANGUAGE_PLACEHOLDER: &str = "{{language}}";
 pub const TARGET_LANGUAGE_PLACEHOLDER: &str = "{{target_language}}";
@@ -495,12 +495,18 @@ fn default_tray_enabled() -> bool {
     true
 }
 
+pub fn default_quick_ask_shortcut() -> String {
+    "Control+Shift+Space".to_owned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     pub version: u8,
     #[serde(default = "default_tray_enabled")]
     pub tray_enabled: bool,
+    #[serde(default = "default_quick_ask_shortcut")]
+    pub quick_ask_shortcut: String,
     pub locale: Locale,
     pub translate: TranslationSettings,
     pub result: ResultSettings,
@@ -516,6 +522,8 @@ pub struct PublicSettings {
     pub version: u8,
     #[serde(default = "default_tray_enabled")]
     pub tray_enabled: bool,
+    #[serde(default = "default_quick_ask_shortcut")]
+    pub quick_ask_shortcut: String,
     pub locale: Locale,
     pub translate: TranslationSettings,
     pub result: ResultSettings,
@@ -532,6 +540,7 @@ impl PublicSettings {
         Self {
             version: SETTINGS_VERSION,
             tray_enabled: settings.tray_enabled,
+            quick_ask_shortcut: settings.quick_ask_shortcut.clone(),
             locale: settings.locale,
             translate: settings.translate.clone(),
             result: settings.result.clone(),
@@ -564,6 +573,7 @@ impl PublicSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsUpdate {
     pub tray_enabled: Option<bool>,
+    pub quick_ask_shortcut: Option<String>,
     pub locale: Option<Locale>,
     pub translate: Option<TranslationSettings>,
     pub result: Option<ResultSettings>,
@@ -833,6 +843,7 @@ impl Default for AppSettings {
             version: SETTINGS_VERSION,
             locale: Locale::ZhCn,
             tray_enabled: true,
+            quick_ask_shortcut: default_quick_ask_shortcut(),
             translate: TranslationSettings::default(),
             result: ResultSettings::default(),
             filter: ApplicationFilterSettings::default(),
@@ -891,6 +902,9 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalize_and_validate(mut self) -> Result<Self, String> {
         self.version = SETTINGS_VERSION;
+        if !crate::quick_ask::valid_shortcut(&self.quick_ask_shortcut) {
+            return Err("快捷提问快捷键无效，请使用修饰键与字母、数字、空格或功能键的组合".into());
+        }
         if self.translate.primary_language == self.translate.alternate_language {
             return Err("翻译语言必须不同".to_owned());
         }

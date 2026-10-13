@@ -7,6 +7,8 @@ use serde_json::{json, Value};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+#[path = "dsh_transport/attachments.rs"]
+mod attachments;
 #[path = "dsh_transport/connection.rs"]
 mod connection;
 pub(crate) use connection::DshService;
@@ -339,6 +341,8 @@ struct DshTiming {
     model_ready_ms: Option<u64>,
     socket_ready_ms: Option<u64>,
     follow_ready_ms: Option<u64>,
+    attachment_ready_ms: Option<u64>,
+    attachment_count: usize,
     prompt_sent_ms: Option<u64>,
     prompt_ack_ms: Option<u64>,
     first_event_ms: Option<u64>,
@@ -361,6 +365,7 @@ fn elapsed(budget: &GenerationBudget, at: Instant) -> u64 {
 }
 
 impl DshService {
+    #[cfg(test)]
     pub(crate) async fn generate<D, T, N>(
         &self,
         request_id: &str,
@@ -369,6 +374,43 @@ impl DshService {
         model: &str,
         thinking_plan: &ThinkingRequestPlan,
         messages: &Value,
+        cancellation: &CancellationToken,
+        budget: &GenerationBudget,
+        delta: D,
+        thinking: T,
+        notice: N,
+    ) -> Result<TransportSuccess, TransportFailure>
+    where
+        D: FnMut(String) -> ControlFlow<()>,
+        T: FnMut(String) -> ControlFlow<()>,
+        N: FnMut(String),
+    {
+        self.generate_with_attachments(
+            request_id,
+            provider,
+            key,
+            model,
+            thinking_plan,
+            messages,
+            &[],
+            cancellation,
+            budget,
+            delta,
+            thinking,
+            notice,
+        )
+        .await
+    }
+
+    pub(crate) async fn generate_with_attachments<D, T, N>(
+        &self,
+        request_id: &str,
+        provider: &ProviderConfig,
+        key: &str,
+        model: &str,
+        thinking_plan: &ThinkingRequestPlan,
+        messages: &Value,
+        attachments: &[crate::quick_ask::Attachment],
         cancellation: &CancellationToken,
         budget: &GenerationBudget,
         mut delta: D,
@@ -380,6 +422,8 @@ impl DshService {
         T: FnMut(String) -> ControlFlow<()>,
         N: FnMut(String),
     {
+        crate::quick_ask::validate_attachments(attachments)
+            .map_err(|message| failure("DSH_ATTACHMENT_INVALID", message))?;
         let gateway = self.gateway(provider, key)?;
         let (upstream_provider, upstream_model) = split_model_id(model)?;
         let prompt = prompt_text(messages)?;
@@ -467,8 +511,12 @@ impl DshService {
                 .await
                 .map_err(|_| failure("DSH_STREAM_TIMEOUT", "DSH 会话订阅就绪超时"))??;
             timing.follow_ready_ms = Some(elapsed(budget, Instant::now()));
+            let content =
+                attachments::prompt_content(rpc, id, prompt, attachments, &mut notice).await?;
+            timing.attachment_ready_ms = Some(elapsed(budget, Instant::now()));
+            timing.attachment_count = attachments.len();
             let args = json!({"request":{"sessionId":id, "requestId":request_id,
-                "mode":"queue", "content":[{"type":"text", "text":prompt}]}});
+                "mode":"queue", "content":content}});
             let prompt_call = rpc.call("session/prompt", args);
             tokio::pin!(prompt_call);
             timing.prompt_sent_ms = Some(elapsed(budget, Instant::now()));
@@ -551,6 +599,12 @@ impl DshService {
             eprintln!("[dsh-network] {record}");
         }
         if let Err(mut error) = result {
+            if !attachments.is_empty()
+                && timing.prompt_sent_ms.is_none()
+                && error.code == "TOTAL_TIMEOUT"
+            {
+                error.retryable = true;
+            }
             error.content_seen = !output.content.is_empty();
             return Err(error);
         }

@@ -2,6 +2,7 @@ mod dictionary;
 mod eudic;
 pub mod actions;
 mod clipboard;
+mod quick_ask;
 mod local_secrets;
 pub mod models;
 mod openai_protocol;
@@ -48,6 +49,9 @@ pub fn run() {
         }
     }));
 
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
+
     builder
         // Keep Tauri's native macOS menu so the focused WebView receives the
         // standard responder actions for Cmd+X/C/V/A and undo/redo. Without
@@ -79,6 +83,7 @@ pub fn run() {
                 .ensure_toolbar(&handle)?;
             runtime::spawn_selection_loop(handle.clone(), receiver)?;
             runtime::setup_tray(&handle)?;
+            runtime::setup_quick_ask_shortcut(&handle);
 
             let state = handle.state::<RuntimeState>();
             state.reconcile_capture(&handle);
@@ -132,6 +137,11 @@ pub fn run() {
             runtime::set_toolbar_input_mode,
             runtime::focus_toolbar_input,
             runtime::run_action,
+            runtime::submit_quick_ask,
+            runtime::set_quick_ask_shortcut_recording,
+            runtime::close_quick_ask,
+            runtime::quick_ask_ready,
+            runtime::report_quick_ask_size,
             runtime::dictionary_state,
             runtime::dictionary_query,
             runtime::submit_translation,

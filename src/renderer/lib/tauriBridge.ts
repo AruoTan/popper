@@ -188,6 +188,7 @@ function parseAccessibility(value: unknown): AccessibilityStatus {
       ? (record.diagnostics as Record<string, unknown>)
       : {};
   const diagnostics = {
+    ...(typeof diagnosticsRecord.quickAskShortcutError === "string" ? { quickAskShortcutError: diagnosticsRecord.quickAskShortcutError } : {}),
     ...(typeof diagnosticsRecord.selectionMonitorError === "string"
       ? { selectionMonitorError: diagnosticsRecord.selectionMonitorError }
       : {}),
@@ -244,6 +245,7 @@ export function installTauriBridge(): void {
     return;
   }
 
+  const quickAskOpened = new EventHub<void>(EVENTS.quickAskOpened, () => undefined);
   const selectionEvents = new EventHub<SelectionPayload>(
     EVENTS.selection,
     (payload) => selectionPayloadSchema.parse(payload),
@@ -408,6 +410,12 @@ export function installTauriBridge(): void {
         selectionId: selectionId ?? null,
       });
     },
+    async setQuickAskShortcutRecording(recording) { await invoke(TAURI_COMMANDS.setQuickAskShortcutRecording, { recording }); },
+    async submitQuickAsk(question, attachments) { return parseRunActionResult(await invoke(TAURI_COMMANDS.submitQuickAsk, { question, attachments })); },
+    async closeQuickAsk() { await invoke(TAURI_COMMANDS.closeQuickAsk); },
+    async quickAskReady() { await quickAskOpened.ready(); await invoke(TAURI_COMMANDS.quickAskReady); },
+    async reportQuickAskSize(height) { await invoke(TAURI_COMMANDS.reportQuickAskSize, { height }); },
+    onQuickAskOpened: (listener) => quickAskOpened.subscribe(listener),
     async runAction(
       actionId: string,
       cursor?: Point,

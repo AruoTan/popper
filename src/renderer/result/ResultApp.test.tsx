@@ -871,6 +871,14 @@ describe("ResultApp window interactions", () => {
     await waitFor(() => expect(api.closeResult).toHaveBeenCalledWith("session-1"));
   });
 
+  it("renders a selection-free quick ask result without an original-text toggle", async () => {
+    const snapshot = resultSnapshot({ actionId: "ask-ai", quickAsk: true, conversation: [{ role: "user", content: "Explain Docker" }] });
+    snapshot.selection.text = "";
+    await renderResult(snapshot);
+    expect(await screen.findByText("Explain Docker")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "显示原文" })).not.toBeInTheDocument();
+  });
+
   it("renders model output as Markdown inside the result window", async () => {
     const content = [
       "# Markdown 标题",

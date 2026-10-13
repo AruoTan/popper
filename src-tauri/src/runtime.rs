@@ -100,6 +100,8 @@ pub struct AccessibilityStatus {
 pub struct RuntimeDiagnostics {
     #[serde(skip_serializing_if = "Option::is_none")]
     selection_monitor_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quick_ask_shortcut_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -342,6 +344,8 @@ pub struct ResultSessionSnapshot {
     provider_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quick_ask: Option<bool>,
     selection: RendererSelectionPayload,
     conversation: Vec<ConversationTurn>,
     status: &'static str,
@@ -419,6 +423,7 @@ fn compose_result_ready_snapshot(
         action_id: meta.action_id,
         provider_id,
         model_id,
+        quick_ask: meta.selection.payload.text.is_empty().then_some(true),
         selection: RendererSelectionPayload::new(&meta.selection.id, &meta.selection.payload),
         conversation,
         status,
@@ -526,6 +531,11 @@ pub struct RuntimeState {
     /// dismissed selection can never be reactivated by an older renderer IPC.
     toolbar_input_switch: Mutex<()>,
     shutting_down: AtomicBool,
+    quick_ask_submitting: AtomicBool,
+    /// Settings recording owns this shortcut until cancel, blur, or close.
+    quick_ask_shortcut_recording: AtomicBool,
+    quick_ask_shortcut: Mutex<Option<String>>,
+    quick_ask_shortcut_switch: Mutex<()>,
     pending_settings_guidance: Mutex<Option<SettingsGuidance>>,
 }
 
@@ -557,6 +567,10 @@ impl RuntimeState {
             toolbar_input_mode: AtomicBool::new(false),
             toolbar_input_switch: Mutex::new(()),
             shutting_down: AtomicBool::new(false),
+            quick_ask_submitting: AtomicBool::new(false),
+            quick_ask_shortcut_recording: AtomicBool::new(false),
+            quick_ask_shortcut: Mutex::new(None),
+            quick_ask_shortcut_switch: Mutex::new(()),
             pending_settings_guidance: Mutex::new(None),
         }
     }
@@ -1524,9 +1538,26 @@ impl RuntimeState {
             }
             return;
         }
+        if label == "quick-ask" {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if !self.shutting_down.load(Ordering::Acquire) {
+                    api.prevent_close();
+                    if let Some(window) = app.get_webview_window(label) {
+                        let _ = window.hide();
+                    }
+                }
+            }
+            return;
+        }
         if label == SETTINGS_LABEL {
             match event {
+                WindowEvent::Focused(false) | WindowEvent::Destroyed => {
+                    self.quick_ask_shortcut_recording
+                        .store(false, Ordering::Release);
+                }
                 WindowEvent::CloseRequested { api, .. } => {
+                    self.quick_ask_shortcut_recording
+                        .store(false, Ordering::Release);
                     if self.shutting_down.load(Ordering::Acquire) {
                         return;
                     }
@@ -1983,20 +2014,58 @@ pub fn update_settings(
     update: SettingsUpdate,
 ) -> Result<PublicSettings, String> {
     ensure_settings_caller(&window)?;
-    let previous_tray_enabled = state.settings.get_settings().tray_enabled;
-    let public = state.settings.update(update).map_err(|error| error.to_string())?;
+    let _shortcut_switch = state.quick_ask_shortcut_switch.lock();
+    let previous_settings = state.settings.get_settings();
+    let previous_tray_enabled = previous_settings.tray_enabled;
+    let next_shortcut = update
+        .quick_ask_shortcut
+        .clone()
+        .unwrap_or_else(|| previous_settings.quick_ask_shortcut.clone());
+    let previous_registered = state.quick_ask_shortcut.lock().clone();
+    let mut shortcut_changed = false;
+    if previous_registered.as_deref() != Some(next_shortcut.as_str()) {
+        match register_quick_ask_shortcut(&app, &next_shortcut) {
+            Ok(()) => shortcut_changed = true,
+            Err(error) if next_shortcut != previous_settings.quick_ask_shortcut => {
+                return Err(error)
+            }
+            // An occupied startup shortcut must not block unrelated provider
+            // or appearance edits. Saving also retries its registration.
+            Err(error) => state.runtime_diagnostics.lock().quick_ask_shortcut_error = Some(error),
+        }
+    }
+    let public = match state.settings.update(update) {
+        Ok(public) => public,
+        Err(error) => {
+            if shortcut_changed {
+                unregister_quick_ask_shortcut(&app, &next_shortcut);
+            }
+            return Err(error.to_string());
+        }
+    };
     if let Err(error) = set_tray_enabled(&app, public.tray_enabled) {
         let message = format!("无法更新托盘：{error}");
+        if shortcut_changed {
+            unregister_quick_ask_shortcut(&app, &next_shortcut);
+        }
         // Keep the persisted switch consistent when native tray creation fails.
         let restored = state
             .settings
             .update(SettingsUpdate {
                 tray_enabled: Some(previous_tray_enabled),
+                quick_ask_shortcut: Some(previous_settings.quick_ask_shortcut),
                 ..Default::default()
             })
             .map_err(|rollback| format!("{message}；恢复托盘设置失败：{rollback}"))?;
         state.after_settings_changed(&app, &restored);
         return Err(message);
+    }
+    if shortcut_changed {
+        if let Some(previous) = previous_registered {
+            unregister_quick_ask_shortcut(&app, &previous);
+        }
+        *state.quick_ask_shortcut.lock() = Some(next_shortcut);
+        state.runtime_diagnostics.lock().quick_ask_shortcut_error = None;
     }
     state.after_settings_changed(&app, &public);
     Ok(public)
@@ -3166,6 +3235,7 @@ fn ensure_result_caller(window: &WebviewWindow, session_id: &str) -> Result<(), 
 fn ensure_known_caller(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == SETTINGS_LABEL
         || window.label() == TOOLBAR_LABEL
+        || window.label() == "quick-ask"
         || session_from_result_label(window.label()).is_some()
     {
         Ok(())
@@ -3440,6 +3510,252 @@ fn open_system_url(_value: &str) -> Result<(), ()> {
     Err(())
 }
 
+pub fn setup_quick_ask_shortcut(app: &AppHandle) {
+    let state = app.state::<RuntimeState>();
+    let shortcut = state.settings.get_settings().quick_ask_shortcut;
+    match register_quick_ask_shortcut(app, &shortcut) {
+        Ok(()) => *state.quick_ask_shortcut.lock() = Some(shortcut),
+        Err(error) => state.runtime_diagnostics.lock().quick_ask_shortcut_error = Some(error),
+    }
+}
+
+fn register_quick_ask_shortcut(app: &AppHandle, value: &str) -> Result<(), String> {
+    if !crate::quick_ask::valid_shortcut(value) {
+        return Err("快捷提问快捷键无效".into());
+    }
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+        let expected = value.to_owned();
+        app.global_shortcut()
+            .on_shortcut(value, move |app, _, event| {
+                let state = app.state::<RuntimeState>();
+                if event.state() != ShortcutState::Pressed
+                    || state.shutting_down.load(Ordering::Acquire)
+                    || state.quick_ask_submitting.load(Ordering::Acquire)
+                    || state.quick_ask_shortcut_recording.load(Ordering::Acquire)
+                    || state.settings.get_settings().quick_ask_shortcut != expected
+                {
+                    return;
+                }
+                let handle = app.clone();
+                let _ = app.run_on_main_thread(move || {
+                    let state = handle.state::<RuntimeState>();
+                    let selection_id = state
+                        .current_selection
+                        .lock()
+                        .as_ref()
+                        .map(|selection| selection.id.clone());
+                    if let Some(selection_id) = selection_id {
+                        state.clear_and_hide_current_selection_if(&handle, &selection_id);
+                    }
+                    if let Err(error) = crate::windows::show_quick_ask_window(&handle) {
+                        eprintln!("failed to open quick ask: {error}");
+                    }
+                });
+            })
+            .map_err(|error| format!("无法注册快捷提问快捷键，可能已被占用：{error}"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = app;
+        Err("当前平台不支持快捷提问快捷键".into())
+    }
+}
+
+fn unregister_quick_ask_shortcut(app: &AppHandle, value: &str) {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        let _ = app.global_shortcut().unregister(value);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (app, value);
+    }
+}
+
+#[tauri::command]
+pub fn set_quick_ask_shortcut_recording(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    recording: bool,
+) -> Result<(), String> {
+    ensure_settings_caller(&window)?;
+    state.quick_ask_shortcut_recording.store(
+        recording && window.is_focused().map_err(|error| error.to_string())?,
+        Ordering::Release,
+    );
+    Ok(())
+}
+
+fn ensure_quick_ask_caller(window: &WebviewWindow) -> Result<(), String> {
+    (window.label() == "quick-ask")
+        .then_some(())
+        .ok_or_else(|| "该操作只能从快捷提问窗口执行".into())
+}
+
+#[tauri::command]
+pub fn quick_ask_ready(window: WebviewWindow) -> Result<(), String> {
+    ensure_quick_ask_caller(&window)?;
+    window
+        .show()
+        .and_then(|_| window.set_focus())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn close_quick_ask(window: WebviewWindow) -> Result<(), String> {
+    ensure_quick_ask_caller(&window)?;
+    window.hide().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn report_quick_ask_size(window: WebviewWindow, height: f64) -> Result<(), String> {
+    ensure_quick_ask_caller(&window)?;
+    if !height.is_finite() {
+        return Err("窗口尺寸无效".into());
+    }
+    crate::windows::resize_quick_ask_window(&window, height).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn submit_quick_ask(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    question: String,
+    attachments: Vec<crate::quick_ask::Attachment>,
+) -> Result<RunActionResult, String> {
+    ensure_quick_ask_caller(&window)?;
+    if state.shutting_down.load(Ordering::Acquire) {
+        return Ok(RunActionResult::rejected("Popper 正在退出"));
+    }
+    let question = question.trim();
+    if question.is_empty() || question.chars().count() > 20_000 {
+        return Ok(RunActionResult::rejected("请输入问题，最多 20,000 个字符"));
+    }
+    if let Err(error) = crate::quick_ask::validate_attachments(&attachments) {
+        return Ok(RunActionResult::rejected(error));
+    }
+    let settings = state.settings.get_settings();
+    let Some(action) = settings
+        .actions
+        .iter()
+        .find(|action| action.kind == ActionKind::Ask)
+    else {
+        return Ok(RunActionResult::rejected("问 AI 动作不可用"));
+    };
+    if settings.providers.iter().any(|provider| {
+        Some(provider.id.as_str()) == action.provider_id()
+            && provider.kind == crate::models::ProviderKind::Openai
+    }) {
+        if let Err(error) = crate::quick_ask::validate_openai_attachments(&attachments) {
+            return Ok(RunActionResult::rejected(error));
+        }
+    }
+    if state.quick_ask_submitting.swap(true, Ordering::AcqRel) {
+        return Ok(RunActionResult::rejected("正在发送，请稍候"));
+    }
+    struct Release<'a>(&'a AtomicBool);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _release = Release(&state.quick_ask_submitting);
+    let cursor = app
+        .cursor_position()
+        .map(|point| WindowPoint {
+            x: point.x,
+            y: point.y,
+        })
+        .unwrap_or(WindowPoint { x: 0.0, y: 0.0 });
+    let selection = CurrentSelection {
+        id: Uuid::new_v4().to_string(),
+        source_result_session_id: None,
+        payload: SelectionPayload {
+            text: String::new(),
+            source_app: SourceApplication {
+                bundle_id: String::new(),
+                name: "Popper".into(),
+            },
+            bounds: None,
+            start_top: None,
+            start_bottom: None,
+            end_top: None,
+            end_bottom: None,
+            mouse: SelectionMouse {
+                start: None,
+                end: None,
+                current: SelectionPoint {
+                    x: cursor.x,
+                    y: cursor.y,
+                },
+            },
+            direction: SelectionDirection::Unknown,
+            is_fullscreen: false,
+            method: SelectionMethod::Accessibility,
+            trigger: SelectionTrigger::Manual,
+            timestamp_ms: 0,
+        },
+    };
+    let display_question = if attachments.is_empty() {
+        question.to_owned()
+    } else {
+        format!(
+            "{}\n\n附件：{}",
+            question,
+            attachments
+                .iter()
+                .map(|attachment| attachment.name.as_str())
+                .collect::<Vec<_>>()
+                .join("、")
+        )
+    };
+    match state.create_ask_result_session(
+        &app,
+        &action.id,
+        "问 AI",
+        selection,
+        cursor,
+        Some(display_question),
+    ) {
+        Ok((session_id, _, receiver)) => {
+            let request_id = match state.actions.continue_with_attachments(
+                &app,
+                &session_id,
+                question,
+                attachments,
+            ) {
+                Ok(request_id) => request_id,
+                Err(error) => {
+                    state.abort_result_reveal(&app, &session_id);
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    return Ok(RunActionResult::rejected(error.to_string()));
+                }
+            };
+            match wait_for_result_reveal_with_timeout(receiver, RESULT_REVEAL_TIMEOUT).await {
+                Ok(()) => {
+                    let _ = window.hide();
+                    Ok(RunActionResult::accepted(
+                        Some(session_id),
+                        Some(request_id),
+                    ))
+                }
+                Err(message) => {
+                    state.abort_result_reveal(&app, &session_id);
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                    Ok(RunActionResult::rejected(message))
+                }
+            }
+        }
+        Err(message) => Ok(RunActionResult::rejected(message)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3693,6 +4009,7 @@ mod tests {
     fn runtime_availability_diagnostics_clear_after_success() {
         let mut diagnostics = RuntimeDiagnostics {
             selection_monitor_error: selection_monitor_diagnostic(true, true),
+            ..Default::default()
         };
         assert!(!selection_access_available("windows", true, &diagnostics));
 
@@ -3711,6 +4028,7 @@ mod tests {
         let native_error = "hook failed while reading TOP SECRET selected text";
         let diagnostics = RuntimeDiagnostics {
             selection_monitor_error: selection_monitor_diagnostic(true, !native_error.is_empty()),
+            ..Default::default()
         };
         let serialized = serde_json::to_string(&diagnostics).unwrap();
         assert!(!serialized.contains(native_error));

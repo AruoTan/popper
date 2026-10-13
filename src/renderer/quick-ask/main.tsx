@@ -1,0 +1,10 @@
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import '../styles.css';
+import './quick-ask.css';
+import { installTauriBridge } from '../lib/tauriBridge';
+import { QuickAskApp } from './QuickAskApp';
+installTauriBridge();
+const root = document.getElementById('root');
+if (!root) throw new Error('Quick Ask root element is missing');
+createRoot(root).render(<StrictMode><QuickAskApp /></StrictMode>);

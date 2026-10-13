@@ -99,6 +99,14 @@ fn gaps_failed_turns_and_abandoned_prefixes_are_not_success() {
     assert_eq!(output.follow(&json!({"type":"assistant-stream","frame":{"type":"end","outcome":{"kind":"abandoned"}}}), &mut delta, &mut reasoning).unwrap_err().code, "DSH_ATTEMPT_ABANDONED");
 }
 
+#[derive(Clone, Debug)]
+struct MockUpload {
+    session_id: String,
+    name: String,
+    bytes: Vec<u8>,
+    receipt: String,
+}
+
 struct MockGateway {
     base: String,
     calls: Arc<Mutex<Vec<Value>>>,
@@ -109,6 +117,12 @@ struct MockGateway {
     ack_gate: Arc<Semaphore>,
     reject_auth: Arc<std::sync::atomic::AtomicBool>,
     reject_websocket: Arc<std::sync::atomic::AtomicU16>,
+    uploads: Arc<Mutex<Vec<MockUpload>>>,
+    upload_status: Arc<std::sync::atomic::AtomicU16>,
+    upload_response: Arc<Mutex<Option<String>>>,
+    upload_seen: Arc<Semaphore>,
+    upload_blocked: Arc<std::sync::atomic::AtomicBool>,
+    upload_gate: Arc<Semaphore>,
     accept: tokio::task::JoinHandle<()>,
 }
 #[derive(Clone, Debug)]
@@ -146,6 +160,18 @@ async fn mock_gateway_options(
     let reject_auth = Arc::new(AtomicBool::new(false));
     let reject_websocket = Arc::new(AtomicU16::new(0));
     let (signals, _) = tokio::sync::broadcast::channel(32);
+    let uploads = Arc::new(Mutex::new(Vec::<MockUpload>::new()));
+    let upload_status = Arc::new(AtomicU16::new(0));
+    let upload_response = Arc::new(Mutex::new(None::<String>));
+    let upload_seen = Arc::new(Semaphore::new(0));
+    let upload_blocked = Arc::new(AtomicBool::new(false));
+    let upload_gate = Arc::new(Semaphore::new(0));
+    let seen_uploads = uploads.clone();
+    let seen_upload_status = upload_status.clone();
+    let seen_upload_response = upload_response.clone();
+    let seen_upload_seen = upload_seen.clone();
+    let seen_upload_blocked = upload_blocked.clone();
+    let seen_upload_gate = upload_gate.clone();
     let seen_calls = calls.clone();
     let seen_prompt = prompt.clone();
     let seen_commands = commands.clone();
@@ -157,6 +183,12 @@ async fn mock_gateway_options(
     let accept = tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
+            let uploads = seen_uploads.clone();
+            let upload_status = seen_upload_status.clone();
+            let upload_response = seen_upload_response.clone();
+            let upload_seen = seen_upload_seen.clone();
+            let upload_blocked = seen_upload_blocked.clone();
+            let upload_gate = seen_upload_gate.clone();
             let calls = seen_calls.clone();
             let prompt = seen_prompt.clone();
             let commands = seen_commands.clone();
@@ -319,6 +351,62 @@ async fn mock_gateway_options(
                         }
                         bytes.extend_from_slice(&chunk[..count]);
                     }
+                    if headers.starts_with("POST /api/session/uploadFileBinary?") {
+                        assert!(headers
+                            .to_lowercase()
+                            .contains("content-type: application/octet-stream"));
+                        let target = headers
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap();
+                        let target = url::Url::parse(&format!("http://localhost{target}")).unwrap();
+                        let query: std::collections::HashMap<_, _> =
+                            target.query_pairs().into_owned().collect();
+                        let session_id = query["sessionId"].clone();
+                        let name = query["name"].clone();
+                        let receipt = {
+                            let mut uploads = uploads.lock().unwrap();
+                            let receipt = format!("receipt-{session_id}-{}", uploads.len() + 1);
+                            uploads.push(MockUpload {
+                                session_id: session_id.clone(),
+                                name: name.clone(),
+                                bytes: bytes[body_start..body_start + length].to_vec(),
+                                receipt: receipt.clone(),
+                            });
+                            receipt
+                        };
+                        calls.lock().unwrap().push(json!({"method":"session/uploadFileBinary", "sessionId":session_id, "name":name}));
+                        upload_seen.add_permits(1);
+                        let status = upload_status.swap(0, Ordering::SeqCst);
+                        if status != 0 {
+                            let response = format!(
+                                "HTTP/1.1 {status} Upload Failed\r\nContent-Length: 0\r\n\r\n"
+                            );
+                            if stream.write_all(response.as_bytes()).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        if upload_blocked.load(Ordering::SeqCst) {
+                            let _permit = upload_gate.acquire().await.unwrap();
+                        }
+                        let body = upload_response.lock().unwrap().clone().unwrap_or_else(|| json!({"ok":true,"value":{"receiptId":receipt,"file":{"attachmentId":"sha256:mock-file","name":name,"bytes":length}}}).to_string());
+                        if body == "disconnect-before-headers" {
+                            return;
+                        }
+                        if body == "disconnect-during-body" {
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{").await;
+                            return;
+                        }
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
+                        if stream.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     let envelope: Value =
                         serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
                     let method = envelope["method"].as_str().unwrap();
@@ -345,6 +433,15 @@ async fn mock_gateway_options(
                         "session/modelCatalog" => catalog(),
                         "session/prompt" => {
                             let request = &envelope["payload"]["args"]["request"];
+                            for part in request["content"].as_array().unwrap() {
+                                if part["type"] == "file" {
+                                    let uploads = uploads.lock().unwrap();
+                                    assert!(uploads.iter().any(|upload| upload.receipt
+                                        == part["receiptId"].as_str().unwrap()
+                                        && upload.session_id
+                                            == request["sessionId"].as_str().unwrap()));
+                                }
+                            }
                             let _ = signals.send(MockSignal::Prompt(
                                 request["sessionId"].as_str().unwrap().to_owned(),
                                 request["requestId"].as_str().unwrap().to_owned(),
@@ -383,6 +480,12 @@ async fn mock_gateway_options(
         ack_gate,
         reject_auth,
         reject_websocket,
+        uploads,
+        upload_status,
+        upload_response,
+        upload_seen,
+        upload_blocked,
+        upload_gate,
         accept,
     }
 }
@@ -1430,4 +1533,438 @@ async fn concurrent_catalog_requests_recover_from_an_expired_cookie() {
             .count(),
         2
     );
+}
+
+fn test_file(name: &str, mime: &str, bytes: &[u8]) -> crate::quick_ask::Attachment {
+    use base64::Engine;
+    crate::quick_ask::Attachment {
+        name: name.into(),
+        mime: mime.into(),
+        kind: "file".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    }
+}
+
+#[tokio::test]
+async fn attachments_upload_binary_files_and_submit_receipts_in_the_same_session() {
+    for cookie_login in [false, true] {
+        let gateway = mock_gateway_auth(false, false, cookie_login).await;
+        let key = if cookie_login { "" } else { "test-dsh-key" };
+        let attachments = vec![
+            crate::quick_ask::Attachment {
+                name: "notes.txt".into(),
+                mime: "text/plain".into(),
+                kind: "text".into(),
+                data: "实际文件内容\n第二行".into(),
+            },
+            test_file(
+                "报告 & notes+#.pdf",
+                "application/pdf",
+                b"%PDF-1.7\nexample",
+            ),
+            test_file(
+                "report.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                b"PK\x03\x04\x00example",
+            ),
+        ];
+        let result = DshService::new()
+            .unwrap()
+            .generate_with_attachments(
+                "files-request",
+                &provider(gateway.base.clone()),
+                key,
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"分析附件"}]),
+                &attachments,
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content, "你好");
+        let uploads = gateway.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 3);
+        assert_eq!(uploads[0].bytes, attachments[0].data.as_bytes());
+        assert_eq!(uploads[1].name, attachments[1].name);
+        assert_eq!(uploads[1].bytes, b"%PDF-1.7\nexample");
+        assert_eq!(uploads[2].bytes, b"PK\x03\x04\x00example");
+        let calls = gateway.calls.lock().unwrap();
+        let prompt = calls
+            .iter()
+            .find(|call| call["method"] == "session/prompt")
+            .unwrap();
+        let request = &prompt["payload"]["args"]["request"];
+        for (index, upload) in uploads.iter().enumerate() {
+            assert_eq!(upload.session_id, request["sessionId"].as_str().unwrap());
+            assert_eq!(
+                request["content"][index + 1],
+                json!({"type":"file", "receiptId":upload.receipt})
+            );
+        }
+        assert!(!request["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(&attachments[0].data));
+        let first_upload = calls
+            .iter()
+            .position(|call| call["method"] == "session/uploadFileBinary")
+            .unwrap();
+        let submit = calls
+            .iter()
+            .position(|call| call["method"] == "session/prompt")
+            .unwrap();
+        assert!(first_upload < submit);
+    }
+}
+
+#[tokio::test]
+async fn images_use_native_media_parts_and_do_not_upload_as_generic_files() {
+    use base64::Engine;
+    let gateway = mock_gateway(false, false).await;
+    let bytes = include_bytes!("../../assets/popper.png");
+    let image = crate::quick_ask::Attachment {
+        name: "photo.png".into(),
+        mime: "image/png".into(),
+        kind: "image".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    };
+    DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "image-request",
+            &provider(gateway.base.clone()),
+            "test-dsh-key",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"描述这张图片"}]),
+            &[image.clone()],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert!(gateway.uploads.lock().unwrap().is_empty());
+    let calls = gateway.calls.lock().unwrap();
+    let prompt = calls
+        .iter()
+        .find(|call| call["method"] == "session/prompt")
+        .unwrap();
+    assert_eq!(
+        prompt["payload"]["args"]["request"]["content"][1],
+        json!({
+            "type":"image", "mediaType":"image/png", "data":image.data, "name":"photo.png"
+        })
+    );
+}
+
+#[tokio::test]
+async fn attachment_upload_business_errors_and_invalid_receipts_never_submit_prompt() {
+    for (body, expected) in [
+        (
+            json!({"ok":false,"error":{"message":"bad test-dsh-key"}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_REJECTED",
+        ),
+        (
+            json!({"ok":true,"value":{}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+        ),
+        (
+            json!({"ok":true,"value":{"receiptId":17}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+        ),
+        (
+            json!({"value":{"receiptId":"receipt"}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+        ),
+        ("not-json".into(), "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE"),
+    ] {
+        let gateway = mock_gateway(false, false).await;
+        *gateway.upload_response.lock().unwrap() = Some(body);
+        let error = DshService::new()
+            .unwrap()
+            .generate_with_attachments(
+                "invalid-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, expected);
+        assert!(!error.message.contains("test-dsh-key"));
+        let calls = gateway.calls.lock().unwrap();
+        assert!(!calls.iter().any(|call| call["method"] == "session/prompt"));
+        assert!(calls.iter().any(|call| call["method"] == "session/cancel"));
+    }
+}
+
+#[tokio::test]
+async fn attachment_upload_http_failures_do_not_replay_or_submit_a_prompt() {
+    use std::sync::atomic::Ordering;
+    for status in [401, 404, 413, 503] {
+        let gateway = mock_gateway(false, false).await;
+        gateway.upload_status.store(status, Ordering::SeqCst);
+        let error = DshService::new()
+            .unwrap()
+            .generate_with_attachments(
+                "failed-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "DSH_ATTACHMENT_UPLOAD_HTTP_ERROR");
+        assert_eq!(error.status, Some(status));
+        assert_eq!(error.retryable, status >= 500);
+        assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+        assert!(!gateway
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call["method"] == "session/prompt"));
+    }
+}
+
+#[tokio::test]
+async fn rejected_upload_cookie_reauthenticates_before_receipt_admission() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway_auth(false, false, true).await;
+    gateway.upload_status.store(401, Ordering::SeqCst);
+    DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "cookie-upload",
+            &provider(gateway.base.clone()),
+            "",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"读取文档"}]),
+            &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(gateway.uploads.lock().unwrap().len(), 2);
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "local-login")
+            .count(),
+        2
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn later_generations_reupload_retained_attachments_into_their_new_sessions() {
+    let gateway = mock_gateway(false, false).await;
+    let service = DshService::new().unwrap();
+    let attachment = test_file("test.pdf", "application/pdf", b"%PDF-test");
+    for request_id in ["first-upload", "retry-upload", "follow-up-upload"] {
+        service.generate_with_attachments(
+            request_id, &provider(gateway.base.clone()), "test-dsh-key", "one/same", &plan(),
+            &json!([{"role":"user","content":"读取文档"},{"role":"assistant","content":"原回答"},{"role":"user","content":"继续分析"}]), &[attachment.clone()],
+            &CancellationToken::new(), &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()), |_| ControlFlow::Continue(()), |_| {},
+        ).await.unwrap();
+    }
+    let uploads = gateway.uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 3);
+    assert_ne!(uploads[0].session_id, uploads[1].session_id);
+    assert_ne!(uploads[1].session_id, uploads[2].session_id);
+    let calls = gateway.calls.lock().unwrap();
+    for prompt in calls
+        .iter()
+        .filter(|call| call["method"] == "session/prompt")
+    {
+        let request = &prompt["payload"]["args"]["request"];
+        let upload = uploads
+            .iter()
+            .find(|upload| upload.session_id == request["sessionId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(request["content"][1]["receiptId"], upload.receipt);
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_upload_cancels_the_session_without_submitting_prompt() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway(false, false).await;
+    gateway.upload_blocked.store(true, Ordering::SeqCst);
+    let cancellation = CancellationToken::new();
+    let trigger = cancellation.clone();
+    let seen = gateway.upload_seen.clone();
+    let cancel_task = tokio::spawn(async move {
+        let _permit = seen.acquire().await.unwrap();
+        trigger.cancel();
+    });
+    let error = DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "cancel-upload",
+            &provider(gateway.base.clone()),
+            "test-dsh-key",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"读取文档"}]),
+            &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+            &cancellation,
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    cancel_task.await.unwrap();
+    assert_eq!(error.code, "CANCELLED");
+    let calls = gateway.calls.lock().unwrap();
+    assert!(!calls.iter().any(|call| call["method"] == "session/prompt"));
+    let cancel = calls
+        .iter()
+        .find(|call| call["method"] == "session/cancel")
+        .unwrap();
+    assert_eq!(
+        cancel["payload"]["args"]["request"]["sessionId"],
+        gateway.uploads.lock().unwrap()[0].session_id
+    );
+    gateway.upload_gate.add_permits(1);
+}
+
+#[tokio::test]
+async fn generation_budget_covers_the_attachment_upload_phase() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway(false, false).await;
+    gateway.upload_blocked.store(true, Ordering::SeqCst);
+    let error = DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "timeout-upload",
+            &provider(gateway.base.clone()),
+            "test-dsh-key",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"读取文档"}]),
+            &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(2)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "TOTAL_TIMEOUT");
+    assert!(error.retryable);
+    assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+    assert!(!gateway
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|call| call["method"] == "session/prompt"));
+    gateway.upload_gate.add_permits(1);
+}
+
+#[tokio::test]
+async fn upload_disconnect_allows_manual_retry_in_a_new_session_without_automatic_replay() {
+    for response in ["disconnect-before-headers", "disconnect-during-body"] {
+        let gateway = mock_gateway(false, false).await;
+        *gateway.upload_response.lock().unwrap() = Some(response.into());
+        let service = DshService::new().unwrap();
+        let attachment = test_file("test.pdf", "application/pdf", b"%PDF-test");
+        let error = service
+            .generate_with_attachments(
+                "disconnect-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[attachment.clone()],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap_err();
+        assert!(error.retryable);
+        assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+        assert!(!gateway
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call["method"] == "session/prompt"));
+        *gateway.upload_response.lock().unwrap() = None;
+        service
+            .generate_with_attachments(
+                "manual-retry-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[attachment],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let uploads = gateway.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 2);
+        assert_ne!(uploads[0].session_id, uploads[1].session_id);
+        assert_eq!(
+            gateway
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call["method"] == "session/prompt")
+                .count(),
+            1
+        );
+    }
 }

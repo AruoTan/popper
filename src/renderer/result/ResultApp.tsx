@@ -1254,7 +1254,7 @@ function ResultSessionApp({
           </div>
         </div>
         <div className="result-window-actions" data-no-drag>
-          {selection && (
+          {selection?.text && (
             <button
               className="result-original-toggle"
               type="button"

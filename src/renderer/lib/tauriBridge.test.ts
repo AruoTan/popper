@@ -348,6 +348,21 @@ describe("Tauri renderer bridge", () => {
       message: "renderer failed",
     });
 
+    await window._popper_.setQuickAskShortcutRecording?.(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_quick_ask_shortcut_recording", { recording: true });
+    await window._popper_.setQuickAskShortcutRecording?.(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_quick_ask_shortcut_recording", { recording: false });
+    await window._popper_.quickAskReady?.();
+    expect(invokeMock).toHaveBeenCalledWith("quick_ask_ready");
+    invokeMock.mockResolvedValueOnce({ accepted: true, sessionId: "quick-result" });
+    const attachments = [{ name: "note.txt", mime: "text/plain", kind: "text" as const, data: "file content" }];
+    expect(await window._popper_.submitQuickAsk?.("Explain", attachments)).toEqual({ accepted: true, sessionId: "quick-result" });
+    expect(invokeMock).toHaveBeenCalledWith("submit_quick_ask", { question: "Explain", attachments });
+    await window._popper_.reportQuickAskSize?.(310);
+    expect(invokeMock).toHaveBeenCalledWith("report_quick_ask_size", { height: 310 });
+    await window._popper_.closeQuickAsk?.();
+    expect(invokeMock).toHaveBeenCalledWith("close_quick_ask");
+
     await window._popper_.runAction("explain", undefined, "selection-1");
     expect(invokeMock).toHaveBeenCalledWith("run_action", {
       actionId: "explain",

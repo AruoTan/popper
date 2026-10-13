@@ -214,6 +214,7 @@ export function toPublicSettings(settings: AppSettings): PublicSettings {
   return publicSettingsSchema.parse({
     version: settings.version,
     trayEnabled: settings.trayEnabled,
+    quickAskShortcut: settings.quickAskShortcut,
     locale: settings.locale,
     translate: settings.translate,
     result: settings.result,
@@ -523,6 +524,7 @@ export function migrateAppSettings(input: unknown): AppSettings {
   } = removeRetiredActionsCandidate(asRecord(input))
   if (
     candidate.version === SETTINGS_VERSION ||
+    candidate.version === 16 ||
     candidate.version === 15 ||
     candidate.version === 14 ||
     candidate.version === 13 ||
@@ -574,6 +576,7 @@ export function migratePublicSettings(input: unknown): PublicSettings {
   } = removeRetiredActionsCandidate(asRecord(input))
   if (
     candidate.version === SETTINGS_VERSION ||
+    candidate.version === 16 ||
     candidate.version === 15 ||
     candidate.version === 14 ||
     candidate.version === 13 ||
