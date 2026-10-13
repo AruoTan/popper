@@ -36,6 +36,7 @@ import {
   defaultTranslationTarget,
   detectTranslationLanguage,
   isAiActionDefinition,
+  requiresProviderApiKey,
   type ActionRetryOptions,
   type Point,
   type PublicSettings,
@@ -108,7 +109,7 @@ interface ModelChoice extends ModelRoute {
   value: string;
   providerName: string;
   modelName: string;
-  keyConfigured: boolean;
+  canConnect: boolean;
 }
 
 function modelRouteValue(route: ModelRoute): string {
@@ -462,13 +463,13 @@ function ResultSessionApp({
         .map((provider) => ({
           id: provider.id,
           name: provider.name,
-          keyConfigured: provider.keyConfigured,
+          canConnect: provider.keyConfigured || !requiresProviderApiKey(provider),
           choices: provider.models.map<ModelChoice>((model) => ({
             providerId: provider.id,
             modelId: model.id,
             providerName: provider.name,
             modelName: model.name,
-            keyConfigured: provider.keyConfigured,
+            canConnect: provider.keyConfigured || !requiresProviderApiKey(provider),
             value: modelRouteValue({ providerId: provider.id, modelId: model.id }),
           })),
         })) ?? [],
@@ -1214,12 +1215,12 @@ function ResultSessionApp({
                         className="result-model-menu__group"
                         role="group"
                         aria-label={
-                          provider.keyConfigured ? provider.name : `${provider.name}（未配置密钥）`
+                          provider.canConnect ? provider.name : `${provider.name}（未配置密钥）`
                         }
                       >
                         <div className="result-model-menu__provider">
                           <span>{provider.name}</span>
-                          {!provider.keyConfigured && <span>未配置密钥</span>}
+                          {!provider.canConnect && <span>未配置密钥</span>}
                         </div>
                         <div className="result-model-menu__options">
                           {provider.choices.map((choice) => {
@@ -1231,7 +1232,7 @@ function ResultSessionApp({
                                 type="button"
                                 role="option"
                                 aria-selected={selected}
-                                disabled={!provider.keyConfigured || modelSwitchDisabled}
+                                disabled={!provider.canConnect || modelSwitchDisabled}
                                 onClick={() => chooseModel(choice.value)}
                               >
                                 <span>{choice.modelName}</span>

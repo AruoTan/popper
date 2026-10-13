@@ -9,6 +9,7 @@ import {
   clampThinkingMode,
   effectiveThinkingLevels,
   modelSupportsThinkingOff,
+  requiresProviderApiKey,
   type ActionDefinition,
   type ActionKind,
   type PublicProviderSettings,
@@ -134,13 +135,15 @@ export function CustomActionDialog({
       .map((provider) => ({
         id: provider.id,
         name: provider.name,
-        keyConfigured: provider.keyConfigured,
+        canConnect: provider.keyConfigured || !requiresProviderApiKey(provider),
         choices: provider.models.map<ModelChoice>((model) => ({
           providerId: provider.id,
           modelId: model.id,
           providerName: provider.name,
           modelName: model.name,
-          thinkingLevels: effectiveThinkingLevels(model.id, model.thinkingLevels),
+          thinkingLevels: provider.kind === 'dsh'
+            ? model.thinkingLevels
+            : effectiveThinkingLevels(model.id, model.thinkingLevels),
           value: modelRouteValue({ providerId: provider.id, modelId: model.id })
         }))
       }))
@@ -325,7 +328,7 @@ export function CustomActionDialog({
                     ...modelGroups.flatMap((group) => group.choices.map((choice) => ({
                       value: choice.value,
                       label: choice.modelName,
-                      group: group.keyConfigured ? group.name : `${group.name}（未配置密钥）`
+                      group: group.canConnect ? group.name : `${group.name}（未配置密钥）`
                     })))
                   ]}
                 />

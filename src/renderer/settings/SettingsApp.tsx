@@ -63,6 +63,7 @@ import {
   TRANSLATION_LANGUAGE_NAMES,
   actionDefinitionSchema,
   isAiActionDefinition,
+  requiresProviderApiKey,
   type AccessibilityStatus,
   type ActionDefinition,
   type ProviderModel,
@@ -702,6 +703,21 @@ export function SettingsApp(): JSX.Element {
     }));
   };
 
+  const changeProviderKind = (providerId: string, kind: "openai" | "dsh"): void => {
+    if ((draft?.providers.find((provider) => provider.id === providerId)?.kind ?? "openai") === kind) return;
+    changeDraft((current) => ({
+      ...current,
+      providers: current.providers.map((provider) => provider.id === providerId ? {
+        ...provider, kind,
+        baseUrl: kind === "dsh" ? "http://localhost:3080" : DEFAULT_OPENAI_BASE_URL,
+        dshWorkspace: kind === "dsh" ? "/workspace" : undefined,
+        models: [],
+      } : provider),
+      actions: current.actions.map((action) => isAiActionDefinition(action) && action.providerId === providerId
+        ? { ...action, modelId: "", thinkingMode: "off" as const } : action),
+    }));
+  };
+
   const deleteProvider = (provider: PublicProviderSettings): void => {
     changeDraft((current) => removeProviderFromSettings(current, provider.id));
     setExpandedProviders((current) => {
@@ -1161,7 +1177,7 @@ export function SettingsApp(): JSX.Element {
                               }
                             />
                             <span className="provider-card__summary">
-                              {provider.models.length} 个模型 · {provider.keyConfigured ? "密钥已保存" : "未保存密钥"}
+                              {provider.models.length} 个模型 · {provider.keyConfigured ? "密钥已保存" : !requiresProviderApiKey(provider) ? "本地自动登录" : "未保存密钥"}
                             </span>
                           </div>
                         </div>
@@ -1206,6 +1222,32 @@ export function SettingsApp(): JSX.Element {
                         id={`provider-config-${provider.id}`}
                         hidden={!expandedProviders[provider.id]}
                       >
+                        <div className="field field--wide">
+                          <span className="field__label">接入方式</span>
+                          <StyledSelect
+                            aria-label={`${provider.name}接入方式`}
+                            value={provider.kind ?? "openai"}
+                            disabled={busy}
+                            options={[
+                              { value: "openai", label: "OpenAI 兼容接口" },
+                              { value: "dsh", label: "DSH Docker" },
+                            ]}
+                            onChange={(value) => changeProviderKind(provider.id, value as "openai" | "dsh")}
+                          />
+                        </div>
+                        {provider.kind === "dsh" && (
+                          <label className="field field--wide">
+                            <span className="field__label">DSH 工作区</span>
+                            <input className="control" aria-label="DSH 工作区" value={provider.dshWorkspace ?? "/workspace"}
+                              placeholder="/workspace" spellCheck={false}
+                              onChange={(event) => changeProvider(provider.id, (current) => ({
+                                ...current, dshWorkspace: event.target.value,
+                              }))} />
+                            <span className="field__hint">
+                              填写容器内路径。工具审批与问题在同一实例的 DSH 网页中处理；Popper 会提示你前往处理。
+                            </span>
+                          </label>
+                        )}
                         <label className="field field--wide">
                           <span className="field__label">API 地址（HTTP / HTTPS）</span>
                           <input
@@ -1213,7 +1255,7 @@ export function SettingsApp(): JSX.Element {
                             type="url"
                             value={provider.baseUrl}
                             spellCheck={false}
-                            placeholder="https://api.example.com/v1 或 http://localhost:11434/v1"
+                            placeholder={provider.kind === "dsh" ? "http://localhost:3080" : "https://api.example.com/v1 或 http://localhost:11434/v1"}
                             onChange={(event) =>
                               changeProvider(provider.id, (current) => ({
                                 ...current,
@@ -1222,10 +1264,13 @@ export function SettingsApp(): JSX.Element {
                             }
                           />
                           <span className="field__hint">
-                            填写到版本前缀即可，例如 <code>…/v1</code>；不要带{" "}
-                            <code>/chat/completions</code>。本地 Ollama 可用 HTTP。
+                            {provider.kind === "dsh" ? (
+                              <>填写 DSH Docker 网关地址，例如 <code>http://localhost:3080</code>，不带 <code>/api</code>。localhost 可留空 API Key，Popper 会自动登录；远程访问填写 <code>DSH_API_KEY</code>。模型凭据在 DSH 网页中配置。</>
+                            ) : (
+                              <>填写到版本前缀即可，例如 <code>…/v1</code>；不要带 <code>/chat/completions</code>。本地 Ollama 可用 HTTP。</>
+                            )}
                           </span>
-                          {usesPlainHttp(provider.baseUrl) && (
+                          {usesPlainHttp(provider.baseUrl) && (requiresProviderApiKey(provider) || provider.keyConfigured || Boolean(keyInputs[provider.id]?.trim())) && (
                             <span className="provider-http-warning" role="alert">
                               <CircleAlert size={15} aria-hidden="true" />
                               当前服务使用 HTTP，API Key
@@ -1234,7 +1279,7 @@ export function SettingsApp(): JSX.Element {
                           )}
                         </label>
                         <label className="field field--wide">
-                          <span className="field__label">API Key</span>
+                          <span className="field__label">{requiresProviderApiKey(provider) ? "API Key" : "API Key（本地可留空）"}</span>
                           <div className="key-control">
                             <KeyRound size={16} aria-hidden="true" />
                             <input
@@ -1246,7 +1291,7 @@ export function SettingsApp(): JSX.Element {
                               placeholder={
                                 provider.keyConfigured || (keyBaselines[provider.id] ?? "")
                                   ? "已保存的 API Key"
-                                  : "输入 API Key"
+                                  : requiresProviderApiKey(provider) ? "输入 API Key" : "本地自动登录，无需填写"
                               }
                               onChange={(event) => {
                                 const value = event.target.value;
@@ -1314,7 +1359,7 @@ export function SettingsApp(): JSX.Element {
                             <input
                               className="control"
                               value={newModelInputs[provider.id] ?? ""}
-                              placeholder="手动添加模型 ID"
+                              placeholder={provider.kind === "dsh" ? "DSH 提供商 ID/模型 ID" : "手动添加模型 ID"}
                               spellCheck={false}
                               onChange={(event) =>
                                 setNewModelInputs((current) => ({

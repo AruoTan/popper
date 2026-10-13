@@ -1194,6 +1194,23 @@ describe("ResultApp window interactions", () => {
     expect(selector).toHaveTextContent("深度模型");
   });
 
+  it("allows switching to a local DSH model without a saved API key", async () => {
+    const settings = settingsWithFontSize();
+    settings.providers.push({
+      id: "dsh-local", name: "本地 DSH", kind: "dsh", enabled: true,
+      baseUrl: "http://localhost:3080", keyConfigured: false,
+      models: [{ id: "one/same", name: "DSH 模型", thinkingLevels: [] }],
+    });
+    const { retryAction } = await renderResult(completedSession, settings);
+    fireEvent.click(screen.getByRole("button", { name: "切换模型" }));
+    const model = screen.getByRole("option", { name: "DSH 模型" });
+    expect(model).toBeEnabled();
+    fireEvent.click(model);
+    await waitFor(() => expect(retryAction).toHaveBeenLastCalledWith("session-1", {
+      providerId: "dsh-local", modelId: "one/same",
+    }));
+  });
+
   it("presents result selections only when a native right-button hold is received", async () => {
     const { container, showResultSelection, emitResultSelectionHold } = await renderResult();
     const select = (element: HTMLElement) => {

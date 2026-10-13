@@ -36,7 +36,7 @@ Core selection-assistant workflow:
 
 - Selection toolbar: copy, search, translate, summarize, explain, polish, Ask AI, and custom actions.
 - Actions can be enabled/disabled, renamed, reordered, and re-iconed; the toolbar shows icons and labels. Search can use Google / Bing / Baidu; URLs, domains, and IPs open directly when possible.
-- Multiple OpenAI-compatible providers and models; providers can be enabled or disabled; each action can bind its own model and prompt; fetch models, multi-select merge, and reorder are supported.
+- Multiple OpenAI-compatible or DSH Docker providers and models; providers can be enabled or disabled; each action can bind its own model and prompt; fetch models, multi-select merge, and reorder are supported. See the [DSH connection guide (Chinese)](./DSH_CONNECTION.md).
 - Streaming results with Markdown / tables / math; drag, resize, pin, and several dismiss modes; text in the result body can be selected again for a new toolbar.
 
 Enhancements beyond a basic selection assistant:

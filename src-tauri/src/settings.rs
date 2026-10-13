@@ -234,6 +234,8 @@ impl SettingsRepository {
                 .map(|provider| ProviderConfig {
                     id: provider.id,
                     name: provider.name,
+                    kind: provider.kind,
+                    dsh_workspace: provider.dsh_workspace,
                     enabled: provider.enabled,
                     base_url: provider.base_url,
                     models: provider.models,
@@ -268,6 +270,8 @@ impl SettingsRepository {
             settings.providers.push(ProviderConfig {
                 id: provider_id,
                 name: input.name,
+                kind: input.kind,
+                dsh_workspace: input.dsh_workspace,
                 enabled: true,
                 base_url: input.base_url,
                 models: Vec::new(),
@@ -295,6 +299,12 @@ impl SettingsRepository {
                 }
                 if let Some(base_url) = update.base_url {
                     provider.base_url = base_url;
+                }
+                if let Some(kind) = update.kind {
+                    provider.kind = kind;
+                }
+                if let Some(workspace) = update.dsh_workspace {
+                    provider.dsh_workspace = Some(workspace);
                 }
                 update.models.map(|models| {
                     provider.models = models;
@@ -963,6 +973,8 @@ fn migrate_v1(mut value: serde_json::Value) -> Result<LoadedSettings, SettingsEr
     let provider = ProviderConfig {
         id: DEFAULT_PROVIDER_ID.to_owned(),
         name: "OpenAI Compatible".to_owned(),
+        kind: crate::models::ProviderKind::Openai,
+        dsh_workspace: None,
         enabled: true,
         base_url: legacy.ai.base_url,
         models: if model.is_empty() {
