@@ -50,6 +50,28 @@ describe('Quick Ask', () => {
     expect(thumbnail).toHaveAttribute('src', expect.stringContaining('data:image/png;base64,'));
   });
 
+  it('adds more than six attachments across batches and displays submission errors', async () => {
+    render(<QuickAskApp />);
+    const files = Array.from({ length: 7 }, (_, index) => new File(['content'], `note-${index}.txt`));
+    const picker = screen.getByLabelText('选择附件');
+    fireEvent.change(picker, { target: { files: files.slice(0, 6) } });
+    await screen.findByText('6 个附件');
+    fireEvent.change(picker, { target: { files: files.slice(6) } });
+    await screen.findByText('7 个附件');
+    expect(screen.getAllByRole('button', { name: /^移除 note-/ })).toHaveLength(7);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'summarize' } });
+    submit.mockResolvedValueOnce({ accepted: false, message: '服务商拒绝：附件数量超过限制' });
+    fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('附件数量超过限制');
+    expect(submit).toHaveBeenCalledWith('summarize', expect.arrayContaining([
+      expect.objectContaining({ name: 'note-0.txt' }),
+      expect.objectContaining({ name: 'note-6.txt' }),
+    ]));
+    expect(submit.mock.calls[0]?.[1]).toHaveLength(7);
+    expect(screen.getByRole('textbox')).toHaveValue('summarize');
+    expect(screen.getByText('7 个附件')).toBeInTheDocument();
+  });
+
   it('rejects invalid text without adding an empty preview', async () => {
     render(<QuickAskApp />);
     fireEvent.drop(screen.getByRole('main'), { dataTransfer: { files: [new File(['a\0b'], 'binary.txt')] } });
