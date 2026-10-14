@@ -95,13 +95,16 @@ export function QuickAskApp(): JSX.Element {
         </div>
       </header>
       {attachments.length > 0 && <section className="quick-ask__attachments" aria-label="附件预览">
-        <div className="quick-ask__attachment-heading"><span>附件</span><span>{attachments.length} 个附件</span></div>
-        <div className="quick-ask__attachment-list">{attachments.map(({ id, size, payload }) => <article className="quick-ask__attachment" key={id}>
-          {payload.kind === 'image' ? <img src={`data:${payload.mime};base64,${payload.data}`} alt={payload.name} /> : <span className="quick-ask__file-icon"><FileText size={20} /></span>}
-          <div className="quick-ask__file-info"><strong title={payload.name}>{payload.name}</strong><span>{payload.kind === 'image' ? '图片' : payload.kind === 'file' ? (payload.name.includes('.') ? payload.name.split('.').at(-1)?.toUpperCase() : '文件') : '文本'} · {attachmentSize(size)}</span></div>
-          <button className="quick-ask__icon-button" type="button" aria-label={`移除 ${payload.name}`} disabled={busy} onClick={() => setAttachments((current) => current.filter((file) => file.id !== id))}><X size={14} /></button>
+        <div className="quick-ask__attachment-header">
+          <span className="quick-ask__attachment-count">{attachments.length} 个附件</span>
+          {attachments.some(({ payload }) => payload.kind !== 'text') && <span className="quick-ask__attachment-note" title="图片需要模型支持；文档解析取决于接入方式和可用工具。">需模型支持解析</span>}
+        </div>
+        <div className="quick-ask__attachment-list">{attachments.map(({ id, size, payload }) => <article className="quick-ask__attachment" key={id} title={`${payload.name} (${attachmentSize(size)})`}>
+          {payload.kind === 'image' ? <img className="quick-ask__attachment-thumb" src={`data:${payload.mime};base64,${payload.data}`} alt={payload.name} /> : <span className="quick-ask__file-icon"><FileText size={13} /></span>}
+          <span className="quick-ask__attachment-name">{payload.name}</span>
+          <span className="quick-ask__attachment-size">{attachmentSize(size)}</span>
+          <button className="quick-ask__attachment-remove" type="button" aria-label={`移除 ${payload.name}`} disabled={busy} onClick={() => setAttachments((current) => current.filter((file) => file.id !== id))}><X size={12} /></button>
         </article>)}</div>
-        {attachments.some(({ payload }) => payload.kind !== "text") && <p className="quick-ask__attachment-note">图片需要模型支持；文档解析取决于接入方式和可用工具。</p>}
       </section>}
       <textarea ref={input} className="quick-ask__input" aria-label="快捷提问内容" placeholder="有什么想问的？" value={question} disabled={sending}
         onChange={(event) => setQuestion(event.target.value)}
