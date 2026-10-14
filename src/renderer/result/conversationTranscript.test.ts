@@ -3,6 +3,7 @@ import {
   appendUserTurn,
   beginAssistantTurn,
   isAskAction,
+  parseTurnContent,
   patchStreamingAssistant,
   transcriptFromSnapshot,
   type TranscriptTurn
@@ -53,5 +54,24 @@ describe('conversationTranscript', () => {
   it('does not patch when there is no assistant turn', () => {
     const turns = appendUserTurn([], '问题')
     expect(patchStreamingAssistant(turns, '回复', true)).toBe(turns)
+  })
+
+  it('parses turn content and extracts legacy attachment annotations', () => {
+    const parsed = parseTurnContent('这是一张图\n\n附件：demo.png、spec.pdf')
+    expect(parsed.text).toBe('这是一张图')
+    expect(parsed.attachments).toEqual([
+      { name: 'demo.png', mime: '', kind: 'image', data: '' },
+      { name: 'spec.pdf', mime: '', kind: 'file', data: '' }
+    ])
+  })
+
+  it('prefers explicit attachments over parsed legacy text', () => {
+    const parsed = parseTurnContent('这是一张图\n\n附件：demo.png', [
+      { name: 'demo.png', mime: 'image/png', kind: 'image', data: 'base64data' }
+    ])
+    expect(parsed.text).toBe('这是一张图')
+    expect(parsed.attachments).toEqual([
+      { name: 'demo.png', mime: 'image/png', kind: 'image', data: 'base64data' }
+    ])
   })
 })

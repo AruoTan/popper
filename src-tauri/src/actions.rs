@@ -120,6 +120,8 @@ struct ChatMessage {
 pub(crate) struct ConversationTurn {
     pub(crate) role: ChatRole,
     pub(crate) content: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) attachments: Vec<crate::quick_ask::Attachment>,
 }
 
 impl ChatMessage {
@@ -707,20 +709,8 @@ impl ActionServiceState {
                 ChatRole::System => None,
                 ChatRole::User | ChatRole::Assistant => Some(ConversationTurn {
                     role: message.role,
-                    content: if message.attachments.is_empty() {
-                        message.content.clone()
-                    } else {
-                        format!(
-                            "{}\n\n附件：{}",
-                            message.content,
-                            message
-                                .attachments
-                                .iter()
-                                .map(|attachment| attachment.name.as_str())
-                                .collect::<Vec<_>>()
-                                .join("、")
-                        )
-                    },
+                    content: message.content.clone(),
+                    attachments: message.attachments.clone(),
                 }),
             })
             .collect();

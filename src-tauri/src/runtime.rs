@@ -368,6 +368,7 @@ struct ResultSessionMeta {
     selection: CurrentSelection,
     action_id: String,
     initial_question: Option<String>,
+    initial_attachments: Vec<crate::quick_ask::Attachment>,
     pinned: bool,
 }
 
@@ -394,11 +395,13 @@ fn compose_result_ready_snapshot(
             conversation.push(ConversationTurn {
                 role: crate::actions::ChatRole::User,
                 content: question.to_owned(),
+                attachments: meta.initial_attachments.clone(),
             });
             if !snapshot.content.is_empty() && snapshot.status == ActionSnapshotStatus::Completed {
                 conversation.push(ConversationTurn {
                     role: crate::actions::ChatRole::Assistant,
                     content: snapshot.content.clone(),
+                    attachments: Vec::new(),
                 });
             }
         }
@@ -1237,6 +1240,7 @@ impl RuntimeState {
             cursor,
             ResultSessionStart::Execute,
             None,
+            Vec::new(),
         )
     }
 
@@ -1248,6 +1252,7 @@ impl RuntimeState {
         selection: CurrentSelection,
         cursor: WindowPoint,
         initial_question: Option<String>,
+        initial_attachments: Vec<crate::quick_ask::Attachment>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         self.create_result_session_with(
             app,
@@ -1257,6 +1262,7 @@ impl RuntimeState {
             cursor,
             ResultSessionStart::OpenAsk,
             initial_question,
+            initial_attachments,
         )
     }
 
@@ -1269,6 +1275,7 @@ impl RuntimeState {
         cursor: WindowPoint,
         start: ResultSessionStart,
         initial_question: Option<String>,
+        initial_attachments: Vec<crate::quick_ask::Attachment>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("Popper 正在退出".to_owned());
@@ -1369,6 +1376,7 @@ impl RuntimeState {
                 selection,
                 action_id: action_id.to_owned(),
                 initial_question,
+                initial_attachments,
                 pinned: result.default_pinned,
             },
         );
@@ -2537,6 +2545,7 @@ pub async fn run_action(
                 selection,
                 cursor,
                 initial_question.map(str::to_owned),
+                Vec::new(),
             ) {
                 Ok((session_id, open_request_id, reveal_receiver)) => {
                     let request_id = if let Some(question) = initial_question {
@@ -3716,26 +3725,14 @@ pub async fn submit_quick_ask(
             timestamp_ms: 0,
         },
     };
-    let display_question = if attachments.is_empty() {
-        question.to_owned()
-    } else {
-        format!(
-            "{}\n\n附件：{}",
-            question,
-            attachments
-                .iter()
-                .map(|attachment| attachment.name.as_str())
-                .collect::<Vec<_>>()
-                .join("、")
-        )
-    };
     match state.create_ask_result_session(
         &app,
         &action.id,
         "问 AI",
         selection,
         cursor,
-        Some(display_question),
+        Some(question.to_owned()),
+        attachments.clone(),
     ) {
         Ok((session_id, _, receiver)) => {
             let request_id = match state.actions.continue_with_attachments(
@@ -3813,6 +3810,7 @@ mod tests {
             },
             action_id: "translate".to_owned(),
             initial_question: None,
+            initial_attachments: Vec::new(),
             pinned: false,
         }
     }

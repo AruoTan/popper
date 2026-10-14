@@ -97,7 +97,8 @@ export function appendResultDeltaBatch(
     ...state,
     content: state.content + batch.delta,
     contentScalarCount: batch.contentScalarCount,
-    contentRevision: state.contentRevision + 1
+    contentRevision: state.contentRevision + 1,
+    generationNotice: state.generationNotice.includes('正在') ? '' : state.generationNotice
   }
 }
 
@@ -155,10 +156,21 @@ export function reduceActionEvent(state: ResultState, event: ActionStreamEvent):
     })
   }
   if (event.type === 'completed') {
-    return { ...state, status: 'completed', errorMessage: '', retryable: false }
+    return {
+      ...state,
+      status: 'completed',
+      generationNotice: state.generationNotice.includes('正在') ? '' : state.generationNotice,
+      errorMessage: '',
+      retryable: false
+    }
   }
   if (event.type === 'cancelled') {
-    return { ...state, status: 'cancelled', retryable: true }
+    return {
+      ...state,
+      status: 'cancelled',
+      generationNotice: state.generationNotice.includes('正在') ? '' : state.generationNotice,
+      retryable: true
+    }
   }
   if (event.type === 'notice') {
     return event.message === state.generationNotice
