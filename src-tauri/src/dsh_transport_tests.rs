@@ -116,6 +116,7 @@ struct MockGateway {
     signals: tokio::sync::broadcast::Sender<MockSignal>,
     ack_gate: Arc<Semaphore>,
     reject_auth: Arc<std::sync::atomic::AtomicBool>,
+    stale_follow_events: Arc<std::sync::atomic::AtomicBool>,
     reject_websocket: Arc<std::sync::atomic::AtomicU16>,
     uploads: Arc<Mutex<Vec<MockUpload>>>,
     upload_status: Arc<std::sync::atomic::AtomicU16>,
@@ -158,6 +159,7 @@ async fn mock_gateway_options(
     let sessions = Arc::new(AtomicUsize::new(0));
     let ack_gate = Arc::new(Semaphore::new(0));
     let reject_auth = Arc::new(AtomicBool::new(false));
+    let stale_follow_events = Arc::new(AtomicBool::new(false));
     let reject_websocket = Arc::new(AtomicU16::new(0));
     let (signals, _) = tokio::sync::broadcast::channel(32);
     let uploads = Arc::new(Mutex::new(Vec::<MockUpload>::new()));
@@ -179,6 +181,7 @@ async fn mock_gateway_options(
     let send_signals = signals.clone();
     let seen_ack_gate = ack_gate.clone();
     let rejected = reject_auth.clone();
+    let stale_events = stale_follow_events.clone();
     let rejected_websocket = reject_websocket.clone();
     let accept = tokio::spawn(async move {
         loop {
@@ -197,6 +200,7 @@ async fn mock_gateway_options(
             let signals = send_signals.clone();
             let ack_gate = seen_ack_gate.clone();
             let reject_auth = rejected.clone();
+            let stale_events = stale_events.clone();
             let reject_websocket = rejected_websocket.clone();
             tokio::spawn(async move {
                 loop {
@@ -261,6 +265,15 @@ async fn mock_gateway_options(
                                         let session = command["payload"]["args"]["request"]["address"]["sessionId"].as_str().unwrap().to_owned();
                                         follows.insert(id.clone(), session);
                                         socket.send(Message::Text(json!({"type":"item","streamId":id,"value":{"type":"snapshot","cursor":-1,"records":[]}}).to_string().into())).await.unwrap();
+                                        if stale_events.load(Ordering::SeqCst) {
+                                            for value in [
+                                                json!({"type":"event","event":{"type":"user/message","data":{"source":{"rpcId":"previous-request"}}}}),
+                                                json!({"type":"event","event":{"type":"assistant/message","data":{"message":{"content":[{"type":"text","text":"Old answer must not leak"}]}}}}),
+                                                json!({"type":"event","event":{"type":"turn/end","data":{"reason":{"kind":"completed"}}}}),
+                                            ] {
+                                                socket.send(Message::Text(json!({"type":"item","streamId":id,"value":value}).to_string().into())).await.unwrap();
+                                            }
+                                        }
                                     }
                                 }
                                 signal = received.recv() => {
@@ -479,6 +492,7 @@ async fn mock_gateway_options(
         signals,
         ack_gate,
         reject_auth,
+        stale_follow_events,
         reject_websocket,
         uploads,
         upload_status,
@@ -1967,4 +1981,522 @@ async fn upload_disconnect_allows_manual_retry_in_a_new_session_without_automati
             1
         );
     }
+}
+
+async fn conversation_turn(
+    service: &DshService,
+    conversation: &DshConversation,
+    config: &ProviderConfig,
+    key: &str,
+    request_id: &str,
+    model: &str,
+    messages: &Value,
+    all: &[crate::quick_ask::Attachment],
+    latest: &[crate::quick_ask::Attachment],
+    cancellation: &CancellationToken,
+) -> Result<TransportSuccess, TransportFailure> {
+    service
+        .generate_in_conversation(
+            conversation,
+            request_id,
+            config,
+            key,
+            model,
+            &plan(),
+            messages,
+            all,
+            latest,
+            cancellation,
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+}
+
+#[tokio::test]
+async fn conversation_reuses_native_session_and_sends_only_new_questions_and_attachments() {
+    for key in ["", "test-dsh-key"] {
+        let gateway = mock_gateway_auth(false, false, key.is_empty()).await;
+        let service = DshService::new().unwrap();
+        let conversation = DshConversation::default();
+        let config = provider(gateway.base.clone());
+        let first_file = test_file("first.txt", "text/plain", b"first file");
+        let next_file = test_file("next.txt", "text/plain", b"next file");
+        let first = json!([
+            {"role":"system","content":"Initial instructions and selected source"},
+            {"role":"user","content":"First question"}
+        ]);
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "first",
+            "one/same",
+            &first,
+            &[first_file.clone()],
+            &[first_file.clone()],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let second = json!([
+            {"role":"system","content":"Initial instructions and selected source"},
+            {"role":"user","content":"First question"},
+            {"role":"assistant","content":"Previous answer"},
+            {"role":"user","content":"Next question"}
+        ]);
+        // A cache expiration must not orphan the active conversation's Agent.
+        service.clear_gateway_cache();
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "second",
+            "two/org/model",
+            &second,
+            &[first_file.clone()],
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let third = json!([
+            {"role":"system","content":"Answer questions instead of translating"},
+            {"role":"user","content":"First question"},
+            {"role":"assistant","content":"Previous answer"},
+            {"role":"user","content":"Question with new file"}
+        ]);
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "third",
+            "two/org/model",
+            &third,
+            &[first_file.clone(), next_file.clone()],
+            &[next_file],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        // User-triggered retry uses the same Agent, without replaying earlier turns.
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "retry",
+            "one/same",
+            &second,
+            &[first_file],
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let calls = gateway.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "session/create")
+                .count(),
+            1
+        );
+        let prompts: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+            .map(|call| &call["payload"]["args"]["request"])
+            .collect();
+        assert_eq!(prompts.len(), 4);
+        assert!(prompts
+            .iter()
+            .all(|prompt| prompt["sessionId"] == prompts[0]["sessionId"]));
+        assert!(prompts[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("selected source"));
+        assert_eq!(
+            prompts[1]["content"],
+            json!([{"type":"text","text":"Next question"}])
+        );
+        let updated = prompts[2]["content"][0]["text"].as_str().unwrap();
+        assert!(updated.contains("Answer questions instead of translating"));
+        assert!(updated.contains("Question with new file"));
+        assert!(!updated.contains("First question"));
+        assert!(!updated.contains("Previous answer"));
+        assert_eq!(prompts[2]["content"].as_array().unwrap().len(), 2);
+        assert!(!prompts[3]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Previous answer"));
+        let selections: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "session/selectModel")
+            .map(|call| &call["payload"]["args"]["request"])
+            .collect();
+        assert!(selections
+            .iter()
+            .all(|selection| selection["sessionId"] == prompts[0]["sessionId"]));
+        assert_eq!(selections[1]["provider"], "two");
+        assert_eq!(selections[1]["model"], "org/model");
+        let uploads = gateway.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 2);
+        assert_eq!(uploads[0].name, "first.txt");
+        assert_eq!(uploads[1].name, "next.txt");
+        assert_eq!(uploads[0].session_id, uploads[1].session_id);
+    }
+}
+
+#[tokio::test]
+async fn conversation_changes_destination_without_reusing_foreign_sessions_or_receipts() {
+    let gateway = mock_gateway(false, false).await;
+    let other_gateway = mock_gateway(false, false).await;
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    let mut config = provider(gateway.base.clone());
+    let messages = json!([
+        {"role":"user","content":"Original question"},
+        {"role":"assistant","content":"Original answer"},
+        {"role":"user","content":"Latest question"}
+    ]);
+    let file = test_file("context.pdf", "application/pdf", b"%PDF-context");
+    for (index, key) in ["test-dsh-key", "test-dsh-key", "rotated-key", "rotated-key"]
+        .into_iter()
+        .enumerate()
+    {
+        if index == 1 {
+            config.dsh_workspace = Some("/other-workspace".into());
+        }
+        if index == 3 {
+            config.id = "other-provider".into();
+        }
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            &format!("route-{index}"),
+            "one/same",
+            &messages,
+            &[file.clone()],
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    }
+    config.base_url = other_gateway.base.clone();
+    conversation_turn(
+        &service,
+        &conversation,
+        &config,
+        "test-dsh-key",
+        "other-host",
+        "one/same",
+        &messages,
+        &[file],
+        &[],
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    for (server, expected) in [(&gateway, 4), (&other_gateway, 1)] {
+        let calls = server.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "session/create")
+                .count(),
+            expected
+        );
+        assert_eq!(server.uploads.lock().unwrap().len(), expected);
+        for call in calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+        {
+            let text = call["payload"]["args"]["request"]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            assert!(text.contains("Original question"));
+            assert!(text.contains("Original answer"));
+            assert!(text.contains("Latest question"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelled_conversation_retries_in_same_session_and_ignores_old_turn_events() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway(true, false).await;
+    let service = Arc::new(DshService::new().unwrap());
+    let conversation = Arc::new(DshConversation::default());
+    let config = provider(gateway.base.clone());
+    let cancellation = CancellationToken::new();
+    let first = {
+        let service = service.clone();
+        let conversation = conversation.clone();
+        let config = config.clone();
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move {
+            conversation_turn(
+                &service,
+                &conversation,
+                &config,
+                "test-dsh-key",
+                "blocked",
+                "one/same",
+                &json!([{"role":"user","content":"Question"}]),
+                &[],
+                &[],
+                &cancellation,
+            )
+            .await
+        })
+    };
+    wait_for_calls(&gateway, "session/prompt", 1).await;
+    cancellation.cancel();
+    assert_eq!(first.await.unwrap().unwrap_err().code, "CANCELLED");
+    wait_for_calls(&gateway, "session/cancel", 1).await;
+    gateway.stale_follow_events.store(true, Ordering::SeqCst);
+    let next = {
+        let service = service.clone();
+        let conversation = conversation.clone();
+        let config = config.clone();
+        tokio::spawn(async move {
+            conversation_turn(
+                &service,
+                &conversation,
+                &config,
+                "test-dsh-key",
+                "unblocked-request",
+                "one/same",
+                &json!([{"role":"user","content":"Question"}]),
+                &[],
+                &[],
+                &CancellationToken::new(),
+            )
+            .await
+        })
+    };
+    assert_eq!(next.await.unwrap().unwrap().content, "你好");
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/create")
+            .count(),
+        1
+    );
+    let prompts: Vec<_> = calls
+        .iter()
+        .filter(|call| call["method"] == "session/prompt")
+        .map(|call| &call["payload"]["args"]["request"])
+        .collect();
+    assert_eq!(prompts[0]["sessionId"], prompts[1]["sessionId"]);
+    assert_eq!(prompts[1]["content"][0]["text"], "Question");
+}
+
+#[tokio::test]
+async fn waiting_for_conversation_lock_honors_cancellation_and_total_budget() {
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    let _lock = conversation.state.lock().await;
+    let token = CancellationToken::new();
+    token.cancel();
+    let config = provider("http://127.0.0.1:1".into());
+    let messages = json!([{"role":"user","content":"Question"}]);
+    let error = conversation_turn(
+        &service,
+        &conversation,
+        &config,
+        "",
+        "cancelled",
+        "one/same",
+        &messages,
+        &[],
+        &[],
+        &token,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "CANCELLED");
+    let error = service
+        .generate_in_conversation(
+            &conversation,
+            "timeout",
+            &config,
+            "",
+            "one/same",
+            &plan(),
+            &messages,
+            &[],
+            &[],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_millis(10)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "TOTAL_TIMEOUT");
+}
+
+#[tokio::test]
+async fn separate_windows_keep_independent_native_sessions_across_followups() {
+    let gateway = mock_gateway(false, false).await;
+    let service = DshService::new().unwrap();
+    let first = DshConversation::default();
+    let second = DshConversation::default();
+    let config = provider(gateway.base.clone());
+    let messages = json!([{"role":"user","content":"Initial question"}]);
+    let token = CancellationToken::new();
+    let (one, two) = tokio::join!(
+        conversation_turn(
+            &service,
+            &first,
+            &config,
+            "test-dsh-key",
+            "one",
+            "one/same",
+            &messages,
+            &[],
+            &[],
+            &token
+        ),
+        conversation_turn(
+            &service,
+            &second,
+            &config,
+            "test-dsh-key",
+            "two",
+            "two/org/model",
+            &messages,
+            &[],
+            &[],
+            &token
+        ),
+    );
+    let first_answer = one.unwrap().content;
+    let second_answer = two.unwrap().content;
+    assert_ne!(first_answer, second_answer);
+    let followup = json!([
+        {"role":"user","content":"Initial question"},
+        {"role":"assistant","content":"Prior answer"},
+        {"role":"user","content":"Follow-up"}
+    ]);
+    let (one, two) = tokio::join!(
+        conversation_turn(
+            &service,
+            &first,
+            &config,
+            "test-dsh-key",
+            "one-next",
+            "one/same",
+            &followup,
+            &[],
+            &[],
+            &token
+        ),
+        conversation_turn(
+            &service,
+            &second,
+            &config,
+            "test-dsh-key",
+            "two-next",
+            "two/org/model",
+            &followup,
+            &[],
+            &[],
+            &token
+        ),
+    );
+    assert_eq!(one.unwrap().content, first_answer);
+    assert_eq!(two.unwrap().content, second_answer);
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/create")
+            .count(),
+        2
+    );
+    let id = |request_id: &str| {
+        calls
+            .iter()
+            .find(|call| {
+                call["method"] == "session/prompt"
+                    && call["payload"]["args"]["request"]["requestId"] == request_id
+            })
+            .unwrap()["payload"]["args"]["request"]["sessionId"]
+            .clone()
+    };
+    assert_eq!(id("one"), id("one-next"));
+    assert_eq!(id("two"), id("two-next"));
+    assert_ne!(id("one"), id("two"));
+}
+
+#[tokio::test]
+async fn disconnected_conversation_reconnects_without_creating_or_replaying_a_session() {
+    let gateway = mock_gateway(true, false).await;
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    let config = provider(gateway.base.clone());
+    let messages = json!([{"role":"user","content":"Question"}]);
+    let token = CancellationToken::new();
+    let disconnect = async {
+        wait_for_calls(&gateway, "session/prompt", 1).await;
+        let _ = gateway.signals.send(MockSignal::Disconnect);
+    };
+    let (result, ()) = tokio::join!(
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            "test-dsh-key",
+            "blocked",
+            "one/same",
+            &messages,
+            &[],
+            &[],
+            &token
+        ),
+        disconnect,
+    );
+    assert_eq!(result.unwrap_err().code, "DSH_DISCONNECTED");
+    let result = conversation_turn(
+        &service,
+        &conversation,
+        &config,
+        "test-dsh-key",
+        "unblocked-request",
+        "one/same",
+        &messages,
+        &[],
+        &[],
+        &token,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.content, "你好");
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/create")
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+            .count(),
+        2
+    );
 }
