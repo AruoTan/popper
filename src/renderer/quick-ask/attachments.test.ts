@@ -17,11 +17,11 @@ describe('Quick Ask attachments and shortcuts', () => {
     expect(binary.payload).toMatchObject({ kind: 'file', mime: 'application/octet-stream' });
   });
 
-  it('bounds count, size, text length and rejects binary disguised as text', async () => {
+  it('bounds size and text length and rejects binary disguised as text', async () => {
     await expect(readAttachment(new File([''], 'empty.txt'))).rejects.toThrow('空文件');
     await expect(readAttachment(new File(['a\0b'], 'binary.txt'))).rejects.toThrow('UTF-8');
     const file = await readAttachment(new File(['a'], 'a.txt'));
-    expect(() => validateAttachmentList(Array(7).fill(file))).toThrow('6');
+    expect(() => validateAttachmentList(Array(7).fill(file))).not.toThrow();
     expect(() => validateAttachmentList([{ ...file, size: 21 * 1024 * 1024 }])).toThrow('20 MB');
     expect(() => validateAttachmentList([{ ...file, payload: { ...file.payload, data: 'a'.repeat(60_001) } }])).toThrow('60,000');
   });

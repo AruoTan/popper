@@ -49,7 +49,6 @@ export function QuickAskApp(): JSX.Element {
     setReading(true);
     setError('');
     try {
-      if (files.length + attachments.length > 6) throw new Error('最多添加 6 个附件');
       const next = [...attachments, ...await Promise.all(files.map(readAttachment))];
       validateAttachmentList(next);
       if (mounted.current) setAttachments(next);
@@ -96,7 +95,7 @@ export function QuickAskApp(): JSX.Element {
         </div>
       </header>
       {attachments.length > 0 && <section className="quick-ask__attachments" aria-label="附件预览">
-        <div className="quick-ask__attachment-heading"><span>附件</span><span>{attachments.length} / 6</span></div>
+        <div className="quick-ask__attachment-heading"><span>附件</span><span>{attachments.length} 个附件</span></div>
         <div className="quick-ask__attachment-list">{attachments.map(({ id, size, payload }) => <article className="quick-ask__attachment" key={id}>
           {payload.kind === 'image' ? <img src={`data:${payload.mime};base64,${payload.data}`} alt={payload.name} /> : <span className="quick-ask__file-icon"><FileText size={20} /></span>}
           <div className="quick-ask__file-info"><strong title={payload.name}>{payload.name}</strong><span>{payload.kind === 'image' ? '图片' : payload.kind === 'file' ? (payload.name.includes('.') ? payload.name.split('.').at(-1)?.toUpperCase() : '文件') : '文本'} · {attachmentSize(size)}</span></div>

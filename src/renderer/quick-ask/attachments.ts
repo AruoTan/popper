@@ -1,7 +1,6 @@
 import type { QuickAskAttachment } from '../../shared';
 
 export const ATTACHMENT_ACCEPT = "";
-export const MAX_ATTACHMENTS = 6;
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 const IMAGE_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
@@ -34,7 +33,6 @@ export async function readAttachment(file: File): Promise<SelectedAttachment> {
 }
 
 export function validateAttachmentList(attachments: SelectedAttachment[]): void {
-  if (attachments.length > MAX_ATTACHMENTS) throw new Error('最多添加 6 个附件');
   if (attachments.reduce((size, file) => size + file.size, 0) > MAX_TOTAL_BYTES) throw new Error('附件总大小不能超过 20 MB');
   if (attachments.reduce((length, file) => length + (file.payload.kind === 'text' ? Array.from(file.payload.data).length : 0), 0) > 60_000) throw new Error('文本附件合计不能超过 60,000 个字符');
 }

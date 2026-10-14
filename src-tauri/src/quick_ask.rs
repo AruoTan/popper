@@ -2,7 +2,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 
-pub const MAX_ATTACHMENTS: usize = 6;
 pub const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_TOTAL_BYTES: usize = 20 * 1024 * 1024;
 pub const MAX_TEXT_CHARS: usize = 60_000;
@@ -18,9 +17,6 @@ pub struct Attachment {
 }
 
 pub fn validate_attachments(attachments: &[Attachment]) -> Result<(), String> {
-    if attachments.len() > MAX_ATTACHMENTS {
-        return Err("最多添加 6 个附件".into());
-    }
     let mut total = 0usize;
     let mut text_chars = 0usize;
     for attachment in attachments {
@@ -301,7 +297,12 @@ mod tests {
             message_content("read", &[pdf.clone()])[1]["file"]["filename"],
             "document.pdf"
         );
-        assert!(validate_attachments(&vec![pdf; 7]).is_err());
+        let attachments = vec![pdf; 7];
+        assert!(validate_attachments(&attachments).is_ok());
+        assert_eq!(
+            message_content("read", &attachments).as_array().unwrap().len(),
+            8
+        );
         let oversized = Attachment {
             name: "big.txt".into(),
             mime: "text/plain".into(),
