@@ -94,6 +94,7 @@ struct ActionServiceState {
     contexts: HashMap<String, ActionSessionContext>,
     dictionaries: HashMap<String, dictionary_session::DictionarySession>,
     translation_inputs: HashMap<String, dictionary_session::TranslationInput>,
+    dsh_conversations: HashMap<String, (SessionGeneration, Arc<crate::dsh_transport::DshConversation>)>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -481,6 +482,25 @@ impl RuntimeFailure {
 }
 
 impl ActionServiceState {
+    fn dsh_conversation(
+        &mut self,
+        ticket: &RequestTicket,
+    ) -> Arc<crate::dsh_transport::DshConversation> {
+        let entry = self
+            .dsh_conversations
+            .entry(ticket.session_id.clone())
+            .or_insert_with(|| {
+                (ticket.session_generation, Arc::new(crate::dsh_transport::DshConversation::default()))
+            });
+        if entry.0 != ticket.session_generation {
+            *entry = (
+                ticket.session_generation,
+                Arc::new(crate::dsh_transport::DshConversation::default()),
+            );
+        }
+        entry.1.clone()
+    }
+
     fn matching_running_cancellation(
         &self,
         ticket: &RequestTicket,
@@ -629,6 +649,11 @@ impl ActionServiceState {
     ) -> TransitionResult {
         let result = self.sessions.commit_prepare_success(ticket);
         if result == TransitionResult::Applied {
+            // An OpenAI turn is absent from the native DSH Agent's history.
+            // Switching back must bootstrap that updated conversation once.
+            if data.route.provider.kind != crate::models::ProviderKind::Dsh {
+                self.dsh_conversations.remove(&ticket.session_id);
+            }
             let ask_system = self
                 .contexts
                 .get(&ticket.session_id)
@@ -1009,6 +1034,7 @@ impl ActionService {
                 || state.contexts.contains_key(session_id);
             let transition = state.sessions.close(session_id);
             state.contexts.remove(session_id);
+            state.dsh_conversations.remove(session_id);
             if let Some(input) = state.translation_inputs.remove(session_id) {
                 input.cancellation.cancel();
             }
@@ -1555,10 +1581,24 @@ impl ActionService {
                 .iter()
                 .flat_map(|message| message.attachments.iter().cloned())
                 .collect::<Vec<_>>();
+            let latest_attachments = prepared
+                .session_data
+                .last_messages
+                .last()
+                .map(|message| message.attachments.as_slice())
+                .unwrap_or_default();
+            let conversation = {
+                let mut state = self.inner.state.lock();
+                state
+                    .matching_running_cancellation(&prepared.ticket, &prepared.cancellation)
+                    .ok_or_else(stale_transport_failure)?;
+                state.dsh_conversation(&prepared.ticket)
+            };
             return self
                 .inner
                 .dsh
-                .generate_with_attachments(
+                .generate_in_conversation(
+                    &conversation,
                     &prepared.ticket.request_id,
                     &prepared.session_data.route.provider,
                     &prepared.api_key,
@@ -1566,6 +1606,7 @@ impl ActionService {
                     &prepared.session_data.route.thinking,
                     &body["messages"],
                     &attachments,
+                    latest_attachments,
                     &cancellation,
                     &prepared.budget,
                     |delta| {
@@ -3433,6 +3474,41 @@ mod tests {
             "scalar-limit"
         )
         .is_err());
+    }
+
+    #[test]
+    fn native_dsh_conversation_is_scoped_to_the_result_session_lifetime() {
+        let service = completed_test_service("dsh-window", "First answer");
+        let ticket = service.current_ticket_for_test("dsh-window").unwrap();
+        let conversation = service.inner.state.lock().dsh_conversation(&ticket);
+        let mut next_ticket = ticket.clone();
+        next_ticket.request_generation = RequestGeneration(ticket.request_generation.0 + 1);
+        let next = service.inner.state.lock().dsh_conversation(&next_ticket);
+        assert!(Arc::ptr_eq(&conversation, &next));
+        let retry = service.reserve_retry_for_test("dsh-window").unwrap();
+        let mut data = prepared().data;
+        data.route.provider.kind = crate::models::ProviderKind::Dsh;
+        assert_eq!(service.commit_prepared_for_test(&retry.reservation.ticket, data.clone()), TransitionResult::Applied);
+        let committed = service.inner.state.lock().dsh_conversation(&retry.reservation.ticket);
+        assert!(Arc::ptr_eq(&conversation, &committed));
+        assert_eq!(service.commit_completed_for_test(&retry.reservation.ticket), TransitionResult::Applied);
+        let api_retry = service.reserve_retry_for_test("dsh-window").unwrap();
+        data.route.provider.kind = crate::models::ProviderKind::Openai;
+        assert_eq!(service.commit_prepared_for_test(&api_retry.reservation.ticket, data), TransitionResult::Applied);
+        assert!(!service.inner.state.lock().dsh_conversations.contains_key("dsh-window"));
+        // Closing also cleans up an active native binding.
+        service.inner.state.lock().dsh_conversation(&api_retry.reservation.ticket);
+        let mut other = ticket.clone();
+        other.session_id = "other-window".into();
+        let independent = service.inner.state.lock().dsh_conversation(&other);
+        assert!(!Arc::ptr_eq(&conversation, &independent));
+        assert!(service.clear_session("dsh-window"));
+        assert!(!service.inner.state.lock().dsh_conversations.contains_key("dsh-window"));
+        let recreated = service.inner.state.lock().dsh_conversation(&ticket);
+        assert!(!Arc::ptr_eq(&conversation, &recreated));
+        next_ticket.session_generation = SessionGeneration(ticket.session_generation.0 + 1);
+        let new_generation = service.inner.state.lock().dsh_conversation(&next_ticket);
+        assert!(!Arc::ptr_eq(&recreated, &new_generation));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! Reusable gateway resources. Remote Agent sessions remain request-owned.
+//! Reusable gateway resources. Remote Agent sessions are owned by Popper conversations.
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
@@ -39,6 +39,11 @@ struct CacheEntry {
     used_at: Instant,
 }
 impl DshService {
+    #[cfg(test)]
+    pub(super) fn clear_gateway_cache(&self) {
+        self.gateways.lock().clear();
+    }
+
     pub(crate) fn new() -> Result<Self, TransportFailure> {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -116,6 +121,10 @@ pub(super) struct Gateway {
     mux: AsyncMutex<Option<Arc<Mux>>>,
 }
 impl Gateway {
+    pub(super) fn authentication_matches(&self, base: &str, key: &str) -> bool {
+        self.rpc.base == base.trim_end_matches('/') && self.rpc.key == key
+    }
+
     pub async fn check_stream(&self) -> Result<(), TransportFailure> {
         // Probe with a short-lived connection; do not create an Agent or retain
         // an event client that could receive unrelated GUI interactions.
