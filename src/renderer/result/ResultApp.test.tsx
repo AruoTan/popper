@@ -981,6 +981,16 @@ describe("ResultApp window interactions", () => {
     expect(input).toHaveValue("继续说明");
   });
 
+  it("displays native translation retry errors instead of a generic fallback", async () => {
+    const { retryAction } = await renderResult();
+    retryAction.mockRejectedValueOnce("请先为服务商保存 API Key；词典查询仍可使用");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "请先为服务商保存 API Key；词典查询仍可使用",
+    );
+    expect(screen.queryByText("无法重试当前操作")).toBeNull();
+  });
+
   it("restores an accepted follow-up question if streaming later fails", async () => {
     const { continueAction, retryAction } = await renderResult(askCompletedSession);
     const input = screen.getByRole("textbox", { name: "继续提问" });
