@@ -496,8 +496,14 @@ export const resultSessionSnapshotSchema = z
     selection: selectionPayloadSchema.extend({ text: z.string().max(1_000_000) }),
     conversation: z.array(z.object({
       role: z.enum(['user', 'assistant']),
-      content: outputStringSchema
-    }).strict()).optional(),
+      content: outputStringSchema,
+      attachments: z.array(z.object({
+        name: z.string(),
+        mime: z.string(),
+        kind: z.string(),
+        data: z.string()
+      })).optional()
+    })).optional(),
     status: resultStatusSchema,
     content: outputStringSchema,
     /** Live CoT for the current request; not part of answer integrity counters. */

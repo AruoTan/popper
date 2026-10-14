@@ -94,6 +94,43 @@ describe('SafeMarkdown', () => {
     expect(screen.getByText('[图片：追踪像素]')).toBeInTheDocument()
   })
 
+  it('renders local attachment images safely while blocking remote images', () => {
+    const attachments = new Map([
+      ['photo.png', { name: 'photo.png', mime: 'image/png', kind: 'image', data: 'iVBORw0KGgo=' }]
+    ])
+    const { container } = render(
+      <SafeMarkdown
+        content={'![用户图](attachment:photo.png)\n\n![远程](https://example.com/a.png)'}
+        attachments={attachments}
+        onOpenExternal={() => undefined}
+      />
+    )
+
+    const img = container.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,iVBORw0KGgo=')
+    expect(img).toHaveAttribute('alt', '用户图')
+    expect(screen.getByText('[图片：远程]')).toBeInTheDocument()
+  })
+
+  it('converts bracketed image references matching attachments into images', () => {
+    const attachments = new Map([
+      ['screenshot.png', { name: 'screenshot.png', mime: 'image/png', kind: 'image', data: 'dGVzdA==' }]
+    ])
+    const { container } = render(
+      <SafeMarkdown
+        content={'参考图：[图片: screenshot.png] 以及未知：[图片: missing.png]'}
+        attachments={attachments}
+        onOpenExternal={() => undefined}
+      />
+    )
+
+    const img = container.querySelector('img')
+    expect(img).not.toBeNull()
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,dGVzdA==')
+    expect(screen.getByText(/\[图片:\s*missing\.png\]/)).toBeInTheDocument()
+  })
+
   it('renders GitHub-flavored Markdown tables and task lists', () => {
     const { container } = render(
       <SafeMarkdown

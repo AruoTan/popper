@@ -260,4 +260,29 @@ describe('result action stream reducer', () => {
       generationNotice: 'fallback applied'
     })
   })
+
+  it('clears in-progress notices when content delta arrives', () => {
+    let state = reduceActionEvent(INITIAL_RESULT_STATE, started(1, 1))
+    state = reduceActionEvent(state, {
+      type: 'notice',
+      sessionId: 'session-1',
+      sessionGeneration: 3,
+      requestId: 'request-1',
+      requestGeneration: 1,
+      sequence: 2,
+      actionId: 'summary',
+      code: 'DSH_INTERACTION',
+      message: 'DSH 正在调用 read_image'
+    })
+    expect(state.generationNotice).toBe('DSH 正在调用 read_image')
+
+    state = appendResultDeltaBatch(state, {
+      requestId: 'request-1',
+      sessionGeneration: 3,
+      requestGeneration: 1,
+      delta: '回答开始',
+      contentScalarCount: 4
+    })
+    expect(state.generationNotice).toBe('')
+  })
 })

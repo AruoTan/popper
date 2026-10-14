@@ -5,6 +5,8 @@ import {
   ChevronDown,
   CircleAlert,
   Copy,
+  FileText,
+  Image as ImageIcon,
   LoaderCircle,
   Maximize2,
   Minimize2,
@@ -17,6 +19,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -57,8 +60,10 @@ import {
   appendUserTurn,
   beginAssistantTurn,
   isAskAction,
+  parseTurnContent,
   patchStreamingAssistant,
   transcriptFromSnapshot,
+  type TranscriptAttachment,
   type TranscriptTurn,
 } from "./conversationTranscript";
 import { DictionaryPanel, useDictionarySession } from "./DictionaryPanel";
@@ -398,6 +403,7 @@ function ResultSessionApp({
   const contentInnerRef = useRef<HTMLDivElement>(null);
   const modelSwitchRef = useRef<HTMLDivElement>(null);
   const modelToggleRef = useRef<HTMLButtonElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   const copyResetTimer = useRef<number | null>(null);
   const retryInFlight = useRef(false);
   const bootstrapRetryInFlight = useRef(false);
@@ -407,6 +413,17 @@ function ResultSessionApp({
   const askSawStreaming = useRef(false);
   const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null);
   const dictionaryMode = dictionary?.mode === "dictionary";
+  const sessionAttachments = useMemo(() => {
+    const map = new Map<string, TranscriptAttachment>();
+    for (const turn of turns) {
+      if (turn.attachments) {
+        for (const att of turn.attachments) {
+          map.set(att.name, att);
+        }
+      }
+    }
+    return map;
+  }, [turns]);
   const handleScroll = useAutoFollowOutput(
     contentRef,
     contentInnerRef,
@@ -921,6 +938,24 @@ function ResultSessionApp({
     if (modelMenuOpen && modelSwitchDisabled) setModelMenuOpen(false);
   }, [modelMenuOpen, modelSwitchDisabled]);
 
+  useLayoutEffect(() => {
+    if (!modelMenuOpen) return;
+    const adjustPosition = (): void => {
+      const menu = modelMenuRef.current;
+      if (!menu) return;
+      menu.style.left = "0px";
+      const rect = menu.getBoundingClientRect();
+      const maxRight = window.innerWidth - 8;
+      if (rect.right > maxRight) {
+        const shift = rect.right - maxRight;
+        menu.style.left = `${Math.min(0, -shift)}px`;
+      }
+    };
+    adjustPosition();
+    window.addEventListener("resize", adjustPosition);
+    return () => window.removeEventListener("resize", adjustPosition);
+  }, [modelMenuOpen]);
+
   const keyboardState = useRef({ status, hasContent, cancel, closeWindow, retry, copy });
   keyboardState.current = { status, hasContent, cancel, closeWindow, retry, copy };
   useEffect(() => {
@@ -1208,7 +1243,12 @@ function ResultSessionApp({
                   <ChevronDown className="dropdown-chevron" size={12} aria-hidden="true" />
                 </button>
                 {modelMenuOpen && (
-                  <div className="result-model-menu" role="listbox" aria-label="可用模型">
+                  <div
+                    ref={modelMenuRef}
+                    className="result-model-menu"
+                    role="listbox"
+                    aria-label="可用模型"
+                  >
                     {modelGroups.map((provider) => (
                       <div
                         key={provider.id}
@@ -1232,6 +1272,7 @@ function ResultSessionApp({
                                 type="button"
                                 role="option"
                                 aria-selected={selected}
+                                title={`${provider.name} · ${choice.modelName}`}
                                 disabled={!provider.canConnect || modelSwitchDisabled}
                                 onClick={() => chooseModel(choice.value)}
                               >
@@ -1312,7 +1353,7 @@ function ResultSessionApp({
         onScroll={handleScroll}
       >
         <div ref={contentInnerRef} className="result-content__inner">
-          {selection && showOriginal && (
+          {selection && Boolean(selection.text.trim()) && showOriginal && (
             <section className="result-original" aria-label="原文">
               <div id="result-original-content" className="result-original__content">
                 {selection.text}
@@ -1359,7 +1400,48 @@ function ResultSessionApp({
                   >
                     <div className="result-turn__label">{turn.role === "user" ? "你" : "AI"}</div>
                     {turn.role === "user" ? (
-                      <div className="result-turn__content">{turn.content}</div>
+                      <div className="result-turn__content">
+                        {(() => {
+                          const parsed = parseTurnContent(turn.content, turn.attachments);
+                          return (
+                            <>
+                              <div className="result-turn__user-text">{parsed.text || turn.content}</div>
+                              {parsed.attachments.length > 0 && (
+                                <div className="result-turn__attachments" aria-label="用户附件">
+                                  {parsed.attachments.map((att, i) => {
+                                    const enriched = sessionAttachments.get(att.name) || att;
+                                    const isImage =
+                                      enriched.kind === "image" ||
+                                      /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(enriched.name);
+                                    return (
+                                      <div
+                                        key={enriched.name || i}
+                                        className={`result-turn__attachment ${
+                                          isImage && enriched.data ? "result-turn__attachment--image" : ""
+                                        }`}
+                                        title={enriched.name}
+                                      >
+                                        {isImage && enriched.data ? (
+                                          <img
+                                            className="result-turn__attachment-thumb"
+                                            src={`data:${enriched.mime || "image/png"};base64,${enriched.data}`}
+                                            alt={enriched.name}
+                                          />
+                                        ) : (
+                                          <span className="result-turn__attachment-icon">
+                                            {isImage ? <ImageIcon size={13} /> : <FileText size={13} />}
+                                          </span>
+                                        )}
+                                        <span className="result-turn__attachment-name">{enriched.name}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
                     ) : (
                       <>
                         {/* CoT attaches to the latest assistant bubble (Cherry-style). */}
@@ -1373,6 +1455,7 @@ function ResultSessionApp({
                               contentScalarCount={countUnicodeScalars(turn.content)}
                               contentRevision={turn.content.length}
                               revealCommitted={revealCommitted}
+                              attachments={sessionAttachments}
                               onOpenExternal={openExternal}
                             />
                           </article>
@@ -1447,7 +1530,7 @@ function ResultSessionApp({
               </div>
             </div>
           )}
-          {generationNotice && (
+          {generationNotice && (!generationNotice.includes("正在") || (status === "streaming" && !hasContent)) && (
             <div className="result-inline-notice" role="status">
               {generationNotice}
             </div>

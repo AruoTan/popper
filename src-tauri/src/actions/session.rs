@@ -1319,6 +1319,13 @@ fn apply_event_to_snapshot(snapshot: &mut ActionSnapshot, event: &ActionStreamEv
             snapshot.last_sequence = event.sequence;
             snapshot.last_content_sequence = event.sequence;
             snapshot.content_scalar_count += delta.chars().count() as u64;
+            if snapshot
+                .generation_notice
+                .as_ref()
+                .is_some_and(|notice| notice.message.contains("正在"))
+            {
+                snapshot.generation_notice = None;
+            }
         }
         ActionStreamPayload::ThinkingDelta { delta } => {
             snapshot.thinking_content.push_str(delta);
@@ -1342,6 +1349,13 @@ fn apply_event_to_snapshot(snapshot: &mut ActionSnapshot, event: &ActionStreamEv
             debug_assert_eq!(*content_scalar_count, snapshot.content_scalar_count);
             snapshot.status = ActionSnapshotStatus::Completed;
             snapshot.last_sequence = event.sequence;
+            if snapshot
+                .generation_notice
+                .as_ref()
+                .is_some_and(|notice| notice.message.contains("正在"))
+            {
+                snapshot.generation_notice = None;
+            }
             snapshot.error_code = None;
             snapshot.error_message = None;
             snapshot.retryable = false;
@@ -1349,6 +1363,13 @@ fn apply_event_to_snapshot(snapshot: &mut ActionSnapshot, event: &ActionStreamEv
         ActionStreamPayload::Cancelled => {
             snapshot.status = ActionSnapshotStatus::Cancelled;
             snapshot.last_sequence = event.sequence;
+            if snapshot
+                .generation_notice
+                .as_ref()
+                .is_some_and(|notice| notice.message.contains("正在"))
+            {
+                snapshot.generation_notice = None;
+            }
             snapshot.error_code = None;
             snapshot.error_message = None;
             snapshot.retryable = false;
@@ -1360,6 +1381,13 @@ fn apply_event_to_snapshot(snapshot: &mut ActionSnapshot, event: &ActionStreamEv
         } => {
             snapshot.status = ActionSnapshotStatus::Error;
             snapshot.last_sequence = event.sequence;
+            if snapshot
+                .generation_notice
+                .as_ref()
+                .is_some_and(|notice| notice.message.contains("正在"))
+            {
+                snapshot.generation_notice = None;
+            }
             snapshot.error_code = Some(code.clone());
             snapshot.error_message = Some(message.clone());
             snapshot.retryable = *retryable;
@@ -2570,6 +2598,45 @@ mod tests {
             table.commit_prepare_success(&retry.ticket),
             TransitionResult::Applied,
         );
+        assert!(open_state(&table, "s").snapshot.generation_notice.is_none());
+    }
+
+    #[test]
+    fn in_progress_notice_cleared_on_completed() {
+        let (mut table, ticket) = running_table("s");
+        table
+            .enqueue_notice(&ticket, "DSH_INTERACTION", "DSH 正在调用 read_image")
+            .unwrap();
+        assert_eq!(
+            open_state(&table, "s")
+                .snapshot
+                .generation_notice
+                .as_ref()
+                .map(|n| n.message.as_str()),
+            Some("DSH 正在调用 read_image")
+        );
+        table
+            .commit_terminal(&ticket, TerminalKind::Completed)
+            .unwrap();
+        assert!(open_state(&table, "s").snapshot.generation_notice.is_none());
+    }
+
+    #[test]
+    fn in_progress_notice_cleared_when_content_delta_arrives() {
+        let (mut table, ticket) = running_table("s");
+        table
+            .enqueue_notice(&ticket, "DSH_INTERACTION", "DSH 正在调用 read_image")
+            .unwrap();
+        assert_eq!(
+            open_state(&table, "s")
+                .snapshot
+                .generation_notice
+                .as_ref()
+                .map(|n| n.message.as_str()),
+            Some("DSH 正在调用 read_image")
+        );
+        let now = tokio::time::Instant::now();
+        table.accept_delta(&ticket, "正式回复".into(), now).unwrap();
         assert!(open_state(&table, "s").snapshot.generation_notice.is_none());
     }
 
