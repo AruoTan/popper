@@ -11,6 +11,7 @@ mod dsh_transport;
 pub mod runtime;
 pub mod selection;
 pub mod settings;
+mod startup;
 mod thinking;
 pub mod windows;
 
@@ -31,6 +32,8 @@ static WINDOWS_RUNTIME_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    startup::initialize();
+    startup::stage("building application");
     let builder = tauri::Builder::default();
     // Windows allows launching the same executable repeatedly from the Start
     // menu. Register this before every other plugin so only the first process
@@ -49,27 +52,28 @@ pub fn run() {
         }
     }));
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
-    let builder = builder.plugin(tauri_plugin_global_shortcut::Builder::new().build());
-
-    builder
+    let app = builder
         // Keep Tauri's native macOS menu so the focused WebView receives the
         // standard responder actions for Cmd+X/C/V/A and undo/redo. Without
         // an Edit menu, WKWebView text fields accept typing but those keyboard
         // shortcuts do not reach the active input in packaged builds.
         .enable_macos_default_menu(true)
         .setup(|app| {
+            startup::stage("initializing UI thread");
             #[cfg(target_os = "windows")]
             windows::initialize_windows_ui_thread();
 
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
+            startup::stage("loading settings");
             let settings_path = app.path().app_config_dir()?.join("settings.json");
             let settings = Arc::new(SettingsRepository::new_with_legacy_migration(
                 settings_path,
             )?);
+            startup::stage("initializing HTTP clients");
             let actions = ActionService::new(settings.clone())?;
+            startup::stage("initializing selection monitor");
             let mut monitor = SelectionMonitor::new(&app.config().identifier)?;
             let receiver = monitor
                 .take_event_receiver()
@@ -77,14 +81,29 @@ pub fn run() {
 
             app.manage(RuntimeState::new(settings, actions, monitor));
             let handle = app.handle().clone();
+            // Create configured UI only after state exists: its first events
+            // and renderer IPC are allowed to arrive during WebView creation.
+            startup::stage("creating settings window");
+            let settings_window = handle
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "settings")
+                .ok_or("缺少设置窗口配置")?;
+            tauri::WebviewWindowBuilder::from_config(&handle, settings_window)?.build()?;
+            startup::stage("creating toolbar");
             handle
                 .state::<RuntimeState>()
                 .windows
                 .ensure_toolbar(&handle)?;
             runtime::spawn_selection_loop(handle.clone(), receiver)?;
+            startup::stage("creating tray");
             runtime::setup_tray(&handle)?;
+            startup::stage("initializing quick ask shortcut");
             runtime::setup_quick_ask_shortcut(&handle);
 
+            startup::stage("starting selection listener");
             let state = handle.state::<RuntimeState>();
             state.reconcile_capture(&handle);
             runtime::start_permission_poll(handle.clone());
@@ -94,6 +113,7 @@ pub fn run() {
             }
             #[cfg(target_os = "windows")]
             {
+                startup::stage("showing startup notice");
                 if !PENDING_SETTINGS_OPEN.load(Ordering::Acquire) {
                     if let Err(error) = windows::show_startup_notice(
                         &handle,
@@ -107,12 +127,16 @@ pub fn run() {
                     runtime::open_settings_window(&handle);
                 }
             }
+            startup::stage("setup complete");
             Ok(())
         })
         .on_window_event(|window, event| {
             let app = window.app_handle();
-            app.state::<RuntimeState>()
-                .handle_window_event(app, window.label(), event);
+            // Configured windows can emit events before setup manages the
+            // runtime. Ignore those events rather than panicking at startup.
+            if let Some(state) = app.try_state::<RuntimeState>() {
+                state.handle_window_event(app, window.label(), event);
+            }
         })
         .invoke_handler(tauri::generate_handler![
             runtime::get_settings,
@@ -175,18 +199,29 @@ pub fn run() {
             runtime::hide_result,
             runtime::close_result,
         ])
-        .build(tauri::generate_context!())
-        .expect("failed to build Popper")
-        .run(|app, event| {
-            #[cfg(target_os = "macos")]
-            if matches!(event, tauri::RunEvent::Reopen { .. }) {
-                runtime::open_settings_window(app);
+        .build(tauri::generate_context!());
+    let app = match app {
+        Ok(app) => app,
+        Err(error) => {
+            startup::failure(&format!("failed to build Popper: {error}"));
+            return;
+        }
+    };
+    app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::Ready) {
+            startup::ready();
+        }
+        #[cfg(target_os = "macos")]
+        if matches!(event, tauri::RunEvent::Reopen { .. }) {
+            runtime::open_settings_window(app);
+        }
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            if let Some(state) = app.try_state::<RuntimeState>() {
+                state.shutdown(app);
             }
-            if matches!(
-                event,
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-            ) {
-                app.state::<RuntimeState>().shutdown(app);
-            }
-        });
+        }
+    });
 }

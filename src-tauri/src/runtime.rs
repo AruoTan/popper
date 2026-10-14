@@ -3512,6 +3512,16 @@ fn open_system_url(_value: &str) -> Result<(), ()> {
 
 pub fn setup_quick_ask_shortcut(app: &AppHandle) {
     let state = app.state::<RuntimeState>();
+    // A failing optional native shortcut manager must not abort startup.
+    // Register the plugin after the runtime exists, so early window events
+    // cannot access uninitialized state.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    if let Err(error) = app.plugin(tauri_plugin_global_shortcut::Builder::new().build()) {
+        let message = format!("无法初始化快捷提问快捷键：{error}");
+        crate::startup::stage(&message);
+        state.runtime_diagnostics.lock().quick_ask_shortcut_error = Some(message);
+        return;
+    }
     let shortcut = state.settings.get_settings().quick_ask_shortcut;
     match register_quick_ask_shortcut(app, &shortcut) {
         Ok(()) => *state.quick_ask_shortcut.lock() = Some(shortcut),
@@ -3525,9 +3535,12 @@ fn register_quick_ask_shortcut(app: &AppHandle, value: &str) -> Result<(), Strin
     }
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+        use tauri_plugin_global_shortcut::ShortcutState;
         let expected = value.to_owned();
-        app.global_shortcut()
+        let shortcuts = app
+            .try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+            .ok_or_else(|| "快捷提问快捷键服务未启动，请重启 Popper".to_owned())?;
+        shortcuts
             .on_shortcut(value, move |app, _, event| {
                 let state = app.state::<RuntimeState>();
                 if event.state() != ShortcutState::Pressed
@@ -3566,8 +3579,11 @@ fn register_quick_ask_shortcut(app: &AppHandle, value: &str) -> Result<(), Strin
 fn unregister_quick_ask_shortcut(app: &AppHandle, value: &str) {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        let _ = app.global_shortcut().unregister(value);
+        if let Some(shortcuts) =
+            app.try_state::<tauri_plugin_global_shortcut::GlobalShortcut<tauri::Wry>>()
+        {
+            let _ = shortcuts.unregister(value);
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
