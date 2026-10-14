@@ -409,6 +409,7 @@ impl ActionService {
             .settings
             .get_api_key(&data.route.provider.id)?
             .filter(|v| !v.trim().is_empty())
+            .or_else(|| (!data.route.provider.requires_api_key()).then(String::new))
             .ok_or_else(|| {
                 ActionServiceError::Validation("请先为服务商保存 API Key；词典查询仍可使用".into())
             })?;
@@ -668,6 +669,85 @@ mod tests {
         closed.cancellation.unwrap().cancel();
         assert!(second.cancellation.is_cancelled());
         assert!(reserve_lookup(&mut sessions, "one").is_err());
+    }
+
+    #[test]
+    fn dictionary_ai_uses_the_selected_providers_authentication_policy() {
+        use crate::models::ProviderKind;
+
+        for (kind, base_url, saved_key, allowed) in [
+            (ProviderKind::Dsh, "http://localhost:3080", false, true),
+            (ProviderKind::Dsh, "http://127.0.0.1:3080", false, true),
+            (ProviderKind::Dsh, "http://[::1]:3080", false, true),
+            (ProviderKind::Dsh, "http://192.168.1.10:3080", false, false),
+            (ProviderKind::Dsh, "http://192.168.1.10:3080", true, true),
+            (ProviderKind::Openai, "http://localhost:3080", false, false),
+        ] {
+            for (status, selected_model) in [
+                ("missing", false), ("found", false),
+                ("missing", true), ("found", true),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let repository = Arc::new(
+                    SettingsRepository::new(directory.path().join("settings.json")).unwrap(),
+                );
+                let service = ActionService::new(repository.clone()).unwrap();
+                let mut settings = repository.get_settings();
+                let provider = &mut settings.providers[0];
+                provider.kind = kind;
+                provider.base_url = base_url.into();
+                provider.models = vec![serde_json::from_value(
+                    serde_json::json!({"id":"one/same", "name":"Test"}),
+                ).unwrap()];
+                let provider_id = provider.id.clone();
+                let action = settings.actions.iter_mut().find(|a| a.id == "translate").unwrap();
+                action.provider_id = Some(provider_id.clone());
+                action.model_id = (!selected_model).then(|| "one/same".into());
+                if saved_key {
+                    repository.set_provider_api_key(&provider_id, "test-secret").unwrap();
+                }
+                let mut state = ActionServiceState::default();
+                shell(&mut state.sessions, "one");
+                let request = ExecuteActionRequest {
+                    session_id: "one".into(),
+                    window_label: "result/one".into(),
+                    action_id: "translate".into(),
+                    text: "defer attachment".into(),
+                    cursor: None,
+                    target_language: None,
+                };
+                let mut dictionary = DictionarySession::new(&request, request.text.clone());
+                dictionary.snapshot.status = status.into();
+                state.dictionaries.insert("one".into(), dictionary);
+
+                let result = service.prepare_dictionary_ai(
+                    &mut state, &settings, "one",
+                    selected_model.then_some(provider_id.as_str()),
+                    selected_model.then_some("one/same"),
+                );
+                assert_eq!(result.is_ok(), allowed, "{kind:?} {base_url} {status}");
+                if allowed {
+                    assert_eq!(state.dictionaries["one"].snapshot.mode, "ai");
+                    assert_eq!(state.contexts["one"].route.model, "one/same");
+                    let reservation = state.reserve_retry(
+                        "one", "ai-retry".into(), RetryPreparationOptions::default(),
+                        tokio::time::Instant::now(),
+                    ).unwrap();
+                    let resolved = resolve_request_config(
+                        &reservation.seed, &settings, &reservation.reservation.ticket,
+                    ).unwrap();
+                    let prepared = service.prepare_with_runtime(
+                        reservation.reservation.ticket, resolved, CancellationToken::new(),
+                        tokio::time::Instant::now(), ActionKind::Translate,
+                    ).unwrap();
+                    assert_eq!(prepared.api_key.is_empty(), !saved_key);
+                } else {
+                    assert!(result.unwrap_err().to_string().contains("API Key"));
+                    assert!(state.contexts.is_empty());
+                    assert_eq!(state.dictionaries["one"].snapshot.mode, "dictionary");
+                }
+            }
+        }
     }
 
     #[test]
