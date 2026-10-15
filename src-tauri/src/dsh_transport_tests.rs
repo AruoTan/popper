@@ -124,6 +124,7 @@ struct MockGateway {
     upload_seen: Arc<Semaphore>,
     upload_blocked: Arc<std::sync::atomic::AtomicBool>,
     upload_gate: Arc<Semaphore>,
+    save_response: Arc<Mutex<Option<(u16, Value)>>>,
     accept: tokio::task::JoinHandle<()>,
 }
 #[derive(Clone, Debug)]
@@ -168,6 +169,8 @@ async fn mock_gateway_options(
     let upload_seen = Arc::new(Semaphore::new(0));
     let upload_blocked = Arc::new(AtomicBool::new(false));
     let upload_gate = Arc::new(Semaphore::new(0));
+    let save_response = Arc::new(Mutex::new(None::<(u16, Value)>));
+    let seen_save_response = save_response.clone();
     let seen_uploads = uploads.clone();
     let seen_upload_status = upload_status.clone();
     let seen_upload_response = upload_response.clone();
@@ -192,6 +195,7 @@ async fn mock_gateway_options(
             let upload_seen = seen_upload_seen.clone();
             let upload_blocked = seen_upload_blocked.clone();
             let upload_gate = seen_upload_gate.clone();
+            let save_response = seen_save_response.clone();
             let calls = seen_calls.clone();
             let prompt = seen_prompt.clone();
             let commands = seen_commands.clone();
@@ -221,6 +225,7 @@ async fn mock_gateway_options(
                         |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
                          response| {
                             assert_eq!(request.uri().path(), "/api/remote.mux");
+                            assert_eq!(request.headers()["x-dsh-client"], "app");
                             if cookie_login {
                                 assert!(!request.headers().contains_key("authorization"));
                                 assert_eq!(request.headers()["cookie"], "dsh-session=test-cookie");
@@ -318,6 +323,9 @@ async fn mock_gateway_options(
                         }
                     };
                     let headers = String::from_utf8(bytes[..body_start].to_vec()).unwrap();
+                    if !headers.starts_with("GET / HTTP") {
+                        assert!(headers.to_lowercase().contains("x-dsh-client: app\r\n"));
+                    }
                     if headers.starts_with("GET / HTTP") {
                         assert!(cookie_login);
                         assert!(!headers.to_lowercase().contains("authorization:"));
@@ -440,9 +448,19 @@ async fn mock_gateway_options(
                             json!({"workspace":{"workspaceId":format!("workspace:{}", envelope["payload"]["args"]["request"]["path"].as_str().unwrap())}})
                         }
                         "session/create" => {
-                            let number = sessions.fetch_add(1, Ordering::SeqCst);
-                            json!({"sessionId":if number == 0 { "remote-session".to_owned() } else { format!("remote-session-{}", number+1) }})
+                            if let Some(id) = envelope["payload"]["args"]["request"]["sessionId"].as_str() {
+                                assert!(envelope["payload"]["args"]["request"].get("workspaceId").is_none());
+                                json!({"sessionId":id})
+                            } else {
+                                let number = sessions.fetch_add(1, Ordering::SeqCst);
+                                json!({"sessionId":if number == 0 { "remote-session".to_owned() } else { format!("remote-session-{}", number+1) }})
+                            }
                         }
+                        "temporary/save" => json!({
+                            "sessionId":envelope["payload"]["args"]["request"]["sessionId"],
+                            "workspaceId":"normal-workspace", "savedSessionIds":[envelope["payload"]["args"]["request"]["sessionId"]],
+                            "temporary":false, "reconnectRequired":true,
+                        }),
                         "session/modelCatalog" => catalog(),
                         "session/prompt" => {
                             let request = &envelope["payload"]["args"]["request"];
@@ -467,7 +485,12 @@ async fn mock_gateway_options(
                         }
                         _ => json!({}),
                     };
-                    let result = if rpc_error {
+                    let mut status = 200;
+                    let result = if method == "temporary/save" && save_response.lock().unwrap().is_some() {
+                        let custom = save_response.lock().unwrap().clone().unwrap();
+                        status = custom.0;
+                        custom.1
+                    } else if rpc_error {
                         json!({"ok":false,"error":{"message":"bad test-dsh-key"}})
                     } else {
                         json!({"ok":true,"value":value})
@@ -475,7 +498,7 @@ async fn mock_gateway_options(
                     let body =
                         json!({"type":"server-response","rpcId":envelope["rpcId"],"result":result})
                             .to_string();
-                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
+                    let response = format!("HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
                     if stream.write_all(response.as_bytes()).await.is_err() {
                         return;
                     }
@@ -500,6 +523,7 @@ async fn mock_gateway_options(
         upload_seen,
         upload_blocked,
         upload_gate,
+        save_response,
         accept,
     }
 }
@@ -2013,6 +2037,121 @@ async fn conversation_turn(
             |_| {},
         )
         .await
+}
+
+#[tokio::test]
+async fn save_promotes_the_bound_session_and_continues_without_replaying_history_or_files() {
+    for key in ["", "test-dsh-key"] {
+        let gateway = mock_gateway_auth(false, false, key.is_empty()).await;
+        let config = provider(gateway.base.clone());
+        let service = DshService::new().unwrap();
+        let conversation = DshConversation::default();
+        let file = test_file("keep.txt", "text/plain", b"preserve this file");
+        conversation_turn(&service, &conversation, &config, key, "before-save", "one/same",
+            &json!([{"role":"user","content":"Original question"}]),
+            &[file.clone()], &[file.clone()], &CancellationToken::new()).await.unwrap();
+        let before = conversation.status(&config.id).await.unwrap();
+        assert!(!before.saved);
+        let saved = conversation.save(&config.id).await.unwrap();
+        assert_eq!(saved.session_id, before.session_id);
+        assert!(saved.saved);
+        assert_eq!(conversation.save(&config.id).await.unwrap(), saved);
+        let calls = gateway.calls.lock().unwrap().clone();
+        let saves: Vec<_> = calls.iter().filter(|call| call["method"] == "temporary/save").collect();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0]["payload"]["args"], json!({"request":{"sessionId":before.session_id}}));
+        conversation_turn(&service, &conversation, &config, key, "after-save", "two/same",
+            &json!([{"role":"user","content":"Original question"},
+                {"role":"assistant","content":"Previous answer"},
+                {"role":"user","content":"Continue saved conversation"}]),
+            &[file.clone()], &[], &CancellationToken::new()).await.unwrap();
+        assert_eq!(conversation.status(&config.id).await.unwrap(), saved);
+        assert_eq!(gateway.sockets.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+        let calls = gateway.calls.lock().unwrap();
+        let creates: Vec<_> = calls.iter().filter(|call| call["method"] == "session/create").collect();
+        assert_eq!(creates.len(), 2);
+        assert_eq!(creates[1]["payload"]["args"], json!({"request":{"sessionId":saved.session_id}}));
+        let prompt = calls.iter().rev().find(|call| call["method"] == "session/prompt").unwrap();
+        assert_eq!(prompt["payload"]["args"]["request"]["sessionId"], saved.session_id);
+        assert_eq!(prompt["payload"]["args"]["request"]["content"], json!([{"type":"text","text":"Continue saved conversation"}]));
+    }
+}
+
+#[tokio::test]
+async fn save_rejects_missing_foreign_or_busy_conversations_without_dispatch() {
+    let conversation = DshConversation::default();
+    assert_eq!(conversation.save("dsh").await.unwrap_err().code, "DSH_NO_SESSION");
+    let _guard = conversation.state.lock().await;
+    assert_eq!(conversation.save("dsh").await.unwrap_err().code, "DSH_SESSION_ACTIVE");
+    drop(_guard);
+    let gateway = mock_gateway(false, false).await;
+    let config = provider(gateway.base.clone());
+    let service = DshService::new().unwrap();
+    conversation_turn(&service, &conversation, &config, "test-dsh-key", "first", "one/same",
+        &json!([{"role":"user","content":"hello"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    assert!(conversation.status("foreign-provider").await.is_none());
+    assert_eq!(conversation.save("foreign-provider").await.unwrap_err().code, "DSH_NO_SESSION");
+    assert!(!gateway.calls.lock().unwrap().iter().any(|call| call["method"] == "temporary/save"));
+}
+
+#[tokio::test]
+async fn save_reports_plugin_errors_and_allows_idempotent_retry_after_an_uncertain_receipt() {
+    let gateway = mock_gateway(false, false).await;
+    let config = provider(gateway.base.clone());
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    conversation_turn(&service, &conversation, &config, "test-dsh-key", "first", "one/same",
+        &json!([{"role":"user","content":"hello"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    for (status, code, expected) in [
+        (409, "temporary/session-active", "DSH_SESSION_ACTIVE"),
+        (410, "temporary/expired", "DSH_SESSION_EXPIRED"),
+        (404, "temporary/not-found", "DSH_NO_SESSION"),
+        (503, "temporary/not-ready", "DSH_NOT_READY"),
+        (404, "unknown", "DSH_SAVE_FAILED"),
+        (500, "temporary/import-conflict", "DSH_SAVE_FAILED"),
+        (200, "temporary/session-active", "DSH_SESSION_ACTIVE"),
+    ] {
+        *gateway.save_response.lock().unwrap() = Some((status, json!({"ok":false,
+            "error":{"code":code,"message":"secret test-dsh-key internal path"}})));
+        let error = conversation.save(&config.id).await.unwrap_err();
+        assert_eq!(error.code, expected);
+        assert!(!error.message.contains("test-dsh-key"));
+        assert!(!conversation.status(&config.id).await.unwrap().saved);
+    }
+    // No RPC failure envelope, as with an older gateway's missing route.
+    *gateway.save_response.lock().unwrap() = Some((404, json!({})));
+    assert_eq!(conversation.save(&config.id).await.unwrap_err().code, "DSH_SAVE_UNSUPPORTED");
+    *gateway.save_response.lock().unwrap() = Some((200, json!({"ok":true,"value":{
+        "sessionId":"wrong-session", "workspaceId":"normal", "savedSessionIds":["wrong-session"],
+        "temporary":false, "reconnectRequired":true,
+    }})));
+    assert_eq!(conversation.save(&config.id).await.unwrap_err().code, "DSH_INVALID_RESPONSE");
+    *gateway.save_response.lock().unwrap() = Some((200, json!({"ok":true,"value":{
+        "sessionId":"remote-session", "workspaceId":"normal", "savedSessionIds":["remote-session"],
+        "temporary":false, "reconnectRequired":true, "alreadySaved":true,
+    }})));
+    assert!(conversation.save(&config.id).await.unwrap().saved);
+}
+
+#[tokio::test]
+async fn saving_one_window_keeps_another_windows_stream_usable() {
+    let gateway = mock_gateway(false, false).await;
+    let config = provider(gateway.base.clone());
+    let service = DshService::new().unwrap();
+    let first = DshConversation::default();
+    let second = DshConversation::default();
+    for (conversation, request) in [(&first, "one"), (&second, "two")] {
+        conversation_turn(&service, conversation, &config, "test-dsh-key", request, "one/same",
+            &json!([{"role":"user","content":"hello"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    }
+    let original_mux = service.gateway(&config, "test-dsh-key").unwrap().mux().await.unwrap().0;
+    first.save(&config.id).await.unwrap();
+    assert!(!original_mux.is_closed());
+    conversation_turn(&service, &second, &config, "test-dsh-key", "two-next", "one/same",
+        &json!([{"role":"user","content":"next"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    assert_eq!(gateway.sockets.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!second.status(&config.id).await.unwrap().saved);
 }
 
 #[tokio::test]

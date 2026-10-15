@@ -6,6 +6,7 @@ import type {
 } from "./dictionary";
 import type {
   ActionStreamEvent,
+  DshSessionState,
   Point,
   ProviderCreateInput,
   ProviderModel,
@@ -227,6 +228,8 @@ export interface WindowPopperApi {
   cancelAction(sessionId?: string): Promise<void>;
   retryAction(sessionId?: string, options?: ActionRetryOptions): Promise<RunActionResult>;
   continueAction?(sessionId: string, question: string): Promise<RunActionResult>;
+  dshSessionState?(sessionId: string, requestId: string): Promise<DshSessionState | null>;
+  saveDshSession?(sessionId: string, requestId: string): Promise<DshSessionState>;
   copyText(text: string): Promise<void>;
   openExternal(url: string): Promise<void>;
   openSettings?(options?: OpenSettingsOptions): Promise<void>;

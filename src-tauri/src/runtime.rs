@@ -3090,6 +3090,28 @@ pub fn retry_action(
 }
 
 #[tauri::command]
+pub async fn dsh_session_state(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    request_id: String,
+) -> Result<Option<crate::dsh_transport::DshSessionState>, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.dsh_session_state(&session_id, &request_id).await
+}
+
+#[tauri::command]
+pub async fn save_dsh_session(
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    request_id: String,
+) -> Result<crate::dsh_transport::DshSessionState, String> {
+    ensure_result_caller(&window, &session_id)?;
+    state.actions.save_dsh_session(&session_id, &request_id).await
+}
+
+#[tauri::command]
 pub fn continue_action(
     app: AppHandle,
     window: WebviewWindow,

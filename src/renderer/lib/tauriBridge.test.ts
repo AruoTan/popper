@@ -117,6 +117,9 @@ describe("Tauri renderer bridge", () => {
           requestId: "request-3",
         });
       }
+      if (command === "dsh_session_state" || command === "save_dsh_session") {
+        return Promise.resolve({ providerId: "dsh", sessionId: "remote-id", saved: command === "save_dsh_session" });
+      }
       if (command === "list_provider_models") {
         return Promise.resolve({
           ok: true,
@@ -405,6 +408,14 @@ describe("Tauri renderer bridge", () => {
       sessionId: "session-1",
       question: "继续解释",
     });
+
+    const saved = { providerId: "dsh", sessionId: "remote-id", saved: true };
+    await expect(window._popper_.dshSessionState?.("session-1", "request-1")).resolves.toEqual({ ...saved, saved: false });
+    await expect(window._popper_.saveDshSession?.("session-1", "request-1")).resolves.toEqual(saved);
+    expect(invokeMock).toHaveBeenCalledWith("save_dsh_session", { sessionId: "session-1", requestId: "request-1" });
+    expect(invokeMock).toHaveBeenCalledWith("dsh_session_state", { sessionId: "session-1", requestId: "request-1" });
+    invokeMock.mockResolvedValueOnce({ ...saved, saved: "true" });
+    await expect(window._popper_.saveDshSession?.("session-1", "request-1")).rejects.toThrow();
 
     await expect(window._popper_.listProviderModels?.("provider-1")).resolves.toEqual({
       ok: true,

@@ -1027,6 +1027,58 @@ impl ActionService {
             .cloned()
     }
 
+    fn current_dsh_conversation(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<Option<(Arc<crate::dsh_transport::DshConversation>, String)>, String> {
+        let state = self.inner.state.lock();
+        let snapshot = state
+            .sessions
+            .authoritative_snapshot(session_id)
+            .filter(|snapshot| snapshot.request_id == request_id)
+            .ok_or_else(|| "会话已更新或结束，请重试".to_owned())?;
+        if state.sessions.is_busy(session_id) {
+            return Err("请先等待或停止当前生成，再保存会话".to_owned());
+        }
+        let Some(context) = state.contexts.get(session_id).filter(|context| {
+            context.session_generation == snapshot.session_generation
+                && context.request_generation == snapshot.request_generation
+                && context.route.provider.kind == crate::models::ProviderKind::Dsh
+        }) else {
+            return Ok(None);
+        };
+        Ok(state
+            .dsh_conversations
+            .get(session_id)
+            .filter(|(generation, _)| *generation == snapshot.session_generation)
+            .map(|(_, conversation)| (conversation.clone(), context.route.provider.id.clone())))
+    }
+
+    pub(crate) async fn dsh_session_state(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<Option<crate::dsh_transport::DshSessionState>, String> {
+        match self.current_dsh_conversation(session_id, request_id)? {
+            Some((conversation, provider_id)) => Ok(conversation.status(&provider_id).await),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) async fn save_dsh_session(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<crate::dsh_transport::DshSessionState, String> {
+        let (conversation, provider_id) = self.current_dsh_conversation(session_id, request_id)?
+            .ok_or_else(|| "当前窗口尚无可保存的 DSH 会话".to_owned())?;
+        conversation
+            .save(&provider_id)
+            .await
+            .map_err(|error| error.message)
+    }
+
     pub fn clear_session(&self, session_id: &str) -> bool {
         let (existed, transition) = {
             let mut state = self.inner.state.lock();
@@ -3509,6 +3561,25 @@ mod tests {
         next_ticket.session_generation = SessionGeneration(ticket.session_generation.0 + 1);
         let new_generation = service.inner.state.lock().dsh_conversation(&next_ticket);
         assert!(!Arc::ptr_eq(&recreated, &new_generation));
+    }
+
+    #[tokio::test]
+    async fn saving_native_sessions_rejects_api_stale_busy_and_closed_requests() {
+        let service = completed_test_service("save-window", "answer");
+        let ticket = service.current_ticket_for_test("save-window").unwrap();
+        assert!(service.dsh_session_state("save-window", &ticket.request_id).await.unwrap().is_none());
+        assert!(service.save_dsh_session("save-window", &ticket.request_id).await.unwrap_err().contains("尚无"));
+        assert!(service.save_dsh_session("save-window", "stale-request").await.unwrap_err().contains("已更新"));
+        {
+            let mut state = service.inner.state.lock();
+            state.contexts.get_mut("save-window").unwrap().route.provider.kind = crate::models::ProviderKind::Dsh;
+            state.dsh_conversation(&ticket);
+        }
+        assert!(service.dsh_session_state("save-window", &ticket.request_id).await.unwrap().is_none());
+        let _retry = service.reserve_retry_for_test("save-window").unwrap();
+        assert!(service.save_dsh_session("save-window", &ticket.request_id).await.unwrap_err().contains("等待或停止"));
+        service.clear_session("save-window");
+        assert!(service.save_dsh_session("save-window", &ticket.request_id).await.unwrap_err().contains("结束"));
     }
 
     #[test]

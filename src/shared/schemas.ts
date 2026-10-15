@@ -482,6 +482,13 @@ export const actionStreamEventSchema = z.discriminatedUnion('type', [
 ])
 export type ActionStreamEvent = z.infer<typeof actionStreamEventSchema>
 
+export const dshSessionStateSchema = z.object({
+  providerId: providerMetadataShape.id,
+  sessionId: z.string().min(1).max(256),
+  saved: z.boolean(),
+}).strict()
+export type DshSessionState = z.infer<typeof dshSessionStateSchema>
+
 export const resultSessionSnapshotSchema = z
   .object({
     dictionary: dictionarySnapshotSchema.nullable().optional(),
