@@ -782,7 +782,7 @@ function ResultSessionApp({
         isBuiltinTranslate ||
         (isAsk ? status === "completed" || status === "idle" : status === "completed");
       if (
-        !question ||
+        (!question && !(isDsh && followUpAttachments.length > 0)) ||
         followUpInFlight.current ||
         dshSaveInFlight.current ||
         readingAttachmentsRef.current ||
@@ -1884,7 +1884,7 @@ function ResultSessionApp({
                   type="button"
                   aria-label="发送追问"
                   title="发送追问 (Enter)"
-                  disabled={followUpDisabled || !followUpQuestion.trim()}
+                  disabled={followUpDisabled || (!followUpQuestion.trim() && followUpAttachments.length === 0)}
                   onClick={() => void submitFollowUp()}
                 >
                   {followUpSubmitting ? (

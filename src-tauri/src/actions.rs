@@ -968,7 +968,7 @@ impl ActionService {
         if !valid_routing_id(session_id, 128) {
             return Err(ActionServiceError::SessionEnded);
         }
-        validate_follow_up_question(question)?;
+        validate_follow_up_question(question, &attachments)?;
         let settings = self.inner.settings.get_settings();
         let action_reservation = {
             let mut state = self.inner.state.lock();
@@ -2053,10 +2053,13 @@ fn validate_request_shape(request: &ExecuteActionRequest) -> Result<(), ActionSe
     Ok(())
 }
 
-fn validate_follow_up_question(question: &str) -> Result<(), ActionServiceError> {
-    if question.trim().is_empty() {
+fn validate_follow_up_question(
+    question: &str,
+    attachments: &[crate::quick_ask::Attachment],
+) -> Result<(), ActionServiceError> {
+    if question.trim().is_empty() && attachments.is_empty() {
         return Err(ActionServiceError::Validation(
-            "请输入继续提问的内容".to_owned(),
+            "请输入继续提问的内容或添加附件".to_owned(),
         ));
     }
     if question.trim().chars().count() > FOLLOW_UP_INPUT_LIMIT {
@@ -2230,21 +2233,19 @@ fn resolve_request_config(
         } => {
             let action = prepared_action(settings, &request.action_id)?;
             let route = resolve_route(settings, action, &route.provider.id, &route.model)?;
-            let mut last_messages =
+            let last_messages =
                 if request.action_id == "translate" && action.kind == ActionKind::Translate {
                     build_translation_continue_messages(
                         ask_system.as_deref(),
                         committed_messages,
                         question,
+                        attachments,
                     )?
                 } else if let Some(seed_system) = ask_system.as_deref() {
-                    build_ask_continue_messages(seed_system, committed_messages, question)?
+                    build_ask_continue_messages(seed_system, committed_messages, question, attachments)?
                 } else {
-                    build_follow_up_messages(committed_messages, question)?
+                    build_follow_up_messages(committed_messages, question, attachments)?
                 };
-            if let Some(message) = last_messages.last_mut() {
-                message.attachments = attachments.clone();
-            }
             PreparedSessionData {
                 frozen_request: request.clone(),
                 route,
@@ -2359,12 +2360,15 @@ fn build_prompt(
 
 fn build_translation_continue_messages(
     reference: Option<&str>, history: &[ChatMessage], question: &str,
+    attachments: &[crate::quick_ask::Attachment],
 ) -> Result<Vec<ChatMessage>, ActionServiceError> {
-    validate_follow_up_question(question)?;
+    validate_follow_up_question(question, attachments)?;
     // Preserve history without carrying the translation-only system instruction into questions.
     let mut messages: Vec<_> = reference.map(|seed| ChatMessage::system(seed.to_owned())).into_iter().collect();
     messages.extend(history.iter().filter(|message| message.role != ChatRole::System).cloned());
-    messages.push(ChatMessage::user(question.trim().to_owned()));
+    let mut message = ChatMessage::user(question.trim().to_owned());
+    message.attachments = attachments.to_vec();
+    messages.push(message);
     validate_conversation_messages(&messages)?;
     Ok(messages)
 }
@@ -2372,25 +2376,19 @@ fn build_translation_continue_messages(
 fn build_follow_up_messages(
     committed_messages: &[ChatMessage],
     question: &str,
+    attachments: &[crate::quick_ask::Attachment],
 ) -> Result<Vec<ChatMessage>, ActionServiceError> {
+    validate_follow_up_question(question, attachments)?;
     let question = question.trim();
-    if question.is_empty() {
-        return Err(ActionServiceError::Validation(
-            "请输入继续提问的内容".to_owned(),
-        ));
-    }
-    if question.chars().count() > FOLLOW_UP_INPUT_LIMIT {
-        return Err(ActionServiceError::Validation(format!(
-            "继续提问超过 {FOLLOW_UP_INPUT_LIMIT} 个字符的上限"
-        )));
-    }
     if committed_messages.last().map(|message| message.role) != Some(ChatRole::Assistant) {
         return Err(ActionServiceError::Validation(
             "当前结果尚不能继续提问".to_owned(),
         ));
     }
     let mut messages = committed_messages.to_vec();
-    messages.push(ChatMessage::user(question.to_owned()));
+    let mut message = ChatMessage::user(question.to_owned());
+    message.attachments = attachments.to_vec();
+    messages.push(message);
     validate_conversation_messages(&messages)?;
     Ok(messages)
 }
@@ -2429,14 +2427,17 @@ fn build_ask_continue_messages(
     seed_system: &str,
     committed: &[ChatMessage],
     question: &str,
+    attachments: &[crate::quick_ask::Attachment],
 ) -> Result<Vec<ChatMessage>, ActionServiceError> {
-    validate_follow_up_question(question)?;
+    validate_follow_up_question(question, attachments)?;
     let mut messages = if committed.is_empty() {
         vec![ChatMessage::system(seed_system.to_owned())]
     } else {
         committed.to_vec()
     };
-    messages.push(ChatMessage::user(question.trim().to_owned()));
+    let mut message = ChatMessage::user(question.trim().to_owned());
+    message.attachments = attachments.to_vec();
+    messages.push(message);
     validate_conversation_messages(&messages)?;
     Ok(messages)
 }
@@ -2446,7 +2447,10 @@ fn validate_conversation_messages(messages: &[ChatMessage]) -> Result<(), Action
         || messages.len() > MAX_CONVERSATION_MESSAGES
         || messages
             .iter()
-            .any(|message| message.content.trim().is_empty())
+            .any(|message| {
+                message.content.trim().is_empty()
+                    && (message.role != ChatRole::User || message.attachments.is_empty())
+            })
     {
         return Err(ActionServiceError::Validation(
             "对话上下文格式无效或轮次过多".to_owned(),
@@ -3609,7 +3613,7 @@ mod tests {
             request: FrozenActionRequest::from(&request),
             route: prepared.session_data.route.clone(),
             committed_messages: Vec::new(),
-            question: "Describe this".into(),
+            question: "   ".into(),
             attachments: attachments.clone(),
             ask_system: Some("Helpful assistant".into()),
         };
@@ -3627,7 +3631,8 @@ mod tests {
             .unwrap()
             .session_data;
         assert_eq!(retry_data.last_messages, data.last_messages);
-        assert_eq!(retry_data.last_messages[1].content, "Describe this");
+        assert_eq!(retry_data.last_messages[1].content, "");
+        assert_eq!(retry_data.last_messages[1].attachments, attachments);
         let mut committed = retry_data.last_messages.clone();
         committed.push(ChatMessage::assistant("A photo".into()));
         let follow_up = FrozenPreparationSeed::Continue {
@@ -3642,7 +3647,8 @@ mod tests {
             .unwrap()
             .session_data;
         let body = build_base_body(&prepared);
-        assert_eq!(body["messages"][1]["content"][1]["type"], "image_url");
+        assert_eq!(body["messages"][1]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(body["messages"][1]["content"][0]["type"], "image_url");
         assert_eq!(body["messages"][3]["content"], "What color?");
         prepared.session_data.route.provider.kind = crate::models::ProviderKind::Dsh;
         assert!(validate_prepared_session_data(&prepared.session_data).is_ok());
@@ -3653,13 +3659,50 @@ mod tests {
     }
 
     #[test]
+    fn attachment_only_turns_work_in_all_chat_contexts_without_allowing_empty_messages() {
+        let attachments = vec![crate::quick_ask::Attachment {
+            name: "note.txt".into(),
+            kind: "text".into(),
+            mime: "text/plain".into(),
+            data: "File content".into(),
+        }];
+        let history = vec![ChatMessage::assistant("Previous answer".into())];
+        let ask = build_ask_continue_messages("System", &[], "   ", &attachments).unwrap();
+        let follow_up = build_follow_up_messages(&history, "", &attachments).unwrap();
+        let translation = build_translation_continue_messages(None, &history, "", &attachments).unwrap();
+        for messages in [ask, follow_up, translation] {
+            let user = messages.last().unwrap();
+            assert_eq!(user.role, ChatRole::User);
+            assert_eq!(user.content, "");
+            assert_eq!(user.attachments, attachments);
+            let mut committed = messages;
+            committed.push(ChatMessage::assistant("Answer about file".into()));
+            assert!(build_follow_up_messages(&committed, "Continue", &[]).is_ok());
+        }
+        assert!(build_ask_continue_messages("System", &[], "   ", &[]).is_err());
+        assert!(build_follow_up_messages(&history, "   ", &[]).is_err());
+        assert!(build_translation_continue_messages(None, &history, "   ", &[]).is_err());
+        assert!(build_follow_up_messages(&history, &"x".repeat(FOLLOW_UP_INPUT_LIMIT + 1), &attachments).is_err());
+
+        let mut oversized = attachments.clone();
+        oversized[0].data = "x".repeat(CONVERSATION_CONTEXT_LIMIT);
+        assert!(build_ask_continue_messages("System", &[], "", &oversized).is_err());
+        assert!(build_follow_up_messages(&history, "", &oversized).is_err());
+        assert!(build_translation_continue_messages(None, &history, "", &oversized).is_err());
+        for mut message in [ChatMessage::system("".into()), ChatMessage::assistant("".into())] {
+            message.attachments = attachments.clone();
+            assert!(validate_conversation_messages(&[message]).is_err());
+        }
+    }
+
+    #[test]
     fn follow_up_excludes_the_original_task_but_keeps_all_follow_up_turns() {
         let committed = vec![
             ChatMessage::assistant("先前的翻译结果".to_owned()),
             ChatMessage::user("第一个追问".to_owned()),
             ChatMessage::assistant("第一个追问的回答".to_owned()),
         ];
-        let messages = build_follow_up_messages(&committed, "  请解释第二个词  ").unwrap();
+        let messages = build_follow_up_messages(&committed, "  请解释第二个词  ", &[]).unwrap();
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0].role, ChatRole::Assistant);
         assert_eq!(messages[0].content, "先前的翻译结果");
@@ -3674,7 +3717,7 @@ mod tests {
     #[test]
     fn ask_first_continue_includes_selection_context_in_messages() {
         let seed = "你是助手。\n\n<selection>\n选中的句子\n</selection>";
-        let messages = build_ask_continue_messages(seed, &[], "这句话什么意思？").unwrap();
+        let messages = build_ask_continue_messages(seed, &[], "这句话什么意思？", &[]).unwrap();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, ChatRole::System);
         assert!(messages[0].content.contains("选中的句子"));
@@ -3686,7 +3729,7 @@ mod tests {
             ChatMessage::user("这句话什么意思？".to_owned()),
             ChatMessage::assistant("这是一句示例。".to_owned()),
         ];
-        let second = build_ask_continue_messages(seed, &after_first, "能再详细点吗？").unwrap();
+        let second = build_ask_continue_messages(seed, &after_first, "能再详细点吗？", &[]).unwrap();
         assert_eq!(second.len(), 4);
         assert_eq!(second[0].role, ChatRole::System);
         assert!(second[0].content.contains("选中的句子"));
@@ -3828,15 +3871,15 @@ mod tests {
             ChatMessage::user("question".to_owned()),
             ChatMessage::assistant("answer".to_owned()),
         ];
-        assert!(build_follow_up_messages(&committed, "   ").is_err());
+        assert!(build_follow_up_messages(&committed, "   ", &[]).is_err());
         assert!(
-            build_follow_up_messages(&committed, &"x".repeat(FOLLOW_UP_INPUT_LIMIT + 1)).is_err()
+            build_follow_up_messages(&committed, &"x".repeat(FOLLOW_UP_INPUT_LIMIT + 1), &[]).is_err()
         );
 
         let oversized_context = vec![ChatMessage::assistant(
             "x".repeat(CONVERSATION_CONTEXT_LIMIT),
         )];
-        assert!(build_follow_up_messages(&oversized_context, "more").is_err());
+        assert!(build_follow_up_messages(&oversized_context, "more", &[]).is_err());
     }
 
     #[test]
@@ -4055,12 +4098,12 @@ mod tests {
             .context_for_test("session")
             .unwrap()
             .committed_messages;
-        let messages = build_translation_continue_messages(None, &history, "解释一下用法").unwrap();
+        let messages = build_translation_continue_messages(None, &history, "解释一下用法", &[]).unwrap();
         assert!(messages[0].hidden_from_transcript);
         assert!(!messages.last().unwrap().hidden_from_transcript);
         assert_eq!(messages.last().unwrap().content, "解释一下用法");
         let first_question =
-            build_translation_continue_messages(Some("词典参考"), &[], "解释一下用法").unwrap();
+            build_translation_continue_messages(Some("词典参考"), &[], "解释一下用法", &[]).unwrap();
         assert!(!first_question.last().unwrap().hidden_from_transcript);
     }
 

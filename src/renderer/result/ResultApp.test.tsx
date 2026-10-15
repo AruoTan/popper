@@ -1109,10 +1109,51 @@ describe("ResultApp window interactions", () => {
     fireEvent.change(picker, { target: { files: [file] } });
 
     await screen.findByRole("region", { name: "追问附件预览" });
+    expect(screen.getByRole("button", { name: "发送追问" })).toBeEnabled();
     const removeBtn = screen.getByRole("button", { name: "移除 doc.txt" });
     fireEvent.click(removeBtn);
 
     expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+    expect(screen.getByRole("button", { name: "发送追问" })).toBeDisabled();
+  });
+
+  it.each(["click", "Enter"])("sends attachment-only DSH messages via %s and keeps the user turn", async (method) => {
+    const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(continueAction).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("选择追问附件"), {
+      target: { files: [new File(["attachment contents"], "only.txt", { type: "text/plain" })] },
+    });
+    const send = screen.getByRole("button", { name: "发送追问" });
+    await waitFor(() => expect(send).toBeEnabled());
+    if (method === "click") fireEvent.click(send);
+    else fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(continueAction).toHaveBeenCalledExactlyOnceWith("session-1", "", [
+      expect.objectContaining({ name: "only.txt", kind: "text", data: "attachment contents" }),
+    ]));
+    expect(input).toHaveValue("");
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+    const userTurn = container.querySelector<HTMLElement>(".result-turn--user");
+    expect(userTurn).not.toBeNull();
+    expect(within(userTurn!).getByText("only.txt")).toBeInTheDocument();
+  });
+
+  it("routes attachment-only input from the translation window to AI", async () => {
+    const submitTranslation = vi.fn().mockResolvedValue({ route: "ai", requestId: "request-followup" });
+    const { continueAction } = await renderResult(completedSession, dshSettings(), { submitTranslation });
+    fireEvent.change(screen.getByLabelText("选择追问附件"), {
+      target: { files: [new File(["translate me"], "translate.txt", { type: "text/plain" })] },
+    });
+    const send = screen.getByRole("button", { name: "发送追问" });
+    await waitFor(() => expect(send).toBeEnabled());
+    fireEvent.click(send);
+    await waitFor(() => expect(submitTranslation).toHaveBeenCalledExactlyOnceWith("session-1", "", [
+      expect.objectContaining({ name: "translate.txt", data: "translate me" }),
+    ]));
+    expect(continueAction).not.toHaveBeenCalled();
   });
 
   it("handles drag-drop and paste of attachments in DSH mode", async () => {
@@ -1141,7 +1182,7 @@ describe("ResultApp window interactions", () => {
     await screen.findByText("pasted.png");
   });
 
-  it("restores attachments and question if backend rejects or streaming fails in DSH mode", async () => {
+  it.each(["失败提问", ""])("restores attachments with question %j if backend rejects or streaming fails in DSH mode", async (question) => {
     const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
     continueAction.mockResolvedValueOnce({ accepted: false, message: "服务商拒绝" });
 
@@ -1151,12 +1192,12 @@ describe("ResultApp window interactions", () => {
     fireEvent.change(picker, { target: { files: [file] } });
     await screen.findByText("reject.txt");
 
-    fireEvent.change(input, { target: { value: "失败提问" } });
+    fireEvent.change(input, { target: { value: question } });
     const sendBtn = screen.getByRole("button", { name: "发送追问" });
     fireEvent.click(sendBtn);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("服务商拒绝");
-    expect(input).toHaveValue("失败提问");
+    expect(input).toHaveValue(question);
     expect(screen.getByText("reject.txt")).toBeInTheDocument();
 
     // Now test restore on streaming failure
@@ -1180,8 +1221,8 @@ describe("ResultApp window interactions", () => {
       });
     });
 
-    await waitFor(() => expect(input).toHaveValue("失败提问"));
-    const previewRegion = screen.getByRole("region", { name: "追问附件预览" });
+    await waitFor(() => expect(input).toHaveValue(question));
+    const previewRegion = await screen.findByRole("region", { name: "追问附件预览" });
     expect(within(previewRegion).getByText("reject.txt")).toBeInTheDocument();
   });
 

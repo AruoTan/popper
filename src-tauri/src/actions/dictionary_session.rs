@@ -75,7 +75,7 @@ impl ActionService {
         text: &str,
         attachments: Vec<crate::quick_ask::Attachment>,
     ) -> Result<TranslationSubmission, ActionServiceError> {
-        validate_follow_up_question(text)?;
+        validate_follow_up_question(text, &attachments)?;
         let settings = self.inner.settings.get_settings();
         let query = if attachments.is_empty() {
             let mut state = self.inner.state.lock();
@@ -628,11 +628,11 @@ mod tests {
     fn freeform_translation_question_keeps_history_without_translation_instructions() {
         let history = vec![ChatMessage::system("Translate everything".into()),
             ChatMessage::user("hello".into()), ChatMessage::assistant("你好".into())];
-        let messages = build_translation_continue_messages(None, &history, "解释一下用法").unwrap();
+        let messages = build_translation_continue_messages(None, &history, "解释一下用法", &[]).unwrap();
         assert_eq!(&messages[..2], &history[1..]);
         assert_eq!(messages[2], ChatMessage::user("解释一下用法".into()));
         assert!(messages.iter().all(|m| m.role != ChatRole::System));
-        let messages = build_translation_continue_messages(Some("词典参考"), &history, "为什么？").unwrap();
+        let messages = build_translation_continue_messages(Some("词典参考"), &history, "为什么？", &[]).unwrap();
         assert_eq!(messages[0].content, "词典参考");
         assert_eq!(messages.last().unwrap().content, "为什么？");
     }
