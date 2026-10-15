@@ -3124,6 +3124,7 @@ pub fn continue_action(
     state: State<'_, RuntimeState>,
     session_id: String,
     question: String,
+    attachments: Option<Vec<crate::quick_ask::Attachment>>,
 ) -> Result<RunActionResult, String> {
     ensure_result_caller(&window, &session_id)?;
     if !state.result_sessions.lock().contains_key(&session_id) {
@@ -3131,7 +3132,7 @@ pub fn continue_action(
     }
     match state
         .actions
-        .continue_with_question(&app, &session_id, &question)
+        .continue_with_attachments(&app, &session_id, &question, attachments.unwrap_or_default())
     {
         Ok(request_id) => Ok(RunActionResult::accepted(
             Some(session_id),
@@ -3142,9 +3143,19 @@ pub fn continue_action(
 }
 
 #[tauri::command]
-pub fn submit_translation(app: AppHandle, window: WebviewWindow, state: State<'_, RuntimeState>, session_id: String, text: String) -> Result<crate::actions::TranslationSubmission, String> {
+pub fn submit_translation(
+    app: AppHandle,
+    window: WebviewWindow,
+    state: State<'_, RuntimeState>,
+    session_id: String,
+    text: String,
+    attachments: Option<Vec<crate::quick_ask::Attachment>>,
+) -> Result<crate::actions::TranslationSubmission, String> {
     ensure_result_caller(&window, &session_id)?;
-    state.actions.submit_translation(&app, &session_id, &text).map_err(|e| e.to_string())
+    state
+        .actions
+        .submit_translation(&app, &session_id, &text, attachments.unwrap_or_default())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -45,6 +45,34 @@ describe('conversationTranscript', () => {
     expect(appendUserTurn([], '   ')).toEqual([])
   })
 
+  it('appends user turn with attachments', () => {
+    const attachments = [
+      { name: 'image.png', mime: 'image/png', kind: 'image', data: 'data123' },
+    ]
+    const turns = appendUserTurn([], '解释这张图', attachments)
+    expect(turns).toEqual([
+      {
+        id: expect.any(String),
+        role: 'user',
+        content: '解释这张图',
+        attachments,
+        streaming: false,
+      },
+    ])
+  })
+
+  it('omits attachments property when attachments array is empty in appendUserTurn', () => {
+    const turns = appendUserTurn([], '问题', [])
+    expect(turns).toEqual([
+      {
+        id: expect.any(String),
+        role: 'user',
+        content: '问题',
+        streaming: false,
+      },
+    ])
+  })
+
   it('detects ask action kind', () => {
     expect(isAskAction('ask')).toBe(true)
     expect(isAskAction('translate')).toBe(false)

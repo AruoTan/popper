@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { StrictMode } from "react";
 
@@ -1054,6 +1054,135 @@ describe("ResultApp window interactions", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("上下文过长");
     expect(input).toHaveValue("继续说明");
+  });
+
+  it("does not show attachment controls in non-DSH mode", async () => {
+    await renderResult(askCompletedSession);
+    expect(screen.queryByRole("button", { name: "添加附件" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "发送追问" })).toBeNull();
+    expect(screen.queryByLabelText("选择追问附件")).toBeNull();
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+  });
+
+  it("supports attachments in follow-up for DSH mode and submits them with question", async () => {
+    const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
+    const attachBtn = screen.getByRole("button", { name: "添加附件" });
+    const sendBtn = screen.getByRole("button", { name: "发送追问" });
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+
+    expect(attachBtn).toBeInTheDocument();
+    expect(sendBtn).toBeInTheDocument();
+    expect(sendBtn).toBeDisabled();
+
+    const file = new File(["test doc content"], "doc.txt", { type: "text/plain" });
+    const picker = screen.getByLabelText("选择追问附件");
+    fireEvent.change(picker, { target: { files: [file] } });
+
+    await screen.findByRole("region", { name: "追问附件预览" });
+    expect(screen.getByText("doc.txt")).toBeInTheDocument();
+    expect(screen.getByText("1 KB")).toBeInTheDocument();
+    expect(container.querySelector(".result-window")).toHaveClass(
+      "result-window--followup-has-attachments",
+    );
+
+    fireEvent.change(input, { target: { value: "请分析此文档" } });
+    expect(sendBtn).toBeEnabled();
+
+    fireEvent.click(sendBtn);
+
+    await waitFor(() => {
+      expect(continueAction).toHaveBeenCalledWith(
+        "session-1",
+        "请分析此文档",
+        [expect.objectContaining({ name: "doc.txt", kind: "text", data: "test doc content" })],
+      );
+    });
+
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+  });
+
+  it("allows removing attachments before sending in DSH mode", async () => {
+    await renderResult(askCompletedSession, dshSettings());
+    const picker = screen.getByLabelText("选择追问附件");
+    const file = new File(["test doc content"], "doc.txt", { type: "text/plain" });
+    fireEvent.change(picker, { target: { files: [file] } });
+
+    await screen.findByRole("region", { name: "追问附件预览" });
+    const removeBtn = screen.getByRole("button", { name: "移除 doc.txt" });
+    fireEvent.click(removeBtn);
+
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+  });
+
+  it("handles drag-drop and paste of attachments in DSH mode", async () => {
+    const { container } = await renderResult(askCompletedSession, dshSettings());
+    const resultWindow = container.querySelector(".result-window")!;
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+
+    fireEvent.dragEnter(resultWindow, { dataTransfer: { types: ["Files"] } });
+    expect(container.querySelector(".result-window__drop-hint")).toBeInTheDocument();
+
+    fireEvent.dragLeave(resultWindow);
+    expect(container.querySelector(".result-window__drop-hint")).toBeNull();
+
+    const file = new File(["file content"], "dropped.txt", { type: "text/plain" });
+    fireEvent.dragEnter(resultWindow, { dataTransfer: { types: ["Files"] } });
+    fireEvent.drop(resultWindow, { dataTransfer: { files: [file] } });
+
+    await screen.findByRole("region", { name: "追问附件预览" });
+    expect(screen.getByText("dropped.txt")).toBeInTheDocument();
+
+    const image = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], "pasted.png", {
+      type: "image/png",
+    });
+    fireEvent.paste(input, { clipboardData: { files: [image] } });
+
+    await screen.findByText("pasted.png");
+  });
+
+  it("restores attachments and question if backend rejects or streaming fails in DSH mode", async () => {
+    const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
+    continueAction.mockResolvedValueOnce({ accepted: false, message: "服务商拒绝" });
+
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+    const picker = screen.getByLabelText("选择追问附件");
+    const file = new File(["some doc"], "reject.txt", { type: "text/plain" });
+    fireEvent.change(picker, { target: { files: [file] } });
+    await screen.findByText("reject.txt");
+
+    fireEvent.change(input, { target: { value: "失败提问" } });
+    const sendBtn = screen.getByRole("button", { name: "发送追问" });
+    fireEvent.click(sendBtn);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("服务商拒绝");
+    expect(input).toHaveValue("失败提问");
+    expect(screen.getByText("reject.txt")).toBeInTheDocument();
+
+    // Now test restore on streaming failure
+    continueAction.mockResolvedValueOnce({ accepted: true, requestId: "request-followup" });
+    fireEvent.click(sendBtn);
+
+    await waitFor(() => expect(continueAction).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+
+    const store = await import("./actionEventStore");
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askCompletedSession,
+        requestId: "request-followup",
+        status: "error",
+        content: "",
+        contentScalarCount: 0,
+        errorMessage: "流式传输异常",
+        retryable: true,
+      });
+    });
+
+    await waitFor(() => expect(input).toHaveValue("失败提问"));
+    const previewRegion = screen.getByRole("region", { name: "追问附件预览" });
+    expect(within(previewRegion).getByText("reject.txt")).toBeInTheDocument();
   });
 
   it("displays native translation retry errors instead of a generic fallback", async () => {

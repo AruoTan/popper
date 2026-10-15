@@ -29,6 +29,7 @@ import {
   type ProviderModelsSyncResult,
   type ProviderUpdateInput,
   type PublicSettings,
+  type QuickAskAttachment,
   type ResultReadyAck,
   type ResultRendererMarker,
   type ResultSessionSnapshot,
@@ -284,9 +285,13 @@ export function installTauriBridge(): void {
   );
 
   const api: WindowPopperApi = {
-    async submitTranslation(sessionId, text) {
+    async submitTranslation(sessionId, text, attachments) {
       return translationSubmissionSchema.parse(
-        await invoke(TAURI_COMMANDS.submitTranslation, { sessionId, text }),
+        await invoke(TAURI_COMMANDS.submitTranslation, {
+          sessionId,
+          text,
+          attachments: attachments ?? null,
+        }),
       );
     },
     async translationInputSuggestions(sessionId, requestId, version, text) {
@@ -525,11 +530,12 @@ export function installTauriBridge(): void {
         }),
       );
     },
-    async continueAction(sessionId: string, question: string) {
+    async continueAction(sessionId: string, question: string, attachments?: QuickAskAttachment[]) {
       return parseRunActionResult(
         await invoke(TAURI_COMMANDS.continueAction, {
           sessionId: requiredSessionId(sessionId),
           question,
+          attachments: attachments ?? null,
         }),
       );
     },

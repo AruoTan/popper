@@ -142,7 +142,7 @@ export interface WindowPopperApi {
   onSelectionDetectionDebugChanged?(listener: (enabled: boolean) => void): Unsubscribe;
   /** Result window only, scoped to its original selection timestamp. */
   getSelectionDetectionDebug?(sessionId: string): Promise<SelectionDetectionDebug | null>;
-  submitTranslation?(sessionId: string, text: string): Promise<TranslationSubmission>;
+  submitTranslation?(sessionId: string, text: string, attachments?: QuickAskAttachment[]): Promise<TranslationSubmission>;
   translationInputSuggestions?(
     sessionId: string,
     requestId: string,
@@ -227,7 +227,7 @@ export interface WindowPopperApi {
   hideResultSelection?(sessionId: string): Promise<void>;
   cancelAction(sessionId?: string): Promise<void>;
   retryAction(sessionId?: string, options?: ActionRetryOptions): Promise<RunActionResult>;
-  continueAction?(sessionId: string, question: string): Promise<RunActionResult>;
+  continueAction?(sessionId: string, question: string, attachments?: QuickAskAttachment[]): Promise<RunActionResult>;
   dshSessionState?(sessionId: string, requestId: string): Promise<DshSessionState | null>;
   saveDshSession?(sessionId: string, requestId: string): Promise<DshSessionState>;
   copyText(text: string): Promise<void>;
