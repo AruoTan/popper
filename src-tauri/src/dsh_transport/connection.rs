@@ -121,6 +121,14 @@ pub(super) struct Gateway {
     mux: AsyncMutex<Option<Arc<Mux>>>,
 }
 impl Gateway {
+    pub(super) fn after_promotion(&self) -> Arc<Self> {
+        // Keep other result windows' active temporary streams independent.
+        Arc::new(Self {
+            rpc: self.rpc.clone(),
+            workspaces: AsyncMutex::new(HashMap::new()),
+            mux: AsyncMutex::new(None),
+        })
+    }
     pub(super) fn authentication_matches(&self, base: &str, key: &str) -> bool {
         self.rpc.base == base.trim_end_matches('/') && self.rpc.key == key
     }
@@ -224,6 +232,7 @@ impl Rpc {
     }
     async fn auth_headers(&self) -> Result<header::HeaderMap, TransportFailure> {
         let mut headers = header::HeaderMap::new();
+        headers.insert("x-dsh-client", header::HeaderValue::from_static("app"));
         if self.key.is_empty() {
             loop {
                 self.authenticate().await?;
@@ -366,11 +375,17 @@ impl Rpc {
         let body = json!({"type":"client-request", "rpcId":rpc_id, "method":method, "payload":{"args":args}});
         for attempt in 0..2 {
             let headers = self.auth_headers().await?;
-            let response = self
+            let request = self
                 .client
                 .post(format!("{}/api/{method}", self.base))
                 .headers(headers.clone())
-                .json(&body)
+                .json(&body);
+            let request = if method == "temporary/save" {
+                request.timeout(Duration::from_secs(60))
+            } else {
+                request
+            };
+            let response = request
                 .send()
                 .await
                 .map_err(|_| {
@@ -386,6 +401,14 @@ impl Rpc {
                 continue;
             }
             if !response.status().is_success() {
+                if method == "temporary/save" && !matches!(status, 401 | 403) {
+                    let envelope = read_body(response).await.ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+                    let code = envelope.as_ref()
+                        .filter(|value| value["type"] == "server-response" && value["rpcId"] == rpc_id && value["result"]["ok"] == false)
+                        .and_then(|value| value["result"]["error"]["code"].as_str());
+                    return Err(save_failure(code, Some(status)));
+                }
                 let mut error = failure(
                     "DSH_HTTP_ERROR",
                     match status {
@@ -407,6 +430,9 @@ impl Rpc {
             }
             return match envelope["result"]["ok"].as_bool() {
                 Some(true) => envelope["result"].get("value").cloned().ok_or_else(invalid),
+                Some(false) if method == "temporary/save" => Err(save_failure(
+                    envelope["result"]["error"]["code"].as_str(), Some(status),
+                )),
                 Some(false) => Err(failure(
                     "DSH_RPC_ERROR",
                     safe_message(&envelope["result"]["error"], &self.key),
@@ -416,6 +442,20 @@ impl Rpc {
         }
         Err(invalid())
     }
+}
+
+fn save_failure(code: Option<&str>, status: Option<u16>) -> TransportFailure {
+    let (code, message) = match (code, status) {
+        (Some("temporary/session-active"), _) => ("DSH_SESSION_ACTIVE", "DSH 会话仍有生成、子任务或后台工作，请结束或取消后再保存"),
+        (Some("temporary/expired"), _) | (_, Some(410)) => ("DSH_SESSION_EXPIRED", "DSH 临时会话已过期清理，无法保存"),
+        (Some("temporary/not-found"), _) => ("DSH_NO_SESSION", "DSH 临时会话不存在，无法保存"),
+        (Some("temporary/not-ready"), _) | (_, Some(503)) => ("DSH_NOT_READY", "DSH 临时会话服务尚未就绪，请稍后重试"),
+        (None, Some(404)) => ("DSH_SAVE_UNSUPPORTED", "DSH 未提供保存接口，请安装并启用 dsh-temporary-sessions 插件"),
+        _ => ("DSH_SAVE_FAILED", "保存 DSH 会话失败，请重试；保存接口支持重复提交"),
+    };
+    let mut error = failure(code, message);
+    error.status = status;
+    error
 }
 async fn read_body(response: Response) -> Result<Vec<u8>, TransportFailure> {
     let mut bytes = Vec::new();

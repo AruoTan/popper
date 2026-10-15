@@ -202,6 +202,77 @@ struct RemoteConversation {
     session_id: String,
     system: Option<String>,
     initialized: bool,
+    saved: bool,
+    resume_required: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DshSessionState {
+    pub provider_id: String,
+    pub session_id: String,
+    pub saved: bool,
+}
+
+impl RemoteConversation {
+    fn status(&self) -> DshSessionState {
+        DshSessionState {
+            provider_id: self.provider_id.clone(),
+            session_id: self.session_id.clone(),
+            saved: self.saved,
+        }
+    }
+}
+
+impl DshConversation {
+    pub(crate) async fn status(&self, provider_id: &str) -> Option<DshSessionState> {
+        self.state
+            .lock()
+            .await
+            .as_ref()
+            .filter(|remote| remote.provider_id == provider_id)
+            .map(RemoteConversation::status)
+    }
+
+    pub(crate) async fn save(&self, provider_id: &str) -> Result<DshSessionState, TransportFailure> {
+        // Never queue a save behind a running turn and unexpectedly save later.
+        let mut state = self.state.try_lock().map_err(|_| {
+            failure("DSH_SESSION_ACTIVE", "请先等待或停止当前生成，再保存会话")
+        })?;
+        let remote = state
+            .as_mut()
+            .filter(|remote| remote.provider_id == provider_id)
+            .ok_or_else(|| failure("DSH_NO_SESSION", "尚未创建 DSH 会话，请先发送消息"))?;
+        if remote.saved {
+            return Ok(remote.status());
+        }
+        // A lost receipt may still mean the server promoted the session. Resume
+        // by ID on the next turn, on a fresh mux, even when saving returns an error.
+        remote.resume_required = true;
+        remote.gateway = remote.gateway.after_promotion();
+        let result = remote
+            .gateway
+            .rpc
+            .call(
+                "temporary/save",
+                json!({"request":{"sessionId":remote.session_id}}),
+            )
+            .await?;
+        if result["sessionId"].as_str() != Some(remote.session_id.as_str())
+            || result["temporary"] != false
+            || result["reconnectRequired"] != true
+            || !result["workspaceId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+            || !result["savedSessionIds"].as_array().is_some_and(|ids| {
+                ids.iter().any(|id| id.as_str() == Some(remote.session_id.as_str()))
+            })
+        {
+            return Err(invalid());
+        }
+        remote.saved = true;
+        Ok(remote.status())
+    }
 }
 
 fn system_text(messages: &Value) -> Result<Option<String>, TransportFailure> {
@@ -566,6 +637,16 @@ impl DshService {
             let prepare_session = async {
                 let id = if let Some(id) = session_id.as_ref() {
                     timing.session_reused = true;
+                    if remote.as_ref().is_some_and(|state| state.resume_required) {
+                        // Temporary workspace IDs belong to the old runtime.
+                        let resumed = rpc
+                            .call("session/create", json!({"request":{"sessionId":id}}))
+                            .await?;
+                        if resumed["sessionId"].as_str() != Some(id.as_str()) {
+                            return Err(invalid());
+                        }
+                        remote.as_mut().ok_or_else(invalid)?.resume_required = false;
+                    }
                     id.clone()
                 } else {
                     let (workspace_id, reused) = gateway
@@ -599,6 +680,8 @@ impl DshService {
                         session_id: id.clone(),
                         system: None,
                         initialized: false,
+                        saved: false,
+                        resume_required: false,
                     });
                     id
                 };

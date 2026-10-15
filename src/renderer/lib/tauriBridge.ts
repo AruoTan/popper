@@ -4,6 +4,7 @@ import { listen, type Event } from "@tauri-apps/api/event";
 import {
   actionStreamEventSchema,
   dictionarySnapshotSchema,
+  dshSessionStateSchema,
   dictionarySuggestionSchema,
   providerModelSchema,
   publicSettingsSchema,
@@ -534,6 +535,18 @@ export function installTauriBridge(): void {
     },
     async copyText(text: string) {
       await invoke(TAURI_COMMANDS.copyText, { text });
+    },
+    async dshSessionState(sessionId: string, requestId: string) {
+      return dshSessionStateSchema.nullable().parse(await invoke(TAURI_COMMANDS.dshSessionState, {
+        sessionId: requiredSessionId(sessionId),
+        requestId: rendererMarkerIdSchema.parse(requestId),
+      }));
+    },
+    async saveDshSession(sessionId: string, requestId: string) {
+      return dshSessionStateSchema.parse(await invoke(TAURI_COMMANDS.saveDshSession, {
+        sessionId: requiredSessionId(sessionId),
+        requestId: rendererMarkerIdSchema.parse(requestId),
+      }));
     },
     async openExternal(url: string) {
       await invoke(TAURI_COMMANDS.openExternal, { url });

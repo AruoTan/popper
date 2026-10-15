@@ -173,6 +173,20 @@ body,
   outline-offset: -2px;
 }
 
+.result-save-session {
+  gap: 4px;
+}
+
+.result-save-session:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.result-save-session:disabled:hover {
+  color: var(--text-secondary);
+  background: transparent;
+}
+
 .result-window--windows .result-original-toggle {
   height: 24px;
   border-radius: 6px;

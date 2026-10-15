@@ -194,6 +194,8 @@ pub fn run() {
             runtime::cancel_action,
             runtime::retry_action,
             runtime::continue_action,
+            runtime::dsh_session_state,
+            runtime::save_dsh_session,
             runtime::copy_text,
             runtime::open_external,
             runtime::hide_result,

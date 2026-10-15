@@ -61,6 +61,13 @@ function resultSnapshot(
 const completedSession = resultSnapshot();
 const askCompletedSession = resultSnapshot({ actionId: "ask-ai" });
 
+function dshSettings(): PublicSettings {
+  const settings = settingsWithFontSize();
+  return { ...settings, providers: settings.providers.map((provider) => ({
+    ...provider, kind: "dsh", baseUrl: "http://localhost:3080", keyConfigured: false,
+  })) };
+}
+
 function dictionaryFixture(): DictionarySnapshot {
   return {
     sessionId: "session-1",
@@ -217,6 +224,74 @@ beforeEach(() => {
   startDragging.mockResolvedValue(undefined);
   startResizeDragging.mockReset();
   startResizeDragging.mockResolvedValue(undefined);
+});
+
+describe("DSH session saving", () => {
+  const remote = { providerId: "openai-compatible", sessionId: "temporary-session-1", saved: false };
+
+  it("only offers saving for DSH, and blocks duplicate saves and new turns while saving", async () => {
+    const pending = deferred<typeof remote>();
+    const saveDshSession = vi.fn().mockReturnValue(pending.promise);
+    const dshSessionState = vi.fn().mockResolvedValue(remote);
+    const view = await renderResult(completedSession, dshSettings(), { dshSessionState, saveDshSession });
+    const button = await screen.findByRole("button", { name: "保存会话" });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(dshSessionState).toHaveBeenCalledWith("session-1", completedSession.requestId);
+    fireEvent.click(button);
+    expect(screen.getByRole("button", { name: "保存中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "切换模型" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "继续提问" })).toBeDisabled();
+    fireEvent.click(button);
+    expect(saveDshSession).toHaveBeenCalledTimes(1);
+    expect(saveDshSession).toHaveBeenCalledWith("session-1", completedSession.requestId);
+    await act(async () => pending.resolve({ ...remote, saved: true }));
+    expect(await screen.findByRole("button", { name: "已保存" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试" })).toBeEnabled();
+    view.unmount();
+    vi.resetModules();
+    await renderResult();
+    expect(screen.queryByRole("button", { name: "保存会话" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the save button available for a manual retry after an active-session error", async () => {
+    const saveDshSession = vi.fn()
+      .mockRejectedValueOnce(new Error("DSH 会话仍有生成、子任务或后台工作，请结束或取消后再保存"))
+      .mockResolvedValueOnce({ ...remote, saved: true });
+    await renderResult(completedSession, dshSettings(), {
+      dshSessionState: vi.fn().mockResolvedValue(remote), saveDshSession,
+    });
+    const button = screen.getByRole("button", { name: "保存会话" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent("后台工作");
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByRole("button", { name: "已保存" })).toBeDisabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("waits for a remote session and disables saving during generation", async () => {
+    const dshSessionState = vi.fn().mockResolvedValue(null);
+    const view = await renderResult(completedSession, dshSettings(), { dshSessionState });
+    await waitFor(() => expect(dshSessionState).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "保存会话" })).toBeDisabled();
+    view.unmount();
+    vi.resetModules();
+    dshSessionState.mockClear();
+    await renderResult(resultSnapshot({ status: "streaming", content: "", contentScalarCount: 0 }), dshSettings(), { dshSessionState });
+    expect(screen.getByRole("button", { name: "保存会话" })).toBeDisabled();
+    expect(dshSessionState).not.toHaveBeenCalled();
+  });
+
+  it("restores the saved state when the result window reconnects", async () => {
+    const saveDshSession = vi.fn();
+    await renderResult(completedSession, dshSettings(), {
+      dshSessionState: vi.fn().mockResolvedValue({ ...remote, saved: true }), saveDshSession,
+    });
+    expect(await screen.findByRole("button", { name: "已保存" })).toBeDisabled();
+    expect(saveDshSession).not.toHaveBeenCalled();
+  });
 });
 
 afterEach(() => {

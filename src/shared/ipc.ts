@@ -54,6 +54,8 @@ export const TAURI_COMMANDS = {
   cancelAction: "cancel_action",
   retryAction: "retry_action",
   continueAction: "continue_action",
+  dshSessionState: "dsh_session_state",
+  saveDshSession: "save_dsh_session",
   copyText: "copy_text",
   openExternal: "open_external",
   openSettings: "open_settings",

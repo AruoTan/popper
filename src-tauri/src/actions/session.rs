@@ -264,6 +264,11 @@ impl Default for SessionTable {
 }
 
 impl SessionTable {
+    pub(super) fn is_busy(&self, session_id: &str) -> bool {
+        matches!(self.entries.get(session_id), Some(SessionEntry::Open(state))
+            if !matches!(state.request_slot, RequestSlot::Vacant))
+    }
+
     pub(super) fn authoritative_snapshot(&self, session_id: &str) -> Option<&ActionSnapshot> {
         match self.entries.get(session_id) {
             Some(SessionEntry::Open(state)) => Some(&state.snapshot),

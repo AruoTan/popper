@@ -12,6 +12,7 @@ import {
   Minimize2,
   Pin,
   RefreshCw,
+  Save,
   Settings2,
   Square,
   X,
@@ -41,6 +42,7 @@ import {
   isAiActionDefinition,
   requiresProviderApiKey,
   type ActionRetryOptions,
+  type DshSessionState,
   type Point,
   type PublicSettings,
   type ResultSessionSnapshot,
@@ -391,6 +393,10 @@ function ResultSessionApp({
   const [routeSwitching, setRouteSwitching] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [commandMessage, setCommandMessage] = useState("");
+  const [dshSession, setDshSession] = useState<DshSessionState | null>(null);
+  const [savingDshSession, setSavingDshSession] = useState(false);
+  const dshSaveInFlight = useRef(false);
+  const dshStateRevision = useRef(0);
   const [copyComplete, setCopyComplete] = useState(false);
   const [followUpQuestion, setFollowUpQuestion] = useState("");
   const [followUpExpanded, setFollowUpExpanded] = useState(false);
@@ -454,6 +460,7 @@ function ResultSessionApp({
     isBuiltinTranslate ||
     (isAiAction && status !== "streaming" && dictionary?.status !== "loading");
   const followUpDisabled =
+    savingDshSession ||
     followUpSubmitting ||
     (!isBuiltinTranslate && status === "streaming") ||
     (!isBuiltinTranslate &&
@@ -473,6 +480,45 @@ function ResultSessionApp({
   }, [action]);
 
   const effectiveModelRoute = activeModelRoute ?? defaultModelRoute;
+  const dshProviderId = !dictionaryMode && settings.providers.find(
+    (provider) => provider.id === effectiveModelRoute?.providerId && provider.kind === "dsh",
+  )?.id;
+
+  useEffect(() => {
+    let disposed = false;
+    const revision = ++dshStateRevision.current;
+    setDshSession(null);
+    if (!dshProviderId || !requestId || status === "streaming" || routeSwitching || retrying || followUpSubmitting) {
+      return;
+    }
+    void window._popper_.dshSessionState?.(sessionId, requestId).then((state) => {
+      if (!disposed && revision === dshStateRevision.current && state?.providerId === dshProviderId) {
+        setDshSession(state);
+      }
+    }).catch(() => {
+      // A replaced/closed native request is no longer a save target.
+    });
+    return () => { disposed = true; };
+  }, [sessionId, requestId, status, dshProviderId, routeSwitching, retrying, followUpSubmitting]);
+
+  const saveDshSession = async (): Promise<void> => {
+    if (!requestId || !dshSession || dshSession.saved || dshSaveInFlight.current || !window._popper_.saveDshSession) return;
+    dshSaveInFlight.current = true;
+    const revision = ++dshStateRevision.current;
+    setSavingDshSession(true);
+    setCommandMessage("");
+    try {
+      const saved = await window._popper_.saveDshSession(sessionId, requestId);
+      if (!disposedRef.current && revision === dshStateRevision.current) setDshSession(saved);
+    } catch (error) {
+      if (!disposedRef.current && revision === dshStateRevision.current) {
+        setCommandMessage(getErrorMessage(error, "保存 DSH 会话失败，请重试"));
+      }
+    } finally {
+      dshSaveInFlight.current = false;
+      if (!disposedRef.current) setSavingDshSession(false);
+    }
+  };
   const modelGroups = useMemo(
     () =>
       settings?.providers
@@ -509,7 +555,7 @@ function ResultSessionApp({
   const modelSummary = selectedModel
     ? `${selectedModel.providerName} · ${selectedModel.modelName}`
     : "未选择模型";
-  const modelSwitchDisabled = status === "streaming" || routeSwitching || retrying;
+  const modelSwitchDisabled = status === "streaming" || routeSwitching || retrying || savingDshSession;
 
   const reconcilePendingFollowUp = useCallback(
     (pending: { question: string; requestId: string | null }): void => {
@@ -571,7 +617,7 @@ function ResultSessionApp({
 
   const retry = useCallback(
     async (options?: ActionRetryOptions, forceAi = false): Promise<boolean> => {
-      if (retryInFlight.current) return false;
+      if (retryInFlight.current || dshSaveInFlight.current) return false;
       retryInFlight.current = true;
       setRetrying(true);
       setCommandMessage("");
@@ -683,7 +729,7 @@ function ResultSessionApp({
       const canSubmit =
         isBuiltinTranslate ||
         (isAsk ? status === "completed" || status === "idle" : status === "completed");
-      if (!question || followUpInFlight.current || !canSubmit) return;
+      if (!question || followUpInFlight.current || dshSaveInFlight.current || !canSubmit) return;
       followUpInFlight.current = true;
       setCommandMessage("");
       setFollowUpSubmitting(true);
@@ -1109,7 +1155,7 @@ function ResultSessionApp({
     const defaultTarget = defaultTranslationTarget(detected, settings.translate);
     return { detected, target: translationTarget ?? defaultTarget };
   }, [action?.kind, selection, settings, translationTarget]);
-  const translationSwitching = status === "streaming" || routeSwitching || retrying;
+  const translationSwitching = status === "streaming" || routeSwitching || retrying || savingDshSession;
   const changeTranslationTarget = (target: TranslationLanguage): void => {
     const previous = translationTarget;
     setRouteSwitching(true);
@@ -1295,6 +1341,18 @@ function ResultSessionApp({
           </div>
         </div>
         <div className="result-window-actions" data-no-drag>
+          {dshProviderId && (
+            <button
+              className="result-original-toggle result-save-session"
+              type="button"
+              disabled={!dshSession || dshSession.saved || savingDshSession || modelSwitchDisabled || followUpSubmitting}
+              title={dshSession?.saved ? "会话已保存到 DSH 聊天历史" : "将当前会话保存到 DSH 聊天历史"}
+              onClick={() => void saveDshSession()}
+            >
+              {savingDshSession ? <LoaderCircle className="result-spin" size={13} aria-hidden="true" /> : dshSession?.saved ? <Check size={13} aria-hidden="true" /> : <Save size={13} aria-hidden="true" />}
+              {savingDshSession ? "保存中…" : dshSession?.saved ? "已保存" : "保存会话"}
+            </button>
+          )}
           {selection?.text && (
             <button
               className="result-original-toggle"
@@ -1636,7 +1694,7 @@ function ResultSessionApp({
             <button
               className="result-footer-button"
               type="button"
-              disabled={retrying || !requestId || (status === "error" && !retryable)}
+              disabled={savingDshSession || retrying || !requestId || (status === "error" && !retryable)}
               onClick={() => void retry()}
               title="使用相同选区重新生成"
             >
