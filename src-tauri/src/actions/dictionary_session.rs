@@ -69,11 +69,15 @@ impl ActionServiceState {
 
 impl ActionService {
     pub(crate) fn submit_translation<R: Runtime + 'static>(
-        &self, app: &AppHandle<R>, id: &str, text: &str,
+        &self,
+        app: &AppHandle<R>,
+        id: &str,
+        text: &str,
+        attachments: Vec<crate::quick_ask::Attachment>,
     ) -> Result<TranslationSubmission, ActionServiceError> {
         validate_follow_up_question(text)?;
         let settings = self.inner.settings.get_settings();
-        let query = {
+        let query = if attachments.is_empty() {
             let mut state = self.inner.state.lock();
             let snapshot = state.sessions.authoritative_snapshot(id).ok_or(ActionServiceError::SessionEnded)?;
             if snapshot.action_id != "translate" || !settings.actions.iter().any(|a| a.id == "translate" && a.kind == ActionKind::Translate) {
@@ -85,6 +89,8 @@ impl ActionService {
                 state.initialize_translation_dictionary(id, text, query.clone().unwrap())?;
             }
             query
+        } else {
+            None
         };
         if query.is_some() {
             let request_id = self.query_dictionary(app, id, text)?;
@@ -93,7 +99,7 @@ impl ActionService {
             if self.dictionary_snapshot(id).is_some_and(|d| d.status == "loading") {
                 self.cancel(app, id)?;
             }
-            let request_id = self.continue_with_question(app, id, text)?;
+            let request_id = self.continue_with_attachments(app, id, text, attachments)?;
             Ok(TranslationSubmission { route: "ai", request_id })
         }
     }

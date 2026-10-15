@@ -69,7 +69,11 @@ export function isAskAction(kind: string | undefined): boolean {
   return kind === 'ask'
 }
 
-export function appendUserTurn(turns: TranscriptTurn[], question: string): TranscriptTurn[] {
+export function appendUserTurn(
+  turns: TranscriptTurn[],
+  question: string,
+  attachments?: TranscriptAttachment[],
+): TranscriptTurn[] {
   const content = question.trim()
   if (!content) return turns
   return [
@@ -78,8 +82,9 @@ export function appendUserTurn(turns: TranscriptTurn[], question: string): Trans
       id: nextTurnId(),
       role: 'user',
       content,
-      streaming: false
-    }
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      streaming: false,
+    },
   ]
 }
 

@@ -117,6 +117,12 @@ describe("Tauri renderer bridge", () => {
           requestId: "request-3",
         });
       }
+      if (command === "submit_translation") {
+        return Promise.resolve({
+          route: "ai",
+          requestId: "request-3",
+        });
+      }
       if (command === "dsh_session_state" || command === "save_dsh_session") {
         return Promise.resolve({ providerId: "dsh", sessionId: "remote-id", saved: command === "save_dsh_session" });
       }
@@ -407,6 +413,50 @@ describe("Tauri renderer bridge", () => {
     expect(invokeMock).toHaveBeenCalledWith("continue_action", {
       sessionId: "session-1",
       question: "继续解释",
+      attachments: null,
+    });
+
+    await expect(
+      window._popper_.continueAction?.("session-1", "继续解释", [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ]),
+    ).resolves.toEqual({
+      accepted: true,
+      sessionId: "session-1",
+      requestId: "request-3",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("continue_action", {
+      sessionId: "session-1",
+      question: "继续解释",
+      attachments: [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ],
+    });
+
+    await expect(window._popper_.submitTranslation?.("session-1", "翻译文本")).resolves.toEqual({
+      route: "ai",
+      requestId: "request-3",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("submit_translation", {
+      sessionId: "session-1",
+      text: "翻译文本",
+      attachments: null,
+    });
+
+    await expect(
+      window._popper_.submitTranslation?.("session-1", "翻译文本", [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ]),
+    ).resolves.toEqual({
+      route: "ai",
+      requestId: "request-3",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("submit_translation", {
+      sessionId: "session-1",
+      text: "翻译文本",
+      attachments: [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ],
     });
 
     const saved = { providerId: "dsh", sessionId: "remote-id", saved: true };

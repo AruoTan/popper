@@ -10,9 +10,11 @@ import {
   LoaderCircle,
   Maximize2,
   Minimize2,
+  Paperclip,
   Pin,
   RefreshCw,
   Save,
+  SendHorizontal,
   Settings2,
   Square,
   X,
@@ -75,6 +77,13 @@ import type { ResultSessionBootstrap } from "./resultSessionBootstrap";
 import type { ResultState } from "./resultState";
 import { useSmoothStreamText } from "./useSmoothStreamText";
 import { useTranslationSuggestions } from "./useTranslationSuggestions";
+import {
+  ATTACHMENT_ACCEPT,
+  attachmentSize,
+  readAttachment,
+  validateAttachmentList,
+  type SelectedAttachment,
+} from "../quick-ask/attachments";
 
 const RESULT_RESIZE_DIRECTIONS = [
   "NorthWest",
@@ -401,6 +410,11 @@ function ResultSessionApp({
   const [followUpQuestion, setFollowUpQuestion] = useState("");
   const [followUpExpanded, setFollowUpExpanded] = useState(false);
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
+  const [followUpAttachments, setFollowUpAttachments] = useState<SelectedAttachment[]>([]);
+  const [readingAttachments, setReadingAttachments] = useState(false);
+  const [draggingOver, setDraggingOver] = useState(false);
+  const filePickerRef = useRef<HTMLInputElement>(null);
+  const readingAttachmentsRef = useRef(false);
   const followUpInFlight = useRef(false);
   const [revealCommitted, setRevealCommitted] = useState(false);
   const [bootstrapMessage, setBootstrapMessage] = useState("");
@@ -417,7 +431,11 @@ function ResultSessionApp({
   const followUpComposing = useRef(false);
   const askOriginalDefaulted = useRef(false);
   const askSawStreaming = useRef(false);
-  const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null);
+  const pendingFollowUp = useRef<{
+    question: string;
+    requestId: string | null;
+    attachments?: SelectedAttachment[];
+  } | null>(null);
   const dictionaryMode = dictionary?.mode === "dictionary";
   const sessionAttachments = useMemo(() => {
     const map = new Map<string, TranscriptAttachment>();
@@ -462,6 +480,7 @@ function ResultSessionApp({
   const followUpDisabled =
     savingDshSession ||
     followUpSubmitting ||
+    readingAttachments ||
     (!isBuiltinTranslate && status === "streaming") ||
     (!isBuiltinTranslate &&
       ((!isAsk && status !== "completed") ||
@@ -483,6 +502,30 @@ function ResultSessionApp({
   const dshProviderId = !dictionaryMode && settings.providers.find(
     (provider) => provider.id === effectiveModelRoute?.providerId && provider.kind === "dsh",
   )?.id;
+  const isDsh = Boolean(dshProviderId);
+
+  useEffect(() => {
+    if (!isDsh && followUpAttachments.length > 0) {
+      setFollowUpAttachments([]);
+    }
+  }, [isDsh, followUpAttachments.length]);
+
+  const addFollowUpFiles = async (files: File[]): Promise<void> => {
+    if (!files.length || followUpSubmitting || readingAttachmentsRef.current || !isDsh) return;
+    readingAttachmentsRef.current = true;
+    setReadingAttachments(true);
+    setCommandMessage("");
+    try {
+      const next = [...followUpAttachments, ...(await Promise.all(files.map(readAttachment)))];
+      validateAttachmentList(next);
+      setFollowUpAttachments(next);
+    } catch (error: unknown) {
+      setCommandMessage(getErrorMessage(error, "无法添加附件"));
+    } finally {
+      readingAttachmentsRef.current = false;
+      setReadingAttachments(false);
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -491,7 +534,7 @@ function ResultSessionApp({
     if (!dshProviderId || !requestId || status === "streaming" || routeSwitching || retrying || followUpSubmitting) {
       return;
     }
-    void window._popper_.dshSessionState?.(sessionId, requestId).then((state) => {
+    void window._popper_?.dshSessionState?.(sessionId, requestId).then((state) => {
       if (!disposed && revision === dshStateRevision.current && state?.providerId === dshProviderId) {
         setDshSession(state);
       }
@@ -502,7 +545,7 @@ function ResultSessionApp({
   }, [sessionId, requestId, status, dshProviderId, routeSwitching, retrying, followUpSubmitting]);
 
   const saveDshSession = async (): Promise<void> => {
-    if (!requestId || !dshSession || dshSession.saved || dshSaveInFlight.current || !window._popper_.saveDshSession) return;
+    if (!requestId || !dshSession || dshSession.saved || dshSaveInFlight.current || !window._popper_?.saveDshSession) return;
     dshSaveInFlight.current = true;
     const revision = ++dshStateRevision.current;
     setSavingDshSession(true);
@@ -558,7 +601,11 @@ function ResultSessionApp({
   const modelSwitchDisabled = status === "streaming" || routeSwitching || retrying || savingDshSession;
 
   const reconcilePendingFollowUp = useCallback(
-    (pending: { question: string; requestId: string | null }): void => {
+    (pending: {
+      question: string;
+      requestId: string | null;
+      attachments?: SelectedAttachment[];
+    }): void => {
       const latest = getActionEventSnapshot();
       if (pending.requestId && latest.requestId !== pending.requestId) return;
       if (latest.status === "completed") {
@@ -566,6 +613,11 @@ function ResultSessionApp({
         setFollowUpQuestion((current) => (current === pending.question ? "" : current));
       } else if (latest.status === "error" || latest.status === "cancelled") {
         setFollowUpQuestion((current) => current || pending.question);
+        if (pending.attachments && pending.attachments.length > 0) {
+          setFollowUpAttachments((current) =>
+            current.length === 0 ? pending.attachments! : current,
+          );
+        }
       }
     },
     [],
@@ -729,20 +781,36 @@ function ResultSessionApp({
       const canSubmit =
         isBuiltinTranslate ||
         (isAsk ? status === "completed" || status === "idle" : status === "completed");
-      if (!question || followUpInFlight.current || dshSaveInFlight.current || !canSubmit) return;
+      if (
+        !question ||
+        followUpInFlight.current ||
+        dshSaveInFlight.current ||
+        readingAttachmentsRef.current ||
+        !canSubmit
+      )
+        return;
       followUpInFlight.current = true;
       setCommandMessage("");
       setFollowUpSubmitting(true);
       let appended = false;
+      const attachmentsToSubmit =
+        isDsh && followUpAttachments.length > 0
+          ? followUpAttachments.map(({ payload }) => payload)
+          : undefined;
+      const stashedAttachments = followUpAttachments;
       try {
         let translationRequestId: string | undefined;
         if (isBuiltinTranslate) {
           if (!window._popper_.submitTranslation) throw new Error("当前版本不支持翻译窗口输入");
-          const submission = await window._popper_.submitTranslation(sessionId, question);
+          const submission =
+            attachmentsToSubmit && attachmentsToSubmit.length > 0
+              ? await window._popper_.submitTranslation(sessionId, question, attachmentsToSubmit)
+              : await window._popper_.submitTranslation(sessionId, question);
           if (disposedRef.current) return;
           if (submission.route === "dictionary") {
             setTurns([]);
             setFollowUpQuestion("");
+            setFollowUpAttachments([]);
             pendingFollowUp.current = null;
             askSawStreaming.current = false;
             return;
@@ -758,12 +826,25 @@ function ResultSessionApp({
               ? crypto.randomUUID()
               : `assistant-${Date.now()}`;
           askSawStreaming.current = false;
-          setTurns((current) => beginAssistantTurn(appendUserTurn(current, question), turnId));
+          const userTurnAttachments: TranscriptAttachment[] | undefined =
+            attachmentsToSubmit && attachmentsToSubmit.length > 0
+              ? attachmentsToSubmit.map((att) => ({
+                  name: att.name,
+                  mime: att.mime,
+                  kind: att.kind,
+                  data: att.data,
+                }))
+              : undefined;
+          setTurns((current) =>
+            beginAssistantTurn(appendUserTurn(current, question, userTurnAttachments), turnId),
+          );
           appended = true;
         }
         const result = translationRequestId
           ? { accepted: true, requestId: translationRequestId, message: "" }
-          : await window._popper_.continueAction!(sessionId, question);
+          : attachmentsToSubmit && attachmentsToSubmit.length > 0
+            ? await window._popper_.continueAction!(sessionId, question, attachmentsToSubmit)
+            : await window._popper_.continueAction!(sessionId, question);
         if (!result.accepted) {
           setCommandMessage(result.message);
           if (appended) {
@@ -772,9 +853,14 @@ function ResultSessionApp({
           }
           return;
         }
-        const pending = { question, requestId: result.requestId ?? null };
+        const pending = {
+          question,
+          requestId: result.requestId ?? null,
+          attachments: stashedAttachments,
+        };
         pendingFollowUp.current = pending;
         setFollowUpQuestion("");
+        setFollowUpAttachments([]);
         reconcilePendingFollowUp(pending);
       } catch (error) {
         setCommandMessage(getErrorMessage(error, "无法继续提问"));
@@ -788,10 +874,12 @@ function ResultSessionApp({
       }
     },
     [
-      followUpQuestion,
-      isBuiltinTranslate,
-      isAsk,
       dictionary,
+      followUpAttachments,
+      followUpQuestion,
+      isAsk,
+      isBuiltinTranslate,
+      isDsh,
       reconcilePendingFollowUp,
       sessionId,
       status,
@@ -1189,12 +1277,46 @@ function ResultSessionApp({
     <main
       className={`result-window ${windowsRenderer ? "result-window--windows" : ""} ${
         showFollowUp && followUpExpanded ? "result-window--followup-expanded" : ""
+      } ${
+        showFollowUp && followUpAttachments.length > 0 ? "result-window--followup-has-attachments" : ""
       }`}
       style={style}
       onPointerEnter={pointerEnter}
       onPointerLeave={pointerLeave}
       onPointerDown={handleResultPointerDown}
+      onDragEnter={(event) => {
+        if (isDsh && showFollowUp && !followUpDisabled) {
+          event.preventDefault();
+          setDraggingOver(true);
+        }
+      }}
+      onDragOver={(event) => {
+        if (isDsh && showFollowUp && !followUpDisabled) {
+          event.preventDefault();
+          setDraggingOver(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDraggingOver(false);
+        }
+      }}
+      onDrop={(event) => {
+        if (isDsh && showFollowUp && !followUpDisabled) {
+          event.preventDefault();
+          setDraggingOver(false);
+          if (event.dataTransfer.files.length) {
+            void addFollowUpFiles(Array.from(event.dataTransfer.files));
+          }
+        }
+      }}
     >
+      {draggingOver && isDsh && (
+        <div className="result-window__drop-hint" aria-hidden="true">
+          <Paperclip size={20} />
+          <span>松开以添加附件到本次追问</span>
+        </div>
+      )}
       {windowsRenderer &&
         RESULT_RESIZE_DIRECTIONS.map((direction) => (
           <div
@@ -1615,52 +1737,164 @@ function ResultSessionApp({
         </div>
       )}
 
-      <footer className={`result-footer ${showFollowUp ? "" : "result-footer--actions-only"}`}>
+      <footer
+        className={`result-footer ${showFollowUp ? "" : "result-footer--actions-only"} ${
+          followUpAttachments.length > 0 ||
+          followUpQuestion.trim().length > 0 ||
+          followUpExpanded ||
+          draggingOver
+            ? "result-footer--active"
+            : ""
+        }`}
+      >
         {showFollowUp && (
-          <div className={`result-followup ${followUpExpanded ? "result-followup--expanded" : ""}`}>
-            <textarea
-              aria-label="继续提问"
-              placeholder={
-                isBuiltinTranslate
-                  ? "输入英文单词查词，或输入问题询问 AI"
-                  : isAsk
-                    ? "输入问题，基于选中文本提问"
-                    : "输入继续提问"
-              }
-              title="Enter 发送，Shift+Enter 换行"
-              rows={followUpExpanded ? 4 : 1}
-              maxLength={20_000}
-              value={followUpQuestion}
-              disabled={followUpDisabled}
-              onChange={(event) => setFollowUpQuestion(event.target.value)}
-              onCompositionStart={() => {
-                followUpComposing.current = true;
-              }}
-              onCompositionEnd={() => {
-                followUpComposing.current = false;
-              }}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Enter" &&
-                  !event.shiftKey &&
-                  !event.nativeEvent.isComposing &&
-                  !followUpComposing.current
-                ) {
-                  event.preventDefault();
-                  void submitFollowUp();
+          <div
+            className={`result-followup ${followUpExpanded ? "result-followup--expanded" : ""} ${
+              followUpAttachments.length > 0 ? "result-followup--has-attachments" : ""
+            } ${isDsh ? "result-followup--dsh" : ""}`}
+          >
+            {followUpAttachments.length > 0 && (
+              <section className="result-followup__attachments" aria-label="追问附件预览">
+                <div className="result-followup__attachment-list">
+                  {followUpAttachments.map(({ id, size, payload }) => (
+                    <div
+                      className="result-followup__attachment"
+                      key={id}
+                      title={`${payload.name} (${attachmentSize(size)})`}
+                    >
+                      {payload.kind === "image" ? (
+                        <img
+                          className="result-followup__attachment-thumb"
+                          src={`data:${payload.mime};base64,${payload.data}`}
+                          alt={payload.name}
+                        />
+                      ) : (
+                        <span className="result-followup__file-icon">
+                          <FileText size={12} />
+                        </span>
+                      )}
+                      <span className="result-followup__attachment-name">{payload.name}</span>
+                      <span className="result-followup__attachment-size">{attachmentSize(size)}</span>
+                      <button
+                        className="result-followup__attachment-remove"
+                        type="button"
+                        aria-label={`移除 ${payload.name}`}
+                        disabled={followUpDisabled}
+                        onClick={() =>
+                          setFollowUpAttachments((current) =>
+                            current.filter((file) => file.id !== id),
+                          )
+                        }
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            <div className="result-followup__composer">
+              {isDsh && (
+                <>
+                  <input
+                    ref={filePickerRef}
+                    type="file"
+                    multiple
+                    accept={ATTACHMENT_ACCEPT}
+                    aria-label="选择追问附件"
+                    hidden
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      event.target.value = "";
+                      void addFollowUpFiles(files);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="result-followup__attach-btn"
+                    aria-label="添加附件"
+                    title="添加附件 · 支持图片、文档等文件（每个最多 8 MB，合计最多 20 MB）"
+                    disabled={followUpDisabled || readingAttachments}
+                    onClick={() => filePickerRef.current?.click()}
+                  >
+                    {readingAttachments ? (
+                      <LoaderCircle size={14} className="result-spin" />
+                    ) : (
+                      <Paperclip size={14} />
+                    )}
+                  </button>
+                </>
+              )}
+              <textarea
+                aria-label="继续提问"
+                placeholder={
+                  isBuiltinTranslate
+                    ? "输入英文单词查词，或输入问题询问 AI"
+                    : isAsk
+                      ? isDsh
+                        ? "输入追问，支持拖拽或粘贴附件…"
+                        : "输入问题，基于选中文本提问"
+                      : isDsh
+                        ? "输入继续提问，支持拖拽或粘贴附件…"
+                        : "输入继续提问"
                 }
-              }}
-            />
-            <button
-              className="result-followup-expand"
-              type="button"
-              aria-label={followUpExpanded ? "收起继续提问输入框" : "放大继续提问输入框"}
-              aria-expanded={followUpExpanded}
-              title={followUpExpanded ? "收起输入框" : "放大输入框"}
-              onClick={() => setFollowUpExpanded((current) => !current)}
-            >
-              {followUpExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            </button>
+                title="Enter 发送，Shift+Enter 换行"
+                rows={followUpExpanded ? 4 : 1}
+                maxLength={20_000}
+                value={followUpQuestion}
+                disabled={followUpDisabled}
+                onChange={(event) => setFollowUpQuestion(event.target.value)}
+                onCompositionStart={() => {
+                  followUpComposing.current = true;
+                }}
+                onCompositionEnd={() => {
+                  followUpComposing.current = false;
+                }}
+                onPaste={(event) => {
+                  if (isDsh && event.clipboardData.files.length > 0) {
+                    event.preventDefault();
+                    void addFollowUpFiles(Array.from(event.clipboardData.files));
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing &&
+                    !followUpComposing.current
+                  ) {
+                    event.preventDefault();
+                    void submitFollowUp();
+                  }
+                }}
+              />
+              <button
+                className="result-followup-expand"
+                type="button"
+                aria-label={followUpExpanded ? "收起继续提问输入框" : "放大继续提问输入框"}
+                aria-expanded={followUpExpanded}
+                title={followUpExpanded ? "收起输入框" : "放大输入框"}
+                onClick={() => setFollowUpExpanded((current) => !current)}
+              >
+                {followUpExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              </button>
+              {isDsh && (
+                <button
+                  className="result-followup__send-btn"
+                  type="button"
+                  aria-label="发送追问"
+                  title="发送追问 (Enter)"
+                  disabled={followUpDisabled || !followUpQuestion.trim()}
+                  onClick={() => void submitFollowUp()}
+                >
+                  {followUpSubmitting ? (
+                    <LoaderCircle size={13} className="result-spin" />
+                  ) : (
+                    <SendHorizontal size={13} />
+                  )}
+                </button>
+              )}
+            </div>
           </div>
         )}
         <div className="result-actions">
