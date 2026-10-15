@@ -75,7 +75,7 @@ export function appendUserTurn(
   attachments?: TranscriptAttachment[],
 ): TranscriptTurn[] {
   const content = question.trim()
-  if (!content) return turns
+  if (!content && !attachments?.length) return turns
   return [
     ...turns,
     {

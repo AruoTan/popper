@@ -3696,8 +3696,8 @@ pub async fn submit_quick_ask(
         return Ok(RunActionResult::rejected("Popper 正在退出"));
     }
     let question = question.trim();
-    if question.is_empty() || question.chars().count() > 20_000 {
-        return Ok(RunActionResult::rejected("请输入问题，最多 20,000 个字符"));
+    if (question.is_empty() && attachments.is_empty()) || question.chars().count() > 20_000 {
+        return Ok(RunActionResult::rejected("请输入问题或添加附件，问题最多 20,000 个字符"));
     }
     if let Err(error) = crate::quick_ask::validate_attachments(&attachments) {
         return Ok(RunActionResult::rejected(error));

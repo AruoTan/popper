@@ -120,7 +120,10 @@ pub fn message_content(question: &str, attachments: &[Attachment]) -> serde_json
     {
         return text.into();
     }
-    let mut parts = vec![serde_json::json!({ "type": "text", "text": text })];
+    let mut parts = Vec::new();
+    if !text.is_empty() {
+        parts.push(serde_json::json!({ "type": "text", "text": text }));
+    }
     for attachment in attachments
         .iter()
         .filter(|attachment| attachment.kind != "text")
@@ -258,6 +261,28 @@ mod tests {
         assert_eq!(content[1]["type"], "image_url");
         assert!(content[0]["text"].as_str().unwrap().contains("hello world"));
     }
+    #[test]
+    fn attachment_only_messages_keep_file_contents_without_an_empty_text_part() {
+        let text = Attachment {
+            name: "note.txt".into(), mime: "text/plain".into(),
+            kind: "text".into(), data: "Only attachment".into(),
+        };
+        assert!(message_content("", &[text]).as_str().unwrap().contains("Only attachment"));
+        let image = Attachment {
+            name: "photo.png".into(), mime: "image/png".into(), kind: "image".into(),
+            data: STANDARD.encode(b"\x89PNG\r\n\x1a\nimage"),
+        };
+        let pdf = Attachment {
+            name: "file.pdf".into(), mime: "application/pdf".into(), kind: "file".into(),
+            data: STANDARD.encode(b"%PDF-1.7"),
+        };
+        let content = message_content("", &[image, pdf]);
+        assert_eq!(content.as_array().unwrap().len(), 2);
+        assert_eq!(content[0]["type"], "image_url");
+        assert_eq!(content[1]["type"], "file");
+        assert_eq!(content[1]["file"]["filename"], "file.pdf");
+    }
+
     #[test]
     fn office_and_binary_files_are_valid_uploads_but_not_openai_file_parts() {
         let mut file = Attachment {

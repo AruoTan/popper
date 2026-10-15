@@ -26,6 +26,30 @@ describe('Quick Ask', () => {
     await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
   });
 
+  it.each(['click', 'Enter'])('sends attachments without text via %s and still rejects empty input', async (method) => {
+    render(<QuickAskApp />);
+    const input = screen.getByRole('textbox');
+    const send = screen.getByRole('button', { name: '发送问题' });
+    fireEvent.change(input, { target: { value: '   ' } });
+    expect(send).toBeDisabled();
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(submit).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('选择附件'), {
+      target: { files: [new File(['file contents'], 'note.txt', { type: 'text/plain' })] },
+    });
+    await waitFor(() => expect(send).toBeEnabled());
+    if (method === 'click') fireEvent.click(send);
+    else fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith('', [
+      expect.objectContaining({ name: 'note.txt', kind: 'text', data: 'file contents' }),
+    ]));
+    await waitFor(() => expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull());
+    expect(input).toHaveValue('');
+    expect(send).toBeDisabled();
+  });
+
   it('previews actual file contents and removes the region with the last attachment', async () => {
     render(<QuickAskApp />);
     const file = new File(['hello world'], 'note.md', { type: 'text/plain' });

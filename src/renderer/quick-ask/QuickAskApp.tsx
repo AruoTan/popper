@@ -61,7 +61,7 @@ export function QuickAskApp(): JSX.Element {
   };
 
   const submit = async (): Promise<void> => {
-    if (!question.trim() || busyRef.current) return;
+    if ((!question.trim() && attachments.length === 0) || busyRef.current) return;
     busyRef.current = true;
     setSending(true);
     setError('');
@@ -115,7 +115,7 @@ export function QuickAskApp(): JSX.Element {
         <input ref={picker} type="file" multiple accept={ATTACHMENT_ACCEPT} aria-label="选择附件" hidden onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void addFiles(files); }} />
         <button type="button" className="quick-ask__attach" disabled={busy} onClick={() => picker.current?.click()} title="图片、文档或其他文件 · 每个最多 8 MB，合计最多 20 MB">{reading ? <LoaderCircle size={16} className="quick-ask__spin" /> : <Paperclip size={16} />}<span>{reading ? '读取中' : '添加附件'}</span></button>
         <span className="quick-ask__hint">Enter 发送 · Shift + Enter 换行</span>
-        <button type="button" className="quick-ask__send" aria-label="发送问题" disabled={busy || !question.trim()} onClick={() => void submit()}>{sending ? <LoaderCircle className="quick-ask__spin" size={17} /> : <SendHorizontal size={17} />}</button>
+        <button type="button" className="quick-ask__send" aria-label="发送问题" disabled={busy || (!question.trim() && attachments.length === 0)} onClick={() => void submit()}>{sending ? <LoaderCircle className="quick-ask__spin" size={17} /> : <SendHorizontal size={17} />}</button>
       </footer>
       {dragging && <div className="quick-ask__drop-hint">松开以添加附件</div>}
     </main>

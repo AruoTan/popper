@@ -43,6 +43,18 @@ describe('conversationTranscript', () => {
 
   it('ignores blank user questions', () => {
     expect(appendUserTurn([], '   ')).toEqual([])
+    expect(appendUserTurn([], '   ', [])).toEqual([])
+  })
+
+  it('keeps attachment-only turns in the transcript and restored history', () => {
+    const attachments = [{ name: 'photo.png', mime: 'image/png', kind: 'image', data: 'data123' }]
+    const turns = appendUserTurn([], '   ', attachments)
+    expect(turns).toEqual([
+      { id: expect.any(String), role: 'user', content: '', attachments, streaming: false },
+    ])
+    const restored = transcriptFromSnapshot('session-1', turns, false)
+    expect(restored[0]).toMatchObject({ role: 'user', content: '', attachments })
+    expect(parseTurnContent(restored[0]!.content, restored[0]!.attachments)).toEqual({ text: '', attachments })
   })
 
   it('appends user turn with attachments', () => {
