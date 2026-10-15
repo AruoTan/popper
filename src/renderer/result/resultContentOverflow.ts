@@ -23,9 +23,9 @@ export function hasVerticalOverflow(element: HTMLElement): boolean {
 }
 
 /**
- * Enables the native scrollbar only when the result really exceeds its
- * viewport. The measured track inset keeps the draggable scrollbar within
- * the middle half of the result area on older WKWebView releases as well.
+ * 测量内容是否溢出，以在需要时展示原生滚动条。
+ * 滚动条轨道铺满整个高度（trackMarginPx 保持为 0），不将滑动条限制或固定在中间某一处。
+ * 滑动条位置完全由用户掌控，不强制重置 scrollTop。
  */
 export function useResultContentOverflow(
   scrollRef: RefObject<HTMLDivElement | null>,
@@ -38,18 +38,15 @@ export function useResultContentOverflow(
   const measure = useCallback((): void => {
     const element = scrollRef.current
     const isOverflowing = Boolean(element && enabled && hasVerticalOverflow(element))
-    const trackMarginPx = isOverflowing && element
-      ? Math.max(0, Math.ceil(element.clientHeight / 4))
-      : 0
+    const trackMarginPx = 0
 
     setState((current) => (
       current.isOverflowing === isOverflowing && current.trackMarginPx === trackMarginPx
         ? current
         : { isOverflowing, trackMarginPx }
     ))
-
-    if (!isOverflowing && element && element.scrollTop !== 0) element.scrollTop = 0
   }, [enabled, scrollRef])
+
 
   const scheduleMeasure = useCallback((): void => {
     if (frameRef.current !== null) return
