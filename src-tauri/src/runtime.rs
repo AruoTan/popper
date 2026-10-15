@@ -1241,6 +1241,7 @@ impl RuntimeState {
             ResultSessionStart::Execute,
             None,
             Vec::new(),
+            None,
         )
     }
 
@@ -1253,6 +1254,7 @@ impl RuntimeState {
         cursor: WindowPoint,
         initial_question: Option<String>,
         initial_attachments: Vec<crate::quick_ask::Attachment>,
+        center: Option<WindowPoint>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         self.create_result_session_with(
             app,
@@ -1263,6 +1265,7 @@ impl RuntimeState {
             ResultSessionStart::OpenAsk,
             initial_question,
             initial_attachments,
+            center,
         )
     }
 
@@ -1276,6 +1279,7 @@ impl RuntimeState {
         start: ResultSessionStart,
         initial_question: Option<String>,
         initial_attachments: Vec<crate::quick_ask::Attachment>,
+        center: Option<WindowPoint>,
     ) -> Result<(String, String, ResultRevealReceiver), String> {
         if self.shutting_down.load(Ordering::Acquire) {
             return Err("Popper 正在退出".to_owned());
@@ -1360,6 +1364,7 @@ impl RuntimeState {
                 height: size.height,
             },
             cursor,
+            center,
             follow_cursor: result.follow_cursor,
             pinned: result.default_pinned,
             dismiss_mode: dismiss_mode(result.dismiss_mode),
@@ -2546,6 +2551,7 @@ pub async fn run_action(
                 cursor,
                 initial_question.map(str::to_owned),
                 Vec::new(),
+                None,
             ) {
                 Ok((session_id, open_request_id, reveal_receiver)) => {
                     let request_id = if let Some(question) = initial_question {
@@ -3711,13 +3717,11 @@ pub async fn submit_quick_ask(
         }
     }
     let _release = Release(&state.quick_ask_submitting);
-    let cursor = app
-        .cursor_position()
-        .map(|point| WindowPoint {
-            x: point.x,
-            y: point.y,
-        })
-        .unwrap_or(WindowPoint { x: 0.0, y: 0.0 });
+    // Snapshot the composer before creating the result. The cursor may be on
+    // another display, and result hydration must retain this submission anchor.
+    let center = crate::windows::quick_ask_window_center(&window)
+        .map_err(|error| format!("无法获取快捷提问窗口位置：{error}"))?;
+    let cursor = center;
     let selection = CurrentSelection {
         id: Uuid::new_v4().to_string(),
         source_result_session_id: None,
@@ -3755,6 +3759,7 @@ pub async fn submit_quick_ask(
         cursor,
         Some(question.to_owned()),
         attachments.clone(),
+        Some(center),
     ) {
         Ok((session_id, _, receiver)) => {
             let request_id = match state.actions.continue_with_attachments(
