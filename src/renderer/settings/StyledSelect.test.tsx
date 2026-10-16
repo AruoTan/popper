@@ -17,17 +17,25 @@ function Picker({ editable = false }: { editable?: boolean }) {
 describe("StyledSelect", () => {
   it("opens above clipping containers, marks the selection and commits a clicked option", () => {
     const { container } = render(<Picker />);
+    const root = container.firstElementChild;
     const trigger = screen.getByRole("combobox", { name: "语言" });
+    expect(root).not.toHaveClass("is-open");
+    expect(trigger).not.toHaveClass("is-open");
     fireEvent.click(trigger);
+    expect(root).toHaveClass("is-open");
+    expect(trigger).toHaveClass("is-open");
     const list = screen.getByRole("listbox", { name: "语言" });
     expect(container.contains(list)).toBe(false);
     expect(trigger).toHaveAttribute("aria-controls", list.id);
     expect(screen.getByRole("option", { name: "简体中文" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("option", { name: "English" }));
+    expect(root).not.toHaveClass("is-open");
+    expect(trigger).not.toHaveClass("is-open");
     expect(trigger).toHaveTextContent("English");
     expect(trigger).toHaveFocus();
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
     fireEvent.click(trigger);
+    expect(root).toHaveClass("is-open");
     expect(screen.getByRole("option", { name: "English" })).toHaveAttribute("aria-selected", "true");
   });
 

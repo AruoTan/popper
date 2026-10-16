@@ -40,21 +40,17 @@ export function DictionarySettings(): JSX.Element {
   return (
     <div className="dictionary-settings field field--wide">
       <div className="dictionary-settings__heading">
-        <span className="dictionary-settings__icon" aria-hidden="true">
-          <BookOpen size={19} />
-        </span>
-        <strong>欧路生词本</strong>
-        <span className={`dictionary-settings__badge ${configured ? "is-configured" : ""}`}>
-          {configured ? "已配置授权" : "未配置授权"}
-        </span>
-      </div>
-      <p className="field__hint">
-        从欧路 OpenAPI 授权页获取完整 Authorization（包含 NIS
-        前缀，如页面提供）。仅在确认添加时上传当前词条。
-      </p>
-      <div>
+        <div className="dictionary-settings__title-group">
+          <span className="dictionary-settings__icon" aria-hidden="true">
+            <BookOpen size={19} />
+          </span>
+          <strong>欧路生词本</strong>
+          <span className={`dictionary-settings__badge ${configured ? "is-configured" : ""}`}>
+            {configured ? "已配置授权" : "未配置授权"}
+          </span>
+        </div>
         <button
-          className="button button--ghost"
+          className="button button--ghost dictionary-settings__auth-btn"
           type="button"
           onClick={() => {
             void window._popper_
@@ -66,6 +62,10 @@ export function DictionarySettings(): JSX.Element {
           获取欧路授权
         </button>
       </div>
+      <p className="field__hint">
+        从欧路 OpenAPI 授权页获取完整 Authorization（包含 NIS
+        前缀，如页面提供）。仅在确认添加时上传当前词条。
+      </p>
       <div className="key-control">
         <KeyRound size={16} aria-hidden="true" />
         <input

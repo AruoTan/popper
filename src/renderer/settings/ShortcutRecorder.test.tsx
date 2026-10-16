@@ -99,4 +99,19 @@ describe("ShortcutRecorder", () => {
     expect(screen.getByRole("button", { name: "快捷提问快捷键" })).toHaveAttribute("aria-pressed", "false");
     expect(change).not.toHaveBeenCalled();
   });
+
+  it("cancels recording when pointer down occurs outside the recorder", async () => {
+    render(
+      <div>
+        <div data-testid="outside">外部区域</div>
+        <Recorder />
+      </div>,
+    );
+    const control = await record();
+    expect(control).toHaveAttribute("aria-pressed", "true");
+    fireEvent.pointerDown(screen.getByTestId("outside"));
+    expect(control).toHaveAttribute("aria-pressed", "false");
+    expect(change).not.toHaveBeenCalled();
+    await waitFor(() => expect(setNative).toHaveBeenLastCalledWith(false));
+  });
 });
