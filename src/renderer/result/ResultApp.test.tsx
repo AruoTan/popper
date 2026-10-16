@@ -1425,6 +1425,19 @@ describe("ResultApp window interactions", () => {
     expect(api.failResultReveal).not.toHaveBeenCalled();
   });
 
+  it.each(["ask-ai", "summary"])("uses the shared default for an unbound %s result", async (actionId) => {
+    const settings = settingsWithFontSize();
+    settings.defaultAi = { providerId: settings.providers[0]!.id, modelId: "shared-model" };
+    settings.providers[0]!.models.push({ id: "shared-model", name: "Shared model", thinkingLevels: [] });
+    settings.actions = settings.actions.map((action) => ({ ...action, modelId: "" }));
+    const snapshot = resultSnapshot({
+      actionId, status: "streaming", content: "", lastSequence: 0,
+      lastContentSequence: 0, contentScalarCount: 0,
+    }, false);
+    await renderResult(snapshot, settings);
+    expect(screen.getByRole("button", { name: "切换模型" })).toHaveTextContent("Shared model");
+  });
+
   it("groups available models by provider and regenerates in the same session", async () => {
     const settings = settingsWithFontSize();
     settings.providers.push({

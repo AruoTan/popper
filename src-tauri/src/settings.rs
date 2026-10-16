@@ -182,6 +182,9 @@ impl SettingsRepository {
             if let Some(value) = update.quick_ask_shortcut {
                 settings.quick_ask_shortcut = value;
             }
+            if let Some(value) = update.default_ai {
+                settings.default_ai = value;
+            }
             if let Some(value) = update.locale {
                 settings.locale = value;
             }
@@ -209,7 +212,7 @@ impl SettingsRepository {
                     .find(|action| action.kind == ActionKind::Ask)
                     .cloned();
                 value.retain(|action| action.kind != ActionKind::Ask);
-                reconcile_fixed_ask_route(&mut fixed_ask, &value, &settings.providers);
+                reconcile_fixed_ask_route(&mut fixed_ask);
                 if let Some(fixed_ask) = fixed_ask {
                     value.push(fixed_ask);
                 }
@@ -245,7 +248,7 @@ impl SettingsRepository {
                 })
                 .collect::<Vec<_>>();
             let mut fixed_ask = fixed_ask;
-            reconcile_fixed_ask_route(&mut fixed_ask, &actions, &providers);
+            reconcile_fixed_ask_route(&mut fixed_ask);
             if let Some(fixed_ask) = fixed_ask {
                 actions.push(fixed_ask);
             }
@@ -253,6 +256,7 @@ impl SettingsRepository {
                 version: SETTINGS_VERSION,
                 tray_enabled: public.tray_enabled,
                 quick_ask_shortcut: public.quick_ask_shortcut,
+                default_ai: public.default_ai,
                 locale: public.locale,
                 translate: public.translate,
                 result: public.result,
@@ -320,6 +324,11 @@ impl SettingsRepository {
                 })
             };
             if let Some(valid_models) = valid_models {
+                if settings.default_ai.provider_id == provider_id
+                    && !valid_models.contains(&settings.default_ai.model_id)
+                {
+                    settings.default_ai = Default::default();
+                }
                 for action in &mut settings.actions {
                     if action.provider_id.as_deref() == Some(provider_id.as_str())
                         && action
@@ -349,6 +358,9 @@ impl SettingsRepository {
             settings
                 .providers
                 .retain(|provider| provider.id != provider_id);
+            if settings.default_ai.provider_id == provider_id {
+                settings.default_ai = Default::default();
+            }
             for action in &mut settings.actions {
                 if action.provider_id.as_deref() == Some(provider_id.as_str()) {
                     action.provider_id = Some(String::new());
@@ -629,42 +641,14 @@ impl SettingsRepository {
     }
 }
 
-/// The fixed Ask entry is intentionally absent from public settings. Keep its
-/// execution route aligned with the first valid editable AI action so users do
-/// not need a second, hidden model configuration surface.
-fn reconcile_fixed_ask_route(
-    fixed_ask: &mut Option<ActionDefinition>,
-    editable_actions: &[ActionDefinition],
-    providers: &[ProviderConfig],
-) {
-    let Some(fixed_ask) = fixed_ask.as_mut() else {
-        return;
-    };
-    let route = editable_actions.iter().find_map(|action| {
-        if !action.kind.is_ai() || action.kind == ActionKind::Ask {
-            return None;
-        }
-        let provider_id = action.provider_id.as_deref()?.trim();
-        let model_id = action.model_id.as_deref()?.trim();
-        let valid = !provider_id.is_empty()
-            && !model_id.is_empty()
-            && providers.iter().any(|provider| {
-                provider.id == provider_id
-                    && provider.models.iter().any(|model| model.id == model_id)
-            });
-        valid.then_some((provider_id, model_id, action.thinking_mode))
-    });
-
-    if let Some((provider_id, model_id, thinking_mode)) = route {
-        fixed_ask.provider_id = Some(provider_id.to_owned());
-        fixed_ask.model_id = Some(model_id.to_owned());
-        fixed_ask.thinking_mode = thinking_mode;
-    } else {
-        fixed_ask.provider_id = Some(String::new());
-        fixed_ask.model_id = Some(String::new());
-        fixed_ask.thinking_mode = crate::models::ThinkingMode::Off;
+/// Ask resolves the shared default at request time, with no hidden per-action override.
+fn reconcile_fixed_ask_route(fixed_ask: &mut Option<ActionDefinition>) {
+    if let Some(ask) = fixed_ask {
+        ask.provider_id = Some(String::new());
+        ask.model_id = Some(String::new());
+        ask.thinking_mode = crate::models::ThinkingMode::Off;
+        ask.enabled = true;
     }
-    fixed_ask.enabled = true;
 }
 
 fn secret_account(provider_id: &str) -> String {
@@ -685,6 +669,9 @@ fn legacy_settings_path(settings_path: &Path) -> Option<PathBuf> {
 }
 
 fn has_usable_ai_route(settings: &AppSettings) -> bool {
+    if !settings.default_ai.model_id.is_empty() {
+        return true;
+    }
     settings.actions.iter().any(|action| {
         if !action.kind.is_ai() {
             return false;
@@ -722,6 +709,28 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
     }
     let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let version = value.get("version").and_then(serde_json::Value::as_u64);
+    // Seed the new default once from the old effective Ask route. An explicitly
+    // empty default remains empty on subsequent starts.
+    let missing_default_ai = value.get("defaultAi").is_none();
+    if missing_default_ai {
+        let route = value.get("actions").and_then(|actions| actions.as_array()).and_then(|actions| {
+            actions.iter().filter(|action| action.get("kind").and_then(|v| v.as_str()) == Some("ask"))
+                .chain(actions.iter()).find_map(|action| {
+                    let provider_id = action.get("providerId")?.as_str()?;
+                    let model_id = action.get("modelId")?.as_str()?;
+                    let valid = value.get("providers")?.as_array()?.iter().any(|provider| {
+                        provider.get("id").and_then(|v| v.as_str()) == Some(provider_id)
+                            && provider.get("models").and_then(|v| v.as_array()).is_some_and(|models| {
+                                models.iter().any(|model| model.get("id").and_then(|v| v.as_str()) == Some(model_id))
+                            })
+                    });
+                    (valid && !model_id.is_empty()).then(|| serde_json::json!({ "providerId": provider_id, "modelId": model_id }))
+                })
+        }).unwrap_or_else(|| serde_json::json!({ "providerId": "", "modelId": "" }));
+        if let Some(object) = value.as_object_mut() {
+            object.insert("defaultAi".to_owned(), route);
+        }
+    }
     let retired_actions_removed = remove_retired_actions_value(&mut value);
     // Discard retired configuration before validating.
     let had_retired_settings = value.as_object_mut().is_some_and(|object| {
@@ -747,10 +756,12 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         let mut settings: AppSettings = serde_json::from_value(value)?;
         let persisted_settings = settings.clone();
         migrate_default_action_prompts(&mut settings);
+        heal_orphan_provider_references(&mut settings);
         let normalized = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
         let must_persist = version != Some(SETTINGS_VERSION as u64)
+            || missing_default_ai
             || missing_tray_default
             || had_retired_settings
             || missing_result_defaults
@@ -767,6 +778,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
+        heal_orphan_provider_references(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -780,6 +792,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
+        heal_orphan_provider_references(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -793,6 +806,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
+        heal_orphan_provider_references(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -806,6 +820,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
+        heal_orphan_provider_references(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -819,6 +834,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         migrate_quote_to_ask_value(&mut value);
         let mut settings: AppSettings = serde_json::from_value(value)?;
         migrate_default_action_prompts(&mut settings);
+        heal_orphan_provider_references(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -838,6 +854,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         let mut settings: AppSettings = serde_json::from_value(value)?;
         settings.result.dismiss_mode = ResultDismissMode::Blur;
         migrate_default_action_prompts(&mut settings);
+        heal_orphan_provider_references(&mut settings);
         let settings = settings
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
@@ -932,6 +949,54 @@ fn migrate_default_action_prompts(settings: &mut AppSettings) {
     }
 }
 
+fn heal_orphan_provider_references(settings: &mut AppSettings) {
+    let providers_map: std::collections::HashMap<&str, &crate::models::ProviderConfig> = settings
+        .providers
+        .iter()
+        .map(|provider| (provider.id.as_str(), provider))
+        .collect();
+
+    for action in &mut settings.actions {
+        if action.kind == ActionKind::Ask {
+            action.provider_id = Some(String::new());
+            action.model_id = Some(String::new());
+            action.thinking_mode = crate::models::ThinkingMode::Off;
+        } else {
+            let provider_id = action.provider_id.as_deref().unwrap_or("").trim();
+            let model_id = action.model_id.as_deref().unwrap_or("").trim();
+
+            if !provider_id.is_empty() {
+                match providers_map.get(provider_id) {
+                    Some(provider) => {
+                        if !model_id.is_empty()
+                            && !provider.models.iter().any(|model| model.id == model_id)
+                        {
+                            action.model_id = Some(String::new());
+                        }
+                    }
+                    None => {
+                        action.provider_id = Some(String::new());
+                        action.model_id = Some(String::new());
+                    }
+                }
+            } else if !model_id.is_empty() {
+                action.model_id = Some(String::new());
+            }
+        }
+    }
+
+    let default_provider_id = settings.default_ai.provider_id.trim();
+    let default_model_id = settings.default_ai.model_id.trim();
+    if !default_provider_id.is_empty() || !default_model_id.is_empty() {
+        let valid = providers_map.get(default_provider_id).is_some_and(|provider| {
+            provider.models.iter().any(|model| model.id == default_model_id)
+        });
+        if !valid {
+            settings.default_ai = Default::default();
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LegacyAiSettings {
@@ -1020,8 +1085,20 @@ fn migrate_v1(mut value: serde_json::Value) -> Result<LoadedSettings, SettingsEr
                     } else {
                         None
                     },
-                    provider_id: action.kind.is_ai().then(|| DEFAULT_PROVIDER_ID.to_owned()),
-                    model_id: action.kind.is_ai().then(|| model.clone()),
+                    provider_id: if action.kind == ActionKind::Ask {
+                        Some(String::new())
+                    } else if action.kind.is_ai() {
+                        Some(DEFAULT_PROVIDER_ID.to_owned())
+                    } else {
+                        None
+                    },
+                    model_id: if action.kind == ActionKind::Ask {
+                        Some(String::new())
+                    } else if action.kind.is_ai() {
+                        Some(model.clone())
+                    } else {
+                        None
+                    },
                     thinking_mode: crate::models::ThinkingMode::Off,
                 }
             })
@@ -1033,15 +1110,24 @@ fn migrate_v1(mut value: serde_json::Value) -> Result<LoadedSettings, SettingsEr
                 let mut added = default.clone();
                 added.enabled = actions.iter().filter(|action| action.enabled).count() < 8;
                 added.order = actions.len() as u32;
-                added.model_id = added.kind.is_ai().then(|| model.clone());
+                added.model_id = (added.kind.is_ai() && added.kind != ActionKind::Ask)
+                    .then(|| model.clone());
                 actions.push(added);
             }
         }
     }
-    let settings = AppSettings {
+    let mut settings = AppSettings {
         version: SETTINGS_VERSION,
         tray_enabled: true,
         quick_ask_shortcut: crate::models::default_quick_ask_shortcut(),
+        default_ai: crate::models::DefaultAiModel {
+            provider_id: if model.is_empty() {
+                String::new()
+            } else {
+                DEFAULT_PROVIDER_ID.to_owned()
+            },
+            model_id: model.clone(),
+        },
         locale: legacy.locale,
         translate: legacy.translate,
         result: Default::default(),
@@ -1049,6 +1135,7 @@ fn migrate_v1(mut value: serde_json::Value) -> Result<LoadedSettings, SettingsEr
         providers: vec![provider],
         actions,
     };
+    heal_orphan_provider_references(&mut settings);
     let settings = settings
         .normalize_and_validate()
         .map_err(SettingsError::Validation)?;
@@ -1229,16 +1316,8 @@ fn migrate_quote_to_ask_value(value: &mut serde_json::Value) {
                 .and_then(serde_json::Value::as_str)
                 .filter(|value| value.contains("{{text}}"))
                 .unwrap_or(DEFAULT_ASK_PROMPT);
-            let provider_id = action_object
-                .get("providerId")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .unwrap_or(DEFAULT_PROVIDER_ID);
-            let model_id = action_object
-                .get("modelId")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
+            let provider_id = "";
+            let model_id = "";
             let thinking_mode = action_object
                 .get("thinkingMode")
                 .cloned()
@@ -1348,6 +1427,10 @@ mod tests {
         }
         repository
             .update(SettingsUpdate {
+                default_ai: Some(crate::models::DefaultAiModel {
+                    provider_id: DEFAULT_PROVIDER_ID.into(),
+                    model_id: model_id.into(),
+                }),
                 providers: Some(settings.providers),
                 actions: Some(settings.actions),
                 ..Default::default()
@@ -1356,6 +1439,74 @@ mod tests {
         repository
             .set_provider_api_key(DEFAULT_PROVIDER_ID, api_key)
             .unwrap();
+    }
+
+    #[test]
+    fn default_ai_persists_without_action_overrides_and_clears_on_model_removal() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let secrets = Arc::new(MemorySecrets::default());
+        let repository = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
+        configure_ai_repository(&repository, "shared-model", "key");
+        let route = crate::models::DefaultAiModel {
+            provider_id: DEFAULT_PROVIDER_ID.into(),
+            model_id: "shared-model".into(),
+        };
+        repository
+            .update(SettingsUpdate {
+                default_ai: Some(route.clone()),
+                ..Default::default()
+            })
+            .unwrap();
+        let reopened = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
+        assert_eq!(reopened.get_public_settings().unwrap().default_ai, route);
+        reopened
+            .update_provider(
+                DEFAULT_PROVIDER_ID,
+                UpdateProviderInput {
+                    models: Some(vec![]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(reopened.get_settings().default_ai, Default::default());
+        assert_eq!(
+            SettingsRepository::with_secret_store(&path, secrets)
+                .unwrap()
+                .get_settings()
+                .default_ai,
+            Default::default()
+        );
+    }
+
+    #[test]
+    fn default_ai_upgrades_old_ask_once_and_does_not_reseed_an_empty_default() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        configure_ai_repository(&repository, "legacy-model", "key");
+        let mut legacy = serde_json::to_value(repository.get_settings()).unwrap();
+        legacy.as_object_mut().unwrap().remove("defaultAi");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let reopened =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        assert_eq!(reopened.get_settings().default_ai.model_id, "legacy-model");
+        reopened
+            .update(SettingsUpdate {
+                default_ai: Some(Default::default()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap()
+                .get_settings()
+                .default_ai,
+            Default::default()
+        );
     }
 
     #[test]
@@ -1558,8 +1709,9 @@ mod tests {
         assert!(settings
             .actions
             .iter()
-            .filter(|action| action.kind.is_ai())
+            .filter(|action| action.kind.is_ai() && action.kind != ActionKind::Ask)
             .all(|action| action.model_id.as_deref() == Some("legacy-model")));
+        assert_eq!(settings.default_ai.model_id, "legacy-model");
         assert_eq!(
             migrated
                 .get_api_key(DEFAULT_PROVIDER_ID)
@@ -2569,5 +2721,106 @@ mod tests {
                 supports_off: false,
             })
         );
+    }
+
+    #[test]
+    fn custom_provider_only_startup_does_not_panic_or_fail_on_ask_action() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let custom_provider = ProviderConfig {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            kind: crate::models::ProviderKind::Openai,
+            dsh_workspace: None,
+            enabled: true,
+            base_url: "https://api.deepseek.com/v1".to_owned(),
+            models: vec![ProviderModel {
+                id: "deepseek-chat".to_owned(),
+                name: "deepseek-chat".to_owned(),
+                thinking_levels: Vec::new(),
+                thinking_capability: None,
+            }],
+        };
+        let mut settings = AppSettings::default();
+        settings.providers = vec![custom_provider];
+        settings.default_ai = crate::models::DefaultAiModel {
+            provider_id: "deepseek".to_owned(),
+            model_id: "deepseek-chat".to_owned(),
+        };
+        for action in &mut settings.actions {
+            if action.kind.is_ai() && action.kind != ActionKind::Ask {
+                action.provider_id = Some("deepseek".to_owned());
+                action.model_id = Some("deepseek-chat".to_owned());
+            }
+        }
+        let normalized = settings.normalize_and_validate().unwrap();
+        fs::write(&path, serde_json::to_string_pretty(&normalized).unwrap()).unwrap();
+
+        let loaded = load_settings(&path).expect("Settings should load without error");
+        let ask = loaded
+            .settings
+            .actions
+            .iter()
+            .find(|a| a.kind == ActionKind::Ask)
+            .expect("Ask action must be present");
+        assert_eq!(ask.provider_id.as_deref(), Some(""));
+        assert_eq!(ask.model_id.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn orphan_provider_and_model_references_are_healed_on_load() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let custom_provider = ProviderConfig {
+            id: "custom".to_owned(),
+            name: "Custom".to_owned(),
+            kind: crate::models::ProviderKind::Openai,
+            dsh_workspace: None,
+            enabled: true,
+            base_url: "https://api.custom.com/v1".to_owned(),
+            models: vec![ProviderModel {
+                id: "model-1".to_owned(),
+                name: "model-1".to_owned(),
+                thinking_levels: Vec::new(),
+                thinking_capability: None,
+            }],
+        };
+        let mut settings = AppSettings::default();
+        settings.providers = vec![custom_provider];
+        settings.default_ai = crate::models::DefaultAiModel {
+            provider_id: "non-existent-provider".to_owned(),
+            model_id: "non-existent-model".to_owned(),
+        };
+        for action in &mut settings.actions {
+            if action.kind == ActionKind::Translate {
+                action.provider_id = Some("custom".to_owned());
+                action.model_id = Some("deleted-model".to_owned());
+            } else if action.kind == ActionKind::Explain {
+                action.provider_id = Some("deleted-provider".to_owned());
+                action.model_id = Some("some-model".to_owned());
+            }
+        }
+        fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+
+        let loaded = load_settings(&path).expect("Orphan references should be healed on load");
+        assert_eq!(
+            loaded.settings.default_ai,
+            crate::models::DefaultAiModel::default()
+        );
+        let translate = loaded
+            .settings
+            .actions
+            .iter()
+            .find(|a| a.kind == ActionKind::Translate)
+            .unwrap();
+        assert_eq!(translate.model_id.as_deref(), Some(""));
+        let explain = loaded
+            .settings
+            .actions
+            .iter()
+            .find(|a| a.kind == ActionKind::Explain)
+            .unwrap();
+        assert_eq!(explain.provider_id.as_deref(), Some(""));
+        assert_eq!(explain.model_id.as_deref(), Some(""));
     }
 }

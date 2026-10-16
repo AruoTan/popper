@@ -25,6 +25,21 @@ import {
 } from '..'
 
 describe('settings schemas and defaults', () => {
+  it('seeds the shared default from a legacy Ask model only once', () => {
+    const { defaultAi: _default, ...legacy } = structuredClone(DEFAULT_PUBLIC_SETTINGS)
+    const route = { providerId: DEFAULT_PROVIDER_ID, modelId: 'old-ask' }
+    legacy.providers[0]!.models = [{ id: route.modelId, name: 'Old Ask', thinkingLevels: [] }]
+    legacy.actions.push({ ...legacy.actions[0]!, ...route, id: 'ask-ai', kind: 'ask' })
+    expect(migratePublicSettings(legacy).defaultAi).toEqual(route)
+    const internal = { ...legacy, providers: legacy.providers.map(({ keyConfigured: _key, ...provider }) => ({ ...provider, apiKey: '' })) }
+    expect(migrateAppSettings(internal).defaultAi).toEqual(route)
+    expect(toPublicSettings(migrateAppSettings(internal)).defaultAi).toEqual(route)
+    const explicit = { providerId: '', modelId: '' }
+    expect(migratePublicSettings({ ...legacy, defaultAi: explicit }).defaultAi).toEqual(explicit)
+    expect(publicSettingsSchema.safeParse({ ...legacy, defaultAi: { ...route, modelId: 'missing' } }).success).toBe(false)
+    expect(settingsUpdateSchema.safeParse({ defaultAi: { providerId: '', modelId: 'missing' } }).success).toBe(false)
+  })
+
   it('round-trips DSH settings and rejects ambiguous model routes and host workspace paths', () => {
     const settings = publicSettingsSchema.parse(structuredClone(DEFAULT_PUBLIC_SETTINGS));
     settings.providers[0] = {

@@ -737,6 +737,7 @@ export function SettingsApp(): JSX.Element {
         dshWorkspace: kind === "dsh" ? "/workspace" : undefined,
         models: [],
       } : provider),
+      defaultAi: current.defaultAi.providerId === providerId ? { providerId: "", modelId: "" } : current.defaultAi,
       actions: current.actions.map((action) => isAiActionDefinition(action) && action.providerId === providerId
         ? { ...action, modelId: "", thinkingMode: "off" as const } : action),
     }));
@@ -1491,6 +1492,35 @@ export function SettingsApp(): JSX.Element {
               className="settings-section settings-section--enter"
               aria-label="动作设置"
             >
+              <div className="settings-group" id="default-ai-title">
+                <div className="section-heading section-heading--actions default-ai-heading">
+                  <div>
+                    <h3 className="settings-subheading">默认模型</h3>
+                    <p>用于快捷提问和划词提问；动作中单独指定的模型优先。</p>
+                  </div>
+                  <StyledSelect
+                    className="default-ai-select"
+                    aria-label="默认模型"
+                    disabled={busy}
+                    value={draft.defaultAi.modelId ? JSON.stringify([draft.defaultAi.providerId, draft.defaultAi.modelId]) : ""}
+                    onChange={(value) => {
+                      const [providerId, modelId] = value ? JSON.parse(value) as [string, string] : ["", ""];
+                      changeDraft((current) => ({ ...current, defaultAi: { providerId, modelId } }));
+                    }}
+                    options={[
+                      { value: "", label: "选择默认模型" },
+                      ...draft.providers.filter((provider) => provider.enabled !== false).flatMap((provider) =>
+                        provider.models.map((model) => ({
+                          value: JSON.stringify([provider.id, model.id]),
+                          label: model.name,
+                          group: provider.keyConfigured || !requiresProviderApiKey(provider) ? provider.name : provider.name + "（未配置密钥）",
+                        })),
+                      ),
+                    ]}
+                  />
+                </div>
+              </div>
+
               <div className="settings-group" id="quick-ask-title">
                 <div className="section-heading section-heading--compact">
                   <div>
@@ -2637,7 +2667,7 @@ function SortableActionRow({
         <strong>{action.name}</strong>
         <span>
           {ACTION_KIND_NAMES[action.kind]}
-          {` · ${action.modelId || "未选择模型"}`}
+          {` · ${action.modelId || "使用默认模型"}`}
         </span>
         {isAiActionDefinition(action) && (
           <span className="action-row__prompt" title={action.prompt}>

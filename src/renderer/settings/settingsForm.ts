@@ -43,6 +43,7 @@ export function removeProviderFromSettings(
 ): PublicSettings {
   return {
     ...settings,
+    defaultAi: settings.defaultAi.providerId === providerId ? { providerId: "", modelId: "" } : settings.defaultAi,
     providers: settings.providers.filter((provider) => provider.id !== providerId),
     actions: settings.actions.map((action) =>
       isAiActionDefinition(action) && action.providerId === providerId
@@ -59,6 +60,8 @@ export function removeProviderModelFromSettings(
 ): PublicSettings {
   return {
     ...settings,
+    defaultAi: settings.defaultAi.providerId === providerId && settings.defaultAi.modelId === modelId
+      ? { providerId: "", modelId: "" } : settings.defaultAi,
     providers: settings.providers.map((provider) =>
       provider.id === providerId
         ? {
@@ -116,6 +119,7 @@ export function buildSettingsUpdate(settings: PublicSettings):
 
   const candidate: SettingsUpdate = {
     trayEnabled: settings.trayEnabled,
+    defaultAi: settings.defaultAi,
     quickAskShortcut: settings.quickAskShortcut,
     locale: settings.locale,
     translate: settings.translate,

@@ -3711,7 +3711,9 @@ pub async fn submit_quick_ask(
         return Ok(RunActionResult::rejected("问 AI 动作不可用"));
     };
     if settings.providers.iter().any(|provider| {
-        Some(provider.id.as_str()) == action.provider_id()
+        settings
+            .ai_model_for(action)
+            .is_some_and(|(id, _)| provider.id == id)
             && provider.kind == crate::models::ProviderKind::Openai
     }) {
         if let Err(error) = crate::quick_ask::validate_openai_attachments(&attachments) {

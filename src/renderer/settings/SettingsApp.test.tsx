@@ -89,6 +89,33 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
 }
 
 describe("SettingsApp provider deletion", () => {
+  it("places the default model first and saves it independently from action overrides", async () => {
+    const settings: PublicSettings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      providers: [{
+        ...DEFAULT_PUBLIC_SETTINGS.providers[0]!,
+        models: [{ id: "shared-model", name: "Shared model", thinkingLevels: [] }],
+      }],
+    };
+    const save = vi.fn(async () => settings);
+    installDefaultBridge({ getSettings: vi.fn(async () => settings), updateSettings: save });
+    render(<SettingsApp />);
+    await goToSettingsSection("动作");
+    const model = screen.getByRole("combobox", { name: "默认模型" });
+    expect(screen.queryByText("交互默认模型")).not.toBeInTheDocument();
+    expect(document.getElementById("default-ai-title")?.contains(model)).toBe(true);
+    expect(document.getElementById("default-ai-title")?.compareDocumentPosition(
+      document.getElementById("quick-ask-title")!,
+    )).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    fireEvent.click(model);
+    fireEvent.click(screen.getByRole("option", { name: "Shared model" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      defaultAi: { providerId: DEFAULT_PROVIDER_ID, modelId: "shared-model" },
+      actions: settings.actions,
+    })));
+  });
+
   it("records and saves the quick ask shortcut and restores its default", async () => {
     const save = vi.fn(async () => DEFAULT_PUBLIC_SETTINGS);
     installDefaultBridge({ updateSettings: save });

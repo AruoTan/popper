@@ -87,6 +87,26 @@ describe('CustomActionDialog model + thinking', () => {
     fireEvent.click(screen.getByRole('option', { name: option }))
   }
 
+  it('allows an action to clear its override and inherit the shared default', () => {
+    const onSave = vi.fn()
+    render(createElement(CustomActionDialog, {
+      action: {
+        id: 'translate', name: '翻译', icon: 'languages', kind: 'translate',
+        enabled: true, order: 0, prompt: DEFAULT_ACTION_PROMPTS.translate,
+        providerId: 'provider-one', modelId: 'model-one', thinkingMode: 'off'
+      },
+      providers: [{
+        id: 'provider-one', name: 'Provider', enabled: true,
+        baseUrl: 'https://example.com/v1', keyConfigured: true,
+        models: [{ id: 'model-one', name: 'Model', thinkingLevels: [] }]
+      }],
+      onCancel: vi.fn(), onSave
+    }))
+    choose('模型', '使用默认模型')
+    fireEvent.submit(screen.getByRole('button', { name: '保存修改' }).closest('form')!)
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ providerId: '', modelId: '' }))
+  })
+
   it('closes the open dropdown before closing the dialog with Escape', () => {
     const onCancel = vi.fn()
     render(createElement(CustomActionDialog, { action: null, providers: [], onCancel, onSave: vi.fn() }))

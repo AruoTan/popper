@@ -215,6 +215,7 @@ export function toPublicSettings(settings: AppSettings): PublicSettings {
     version: settings.version,
     trayEnabled: settings.trayEnabled,
     quickAskShortcut: settings.quickAskShortcut,
+    defaultAi: settings.defaultAi,
     locale: settings.locale,
     translate: settings.translate,
     result: settings.result,
@@ -397,8 +398,19 @@ function migratePromptDefaultsCandidate(candidate: UnknownRecord): UnknownRecord
   const normalizedActions = editableActions.length > 0
     ? editableActions
     : DEFAULT_ACTIONS.map((action) => ({ ...action }))
+  const legacyActions = Array.isArray(migrated.actions) ? migrated.actions.map(asRecord) : []
+  const providers = Array.isArray(migrated.providers) ? migrated.providers.map(asRecord) : []
+  const previousRoute = [...legacyActions.filter((action) => action.kind === 'ask'), ...legacyActions]
+    .find((action) => action.modelId && providers.some((provider) =>
+      provider.id === action.providerId && Array.isArray(provider.models) && provider.models.some(
+        (model) => asRecord(model).id === action.modelId
+      )
+    ))
   return {
     ...migrated,
+    defaultAi: migrated.defaultAi ?? (previousRoute
+      ? { providerId: previousRoute.providerId, modelId: previousRoute.modelId }
+      : { providerId: '', modelId: '' }),
     actions: normalizedActions.map((action, order) => ({ ...action, order }))
   }
 }
@@ -507,6 +519,7 @@ function migrateLegacyCommon(input: UnknownRecord) {
     result: input.result ?? defaults.result,
     filter: input.filter ?? defaults.filter,
     actions: migrated.actions as ActionDefinition[],
+    defaultAi: modelId ? { providerId: DEFAULT_PROVIDER_ID, modelId } : { providerId: '', modelId: '' },
     ai
   }
 }
