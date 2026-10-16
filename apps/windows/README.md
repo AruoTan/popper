@@ -45,6 +45,27 @@ Restart to check no tray is created; re-enable and save to check it returns.
 Repeat toggling and check a tray menu action fires only once. Also verify a
 minimized settings window is restored by another launch.
 
+## Startup diagnostics
+
+Every normal launch writes initialization stages, its process ID and a `ready`
+marker to `%LOCALAPPDATA%\Popper\startup.log`. Startup errors and Rust panics
+are recorded even when DEV Debug is off. Once the existing log reaches 256 KiB,
+the next entry truncates it. It does not log settings contents,
+API keys, selected text or attachments during normal initialization. A startup
+failure also shows a native error dialog with the diagnostic path.
+
+The settings WebView is created only after runtime initialization, so its first
+events and renderer IPC can safely access managed state. Events arriving before
+runtime initialization are ignored. The optional
+quick-ask shortcut plugin initializes after runtime state is available; a native
+manager or shortcut registration error is shown in settings and does not stop
+selection assistance from starting.
+
+Windows CI launches the actual release executable after packaging and requires
+the same process to remain alive and write `ready` within 20 seconds. Diagnostic
+logs stay local and are not uploaded. This check complements library tests;
+installed-app and desktop behavior still need Windows acceptance.
+
 ## Mouse/UIA selection offset detection
 
 Windows records the latest completed left-button gesture without querying UIA

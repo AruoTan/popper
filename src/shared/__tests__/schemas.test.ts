@@ -51,9 +51,23 @@ describe('settings schemas and defaults', () => {
     expect(settingsUpdateSchema.safeParse({ trayEnabled: 'false' }).success).toBe(false)
   })
 
-  it('provides v16 defaults with only AI actions', () => {
+  it('upgrades v16 with a default shortcut while preserving providers and actions', () => {
+    for (const [defaults, migrate] of [[DEFAULT_APP_SETTINGS, migrateAppSettings], [DEFAULT_PUBLIC_SETTINGS, migratePublicSettings]] as const) {
+      const { quickAskShortcut: _shortcut, ...legacy } = defaults;
+      const result = migrate({ ...legacy, version: 16 });
+      expect(result.quickAskShortcut).toBe('Control+Shift+Space');
+      expect(result.providers).toEqual(defaults.providers);
+      expect(result.actions).toEqual(defaults.actions);
+    }
+    expect(settingsUpdateSchema.parse({})).toEqual({});
+    expect(settingsUpdateSchema.safeParse({ quickAskShortcut: 'Space' }).success).toBe(false);
+    expect(settingsUpdateSchema.safeParse({ quickAskShortcut: 'Control+Control+Space' }).success).toBe(false);
+    expect(settingsUpdateSchema.parse({ quickAskShortcut: 'Alt+KeyK' }).quickAskShortcut).toBe('Alt+KeyK');
+  })
+
+  it('provides v17 defaults with only AI actions', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
-    expect(DEFAULT_APP_SETTINGS.version).toBe(16)
+    expect(DEFAULT_APP_SETTINGS.version).toBe(17)
     expect(DEFAULT_APP_SETTINGS.providers[0]).toMatchObject({
       id: DEFAULT_PROVIDER_ID,
       enabled: true,
@@ -91,14 +105,14 @@ describe('settings schemas and defaults', () => {
       applications: [{ application: 'reader.exe', strategy: 'selection-hook' }]
     }
     const migrated = migrateAppSettings({ ...DEFAULT_APP_SETTINGS, version, selectionCapture, trigger: { mode: "shortcut" }, captureShortcut: "CommandOrControl+Shift+F12" })
-    expect(migrated.version).toBe(16)
+    expect(migrated.version).toBe(17)
     expect(migrated).not.toHaveProperty('selectionCapture')
     expect(migrated).not.toHaveProperty('trigger')
     expect(migrated).not.toHaveProperty('captureShortcut')
     expect(migrated.actions).toEqual(DEFAULT_APP_SETTINGS.actions)
     expect(migrated.providers).toEqual(DEFAULT_APP_SETTINGS.providers)
     const publicSettings = migratePublicSettings({ ...DEFAULT_PUBLIC_SETTINGS, version, selectionCapture, trigger: { mode: "shortcut" }, captureShortcut: "CommandOrControl+Shift+F12" })
-    expect(publicSettings.version).toBe(16)
+    expect(publicSettings.version).toBe(17)
     expect(publicSettings).not.toHaveProperty('selectionCapture')
     expect(publicSettings).not.toHaveProperty('trigger')
     expect(publicSettings).not.toHaveProperty('captureShortcut')
@@ -116,7 +130,7 @@ describe('settings schemas and defaults', () => {
       migrateAppSettings({ ...DEFAULT_APP_SETTINGS, version, ...retired }),
       migratePublicSettings({ ...DEFAULT_PUBLIC_SETTINGS, version, ...retired })
     ]) {
-      expect(settings.version).toBe(16)
+      expect(settings.version).toBe(17)
       for (const key of ['enabled', 'toolbar', 'application']) expect(settings).not.toHaveProperty(key)
       expect(settings.result).toEqual(DEFAULT_APP_SETTINGS.result)
     }
@@ -160,7 +174,7 @@ describe('settings schemas and defaults', () => {
         { id: 'quote', name: '引用', icon: 'quote', kind: 'quote', enabled: true, order: 6 }
       ]
     })
-    expect(migrated.version).toBe(16)
+    expect(migrated.version).toBe(17)
     expect(migrated.actions.filter((action) => action.kind === 'ask')).toHaveLength(0)
     expect(migrated.actions.some((action) => action.id === 'ask-ai')).toBe(false)
   })
@@ -343,7 +357,7 @@ describe('settings schemas and defaults', () => {
       ]
     }
     const migrated = migrateAppSettings(legacy)
-    expect(migrated.version).toBe(16)
+    expect(migrated.version).toBe(17)
     expect(migrated.providers[0]).toMatchObject({
       baseUrl: 'https://example.com/v1',
       apiKey: 'secret',
@@ -430,7 +444,7 @@ describe('settings schemas and defaults', () => {
       actions: [...DEFAULT_APP_SETTINGS.actions, secondTranslate]
     })
 
-    expect(migrated.version).toBe(16)
+    expect(migrated.version).toBe(17)
     expect(migrated.providers[1]).toEqual({
       ...secondProvider,
       enabled: true,
@@ -475,7 +489,7 @@ describe('settings schemas and defaults', () => {
       ]
     })
 
-    expect(migrated.version).toBe(16)
+    expect(migrated.version).toBe(17)
     expect(migrated.actions.find((action) => action.id === 'translate')).toMatchObject({
       prompt: DEFAULT_ACTION_PROMPTS.translate
     })
@@ -533,7 +547,7 @@ describe('settings schemas and defaults', () => {
     const migratedPublic = migratePublicSettings(withV4Prompts(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(16)
+      expect(settings.version).toBe(17)
       expect(settings.actions.find((action) => action.id === 'summary')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.summary
       })
@@ -610,7 +624,7 @@ Return only the translated content. Do not include explanations, labels, tags, o
     const migratedPublic = migratePublicSettings(withLegacyV11(DEFAULT_PUBLIC_SETTINGS))
 
     for (const settings of [migrated, migratedPublic]) {
-      expect(settings.version).toBe(16)
+      expect(settings.version).toBe(17)
       expect(settings.actions.find((action) => action.id === 'translate')).toMatchObject({
         prompt: DEFAULT_ACTION_PROMPTS.translate
       })
@@ -718,6 +732,19 @@ Return only the translated content. Do not include explanations, labels, tags, o
 })
 
 describe('action stream event schemas', () => {
+  it('allows empty source only for an explicit quick ask session', () => {
+    const snapshot = {
+      sessionId: 'session-quick', sessionGeneration: 1, requestId: 'request-quick', requestGeneration: 1,
+      actionId: 'ask-ai', quickAsk: true,
+      selection: { text: '', sourceApp: { name: 'Popper', bundleId: null }, anchor: { kind: 'cursor', x: 0, y: 0 } },
+      status: 'completed', content: '', contentScalarCount: 0, lastSequence: 0, lastContentSequence: 0, handshakeGeneration: 1,
+      errorMessage: '', retryable: false, pinned: false
+    };
+    expect(resultSessionSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    expect(resultSessionSnapshotSchema.safeParse({ ...snapshot, quickAsk: false }).success).toBe(false);
+    expect(resultSessionSnapshotSchema.safeParse({ ...snapshot, actionId: 'translate' }).success).toBe(false);
+  });
+
   const orderedBase = {
     sessionId: 'session-1',
     sessionGeneration: 7,

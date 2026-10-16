@@ -51,7 +51,7 @@ Invoke-BuildStage 'Windows verification' { pnpm verify:windows }
 
 # verify:windows just built these files from this checkout. Reuse them only in
 # this CI invocation; ordinary local packaging still runs beforeBuildCommand.
-foreach ($page in @('settings', 'toolbar', 'result', 'startup')) {
+foreach ($page in @('settings', 'toolbar', 'result', 'startup', 'quick-ask')) {
     $html = Join-Path 'dist' "$page/index.html"
     if (-not (Test-Path -LiteralPath $html -PathType Leaf) -or (Get-Item -LiteralPath $html).Length -eq 0) {
         throw "Missing verified frontend output: $html"
@@ -63,6 +63,9 @@ Invoke-BuildStage 'Windows installer build' {
 }
 # Preserve the repository's PE/version/SHA-256 verification entry point.
 Invoke-BuildStage 'Windows artifact verification' { pnpm verify:artifacts:windows }
+Invoke-BuildStage 'Windows release startup' {
+    & (Join-Path $PSScriptRoot 'smoke-test-windows.ps1') -Executable 'src-tauri/target/x86_64-pc-windows-msvc/release/popper.exe'
+}
 
 $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
 $bundleDirectory = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
@@ -77,7 +80,7 @@ foreach ($filename in @("Popper_${version}_x64-setup.exe", 'SHA256SUMS.txt')) {
 ## Popper $version — Windows x64
 
 - Source commit: $env:GITHUB_SHA
-- Windows verification and installer checks passed.
+- Windows verification, installer checks and release startup passed.
 - Download the installer and SHA256SUMS.txt from this run's Artifacts section.
 - Unsigned test installer; SmartScreen warnings are possible.
 - Native selection behavior still requires manual desktop regression testing.

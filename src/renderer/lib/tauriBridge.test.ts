@@ -117,6 +117,15 @@ describe("Tauri renderer bridge", () => {
           requestId: "request-3",
         });
       }
+      if (command === "submit_translation") {
+        return Promise.resolve({
+          route: "ai",
+          requestId: "request-3",
+        });
+      }
+      if (command === "dsh_session_state" || command === "save_dsh_session") {
+        return Promise.resolve({ providerId: "dsh", sessionId: "remote-id", saved: command === "save_dsh_session" });
+      }
       if (command === "list_provider_models") {
         return Promise.resolve({
           ok: true,
@@ -348,6 +357,21 @@ describe("Tauri renderer bridge", () => {
       message: "renderer failed",
     });
 
+    await window._popper_.setQuickAskShortcutRecording?.(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_quick_ask_shortcut_recording", { recording: true });
+    await window._popper_.setQuickAskShortcutRecording?.(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_quick_ask_shortcut_recording", { recording: false });
+    await window._popper_.quickAskReady?.();
+    expect(invokeMock).toHaveBeenCalledWith("quick_ask_ready");
+    invokeMock.mockResolvedValueOnce({ accepted: true, sessionId: "quick-result" });
+    const attachments = [{ name: "note.txt", mime: "text/plain", kind: "text" as const, data: "file content" }];
+    expect(await window._popper_.submitQuickAsk?.("Explain", attachments)).toEqual({ accepted: true, sessionId: "quick-result" });
+    expect(invokeMock).toHaveBeenCalledWith("submit_quick_ask", { question: "Explain", attachments });
+    await window._popper_.reportQuickAskSize?.(310);
+    expect(invokeMock).toHaveBeenCalledWith("report_quick_ask_size", { height: 310 });
+    await window._popper_.closeQuickAsk?.();
+    expect(invokeMock).toHaveBeenCalledWith("close_quick_ask");
+
     await window._popper_.runAction("explain", undefined, "selection-1");
     expect(invokeMock).toHaveBeenCalledWith("run_action", {
       actionId: "explain",
@@ -389,7 +413,59 @@ describe("Tauri renderer bridge", () => {
     expect(invokeMock).toHaveBeenCalledWith("continue_action", {
       sessionId: "session-1",
       question: "继续解释",
+      attachments: null,
     });
+
+    await expect(
+      window._popper_.continueAction?.("session-1", "继续解释", [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ]),
+    ).resolves.toEqual({
+      accepted: true,
+      sessionId: "session-1",
+      requestId: "request-3",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("continue_action", {
+      sessionId: "session-1",
+      question: "继续解释",
+      attachments: [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ],
+    });
+
+    await expect(window._popper_.submitTranslation?.("session-1", "翻译文本")).resolves.toEqual({
+      route: "ai",
+      requestId: "request-3",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("submit_translation", {
+      sessionId: "session-1",
+      text: "翻译文本",
+      attachments: null,
+    });
+
+    await expect(
+      window._popper_.submitTranslation?.("session-1", "翻译文本", [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ]),
+    ).resolves.toEqual({
+      route: "ai",
+      requestId: "request-3",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("submit_translation", {
+      sessionId: "session-1",
+      text: "翻译文本",
+      attachments: [
+        { name: "note.txt", mime: "text/plain", kind: "text", data: "file content" },
+      ],
+    });
+
+    const saved = { providerId: "dsh", sessionId: "remote-id", saved: true };
+    await expect(window._popper_.dshSessionState?.("session-1", "request-1")).resolves.toEqual({ ...saved, saved: false });
+    await expect(window._popper_.saveDshSession?.("session-1", "request-1")).resolves.toEqual(saved);
+    expect(invokeMock).toHaveBeenCalledWith("save_dsh_session", { sessionId: "session-1", requestId: "request-1" });
+    expect(invokeMock).toHaveBeenCalledWith("dsh_session_state", { sessionId: "session-1", requestId: "request-1" });
+    invokeMock.mockResolvedValueOnce({ ...saved, saved: "true" });
+    await expect(window._popper_.saveDshSession?.("session-1", "request-1")).rejects.toThrow();
 
     await expect(window._popper_.listProviderModels?.("provider-1")).resolves.toEqual({
       ok: true,

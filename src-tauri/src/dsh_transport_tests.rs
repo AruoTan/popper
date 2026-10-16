@@ -99,6 +99,14 @@ fn gaps_failed_turns_and_abandoned_prefixes_are_not_success() {
     assert_eq!(output.follow(&json!({"type":"assistant-stream","frame":{"type":"end","outcome":{"kind":"abandoned"}}}), &mut delta, &mut reasoning).unwrap_err().code, "DSH_ATTEMPT_ABANDONED");
 }
 
+#[derive(Clone, Debug)]
+struct MockUpload {
+    session_id: String,
+    name: String,
+    bytes: Vec<u8>,
+    receipt: String,
+}
+
 struct MockGateway {
     base: String,
     calls: Arc<Mutex<Vec<Value>>>,
@@ -108,7 +116,15 @@ struct MockGateway {
     signals: tokio::sync::broadcast::Sender<MockSignal>,
     ack_gate: Arc<Semaphore>,
     reject_auth: Arc<std::sync::atomic::AtomicBool>,
+    stale_follow_events: Arc<std::sync::atomic::AtomicBool>,
     reject_websocket: Arc<std::sync::atomic::AtomicU16>,
+    uploads: Arc<Mutex<Vec<MockUpload>>>,
+    upload_status: Arc<std::sync::atomic::AtomicU16>,
+    upload_response: Arc<Mutex<Option<String>>>,
+    upload_seen: Arc<Semaphore>,
+    upload_blocked: Arc<std::sync::atomic::AtomicBool>,
+    upload_gate: Arc<Semaphore>,
+    save_response: Arc<Mutex<Option<(u16, Value)>>>,
     accept: tokio::task::JoinHandle<()>,
 }
 #[derive(Clone, Debug)]
@@ -144,8 +160,23 @@ async fn mock_gateway_options(
     let sessions = Arc::new(AtomicUsize::new(0));
     let ack_gate = Arc::new(Semaphore::new(0));
     let reject_auth = Arc::new(AtomicBool::new(false));
+    let stale_follow_events = Arc::new(AtomicBool::new(false));
     let reject_websocket = Arc::new(AtomicU16::new(0));
     let (signals, _) = tokio::sync::broadcast::channel(32);
+    let uploads = Arc::new(Mutex::new(Vec::<MockUpload>::new()));
+    let upload_status = Arc::new(AtomicU16::new(0));
+    let upload_response = Arc::new(Mutex::new(None::<String>));
+    let upload_seen = Arc::new(Semaphore::new(0));
+    let upload_blocked = Arc::new(AtomicBool::new(false));
+    let upload_gate = Arc::new(Semaphore::new(0));
+    let save_response = Arc::new(Mutex::new(None::<(u16, Value)>));
+    let seen_save_response = save_response.clone();
+    let seen_uploads = uploads.clone();
+    let seen_upload_status = upload_status.clone();
+    let seen_upload_response = upload_response.clone();
+    let seen_upload_seen = upload_seen.clone();
+    let seen_upload_blocked = upload_blocked.clone();
+    let seen_upload_gate = upload_gate.clone();
     let seen_calls = calls.clone();
     let seen_prompt = prompt.clone();
     let seen_commands = commands.clone();
@@ -153,10 +184,18 @@ async fn mock_gateway_options(
     let send_signals = signals.clone();
     let seen_ack_gate = ack_gate.clone();
     let rejected = reject_auth.clone();
+    let stale_events = stale_follow_events.clone();
     let rejected_websocket = reject_websocket.clone();
     let accept = tokio::spawn(async move {
         loop {
             let (mut stream, _) = listener.accept().await.unwrap();
+            let uploads = seen_uploads.clone();
+            let upload_status = seen_upload_status.clone();
+            let upload_response = seen_upload_response.clone();
+            let upload_seen = seen_upload_seen.clone();
+            let upload_blocked = seen_upload_blocked.clone();
+            let upload_gate = seen_upload_gate.clone();
+            let save_response = seen_save_response.clone();
             let calls = seen_calls.clone();
             let prompt = seen_prompt.clone();
             let commands = seen_commands.clone();
@@ -165,6 +204,7 @@ async fn mock_gateway_options(
             let signals = send_signals.clone();
             let ack_gate = seen_ack_gate.clone();
             let reject_auth = rejected.clone();
+            let stale_events = stale_events.clone();
             let reject_websocket = rejected_websocket.clone();
             tokio::spawn(async move {
                 loop {
@@ -185,6 +225,7 @@ async fn mock_gateway_options(
                         |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
                          response| {
                             assert_eq!(request.uri().path(), "/api/remote.mux");
+                            assert_eq!(request.headers()["x-dsh-client"], "app");
                             if cookie_login {
                                 assert!(!request.headers().contains_key("authorization"));
                                 assert_eq!(request.headers()["cookie"], "dsh-session=test-cookie");
@@ -229,6 +270,15 @@ async fn mock_gateway_options(
                                         let session = command["payload"]["args"]["request"]["address"]["sessionId"].as_str().unwrap().to_owned();
                                         follows.insert(id.clone(), session);
                                         socket.send(Message::Text(json!({"type":"item","streamId":id,"value":{"type":"snapshot","cursor":-1,"records":[]}}).to_string().into())).await.unwrap();
+                                        if stale_events.load(Ordering::SeqCst) {
+                                            for value in [
+                                                json!({"type":"event","event":{"type":"user/message","data":{"source":{"rpcId":"previous-request"}}}}),
+                                                json!({"type":"event","event":{"type":"assistant/message","data":{"message":{"content":[{"type":"text","text":"Old answer must not leak"}]}}}}),
+                                                json!({"type":"event","event":{"type":"turn/end","data":{"reason":{"kind":"completed"}}}}),
+                                            ] {
+                                                socket.send(Message::Text(json!({"type":"item","streamId":id,"value":value}).to_string().into())).await.unwrap();
+                                            }
+                                        }
                                     }
                                 }
                                 signal = received.recv() => {
@@ -273,6 +323,9 @@ async fn mock_gateway_options(
                         }
                     };
                     let headers = String::from_utf8(bytes[..body_start].to_vec()).unwrap();
+                    if !headers.starts_with("GET / HTTP") {
+                        assert!(headers.to_lowercase().contains("x-dsh-client: app\r\n"));
+                    }
                     if headers.starts_with("GET / HTTP") {
                         assert!(cookie_login);
                         assert!(!headers.to_lowercase().contains("authorization:"));
@@ -319,6 +372,62 @@ async fn mock_gateway_options(
                         }
                         bytes.extend_from_slice(&chunk[..count]);
                     }
+                    if headers.starts_with("POST /api/session/uploadFileBinary?") {
+                        assert!(headers
+                            .to_lowercase()
+                            .contains("content-type: application/octet-stream"));
+                        let target = headers
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap();
+                        let target = url::Url::parse(&format!("http://localhost{target}")).unwrap();
+                        let query: std::collections::HashMap<_, _> =
+                            target.query_pairs().into_owned().collect();
+                        let session_id = query["sessionId"].clone();
+                        let name = query["name"].clone();
+                        let receipt = {
+                            let mut uploads = uploads.lock().unwrap();
+                            let receipt = format!("receipt-{session_id}-{}", uploads.len() + 1);
+                            uploads.push(MockUpload {
+                                session_id: session_id.clone(),
+                                name: name.clone(),
+                                bytes: bytes[body_start..body_start + length].to_vec(),
+                                receipt: receipt.clone(),
+                            });
+                            receipt
+                        };
+                        calls.lock().unwrap().push(json!({"method":"session/uploadFileBinary", "sessionId":session_id, "name":name}));
+                        upload_seen.add_permits(1);
+                        let status = upload_status.swap(0, Ordering::SeqCst);
+                        if status != 0 {
+                            let response = format!(
+                                "HTTP/1.1 {status} Upload Failed\r\nContent-Length: 0\r\n\r\n"
+                            );
+                            if stream.write_all(response.as_bytes()).await.is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        if upload_blocked.load(Ordering::SeqCst) {
+                            let _permit = upload_gate.acquire().await.unwrap();
+                        }
+                        let body = upload_response.lock().unwrap().clone().unwrap_or_else(|| json!({"ok":true,"value":{"receiptId":receipt,"file":{"attachmentId":"sha256:mock-file","name":name,"bytes":length}}}).to_string());
+                        if body == "disconnect-before-headers" {
+                            return;
+                        }
+                        if body == "disconnect-during-body" {
+                            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{").await;
+                            return;
+                        }
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
+                        if stream.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                     let envelope: Value =
                         serde_json::from_slice(&bytes[body_start..body_start + length]).unwrap();
                     let method = envelope["method"].as_str().unwrap();
@@ -339,12 +448,31 @@ async fn mock_gateway_options(
                             json!({"workspace":{"workspaceId":format!("workspace:{}", envelope["payload"]["args"]["request"]["path"].as_str().unwrap())}})
                         }
                         "session/create" => {
-                            let number = sessions.fetch_add(1, Ordering::SeqCst);
-                            json!({"sessionId":if number == 0 { "remote-session".to_owned() } else { format!("remote-session-{}", number+1) }})
+                            if let Some(id) = envelope["payload"]["args"]["request"]["sessionId"].as_str() {
+                                assert!(envelope["payload"]["args"]["request"].get("workspaceId").is_none());
+                                json!({"sessionId":id})
+                            } else {
+                                let number = sessions.fetch_add(1, Ordering::SeqCst);
+                                json!({"sessionId":if number == 0 { "remote-session".to_owned() } else { format!("remote-session-{}", number+1) }})
+                            }
                         }
+                        "temporary/save" => json!({
+                            "sessionId":envelope["payload"]["args"]["request"]["sessionId"],
+                            "workspaceId":"normal-workspace", "savedSessionIds":[envelope["payload"]["args"]["request"]["sessionId"]],
+                            "temporary":false, "reconnectRequired":true,
+                        }),
                         "session/modelCatalog" => catalog(),
                         "session/prompt" => {
                             let request = &envelope["payload"]["args"]["request"];
+                            for part in request["content"].as_array().unwrap() {
+                                if part["type"] == "file" {
+                                    let uploads = uploads.lock().unwrap();
+                                    assert!(uploads.iter().any(|upload| upload.receipt
+                                        == part["receiptId"].as_str().unwrap()
+                                        && upload.session_id
+                                            == request["sessionId"].as_str().unwrap()));
+                                }
+                            }
                             let _ = signals.send(MockSignal::Prompt(
                                 request["sessionId"].as_str().unwrap().to_owned(),
                                 request["requestId"].as_str().unwrap().to_owned(),
@@ -357,7 +485,12 @@ async fn mock_gateway_options(
                         }
                         _ => json!({}),
                     };
-                    let result = if rpc_error {
+                    let mut status = 200;
+                    let result = if method == "temporary/save" && save_response.lock().unwrap().is_some() {
+                        let custom = save_response.lock().unwrap().clone().unwrap();
+                        status = custom.0;
+                        custom.1
+                    } else if rpc_error {
                         json!({"ok":false,"error":{"message":"bad test-dsh-key"}})
                     } else {
                         json!({"ok":true,"value":value})
@@ -365,7 +498,7 @@ async fn mock_gateway_options(
                     let body =
                         json!({"type":"server-response","rpcId":envelope["rpcId"],"result":result})
                             .to_string();
-                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
+                    let response = format!("HTTP/1.1 {status} Response\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}", body.len(), body);
                     if stream.write_all(response.as_bytes()).await.is_err() {
                         return;
                     }
@@ -382,7 +515,15 @@ async fn mock_gateway_options(
         signals,
         ack_gate,
         reject_auth,
+        stale_follow_events,
         reject_websocket,
+        uploads,
+        upload_status,
+        upload_response,
+        upload_seen,
+        upload_blocked,
+        upload_gate,
+        save_response,
         accept,
     }
 }
@@ -1427,6 +1568,1073 @@ async fn concurrent_catalog_requests_recover_from_an_expired_cookie() {
             .unwrap()
             .iter()
             .filter(|call| call["method"] == "local-login")
+            .count(),
+        2
+    );
+}
+
+fn test_file(name: &str, mime: &str, bytes: &[u8]) -> crate::quick_ask::Attachment {
+    use base64::Engine;
+    crate::quick_ask::Attachment {
+        name: name.into(),
+        mime: mime.into(),
+        kind: "file".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    }
+}
+
+#[tokio::test]
+async fn attachments_upload_binary_files_and_submit_receipts_in_the_same_session() {
+    for cookie_login in [false, true] {
+        let gateway = mock_gateway_auth(false, false, cookie_login).await;
+        let key = if cookie_login { "" } else { "test-dsh-key" };
+        let attachments = vec![
+            crate::quick_ask::Attachment {
+                name: "notes.txt".into(),
+                mime: "text/plain".into(),
+                kind: "text".into(),
+                data: "实际文件内容\n第二行".into(),
+            },
+            test_file(
+                "报告 & notes+#.pdf",
+                "application/pdf",
+                b"%PDF-1.7\nexample",
+            ),
+            test_file(
+                "report.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                b"PK\x03\x04\x00example",
+            ),
+        ];
+        let result = DshService::new()
+            .unwrap()
+            .generate_with_attachments(
+                "files-request",
+                &provider(gateway.base.clone()),
+                key,
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"分析附件"}]),
+                &attachments,
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.content, "你好");
+        let uploads = gateway.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 3);
+        assert_eq!(uploads[0].bytes, attachments[0].data.as_bytes());
+        assert_eq!(uploads[1].name, attachments[1].name);
+        assert_eq!(uploads[1].bytes, b"%PDF-1.7\nexample");
+        assert_eq!(uploads[2].bytes, b"PK\x03\x04\x00example");
+        let calls = gateway.calls.lock().unwrap();
+        let prompt = calls
+            .iter()
+            .find(|call| call["method"] == "session/prompt")
+            .unwrap();
+        let request = &prompt["payload"]["args"]["request"];
+        for (index, upload) in uploads.iter().enumerate() {
+            assert_eq!(upload.session_id, request["sessionId"].as_str().unwrap());
+            assert_eq!(
+                request["content"][index + 1],
+                json!({"type":"file", "receiptId":upload.receipt})
+            );
+        }
+        assert!(!request["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(&attachments[0].data));
+        let first_upload = calls
+            .iter()
+            .position(|call| call["method"] == "session/uploadFileBinary")
+            .unwrap();
+        let submit = calls
+            .iter()
+            .position(|call| call["method"] == "session/prompt")
+            .unwrap();
+        assert!(first_upload < submit);
+    }
+}
+
+#[tokio::test]
+async fn images_use_native_media_parts_and_do_not_upload_as_generic_files() {
+    use base64::Engine;
+    let gateway = mock_gateway(false, false).await;
+    let bytes = include_bytes!("../../assets/popper.png");
+    let image = crate::quick_ask::Attachment {
+        name: "photo.png".into(),
+        mime: "image/png".into(),
+        kind: "image".into(),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+    };
+    DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "image-request",
+            &provider(gateway.base.clone()),
+            "test-dsh-key",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"描述这张图片"}]),
+            &[image.clone()],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert!(gateway.uploads.lock().unwrap().is_empty());
+    let calls = gateway.calls.lock().unwrap();
+    let prompt = calls
+        .iter()
+        .find(|call| call["method"] == "session/prompt")
+        .unwrap();
+    assert_eq!(
+        prompt["payload"]["args"]["request"]["content"][1],
+        json!({
+            "type":"image", "mediaType":"image/png", "data":image.data, "name":"photo.png"
+        })
+    );
+}
+
+#[tokio::test]
+async fn attachment_upload_business_errors_and_invalid_receipts_never_submit_prompt() {
+    for (body, expected) in [
+        (
+            json!({"ok":false,"error":{"message":"bad test-dsh-key"}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_REJECTED",
+        ),
+        (
+            json!({"ok":true,"value":{}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+        ),
+        (
+            json!({"ok":true,"value":{"receiptId":17}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+        ),
+        (
+            json!({"value":{"receiptId":"receipt"}}).to_string(),
+            "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+        ),
+        ("not-json".into(), "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE"),
+    ] {
+        let gateway = mock_gateway(false, false).await;
+        *gateway.upload_response.lock().unwrap() = Some(body);
+        let error = DshService::new()
+            .unwrap()
+            .generate_with_attachments(
+                "invalid-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, expected);
+        assert!(!error.message.contains("test-dsh-key"));
+        let calls = gateway.calls.lock().unwrap();
+        assert!(!calls.iter().any(|call| call["method"] == "session/prompt"));
+        assert!(calls.iter().any(|call| call["method"] == "session/cancel"));
+    }
+}
+
+#[tokio::test]
+async fn attachment_upload_http_failures_do_not_replay_or_submit_a_prompt() {
+    use std::sync::atomic::Ordering;
+    for status in [401, 404, 413, 503] {
+        let gateway = mock_gateway(false, false).await;
+        gateway.upload_status.store(status, Ordering::SeqCst);
+        let error = DshService::new()
+            .unwrap()
+            .generate_with_attachments(
+                "failed-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, "DSH_ATTACHMENT_UPLOAD_HTTP_ERROR");
+        assert_eq!(error.status, Some(status));
+        assert_eq!(error.retryable, status >= 500);
+        assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+        assert!(!gateway
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call["method"] == "session/prompt"));
+    }
+}
+
+#[tokio::test]
+async fn rejected_upload_cookie_reauthenticates_before_receipt_admission() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway_auth(false, false, true).await;
+    gateway.upload_status.store(401, Ordering::SeqCst);
+    DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "cookie-upload",
+            &provider(gateway.base.clone()),
+            "",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"读取文档"}]),
+            &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(gateway.uploads.lock().unwrap().len(), 2);
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "local-login")
+            .count(),
+        2
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn later_generations_reupload_retained_attachments_into_their_new_sessions() {
+    let gateway = mock_gateway(false, false).await;
+    let service = DshService::new().unwrap();
+    let attachment = test_file("test.pdf", "application/pdf", b"%PDF-test");
+    for request_id in ["first-upload", "retry-upload", "follow-up-upload"] {
+        service.generate_with_attachments(
+            request_id, &provider(gateway.base.clone()), "test-dsh-key", "one/same", &plan(),
+            &json!([{"role":"user","content":"读取文档"},{"role":"assistant","content":"原回答"},{"role":"user","content":"继续分析"}]), &[attachment.clone()],
+            &CancellationToken::new(), &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()), |_| ControlFlow::Continue(()), |_| {},
+        ).await.unwrap();
+    }
+    let uploads = gateway.uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 3);
+    assert_ne!(uploads[0].session_id, uploads[1].session_id);
+    assert_ne!(uploads[1].session_id, uploads[2].session_id);
+    let calls = gateway.calls.lock().unwrap();
+    for prompt in calls
+        .iter()
+        .filter(|call| call["method"] == "session/prompt")
+    {
+        let request = &prompt["payload"]["args"]["request"];
+        let upload = uploads
+            .iter()
+            .find(|upload| upload.session_id == request["sessionId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(request["content"][1]["receiptId"], upload.receipt);
+    }
+}
+
+#[tokio::test]
+async fn cancellation_during_upload_cancels_the_session_without_submitting_prompt() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway(false, false).await;
+    gateway.upload_blocked.store(true, Ordering::SeqCst);
+    let cancellation = CancellationToken::new();
+    let trigger = cancellation.clone();
+    let seen = gateway.upload_seen.clone();
+    let cancel_task = tokio::spawn(async move {
+        let _permit = seen.acquire().await.unwrap();
+        trigger.cancel();
+    });
+    let error = DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "cancel-upload",
+            &provider(gateway.base.clone()),
+            "test-dsh-key",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"读取文档"}]),
+            &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+            &cancellation,
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    cancel_task.await.unwrap();
+    assert_eq!(error.code, "CANCELLED");
+    let calls = gateway.calls.lock().unwrap();
+    assert!(!calls.iter().any(|call| call["method"] == "session/prompt"));
+    let cancel = calls
+        .iter()
+        .find(|call| call["method"] == "session/cancel")
+        .unwrap();
+    assert_eq!(
+        cancel["payload"]["args"]["request"]["sessionId"],
+        gateway.uploads.lock().unwrap()[0].session_id
+    );
+    gateway.upload_gate.add_permits(1);
+}
+
+#[tokio::test]
+async fn generation_budget_covers_the_attachment_upload_phase() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway(false, false).await;
+    gateway.upload_blocked.store(true, Ordering::SeqCst);
+    let error = DshService::new()
+        .unwrap()
+        .generate_with_attachments(
+            "timeout-upload",
+            &provider(gateway.base.clone()),
+            "test-dsh-key",
+            "one/same",
+            &plan(),
+            &json!([{"role":"user","content":"读取文档"}]),
+            &[test_file("test.pdf", "application/pdf", b"%PDF-test")],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(2)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "TOTAL_TIMEOUT");
+    assert!(error.retryable);
+    assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+    assert!(!gateway
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|call| call["method"] == "session/prompt"));
+    gateway.upload_gate.add_permits(1);
+}
+
+#[tokio::test]
+async fn upload_disconnect_allows_manual_retry_in_a_new_session_without_automatic_replay() {
+    for response in ["disconnect-before-headers", "disconnect-during-body"] {
+        let gateway = mock_gateway(false, false).await;
+        *gateway.upload_response.lock().unwrap() = Some(response.into());
+        let service = DshService::new().unwrap();
+        let attachment = test_file("test.pdf", "application/pdf", b"%PDF-test");
+        let error = service
+            .generate_with_attachments(
+                "disconnect-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[attachment.clone()],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap_err();
+        assert!(error.retryable);
+        assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+        assert!(!gateway
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|call| call["method"] == "session/prompt"));
+        *gateway.upload_response.lock().unwrap() = None;
+        service
+            .generate_with_attachments(
+                "manual-retry-upload",
+                &provider(gateway.base.clone()),
+                "test-dsh-key",
+                "one/same",
+                &plan(),
+                &json!([{"role":"user","content":"读取文档"}]),
+                &[attachment],
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+                |_| ControlFlow::Continue(()),
+                |_| ControlFlow::Continue(()),
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let uploads = gateway.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 2);
+        assert_ne!(uploads[0].session_id, uploads[1].session_id);
+        assert_eq!(
+            gateway
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call["method"] == "session/prompt")
+                .count(),
+            1
+        );
+    }
+}
+
+async fn conversation_turn(
+    service: &DshService,
+    conversation: &DshConversation,
+    config: &ProviderConfig,
+    key: &str,
+    request_id: &str,
+    model: &str,
+    messages: &Value,
+    all: &[crate::quick_ask::Attachment],
+    latest: &[crate::quick_ask::Attachment],
+    cancellation: &CancellationToken,
+) -> Result<TransportSuccess, TransportFailure> {
+    service
+        .generate_in_conversation(
+            conversation,
+            request_id,
+            config,
+            key,
+            model,
+            &plan(),
+            messages,
+            all,
+            latest,
+            cancellation,
+            &GenerationBudget::new(Instant::now(), Duration::from_secs(5)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+}
+
+#[tokio::test]
+async fn save_promotes_the_bound_session_and_continues_without_replaying_history_or_files() {
+    for key in ["", "test-dsh-key"] {
+        let gateway = mock_gateway_auth(false, false, key.is_empty()).await;
+        let config = provider(gateway.base.clone());
+        let service = DshService::new().unwrap();
+        let conversation = DshConversation::default();
+        let file = test_file("keep.txt", "text/plain", b"preserve this file");
+        conversation_turn(&service, &conversation, &config, key, "before-save", "one/same",
+            &json!([{"role":"user","content":"Original question"}]),
+            &[file.clone()], &[file.clone()], &CancellationToken::new()).await.unwrap();
+        let before = conversation.status(&config.id).await.unwrap();
+        assert!(!before.saved);
+        let saved = conversation.save(&config.id).await.unwrap();
+        assert_eq!(saved.session_id, before.session_id);
+        assert!(saved.saved);
+        assert_eq!(conversation.save(&config.id).await.unwrap(), saved);
+        let calls = gateway.calls.lock().unwrap().clone();
+        let saves: Vec<_> = calls.iter().filter(|call| call["method"] == "temporary/save").collect();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0]["payload"]["args"], json!({"request":{"sessionId":before.session_id}}));
+        conversation_turn(&service, &conversation, &config, key, "after-save", "two/same",
+            &json!([{"role":"user","content":"Original question"},
+                {"role":"assistant","content":"Previous answer"},
+                {"role":"user","content":"Continue saved conversation"}]),
+            &[file.clone()], &[], &CancellationToken::new()).await.unwrap();
+        assert_eq!(conversation.status(&config.id).await.unwrap(), saved);
+        assert_eq!(gateway.sockets.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(gateway.uploads.lock().unwrap().len(), 1);
+        let calls = gateway.calls.lock().unwrap();
+        let creates: Vec<_> = calls.iter().filter(|call| call["method"] == "session/create").collect();
+        assert_eq!(creates.len(), 2);
+        assert_eq!(creates[1]["payload"]["args"], json!({"request":{"sessionId":saved.session_id}}));
+        let prompt = calls.iter().rev().find(|call| call["method"] == "session/prompt").unwrap();
+        assert_eq!(prompt["payload"]["args"]["request"]["sessionId"], saved.session_id);
+        assert_eq!(prompt["payload"]["args"]["request"]["content"], json!([{"type":"text","text":"Continue saved conversation"}]));
+    }
+}
+
+#[tokio::test]
+async fn save_rejects_missing_foreign_or_busy_conversations_without_dispatch() {
+    let conversation = DshConversation::default();
+    assert_eq!(conversation.save("dsh").await.unwrap_err().code, "DSH_NO_SESSION");
+    let _guard = conversation.state.lock().await;
+    assert_eq!(conversation.save("dsh").await.unwrap_err().code, "DSH_SESSION_ACTIVE");
+    drop(_guard);
+    let gateway = mock_gateway(false, false).await;
+    let config = provider(gateway.base.clone());
+    let service = DshService::new().unwrap();
+    conversation_turn(&service, &conversation, &config, "test-dsh-key", "first", "one/same",
+        &json!([{"role":"user","content":"hello"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    assert!(conversation.status("foreign-provider").await.is_none());
+    assert_eq!(conversation.save("foreign-provider").await.unwrap_err().code, "DSH_NO_SESSION");
+    assert!(!gateway.calls.lock().unwrap().iter().any(|call| call["method"] == "temporary/save"));
+}
+
+#[tokio::test]
+async fn save_reports_plugin_errors_and_allows_idempotent_retry_after_an_uncertain_receipt() {
+    let gateway = mock_gateway(false, false).await;
+    let config = provider(gateway.base.clone());
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    conversation_turn(&service, &conversation, &config, "test-dsh-key", "first", "one/same",
+        &json!([{"role":"user","content":"hello"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    for (status, code, expected) in [
+        (409, "temporary/session-active", "DSH_SESSION_ACTIVE"),
+        (410, "temporary/expired", "DSH_SESSION_EXPIRED"),
+        (404, "temporary/not-found", "DSH_NO_SESSION"),
+        (503, "temporary/not-ready", "DSH_NOT_READY"),
+        (404, "unknown", "DSH_SAVE_FAILED"),
+        (500, "temporary/import-conflict", "DSH_SAVE_FAILED"),
+        (200, "temporary/session-active", "DSH_SESSION_ACTIVE"),
+    ] {
+        *gateway.save_response.lock().unwrap() = Some((status, json!({"ok":false,
+            "error":{"code":code,"message":"secret test-dsh-key internal path"}})));
+        let error = conversation.save(&config.id).await.unwrap_err();
+        assert_eq!(error.code, expected);
+        assert!(!error.message.contains("test-dsh-key"));
+        assert!(!conversation.status(&config.id).await.unwrap().saved);
+    }
+    // No RPC failure envelope, as with an older gateway's missing route.
+    *gateway.save_response.lock().unwrap() = Some((404, json!({})));
+    assert_eq!(conversation.save(&config.id).await.unwrap_err().code, "DSH_SAVE_UNSUPPORTED");
+    *gateway.save_response.lock().unwrap() = Some((200, json!({"ok":true,"value":{
+        "sessionId":"wrong-session", "workspaceId":"normal", "savedSessionIds":["wrong-session"],
+        "temporary":false, "reconnectRequired":true,
+    }})));
+    assert_eq!(conversation.save(&config.id).await.unwrap_err().code, "DSH_INVALID_RESPONSE");
+    *gateway.save_response.lock().unwrap() = Some((200, json!({"ok":true,"value":{
+        "sessionId":"remote-session", "workspaceId":"normal", "savedSessionIds":["remote-session"],
+        "temporary":false, "reconnectRequired":true, "alreadySaved":true,
+    }})));
+    assert!(conversation.save(&config.id).await.unwrap().saved);
+}
+
+#[tokio::test]
+async fn saving_one_window_keeps_another_windows_stream_usable() {
+    let gateway = mock_gateway(false, false).await;
+    let config = provider(gateway.base.clone());
+    let service = DshService::new().unwrap();
+    let first = DshConversation::default();
+    let second = DshConversation::default();
+    for (conversation, request) in [(&first, "one"), (&second, "two")] {
+        conversation_turn(&service, conversation, &config, "test-dsh-key", request, "one/same",
+            &json!([{"role":"user","content":"hello"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    }
+    let original_mux = service.gateway(&config, "test-dsh-key").unwrap().mux().await.unwrap().0;
+    first.save(&config.id).await.unwrap();
+    assert!(!original_mux.is_closed());
+    conversation_turn(&service, &second, &config, "test-dsh-key", "two-next", "one/same",
+        &json!([{"role":"user","content":"next"}]), &[], &[], &CancellationToken::new()).await.unwrap();
+    assert_eq!(gateway.sockets.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!second.status(&config.id).await.unwrap().saved);
+}
+
+#[tokio::test]
+async fn conversation_reuses_native_session_and_sends_only_new_questions_and_attachments() {
+    for key in ["", "test-dsh-key"] {
+        let gateway = mock_gateway_auth(false, false, key.is_empty()).await;
+        let service = DshService::new().unwrap();
+        let conversation = DshConversation::default();
+        let config = provider(gateway.base.clone());
+        let first_file = test_file("first.txt", "text/plain", b"first file");
+        let next_file = test_file("next.txt", "text/plain", b"next file");
+        let first = json!([
+            {"role":"system","content":"Initial instructions and selected source"},
+            {"role":"user","content":"First question"}
+        ]);
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "first",
+            "one/same",
+            &first,
+            &[first_file.clone()],
+            &[first_file.clone()],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let second = json!([
+            {"role":"system","content":"Initial instructions and selected source"},
+            {"role":"user","content":"First question"},
+            {"role":"assistant","content":"Previous answer"},
+            {"role":"user","content":"Next question"}
+        ]);
+        // A cache expiration must not orphan the active conversation's Agent.
+        service.clear_gateway_cache();
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "second",
+            "two/org/model",
+            &second,
+            &[first_file.clone()],
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let third = json!([
+            {"role":"system","content":"Answer questions instead of translating"},
+            {"role":"user","content":"First question"},
+            {"role":"assistant","content":"Previous answer"},
+            {"role":"user","content":"Question with new file"}
+        ]);
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "third",
+            "two/org/model",
+            &third,
+            &[first_file.clone(), next_file.clone()],
+            &[next_file],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        // User-triggered retry uses the same Agent, without replaying earlier turns.
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            "retry",
+            "one/same",
+            &second,
+            &[first_file],
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        let calls = gateway.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "session/create")
+                .count(),
+            1
+        );
+        let prompts: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+            .map(|call| &call["payload"]["args"]["request"])
+            .collect();
+        assert_eq!(prompts.len(), 4);
+        assert!(prompts
+            .iter()
+            .all(|prompt| prompt["sessionId"] == prompts[0]["sessionId"]));
+        assert!(prompts[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("selected source"));
+        assert_eq!(
+            prompts[1]["content"],
+            json!([{"type":"text","text":"Next question"}])
+        );
+        let updated = prompts[2]["content"][0]["text"].as_str().unwrap();
+        assert!(updated.contains("Answer questions instead of translating"));
+        assert!(updated.contains("Question with new file"));
+        assert!(!updated.contains("First question"));
+        assert!(!updated.contains("Previous answer"));
+        assert_eq!(prompts[2]["content"].as_array().unwrap().len(), 2);
+        assert!(!prompts[3]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Previous answer"));
+        let selections: Vec<_> = calls
+            .iter()
+            .filter(|call| call["method"] == "session/selectModel")
+            .map(|call| &call["payload"]["args"]["request"])
+            .collect();
+        assert!(selections
+            .iter()
+            .all(|selection| selection["sessionId"] == prompts[0]["sessionId"]));
+        assert_eq!(selections[1]["provider"], "two");
+        assert_eq!(selections[1]["model"], "org/model");
+        let uploads = gateway.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 2);
+        assert_eq!(uploads[0].name, "first.txt");
+        assert_eq!(uploads[1].name, "next.txt");
+        assert_eq!(uploads[0].session_id, uploads[1].session_id);
+    }
+}
+
+#[tokio::test]
+async fn conversation_changes_destination_without_reusing_foreign_sessions_or_receipts() {
+    let gateway = mock_gateway(false, false).await;
+    let other_gateway = mock_gateway(false, false).await;
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    let mut config = provider(gateway.base.clone());
+    let messages = json!([
+        {"role":"user","content":"Original question"},
+        {"role":"assistant","content":"Original answer"},
+        {"role":"user","content":"Latest question"}
+    ]);
+    let file = test_file("context.pdf", "application/pdf", b"%PDF-context");
+    for (index, key) in ["test-dsh-key", "test-dsh-key", "rotated-key", "rotated-key"]
+        .into_iter()
+        .enumerate()
+    {
+        if index == 1 {
+            config.dsh_workspace = Some("/other-workspace".into());
+        }
+        if index == 3 {
+            config.id = "other-provider".into();
+        }
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            key,
+            &format!("route-{index}"),
+            "one/same",
+            &messages,
+            &[file.clone()],
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    }
+    config.base_url = other_gateway.base.clone();
+    conversation_turn(
+        &service,
+        &conversation,
+        &config,
+        "test-dsh-key",
+        "other-host",
+        "one/same",
+        &messages,
+        &[file],
+        &[],
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    for (server, expected) in [(&gateway, 4), (&other_gateway, 1)] {
+        let calls = server.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "session/create")
+                .count(),
+            expected
+        );
+        assert_eq!(server.uploads.lock().unwrap().len(), expected);
+        for call in calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
+        {
+            let text = call["payload"]["args"]["request"]["content"][0]["text"]
+                .as_str()
+                .unwrap();
+            assert!(text.contains("Original question"));
+            assert!(text.contains("Original answer"));
+            assert!(text.contains("Latest question"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancelled_conversation_retries_in_same_session_and_ignores_old_turn_events() {
+    use std::sync::atomic::Ordering;
+    let gateway = mock_gateway(true, false).await;
+    let service = Arc::new(DshService::new().unwrap());
+    let conversation = Arc::new(DshConversation::default());
+    let config = provider(gateway.base.clone());
+    let cancellation = CancellationToken::new();
+    let first = {
+        let service = service.clone();
+        let conversation = conversation.clone();
+        let config = config.clone();
+        let cancellation = cancellation.clone();
+        tokio::spawn(async move {
+            conversation_turn(
+                &service,
+                &conversation,
+                &config,
+                "test-dsh-key",
+                "blocked",
+                "one/same",
+                &json!([{"role":"user","content":"Question"}]),
+                &[],
+                &[],
+                &cancellation,
+            )
+            .await
+        })
+    };
+    wait_for_calls(&gateway, "session/prompt", 1).await;
+    cancellation.cancel();
+    assert_eq!(first.await.unwrap().unwrap_err().code, "CANCELLED");
+    wait_for_calls(&gateway, "session/cancel", 1).await;
+    gateway.stale_follow_events.store(true, Ordering::SeqCst);
+    let next = {
+        let service = service.clone();
+        let conversation = conversation.clone();
+        let config = config.clone();
+        tokio::spawn(async move {
+            conversation_turn(
+                &service,
+                &conversation,
+                &config,
+                "test-dsh-key",
+                "unblocked-request",
+                "one/same",
+                &json!([{"role":"user","content":"Question"}]),
+                &[],
+                &[],
+                &CancellationToken::new(),
+            )
+            .await
+        })
+    };
+    assert_eq!(next.await.unwrap().unwrap().content, "你好");
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/create")
+            .count(),
+        1
+    );
+    let prompts: Vec<_> = calls
+        .iter()
+        .filter(|call| call["method"] == "session/prompt")
+        .map(|call| &call["payload"]["args"]["request"])
+        .collect();
+    assert_eq!(prompts[0]["sessionId"], prompts[1]["sessionId"]);
+    assert_eq!(prompts[1]["content"][0]["text"], "Question");
+}
+
+#[tokio::test]
+async fn waiting_for_conversation_lock_honors_cancellation_and_total_budget() {
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    let _lock = conversation.state.lock().await;
+    let token = CancellationToken::new();
+    token.cancel();
+    let config = provider("http://127.0.0.1:1".into());
+    let messages = json!([{"role":"user","content":"Question"}]);
+    let error = conversation_turn(
+        &service,
+        &conversation,
+        &config,
+        "",
+        "cancelled",
+        "one/same",
+        &messages,
+        &[],
+        &[],
+        &token,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, "CANCELLED");
+    let error = service
+        .generate_in_conversation(
+            &conversation,
+            "timeout",
+            &config,
+            "",
+            "one/same",
+            &plan(),
+            &messages,
+            &[],
+            &[],
+            &CancellationToken::new(),
+            &GenerationBudget::new(Instant::now(), Duration::from_millis(10)),
+            |_| ControlFlow::Continue(()),
+            |_| ControlFlow::Continue(()),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "TOTAL_TIMEOUT");
+}
+
+#[tokio::test]
+async fn separate_windows_keep_independent_native_sessions_across_followups() {
+    let gateway = mock_gateway(false, false).await;
+    let service = DshService::new().unwrap();
+    let first = DshConversation::default();
+    let second = DshConversation::default();
+    let config = provider(gateway.base.clone());
+    let messages = json!([{"role":"user","content":"Initial question"}]);
+    let token = CancellationToken::new();
+    let (one, two) = tokio::join!(
+        conversation_turn(
+            &service,
+            &first,
+            &config,
+            "test-dsh-key",
+            "one",
+            "one/same",
+            &messages,
+            &[],
+            &[],
+            &token
+        ),
+        conversation_turn(
+            &service,
+            &second,
+            &config,
+            "test-dsh-key",
+            "two",
+            "two/org/model",
+            &messages,
+            &[],
+            &[],
+            &token
+        ),
+    );
+    let first_answer = one.unwrap().content;
+    let second_answer = two.unwrap().content;
+    assert_ne!(first_answer, second_answer);
+    let followup = json!([
+        {"role":"user","content":"Initial question"},
+        {"role":"assistant","content":"Prior answer"},
+        {"role":"user","content":"Follow-up"}
+    ]);
+    let (one, two) = tokio::join!(
+        conversation_turn(
+            &service,
+            &first,
+            &config,
+            "test-dsh-key",
+            "one-next",
+            "one/same",
+            &followup,
+            &[],
+            &[],
+            &token
+        ),
+        conversation_turn(
+            &service,
+            &second,
+            &config,
+            "test-dsh-key",
+            "two-next",
+            "two/org/model",
+            &followup,
+            &[],
+            &[],
+            &token
+        ),
+    );
+    assert_eq!(one.unwrap().content, first_answer);
+    assert_eq!(two.unwrap().content, second_answer);
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/create")
+            .count(),
+        2
+    );
+    let id = |request_id: &str| {
+        calls
+            .iter()
+            .find(|call| {
+                call["method"] == "session/prompt"
+                    && call["payload"]["args"]["request"]["requestId"] == request_id
+            })
+            .unwrap()["payload"]["args"]["request"]["sessionId"]
+            .clone()
+    };
+    assert_eq!(id("one"), id("one-next"));
+    assert_eq!(id("two"), id("two-next"));
+    assert_ne!(id("one"), id("two"));
+}
+
+#[tokio::test]
+async fn disconnected_conversation_reconnects_without_creating_or_replaying_a_session() {
+    let gateway = mock_gateway(true, false).await;
+    let service = DshService::new().unwrap();
+    let conversation = DshConversation::default();
+    let config = provider(gateway.base.clone());
+    let messages = json!([{"role":"user","content":"Question"}]);
+    let token = CancellationToken::new();
+    let disconnect = async {
+        wait_for_calls(&gateway, "session/prompt", 1).await;
+        let _ = gateway.signals.send(MockSignal::Disconnect);
+    };
+    let (result, ()) = tokio::join!(
+        conversation_turn(
+            &service,
+            &conversation,
+            &config,
+            "test-dsh-key",
+            "blocked",
+            "one/same",
+            &messages,
+            &[],
+            &[],
+            &token
+        ),
+        disconnect,
+    );
+    assert_eq!(result.unwrap_err().code, "DSH_DISCONNECTED");
+    let result = conversation_turn(
+        &service,
+        &conversation,
+        &config,
+        "test-dsh-key",
+        "unblocked-request",
+        "one/same",
+        &messages,
+        &[],
+        &[],
+        &token,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.content, "你好");
+    let calls = gateway.calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/create")
+            .count(),
+        1
+    );
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "session/prompt")
             .count(),
         2
     );

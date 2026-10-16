@@ -140,6 +140,9 @@ if (settingsWindows.length !== 1) {
   );
 } else {
   const settingsWindow = settingsWindows[0];
+  if (settingsWindow.create !== false) {
+    errors.push("Windows settings 窗口必须配置 create=false，在应用状态初始化完成后创建");
+  }
   if (settingsWindow.visible !== false) {
     errors.push("Windows settings 窗口必须配置 visible=false，确保普通启动不弹出设置页");
   }

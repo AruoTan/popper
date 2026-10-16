@@ -5,11 +5,16 @@ import {
   ChevronDown,
   CircleAlert,
   Copy,
+  FileText,
+  Image as ImageIcon,
   LoaderCircle,
   Maximize2,
   Minimize2,
+  Paperclip,
   Pin,
   RefreshCw,
+  Save,
+  SendHorizontal,
   Settings2,
   Square,
   X,
@@ -17,6 +22,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -38,6 +44,7 @@ import {
   isAiActionDefinition,
   requiresProviderApiKey,
   type ActionRetryOptions,
+  type DshSessionState,
   type Point,
   type PublicSettings,
   type ResultSessionSnapshot,
@@ -57,8 +64,10 @@ import {
   appendUserTurn,
   beginAssistantTurn,
   isAskAction,
+  parseTurnContent,
   patchStreamingAssistant,
   transcriptFromSnapshot,
+  type TranscriptAttachment,
   type TranscriptTurn,
 } from "./conversationTranscript";
 import { DictionaryPanel, useDictionarySession } from "./DictionaryPanel";
@@ -68,6 +77,13 @@ import type { ResultSessionBootstrap } from "./resultSessionBootstrap";
 import type { ResultState } from "./resultState";
 import { useSmoothStreamText } from "./useSmoothStreamText";
 import { useTranslationSuggestions } from "./useTranslationSuggestions";
+import {
+  ATTACHMENT_ACCEPT,
+  attachmentSize,
+  readAttachment,
+  validateAttachmentList,
+  type SelectedAttachment,
+} from "../quick-ask/attachments";
 
 const RESULT_RESIZE_DIRECTIONS = [
   "NorthWest",
@@ -386,10 +402,19 @@ function ResultSessionApp({
   const [routeSwitching, setRouteSwitching] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [commandMessage, setCommandMessage] = useState("");
+  const [dshSession, setDshSession] = useState<DshSessionState | null>(null);
+  const [savingDshSession, setSavingDshSession] = useState(false);
+  const dshSaveInFlight = useRef(false);
+  const dshStateRevision = useRef(0);
   const [copyComplete, setCopyComplete] = useState(false);
   const [followUpQuestion, setFollowUpQuestion] = useState("");
   const [followUpExpanded, setFollowUpExpanded] = useState(false);
   const [followUpSubmitting, setFollowUpSubmitting] = useState(false);
+  const [followUpAttachments, setFollowUpAttachments] = useState<SelectedAttachment[]>([]);
+  const [readingAttachments, setReadingAttachments] = useState(false);
+  const [draggingOver, setDraggingOver] = useState(false);
+  const filePickerRef = useRef<HTMLInputElement>(null);
+  const readingAttachmentsRef = useRef(false);
   const followUpInFlight = useRef(false);
   const [revealCommitted, setRevealCommitted] = useState(false);
   const [bootstrapMessage, setBootstrapMessage] = useState("");
@@ -398,6 +423,7 @@ function ResultSessionApp({
   const contentInnerRef = useRef<HTMLDivElement>(null);
   const modelSwitchRef = useRef<HTMLDivElement>(null);
   const modelToggleRef = useRef<HTMLButtonElement>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   const copyResetTimer = useRef<number | null>(null);
   const retryInFlight = useRef(false);
   const bootstrapRetryInFlight = useRef(false);
@@ -405,8 +431,23 @@ function ResultSessionApp({
   const followUpComposing = useRef(false);
   const askOriginalDefaulted = useRef(false);
   const askSawStreaming = useRef(false);
-  const pendingFollowUp = useRef<{ question: string; requestId: string | null } | null>(null);
+  const pendingFollowUp = useRef<{
+    question: string;
+    requestId: string | null;
+    attachments?: SelectedAttachment[];
+  } | null>(null);
   const dictionaryMode = dictionary?.mode === "dictionary";
+  const sessionAttachments = useMemo(() => {
+    const map = new Map<string, TranscriptAttachment>();
+    for (const turn of turns) {
+      if (turn.attachments) {
+        for (const att of turn.attachments) {
+          map.set(att.name, att);
+        }
+      }
+    }
+    return map;
+  }, [turns]);
   const handleScroll = useAutoFollowOutput(
     contentRef,
     contentInnerRef,
@@ -437,7 +478,9 @@ function ResultSessionApp({
     isBuiltinTranslate ||
     (isAiAction && status !== "streaming" && dictionary?.status !== "loading");
   const followUpDisabled =
+    savingDshSession ||
     followUpSubmitting ||
+    readingAttachments ||
     (!isBuiltinTranslate && status === "streaming") ||
     (!isBuiltinTranslate &&
       ((!isAsk && status !== "completed") ||
@@ -456,6 +499,69 @@ function ResultSessionApp({
   }, [action]);
 
   const effectiveModelRoute = activeModelRoute ?? defaultModelRoute;
+  const dshProviderId = !dictionaryMode && settings.providers.find(
+    (provider) => provider.id === effectiveModelRoute?.providerId && provider.kind === "dsh",
+  )?.id;
+  const isDsh = Boolean(dshProviderId);
+
+  useEffect(() => {
+    if (!isDsh && followUpAttachments.length > 0) {
+      setFollowUpAttachments([]);
+    }
+  }, [isDsh, followUpAttachments.length]);
+
+  const addFollowUpFiles = async (files: File[]): Promise<void> => {
+    if (!files.length || followUpSubmitting || readingAttachmentsRef.current || !isDsh) return;
+    readingAttachmentsRef.current = true;
+    setReadingAttachments(true);
+    setCommandMessage("");
+    try {
+      const next = [...followUpAttachments, ...(await Promise.all(files.map(readAttachment)))];
+      validateAttachmentList(next);
+      setFollowUpAttachments(next);
+    } catch (error: unknown) {
+      setCommandMessage(getErrorMessage(error, "无法添加附件"));
+    } finally {
+      readingAttachmentsRef.current = false;
+      setReadingAttachments(false);
+    }
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    const revision = ++dshStateRevision.current;
+    setDshSession(null);
+    if (!dshProviderId || !requestId || status === "streaming" || routeSwitching || retrying || followUpSubmitting) {
+      return;
+    }
+    void window._popper_?.dshSessionState?.(sessionId, requestId).then((state) => {
+      if (!disposed && revision === dshStateRevision.current && state?.providerId === dshProviderId) {
+        setDshSession(state);
+      }
+    }).catch(() => {
+      // A replaced/closed native request is no longer a save target.
+    });
+    return () => { disposed = true; };
+  }, [sessionId, requestId, status, dshProviderId, routeSwitching, retrying, followUpSubmitting]);
+
+  const saveDshSession = async (): Promise<void> => {
+    if (!requestId || !dshSession || dshSession.saved || dshSaveInFlight.current || !window._popper_?.saveDshSession) return;
+    dshSaveInFlight.current = true;
+    const revision = ++dshStateRevision.current;
+    setSavingDshSession(true);
+    setCommandMessage("");
+    try {
+      const saved = await window._popper_.saveDshSession(sessionId, requestId);
+      if (!disposedRef.current && revision === dshStateRevision.current) setDshSession(saved);
+    } catch (error) {
+      if (!disposedRef.current && revision === dshStateRevision.current) {
+        setCommandMessage(getErrorMessage(error, "保存 DSH 会话失败，请重试"));
+      }
+    } finally {
+      dshSaveInFlight.current = false;
+      if (!disposedRef.current) setSavingDshSession(false);
+    }
+  };
   const modelGroups = useMemo(
     () =>
       settings?.providers
@@ -492,10 +598,14 @@ function ResultSessionApp({
   const modelSummary = selectedModel
     ? `${selectedModel.providerName} · ${selectedModel.modelName}`
     : "未选择模型";
-  const modelSwitchDisabled = status === "streaming" || routeSwitching || retrying;
+  const modelSwitchDisabled = status === "streaming" || routeSwitching || retrying || savingDshSession;
 
   const reconcilePendingFollowUp = useCallback(
-    (pending: { question: string; requestId: string | null }): void => {
+    (pending: {
+      question: string;
+      requestId: string | null;
+      attachments?: SelectedAttachment[];
+    }): void => {
       const latest = getActionEventSnapshot();
       if (pending.requestId && latest.requestId !== pending.requestId) return;
       if (latest.status === "completed") {
@@ -503,6 +613,11 @@ function ResultSessionApp({
         setFollowUpQuestion((current) => (current === pending.question ? "" : current));
       } else if (latest.status === "error" || latest.status === "cancelled") {
         setFollowUpQuestion((current) => current || pending.question);
+        if (pending.attachments && pending.attachments.length > 0) {
+          setFollowUpAttachments((current) =>
+            current.length === 0 ? pending.attachments! : current,
+          );
+        }
       }
     },
     [],
@@ -554,7 +669,7 @@ function ResultSessionApp({
 
   const retry = useCallback(
     async (options?: ActionRetryOptions, forceAi = false): Promise<boolean> => {
-      if (retryInFlight.current) return false;
+      if (retryInFlight.current || dshSaveInFlight.current) return false;
       retryInFlight.current = true;
       setRetrying(true);
       setCommandMessage("");
@@ -666,20 +781,36 @@ function ResultSessionApp({
       const canSubmit =
         isBuiltinTranslate ||
         (isAsk ? status === "completed" || status === "idle" : status === "completed");
-      if (!question || followUpInFlight.current || !canSubmit) return;
+      if (
+        (!question && !(isDsh && followUpAttachments.length > 0)) ||
+        followUpInFlight.current ||
+        dshSaveInFlight.current ||
+        readingAttachmentsRef.current ||
+        !canSubmit
+      )
+        return;
       followUpInFlight.current = true;
       setCommandMessage("");
       setFollowUpSubmitting(true);
       let appended = false;
+      const attachmentsToSubmit =
+        isDsh && followUpAttachments.length > 0
+          ? followUpAttachments.map(({ payload }) => payload)
+          : undefined;
+      const stashedAttachments = followUpAttachments;
       try {
         let translationRequestId: string | undefined;
         if (isBuiltinTranslate) {
           if (!window._popper_.submitTranslation) throw new Error("当前版本不支持翻译窗口输入");
-          const submission = await window._popper_.submitTranslation(sessionId, question);
+          const submission =
+            attachmentsToSubmit && attachmentsToSubmit.length > 0
+              ? await window._popper_.submitTranslation(sessionId, question, attachmentsToSubmit)
+              : await window._popper_.submitTranslation(sessionId, question);
           if (disposedRef.current) return;
           if (submission.route === "dictionary") {
             setTurns([]);
             setFollowUpQuestion("");
+            setFollowUpAttachments([]);
             pendingFollowUp.current = null;
             askSawStreaming.current = false;
             return;
@@ -695,12 +826,25 @@ function ResultSessionApp({
               ? crypto.randomUUID()
               : `assistant-${Date.now()}`;
           askSawStreaming.current = false;
-          setTurns((current) => beginAssistantTurn(appendUserTurn(current, question), turnId));
+          const userTurnAttachments: TranscriptAttachment[] | undefined =
+            attachmentsToSubmit && attachmentsToSubmit.length > 0
+              ? attachmentsToSubmit.map((att) => ({
+                  name: att.name,
+                  mime: att.mime,
+                  kind: att.kind,
+                  data: att.data,
+                }))
+              : undefined;
+          setTurns((current) =>
+            beginAssistantTurn(appendUserTurn(current, question, userTurnAttachments), turnId),
+          );
           appended = true;
         }
         const result = translationRequestId
           ? { accepted: true, requestId: translationRequestId, message: "" }
-          : await window._popper_.continueAction!(sessionId, question);
+          : attachmentsToSubmit && attachmentsToSubmit.length > 0
+            ? await window._popper_.continueAction!(sessionId, question, attachmentsToSubmit)
+            : await window._popper_.continueAction!(sessionId, question);
         if (!result.accepted) {
           setCommandMessage(result.message);
           if (appended) {
@@ -709,9 +853,14 @@ function ResultSessionApp({
           }
           return;
         }
-        const pending = { question, requestId: result.requestId ?? null };
+        const pending = {
+          question,
+          requestId: result.requestId ?? null,
+          attachments: stashedAttachments,
+        };
         pendingFollowUp.current = pending;
         setFollowUpQuestion("");
+        setFollowUpAttachments([]);
         reconcilePendingFollowUp(pending);
       } catch (error) {
         setCommandMessage(getErrorMessage(error, "无法继续提问"));
@@ -725,10 +874,12 @@ function ResultSessionApp({
       }
     },
     [
-      followUpQuestion,
-      isBuiltinTranslate,
-      isAsk,
       dictionary,
+      followUpAttachments,
+      followUpQuestion,
+      isAsk,
+      isBuiltinTranslate,
+      isDsh,
       reconcilePendingFollowUp,
       sessionId,
       status,
@@ -921,6 +1072,24 @@ function ResultSessionApp({
     if (modelMenuOpen && modelSwitchDisabled) setModelMenuOpen(false);
   }, [modelMenuOpen, modelSwitchDisabled]);
 
+  useLayoutEffect(() => {
+    if (!modelMenuOpen) return;
+    const adjustPosition = (): void => {
+      const menu = modelMenuRef.current;
+      if (!menu) return;
+      menu.style.left = "0px";
+      const rect = menu.getBoundingClientRect();
+      const maxRight = window.innerWidth - 8;
+      if (rect.right > maxRight) {
+        const shift = rect.right - maxRight;
+        menu.style.left = `${Math.min(0, -shift)}px`;
+      }
+    };
+    adjustPosition();
+    window.addEventListener("resize", adjustPosition);
+    return () => window.removeEventListener("resize", adjustPosition);
+  }, [modelMenuOpen]);
+
   const keyboardState = useRef({ status, hasContent, cancel, closeWindow, retry, copy });
   keyboardState.current = { status, hasContent, cancel, closeWindow, retry, copy };
   useEffect(() => {
@@ -1074,7 +1243,7 @@ function ResultSessionApp({
     const defaultTarget = defaultTranslationTarget(detected, settings.translate);
     return { detected, target: translationTarget ?? defaultTarget };
   }, [action?.kind, selection, settings, translationTarget]);
-  const translationSwitching = status === "streaming" || routeSwitching || retrying;
+  const translationSwitching = status === "streaming" || routeSwitching || retrying || savingDshSession;
   const changeTranslationTarget = (target: TranslationLanguage): void => {
     const previous = translationTarget;
     setRouteSwitching(true);
@@ -1108,12 +1277,46 @@ function ResultSessionApp({
     <main
       className={`result-window ${windowsRenderer ? "result-window--windows" : ""} ${
         showFollowUp && followUpExpanded ? "result-window--followup-expanded" : ""
+      } ${
+        showFollowUp && followUpAttachments.length > 0 ? "result-window--followup-has-attachments" : ""
       }`}
       style={style}
       onPointerEnter={pointerEnter}
       onPointerLeave={pointerLeave}
       onPointerDown={handleResultPointerDown}
+      onDragEnter={(event) => {
+        if (isDsh && showFollowUp && !followUpDisabled) {
+          event.preventDefault();
+          setDraggingOver(true);
+        }
+      }}
+      onDragOver={(event) => {
+        if (isDsh && showFollowUp && !followUpDisabled) {
+          event.preventDefault();
+          setDraggingOver(true);
+        }
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDraggingOver(false);
+        }
+      }}
+      onDrop={(event) => {
+        if (isDsh && showFollowUp && !followUpDisabled) {
+          event.preventDefault();
+          setDraggingOver(false);
+          if (event.dataTransfer.files.length) {
+            void addFollowUpFiles(Array.from(event.dataTransfer.files));
+          }
+        }
+      }}
     >
+      {draggingOver && isDsh && (
+        <div className="result-window__drop-hint" aria-hidden="true">
+          <Paperclip size={20} />
+          <span>松开以添加附件到本次追问</span>
+        </div>
+      )}
       {windowsRenderer &&
         RESULT_RESIZE_DIRECTIONS.map((direction) => (
           <div
@@ -1208,7 +1411,12 @@ function ResultSessionApp({
                   <ChevronDown className="dropdown-chevron" size={12} aria-hidden="true" />
                 </button>
                 {modelMenuOpen && (
-                  <div className="result-model-menu" role="listbox" aria-label="可用模型">
+                  <div
+                    ref={modelMenuRef}
+                    className="result-model-menu"
+                    role="listbox"
+                    aria-label="可用模型"
+                  >
                     {modelGroups.map((provider) => (
                       <div
                         key={provider.id}
@@ -1232,6 +1440,7 @@ function ResultSessionApp({
                                 type="button"
                                 role="option"
                                 aria-selected={selected}
+                                title={`${provider.name} · ${choice.modelName}`}
                                 disabled={!provider.canConnect || modelSwitchDisabled}
                                 onClick={() => chooseModel(choice.value)}
                               >
@@ -1254,7 +1463,19 @@ function ResultSessionApp({
           </div>
         </div>
         <div className="result-window-actions" data-no-drag>
-          {selection && (
+          {dshProviderId && (
+            <button
+              className="result-original-toggle result-save-session"
+              type="button"
+              disabled={!dshSession || dshSession.saved || savingDshSession || modelSwitchDisabled || followUpSubmitting}
+              title={dshSession?.saved ? "会话已保存到 DSH 聊天历史" : "将当前会话保存到 DSH 聊天历史"}
+              onClick={() => void saveDshSession()}
+            >
+              {savingDshSession ? <LoaderCircle className="result-spin" size={13} aria-hidden="true" /> : dshSession?.saved ? <Check size={13} aria-hidden="true" /> : <Save size={13} aria-hidden="true" />}
+              {savingDshSession ? "保存中…" : dshSession?.saved ? "已保存" : "保存会话"}
+            </button>
+          )}
+          {selection?.text && (
             <button
               className="result-original-toggle"
               type="button"
@@ -1312,7 +1533,7 @@ function ResultSessionApp({
         onScroll={handleScroll}
       >
         <div ref={contentInnerRef} className="result-content__inner">
-          {selection && showOriginal && (
+          {selection && Boolean(selection.text.trim()) && showOriginal && (
             <section className="result-original" aria-label="原文">
               <div id="result-original-content" className="result-original__content">
                 {selection.text}
@@ -1359,7 +1580,48 @@ function ResultSessionApp({
                   >
                     <div className="result-turn__label">{turn.role === "user" ? "你" : "AI"}</div>
                     {turn.role === "user" ? (
-                      <div className="result-turn__content">{turn.content}</div>
+                      <div className="result-turn__content">
+                        {(() => {
+                          const parsed = parseTurnContent(turn.content, turn.attachments);
+                          return (
+                            <>
+                              <div className="result-turn__user-text">{parsed.text || turn.content}</div>
+                              {parsed.attachments.length > 0 && (
+                                <div className="result-turn__attachments" aria-label="用户附件">
+                                  {parsed.attachments.map((att, i) => {
+                                    const enriched = sessionAttachments.get(att.name) || att;
+                                    const isImage =
+                                      enriched.kind === "image" ||
+                                      /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(enriched.name);
+                                    return (
+                                      <div
+                                        key={enriched.name || i}
+                                        className={`result-turn__attachment ${
+                                          isImage && enriched.data ? "result-turn__attachment--image" : ""
+                                        }`}
+                                        title={enriched.name}
+                                      >
+                                        {isImage && enriched.data ? (
+                                          <img
+                                            className="result-turn__attachment-thumb"
+                                            src={`data:${enriched.mime || "image/png"};base64,${enriched.data}`}
+                                            alt={enriched.name}
+                                          />
+                                        ) : (
+                                          <span className="result-turn__attachment-icon">
+                                            {isImage ? <ImageIcon size={13} /> : <FileText size={13} />}
+                                          </span>
+                                        )}
+                                        <span className="result-turn__attachment-name">{enriched.name}</span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
+                      </div>
                     ) : (
                       <>
                         {/* CoT attaches to the latest assistant bubble (Cherry-style). */}
@@ -1373,6 +1635,7 @@ function ResultSessionApp({
                               contentScalarCount={countUnicodeScalars(turn.content)}
                               contentRevision={turn.content.length}
                               revealCommitted={revealCommitted}
+                              attachments={sessionAttachments}
                               onOpenExternal={openExternal}
                             />
                           </article>
@@ -1447,7 +1710,7 @@ function ResultSessionApp({
               </div>
             </div>
           )}
-          {generationNotice && (
+          {generationNotice && (!generationNotice.includes("正在") || (status === "streaming" && !hasContent)) && (
             <div className="result-inline-notice" role="status">
               {generationNotice}
             </div>
@@ -1474,52 +1737,164 @@ function ResultSessionApp({
         </div>
       )}
 
-      <footer className={`result-footer ${showFollowUp ? "" : "result-footer--actions-only"}`}>
+      <footer
+        className={`result-footer ${showFollowUp ? "" : "result-footer--actions-only"} ${
+          followUpAttachments.length > 0 ||
+          followUpQuestion.trim().length > 0 ||
+          followUpExpanded ||
+          draggingOver
+            ? "result-footer--active"
+            : ""
+        }`}
+      >
         {showFollowUp && (
-          <div className={`result-followup ${followUpExpanded ? "result-followup--expanded" : ""}`}>
-            <textarea
-              aria-label="继续提问"
-              placeholder={
-                isBuiltinTranslate
-                  ? "输入英文单词查词，或输入问题询问 AI"
-                  : isAsk
-                    ? "输入问题，基于选中文本提问"
-                    : "输入继续提问"
-              }
-              title="Enter 发送，Shift+Enter 换行"
-              rows={followUpExpanded ? 4 : 1}
-              maxLength={20_000}
-              value={followUpQuestion}
-              disabled={followUpDisabled}
-              onChange={(event) => setFollowUpQuestion(event.target.value)}
-              onCompositionStart={() => {
-                followUpComposing.current = true;
-              }}
-              onCompositionEnd={() => {
-                followUpComposing.current = false;
-              }}
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Enter" &&
-                  !event.shiftKey &&
-                  !event.nativeEvent.isComposing &&
-                  !followUpComposing.current
-                ) {
-                  event.preventDefault();
-                  void submitFollowUp();
+          <div
+            className={`result-followup ${followUpExpanded ? "result-followup--expanded" : ""} ${
+              followUpAttachments.length > 0 ? "result-followup--has-attachments" : ""
+            } ${isDsh ? "result-followup--dsh" : ""}`}
+          >
+            {followUpAttachments.length > 0 && (
+              <section className="result-followup__attachments" aria-label="追问附件预览">
+                <div className="result-followup__attachment-list">
+                  {followUpAttachments.map(({ id, size, payload }) => (
+                    <div
+                      className="result-followup__attachment"
+                      key={id}
+                      title={`${payload.name} (${attachmentSize(size)})`}
+                    >
+                      {payload.kind === "image" ? (
+                        <img
+                          className="result-followup__attachment-thumb"
+                          src={`data:${payload.mime};base64,${payload.data}`}
+                          alt={payload.name}
+                        />
+                      ) : (
+                        <span className="result-followup__file-icon">
+                          <FileText size={12} />
+                        </span>
+                      )}
+                      <span className="result-followup__attachment-name">{payload.name}</span>
+                      <span className="result-followup__attachment-size">{attachmentSize(size)}</span>
+                      <button
+                        className="result-followup__attachment-remove"
+                        type="button"
+                        aria-label={`移除 ${payload.name}`}
+                        disabled={followUpDisabled}
+                        onClick={() =>
+                          setFollowUpAttachments((current) =>
+                            current.filter((file) => file.id !== id),
+                          )
+                        }
+                      >
+                        <X size={11} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            <div className="result-followup__composer">
+              {isDsh && (
+                <>
+                  <input
+                    ref={filePickerRef}
+                    type="file"
+                    multiple
+                    accept={ATTACHMENT_ACCEPT}
+                    aria-label="选择追问附件"
+                    hidden
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files ?? []);
+                      event.target.value = "";
+                      void addFollowUpFiles(files);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="result-followup__attach-btn"
+                    aria-label="添加附件"
+                    title="添加附件 · 支持图片、文档等文件（每个最多 8 MB，合计最多 20 MB）"
+                    disabled={followUpDisabled || readingAttachments}
+                    onClick={() => filePickerRef.current?.click()}
+                  >
+                    {readingAttachments ? (
+                      <LoaderCircle size={14} className="result-spin" />
+                    ) : (
+                      <Paperclip size={14} />
+                    )}
+                  </button>
+                </>
+              )}
+              <textarea
+                aria-label="继续提问"
+                placeholder={
+                  isBuiltinTranslate
+                    ? "输入英文单词查词，或输入问题询问 AI"
+                    : isAsk
+                      ? isDsh
+                        ? "输入追问，支持拖拽或粘贴附件…"
+                        : "输入问题，基于选中文本提问"
+                      : isDsh
+                        ? "输入继续提问，支持拖拽或粘贴附件…"
+                        : "输入继续提问"
                 }
-              }}
-            />
-            <button
-              className="result-followup-expand"
-              type="button"
-              aria-label={followUpExpanded ? "收起继续提问输入框" : "放大继续提问输入框"}
-              aria-expanded={followUpExpanded}
-              title={followUpExpanded ? "收起输入框" : "放大输入框"}
-              onClick={() => setFollowUpExpanded((current) => !current)}
-            >
-              {followUpExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-            </button>
+                title="Enter 发送，Shift+Enter 换行"
+                rows={followUpExpanded ? 4 : 1}
+                maxLength={20_000}
+                value={followUpQuestion}
+                disabled={followUpDisabled}
+                onChange={(event) => setFollowUpQuestion(event.target.value)}
+                onCompositionStart={() => {
+                  followUpComposing.current = true;
+                }}
+                onCompositionEnd={() => {
+                  followUpComposing.current = false;
+                }}
+                onPaste={(event) => {
+                  if (isDsh && event.clipboardData.files.length > 0) {
+                    event.preventDefault();
+                    void addFollowUpFiles(Array.from(event.clipboardData.files));
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent.isComposing &&
+                    !followUpComposing.current
+                  ) {
+                    event.preventDefault();
+                    void submitFollowUp();
+                  }
+                }}
+              />
+              <button
+                className="result-followup-expand"
+                type="button"
+                aria-label={followUpExpanded ? "收起继续提问输入框" : "放大继续提问输入框"}
+                aria-expanded={followUpExpanded}
+                title={followUpExpanded ? "收起输入框" : "放大输入框"}
+                onClick={() => setFollowUpExpanded((current) => !current)}
+              >
+                {followUpExpanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              </button>
+              {isDsh && (
+                <button
+                  className="result-followup__send-btn"
+                  type="button"
+                  aria-label="发送追问"
+                  title="发送追问 (Enter)"
+                  disabled={followUpDisabled || (!followUpQuestion.trim() && followUpAttachments.length === 0)}
+                  onClick={() => void submitFollowUp()}
+                >
+                  {followUpSubmitting ? (
+                    <LoaderCircle size={13} className="result-spin" />
+                  ) : (
+                    <SendHorizontal size={13} />
+                  )}
+                </button>
+              )}
+            </div>
           </div>
         )}
         <div className="result-actions">
@@ -1553,7 +1928,7 @@ function ResultSessionApp({
             <button
               className="result-footer-button"
               type="button"
-              disabled={retrying || !requestId || (status === "error" && !retryable)}
+              disabled={savingDshSession || retrying || !requestId || (status === "error" && !retryable)}
               onClick={() => void retry()}
               title="使用相同选区重新生成"
             >

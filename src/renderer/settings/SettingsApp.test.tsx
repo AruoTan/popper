@@ -70,6 +70,26 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
 }
 
 describe("SettingsApp provider deletion", () => {
+  it("records and saves the quick ask shortcut and restores its default", async () => {
+    const save = vi.fn(async () => DEFAULT_PUBLIC_SETTINGS);
+    installDefaultBridge({ updateSettings: save });
+    render(<SettingsApp />);
+    const shortcut = await screen.findByLabelText("快捷提问快捷键");
+    expect(shortcut).toHaveTextContent(/Ctrl.*Shift.*Space/);
+    fireEvent.click(shortcut);
+    await waitFor(() => expect(shortcut).toHaveAttribute("aria-pressed", "true"));
+    fireEvent.keyDown(shortcut, { key: "k", code: "KeyK", ctrlKey: true, altKey: true });
+    expect(shortcut).toHaveTextContent(/Ctrl.*Alt.*K/);
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ quickAskShortcut: "Control+Alt+KeyK" })));
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存设置" })).toBeEnabled());
+    fireEvent.click(shortcut);
+    await waitFor(() => expect(shortcut).toHaveAttribute("aria-pressed", "true"));
+    fireEvent.keyDown(shortcut, { key: "k", code: "KeyK", ctrlKey: true });
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
+    expect(shortcut).toHaveTextContent(/Ctrl.*Shift.*Space/);
+  });
+
   it("saves DSH transport and container workspace while clearing the former model route", async () => {
     const saved: PublicSettings = structuredClone(DEFAULT_PUBLIC_SETTINGS);
     saved.providers[0]!.models = [{ id: "old-model", name: "Old", thinkingLevels: [] }];

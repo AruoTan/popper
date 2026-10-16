@@ -241,6 +241,7 @@ pub enum DismissMode {
 pub struct ResultWindowOptions {
     pub size: WindowSize,
     pub cursor: Point,
+    pub center: Option<Point>,
     pub follow_cursor: bool,
     pub pinned: bool,
     pub dismiss_mode: DismissMode,
@@ -254,6 +255,7 @@ pub struct ResultWindowOptions {
 struct ResultPlacement {
     size: WindowSize,
     cursor: Point,
+    center: Option<Point>,
     follow_cursor: bool,
 }
 
@@ -1111,6 +1113,7 @@ impl WindowCoordinator {
                 placement: ResultPlacement {
                     size,
                     cursor: options.cursor,
+                    center: options.center,
                     follow_cursor: options.follow_cursor,
                 },
                 reveal_phase: initial_result_reveal_phase(),
@@ -1172,15 +1175,15 @@ impl WindowCoordinator {
                     .map_err(|error| result_window_step_error("native configuration", error))?;
                 prime_result_window_opacity(&window, options.opacity)
                     .map_err(|error| result_window_step_error("opacity preparation", error))?;
-                let size = fit_size_to_monitor(&window, options.cursor, size)
-                    .map_err(|error| result_window_step_error("monitor sizing", error))?;
-                if options.follow_cursor {
-                    result_layout(&window, options.cursor, size)
-                        .map_err(|error| result_window_step_error("cursor layout", error))
-                } else {
-                    centered_layout(&window, options.cursor, size)
-                        .map_err(|error| result_window_step_error("centered layout", error))
-                }
+                initial_result_layout(
+                    &window,
+                    ResultPlacement {
+                        size,
+                        cursor: options.cursor,
+                        center: options.center,
+                        follow_cursor: options.follow_cursor,
+                    },
+                )
             })() {
                 Ok(layout) => layout,
                 Err(error) => {
@@ -1685,6 +1688,58 @@ fn result_layout(
         position,
         coordinate_size,
     })
+}
+
+fn initial_result_layout(
+    window: &WebviewWindow,
+    placement: ResultPlacement,
+) -> tauri::Result<WindowLayout> {
+    let anchor = placement.center.unwrap_or(placement.cursor);
+    let size = fit_size_to_monitor(window, anchor, placement.size)
+        .map_err(|error| result_window_step_error("monitor sizing", error))?;
+    if let Some(center) = placement.center {
+        let geometry = monitor_geometry_for_point(window, center)?;
+        let scale = geometry
+            .map(|value| value.coordinate_scale)
+            .unwrap_or_else(|| current_window_coordinate_scale(window));
+        let coordinate_size = logical_size_to_coordinates(size, scale);
+        Ok(WindowLayout {
+            position: result_position_around_center(center, coordinate_size, geometry),
+            coordinate_size,
+        })
+    } else if placement.follow_cursor {
+        result_layout(window, anchor, size)
+            .map_err(|error| result_window_step_error("cursor layout", error))
+    } else {
+        centered_layout(window, anchor, size)
+            .map_err(|error| result_window_step_error("centered layout", error))
+    }
+}
+
+fn result_position_around_center(
+    center: Point,
+    size: WindowSize,
+    geometry: Option<MonitorGeometry>,
+) -> Point {
+    let position = Point {
+        x: center.x - size.width / 2.0,
+        y: center.y - size.height / 2.0,
+    };
+    let Some(geometry) = geometry else {
+        return position;
+    };
+    let area = geometry.work_area;
+    let margin = SCREEN_MARGIN * geometry.coordinate_scale;
+    let left = area.x + margin;
+    let top = area.y + margin;
+    Point {
+        x: position
+            .x
+            .clamp(left, (area.x + area.width - margin - size.width).max(left)),
+        y: position
+            .y
+            .clamp(top, (area.y + area.height - margin - size.height).max(top)),
+    }
 }
 
 fn toolbar_position_in_area(
@@ -3139,15 +3194,7 @@ fn prepare_result_window(
         SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     };
 
-    let size = fit_size_to_monitor(window, placement.cursor, placement.size)
-        .map_err(|error| result_window_step_error("monitor sizing", error))?;
-    let layout = if placement.follow_cursor {
-        result_layout(window, placement.cursor, size)
-            .map_err(|error| result_window_step_error("cursor layout", error))?
-    } else {
-        centered_layout(window, placement.cursor, size)
-            .map_err(|error| result_window_step_error("centered layout", error))?
-    };
+    let layout = initial_result_layout(window, placement)?;
 
     run_windows_window_operation(window, move |window| {
         configure_result_native_raw(window, pinned)?;
@@ -3400,8 +3447,250 @@ fn windows_error(error: windows::core::Error) -> tauri::Error {
     std::io::Error::other(error.to_string()).into()
 }
 
+/// Submission anchor in the same screen coordinate space as result placement.
+pub fn quick_ask_window_center(window: &WebviewWindow) -> tauri::Result<Point> {
+    let position = window.outer_position()?;
+    let size = window.outer_size()?;
+    let area = coordinate_area(
+        position.x as f64,
+        position.y as f64,
+        size.width as f64,
+        size.height as f64,
+        normalized_scale(window.scale_factor()?),
+    );
+    Ok(Point {
+        x: area.x + area.width / 2.0,
+        y: area.y + area.height / 2.0,
+    })
+}
+
+/// A keyboard-focused composer, independent of host selection and clipboard.
+pub fn show_quick_ask_window(app: &AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("quick-ask") {
+        let size = window
+            .inner_size()?
+            .to_logical::<f64>(window.scale_factor()?);
+        position_quick_ask_window(app, &window, size.height)?;
+        window.show()?;
+        window.set_focus()?;
+        let _ = tauri::Emitter::emit_to(app, "quick-ask", "popper:quick-ask-opened", ());
+        return Ok(());
+    }
+    let window = WebviewWindowBuilder::new(
+        app,
+        "quick-ask",
+        WebviewUrl::App("quick-ask/index.html".into()),
+    )
+    .title("Popper 快捷提问")
+    .disable_drag_drop_handler()
+    .inner_size(560.0, 230.0)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .resizable(false)
+    .minimizable(false)
+    .maximizable(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(false)
+    .build()?;
+    position_quick_ask_window(app, &window, 230.0)?;
+    // Its renderer reveals it after installing listeners and committing the input.
+    Ok(())
+}
+
+fn quick_ask_layout_in_area(
+    area: WorkArea,
+    scale: f64,
+    height: f64,
+    anchor: Option<Point>,
+) -> WindowLayout {
+    let rect = crate::quick_ask::composer_layout(
+        crate::quick_ask::ComposerRect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: area.height,
+        },
+        scale,
+        height,
+        anchor.map(|point| (point.x, point.y)),
+    );
+    WindowLayout {
+        position: Point {
+            x: rect.x,
+            y: rect.y,
+        },
+        coordinate_size: WindowSize {
+            width: rect.width,
+            height: rect.height,
+        },
+    }
+}
+
+fn position_quick_ask_window(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    height: f64,
+) -> tauri::Result<()> {
+    let cursor = app
+        .cursor_position()
+        .map(|point| Point {
+            x: point.x,
+            y: point.y,
+        })
+        .unwrap_or(Point { x: 0.0, y: 0.0 });
+    if let Some(geometry) = monitor_geometry_for_point(window, cursor)? {
+        apply_window_layout(
+            window,
+            quick_ask_layout_in_area(geometry.work_area, geometry.coordinate_scale, height, None),
+        )
+    } else {
+        window.center()
+    }
+}
+
+pub fn resize_quick_ask_window(window: &WebviewWindow, height: f64) -> tauri::Result<()> {
+    let native_position = window.outer_position()?;
+    #[cfg(target_os = "windows")]
+    let position = Point {
+        x: native_position.x as f64,
+        y: native_position.y as f64,
+    };
+    #[cfg(not(target_os = "windows"))]
+    let position = {
+        let logical = native_position.to_logical::<f64>(window.scale_factor()?);
+        Point {
+            x: logical.x,
+            y: logical.y,
+        }
+    };
+    if let Some(geometry) = monitor_geometry_for_point(window, position)? {
+        apply_window_layout(
+            window,
+            quick_ask_layout_in_area(
+                geometry.work_area,
+                geometry.coordinate_scale,
+                height,
+                Some(position),
+            ),
+        )
+    } else {
+        window.set_size(tauri::LogicalSize::new(560.0, height.clamp(180.0, 480.0)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quick_ask_results_share_the_composer_center_across_sizes_and_scales() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let area = WorkArea {
+                x: -3200.0,
+                y: -400.0,
+                width: 3200.0,
+                height: 2200.0,
+            };
+            let geometry = MonitorGeometry {
+                bounds: area,
+                work_area: area,
+                coordinate_scale: scale,
+            };
+            // Includes moved composers and attachment-driven height changes.
+            for (x, y, height) in [(-2700.0, 200.0, 230.0), (-1800.0, 500.0, 470.0)] {
+                let center = Point {
+                    x: x + 560.0 * scale / 2.0,
+                    y: y + height * scale / 2.0,
+                };
+                for (width, height) in [(520.0, 420.0), (720.0, 640.0)] {
+                    let size = WindowSize {
+                        width: width * scale,
+                        height: height * scale,
+                    };
+                    let position = result_position_around_center(center, size, Some(geometry));
+                    assert_eq!(position.x + size.width / 2.0, center.x);
+                    assert_eq!(position.y + size.height / 2.0, center.y);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quick_ask_result_center_clamps_only_at_work_area_edges() {
+        let area = WorkArea {
+            x: -1920.0,
+            y: -200.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let geometry = MonitorGeometry {
+                bounds: area,
+                work_area: area,
+                coordinate_scale: scale,
+            };
+            let size = WindowSize {
+                width: 720.0 * scale,
+                height: 420.0 * scale,
+            };
+            for center in [
+                Point {
+                    x: -1910.0,
+                    y: -190.0,
+                },
+                Point { x: -10.0, y: 870.0 },
+            ] {
+                let position = result_position_around_center(center, size, Some(geometry));
+                let margin = SCREEN_MARGIN * scale;
+                assert!(position.x >= area.x + margin);
+                assert!(position.y >= area.y + margin);
+                assert!(position.x + size.width <= area.x + area.width - margin);
+                assert!(position.y + size.height <= area.y + area.height - margin);
+            }
+        }
+        let center = Point {
+            x: -500.0,
+            y: 300.0,
+        };
+        let size = WindowSize {
+            width: 720.0,
+            height: 640.0,
+        };
+        assert_eq!(
+            result_position_around_center(center, size, None),
+            Point {
+                x: -860.0,
+                y: -20.0
+            }
+        );
+    }
+
+    #[test]
+    fn quick_ask_growth_stays_inside_negative_and_scaled_monitor_work_areas() {
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let area = super::WorkArea {
+                x: -1920.0,
+                y: -200.0,
+                width: 1920.0,
+                height: 900.0,
+            };
+            let layout = super::quick_ask_layout_in_area(
+                area,
+                scale,
+                470.0,
+                Some(super::Point {
+                    x: -500.0,
+                    y: 500.0,
+                }),
+            );
+            assert!(layout.position.x >= area.x);
+            assert!(layout.position.y >= area.y);
+            assert!(layout.position.x + layout.coordinate_size.width <= area.x + area.width);
+            assert!(layout.position.y + layout.coordinate_size.height <= area.y + area.height);
+        }
+    }
+
     use super::*;
 
     fn blur_result_runtime(reveal_phase: ResultRevealPhase) -> ResultRuntime {
@@ -3415,6 +3704,7 @@ mod tests {
                     height: 420.0,
                 },
                 cursor: Point { x: 640.0, y: 360.0 },
+                center: None,
                 follow_cursor: true,
             },
             reveal_phase,
@@ -3560,6 +3850,7 @@ mod tests {
                         height: 420.0,
                     },
                     cursor: Point { x: 640.0, y: 360.0 },
+                    center: None,
                     follow_cursor: true,
                 },
                 reveal_phase: ResultRevealPhase::Prepared,
@@ -3608,6 +3899,7 @@ mod tests {
                 placement: ResultPlacement {
                     size: expected_size,
                     cursor: expected_cursor,
+                    center: None,
                     follow_cursor: false,
                 },
                 reveal_phase: ResultRevealPhase::Hidden,
@@ -4108,6 +4400,7 @@ mod tests {
                     height: 420.0,
                 },
                 cursor: Point { x: 640.0, y: 360.0 },
+                center: None,
                 follow_cursor: true,
             },
             reveal_phase: ResultRevealPhase::Committed,
