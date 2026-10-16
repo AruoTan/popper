@@ -28,7 +28,7 @@
     ],
     "containerEnv": {
         "CARGO_TARGET_DIR": "/home/node/.cache/cargo-target",
-        "npm_config_store_dir": "/home/node/.cache/pnpm-store",
+        "PNPM_CONFIG_STORE_DIR": "/home/node/.cache/pnpm-store",
         "CODEX_HOME": "/home/node/.codex"
     },
     "postCreateCommand": "bash .devcontainer/setup.sh",
