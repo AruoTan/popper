@@ -13,6 +13,22 @@ import {
 } from './settingsForm'
 
 describe('settings form helpers', () => {
+  it('clears the shared default when its provider or model is removed', () => {
+    const settings = {
+      ...DEFAULT_PUBLIC_SETTINGS,
+      defaultAi: { providerId: DEFAULT_PROVIDER_ID, modelId: 'model-a' },
+      providers: [{
+        ...DEFAULT_PUBLIC_SETTINGS.providers[0]!,
+        models: [{ id: 'model-a', name: 'Model A', thinkingLevels: [] }]
+      }]
+    }
+    const empty = { providerId: '', modelId: '' }
+    expect(removeProviderFromSettings(settings, DEFAULT_PROVIDER_ID).defaultAi).toEqual(empty)
+    expect(removeProviderModelFromSettings(settings, DEFAULT_PROVIDER_ID, 'model-a').defaultAi).toEqual(empty)
+    expect(removeProviderModelFromSettings(settings, DEFAULT_PROVIDER_ID, 'other').defaultAi).toEqual(settings.defaultAi)
+    expect(buildSettingsUpdate({ ...settings, defaultAi: { providerId: DEFAULT_PROVIDER_ID, modelId: 'missing' } }).valid).toBe(false)
+  })
+
   it('saves settings without retired configuration fields', () => {
     const result = buildSettingsUpdate(DEFAULT_PUBLIC_SETTINGS)
     expect(result.valid).toBe(true)

@@ -324,7 +324,7 @@ export function CustomActionDialog({
                   value={modelSelectValue}
                   onChange={changeModelRoute}
                   options={[
-                    { value: '', label: '尚未选择' },
+                    { value: '', label: '使用默认模型' },
                     ...modelGroups.flatMap((group) => group.choices.map((choice) => ({
                       value: choice.value,
                       label: choice.modelName,
@@ -333,7 +333,7 @@ export function CustomActionDialog({
                   ]}
                 />
                 <span className="field__hint">
-                  已启用的服务商与其模型列在同一列表中；可在「通用」中关闭不需要的服务商。
+                  未单独指定时使用「动作」页的默认模型；指定后仅覆盖此动作。
                 </span>
               </div>
 

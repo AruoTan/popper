@@ -322,9 +322,16 @@ export type FilterSettings = z.infer<typeof filterSettingsSchema>
 
 const quickAskShortcutSchema = z.string().max(100).regex(/^(?:(?:Control|Alt|Shift|Super)\+)+(?:Space|Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/).refine((value) => { const modifiers = value.split("+").slice(0, -1); return new Set(modifiers).size === modifiers.length; }, "快捷键修饰键不能重复")
 
+export const defaultAiModelSchema = z.object({
+  providerId: z.string().trim().max(64),
+  modelId: z.string().trim().max(256)
+}).strict().refine((route) => Boolean(route.providerId) === Boolean(route.modelId),
+  '默认模型必须同时选择服务商和模型')
+
 const commonSettingsShape = {
   version: z.literal(SETTINGS_VERSION),
   trayEnabled: z.boolean().default(true),
+  defaultAi: defaultAiModelSchema.default({ providerId: "", modelId: "" }),
   quickAskShortcut: quickAskShortcutSchema.default("Control+Shift+Space"),
   locale: supportedLocaleSchema,
   translate: translationSettingsSchema,
@@ -337,10 +344,16 @@ function validateSettingsReferences(
   value: {
     providers: Array<{ id: string; models: ProviderModel[] }>
     actions: ActionDefinition[]
+    defaultAi?: { providerId: string; modelId: string }
   },
   context: z.RefinementCtx
 ): void {
   const providers = new Map(value.providers.map((provider) => [provider.id, provider]))
+  if (value.defaultAi?.modelId && !providers.get(value.defaultAi.providerId)?.models.some(
+    (model) => model.id === value.defaultAi?.modelId
+  )) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: '默认模型引用了不存在的服务商或模型' })
+  }
   for (const action of value.actions) {
     if (!isAiActionDefinition(action) || !action.providerId) continue
     const provider = providers.get(action.providerId)
@@ -381,6 +394,7 @@ export type PublicSettings = z.infer<typeof publicSettingsSchema>
 export const settingsUpdateSchema = z
   .object({
     trayEnabled: z.boolean().optional(),
+    defaultAi: defaultAiModelSchema.optional(),
     quickAskShortcut: quickAskShortcutSchema.optional(),
     locale: supportedLocaleSchema.optional(),
     translate: translationSettingsSchema.optional(),

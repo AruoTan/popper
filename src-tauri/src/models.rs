@@ -491,6 +491,13 @@ impl ActionDefinition {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DefaultAiModel {
+    pub provider_id: String,
+    pub model_id: String,
+}
+
 fn default_tray_enabled() -> bool {
     true
 }
@@ -507,6 +514,8 @@ pub struct AppSettings {
     pub tray_enabled: bool,
     #[serde(default = "default_quick_ask_shortcut")]
     pub quick_ask_shortcut: String,
+    #[serde(default)]
+    pub default_ai: DefaultAiModel,
     pub locale: Locale,
     pub translate: TranslationSettings,
     pub result: ResultSettings,
@@ -524,6 +533,8 @@ pub struct PublicSettings {
     pub tray_enabled: bool,
     #[serde(default = "default_quick_ask_shortcut")]
     pub quick_ask_shortcut: String,
+    #[serde(default)]
+    pub default_ai: DefaultAiModel,
     pub locale: Locale,
     pub translate: TranslationSettings,
     pub result: ResultSettings,
@@ -541,6 +552,7 @@ impl PublicSettings {
             version: SETTINGS_VERSION,
             tray_enabled: settings.tray_enabled,
             quick_ask_shortcut: settings.quick_ask_shortcut.clone(),
+            default_ai: settings.default_ai.clone(),
             locale: settings.locale,
             translate: settings.translate.clone(),
             result: settings.result.clone(),
@@ -555,10 +567,8 @@ impl PublicSettings {
                     )
                 })
                 .collect(),
-            // Ask is a permanent toolbar capability, not a user-managed
-            // action. Keep its route/prompt in the internal settings for
-            // backwards-compatible persistence, but do not expose it in the
-            // editable action collection.
+            // Ask is a permanent capability using the shared default model.
+            // Keep its prompt internally, outside the editable action list.
             actions: settings
                 .actions
                 .iter()
@@ -574,6 +584,7 @@ impl PublicSettings {
 pub struct SettingsUpdate {
     pub tray_enabled: Option<bool>,
     pub quick_ask_shortcut: Option<String>,
+    pub default_ai: Option<DefaultAiModel>,
     pub locale: Option<Locale>,
     pub translate: Option<TranslationSettings>,
     pub result: Option<ResultSettings>,
@@ -835,7 +846,11 @@ impl Default for AppSettings {
             enabled,
             order,
             prompt: Some(prompt.to_owned()),
-            provider_id: Some(DEFAULT_PROVIDER_ID.to_owned()),
+            provider_id: if kind == ActionKind::Ask {
+                Some(String::new())
+            } else {
+                Some(DEFAULT_PROVIDER_ID.to_owned())
+            },
             model_id: Some(String::new()),
             thinking_mode: ThinkingMode::Off,
         };
@@ -844,6 +859,7 @@ impl Default for AppSettings {
             locale: Locale::ZhCn,
             tray_enabled: true,
             quick_ask_shortcut: default_quick_ask_shortcut(),
+            default_ai: DefaultAiModel::default(),
             translate: TranslationSettings::default(),
             result: ResultSettings::default(),
             filter: ApplicationFilterSettings::default(),
@@ -900,6 +916,23 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// An explicit action model overrides the shared default. The fixed Ask
+    /// capability has no editable route and always uses the shared default.
+    pub fn ai_model_for<'a>(&'a self, action: &'a ActionDefinition) -> Option<(&'a str, &'a str)> {
+        if action.kind != ActionKind::Ask {
+            if let Some(model) = action.model_id().filter(|model| !model.is_empty()) {
+                return action
+                    .provider_id()
+                    .filter(|id| !id.is_empty())
+                    .map(|id| (id, model));
+            }
+        }
+        (!self.default_ai.model_id.is_empty()).then_some((
+            self.default_ai.provider_id.as_str(),
+            self.default_ai.model_id.as_str(),
+        ))
+    }
+
     pub fn normalize_and_validate(mut self) -> Result<Self, String> {
         self.version = SETTINGS_VERSION;
         if !crate::quick_ask::valid_shortcut(&self.quick_ask_shortcut) {
@@ -970,6 +1003,23 @@ impl AppSettings {
             }
         }
 
+        self.default_ai.provider_id = self.default_ai.provider_id.trim().to_owned();
+        self.default_ai.model_id = self.default_ai.model_id.trim().to_owned();
+        if self.default_ai.provider_id.is_empty() != self.default_ai.model_id.is_empty() {
+            return Err("默认模型必须同时选择服务商和模型".to_owned());
+        }
+        if !self.default_ai.model_id.is_empty()
+            && !self.providers.iter().any(|provider| {
+                provider.id == self.default_ai.provider_id
+                    && provider
+                        .models
+                        .iter()
+                        .any(|model| model.id == self.default_ai.model_id)
+            })
+        {
+            return Err("默认模型引用了不存在的服务商或模型".to_owned());
+        }
+
         if self.actions.is_empty() || self.actions.len() > MAX_ACTIONS {
             return Err(format!("动作数量必须为 1–{MAX_ACTIONS}"));
         }
@@ -1001,6 +1051,12 @@ impl AppSettings {
             // one of the user-configurable toolbar action slots.
             enabled_count += usize::from(action.enabled && action.kind != ActionKind::Ask);
             custom_count += usize::from(action.kind == ActionKind::Custom);
+
+            if action.kind == ActionKind::Ask {
+                action.provider_id = Some(String::new());
+                action.model_id = Some(String::new());
+                action.thinking_mode = ThinkingMode::Off;
+            }
 
             if action.kind.is_ai() {
                 let prompt = action

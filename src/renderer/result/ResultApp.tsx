@@ -494,9 +494,11 @@ function ResultSessionApp({
   );
 
   const defaultModelRoute = useMemo<ModelRoute | null>(() => {
-    if (!action || !("providerId" in action) || !action.providerId || !action.modelId) return null;
-    return { providerId: action.providerId, modelId: action.modelId };
-  }, [action]);
+    if (action && action.kind !== "ask" && "providerId" in action && action.providerId && action.modelId) {
+      return { providerId: action.providerId, modelId: action.modelId };
+    }
+    return settings.defaultAi.modelId ? settings.defaultAi : null;
+  }, [action, settings.defaultAi]);
 
   const effectiveModelRoute = activeModelRoute ?? defaultModelRoute;
   const dshProviderId = !dictionaryMode && settings.providers.find(

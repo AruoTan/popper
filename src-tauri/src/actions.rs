@@ -823,14 +823,9 @@ impl ActionService {
                 "该动作不是问AI会话".to_owned(),
             ));
         }
-        let provider_id = action
-            .provider_id()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ActionServiceError::Validation("请先为动作选择 AI 服务商".to_owned()))?;
-        let model_id = action
-            .model_id()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ActionServiceError::Validation("请先为动作选择模型".to_owned()))?;
+        let (provider_id, model_id) = settings.ai_model_for(action).ok_or_else(|| {
+            ActionServiceError::Validation("请先在动作设置中选择默认模型".to_owned())
+        })?;
         let route = resolve_route(&settings, action, provider_id, model_id)?;
         let _api_key = self
             .inner
@@ -2154,16 +2149,9 @@ fn resolve_request_config(
     let session_data = match seed {
         FrozenPreparationSeed::Initial { request } => {
             let action = prepared_action(settings, &request.action_id)?;
-            let provider_id = action
-                .provider_id()
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| {
-                    ActionServiceError::Validation("请先为动作选择 AI 服务商".to_owned())
-                })?;
-            let model_id = action
-                .model_id()
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| ActionServiceError::Validation("请先为动作选择模型".to_owned()))?;
+            let (provider_id, model_id) = settings.ai_model_for(action).ok_or_else(|| {
+                ActionServiceError::Validation("请先选择默认模型或为动作指定模型".to_owned())
+            })?;
             let route = resolve_route(settings, action, provider_id, model_id)?;
             let prompt = build_prompt(
                 action,
@@ -2821,6 +2809,53 @@ mod tests {
             cursor: None,
             target_language: None,
         }
+    }
+
+    #[test]
+    fn initial_requests_inherit_default_but_explicit_actions_override_it() {
+        let mut settings = configured_settings("provider-a", "action-model", ThinkingMode::Off);
+        settings.providers[0].models.push(ProviderModel {
+            id: "shared-model".into(),
+            name: "Shared".into(),
+            thinking_levels: vec![],
+            thinking_capability: None,
+        });
+        settings.default_ai = crate::models::DefaultAiModel {
+            provider_id: "provider-a".into(),
+            model_id: "shared-model".into(),
+        };
+        let resolve = |settings: &AppSettings, action_id: &str| {
+            let request = configured_request(action_id, "hello");
+            let ticket = RequestTicket {
+                session_id: request.session_id.clone(),
+                session_generation: SessionGeneration(1),
+                request_generation: RequestGeneration(1),
+                request_id: "default-test".into(),
+                action_id: action_id.into(),
+            };
+            resolve_request_config(
+                &FrozenPreparationSeed::Initial {
+                    request: FrozenActionRequest::from(&request),
+                },
+                settings,
+                &ticket,
+            )
+            .map(|resolved| resolved.session_data.route.model)
+        };
+        assert_eq!(resolve(&settings, "summary").unwrap(), "action-model");
+        let summary = settings
+            .actions
+            .iter_mut()
+            .find(|a| a.id == "summary")
+            .unwrap();
+        summary.model_id = Some(String::new());
+        summary.provider_id = Some("another-provider-without-a-model".into());
+        assert_eq!(resolve(&settings, "summary").unwrap(), "shared-model");
+        // Both selection Ask and Quick Ask use the fixed Ask capability.
+        assert_eq!(resolve(&settings, "ask-ai").unwrap(), "shared-model");
+        settings.default_ai = Default::default();
+        assert!(resolve(&settings, "summary").is_err());
+        assert!(resolve(&settings, "ask-ai").is_err());
     }
 
     #[test]
@@ -3770,6 +3805,10 @@ mod tests {
         visible_ai.model_id = ask_model_id;
         repository
             .update(crate::models::SettingsUpdate {
+                default_ai: Some(crate::models::DefaultAiModel {
+                    provider_id: provider_id.clone(),
+                    model_id: "ask-model".into(),
+                }),
                 providers: Some(settings.providers.clone()),
                 actions: Some(settings.actions.clone()),
                 ..Default::default()
@@ -3795,8 +3834,7 @@ mod tests {
             let settings = service.inner.settings.get_settings();
             let action = prepared_action(&settings, &request.action_id).unwrap();
             assert_eq!(action.kind, ActionKind::Ask);
-            let provider_id = action.provider_id().unwrap();
-            let model_id = action.model_id().unwrap();
+            let (provider_id, model_id) = settings.ai_model_for(action).unwrap();
             let route = resolve_route(&settings, action, provider_id, model_id).unwrap();
             let ask_system = build_ask_seed_system(action, &request.text, &settings).unwrap();
             let request_id = Uuid::new_v4().to_string();
