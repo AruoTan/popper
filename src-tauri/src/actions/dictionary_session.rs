@@ -69,11 +69,15 @@ impl ActionServiceState {
 
 impl ActionService {
     pub(crate) fn submit_translation<R: Runtime + 'static>(
-        &self, app: &AppHandle<R>, id: &str, text: &str,
+        &self,
+        app: &AppHandle<R>,
+        id: &str,
+        text: &str,
+        attachments: Vec<crate::quick_ask::Attachment>,
     ) -> Result<TranslationSubmission, ActionServiceError> {
-        validate_follow_up_question(text)?;
+        validate_follow_up_question(text, &attachments)?;
         let settings = self.inner.settings.get_settings();
-        let query = {
+        let query = if attachments.is_empty() {
             let mut state = self.inner.state.lock();
             let snapshot = state.sessions.authoritative_snapshot(id).ok_or(ActionServiceError::SessionEnded)?;
             if snapshot.action_id != "translate" || !settings.actions.iter().any(|a| a.id == "translate" && a.kind == ActionKind::Translate) {
@@ -85,6 +89,8 @@ impl ActionService {
                 state.initialize_translation_dictionary(id, text, query.clone().unwrap())?;
             }
             query
+        } else {
+            None
         };
         if query.is_some() {
             let request_id = self.query_dictionary(app, id, text)?;
@@ -93,7 +99,7 @@ impl ActionService {
             if self.dictionary_snapshot(id).is_some_and(|d| d.status == "loading") {
                 self.cancel(app, id)?;
             }
-            let request_id = self.continue_with_question(app, id, text)?;
+            let request_id = self.continue_with_attachments(app, id, text, attachments)?;
             Ok(TranslationSubmission { route: "ai", request_id })
         }
     }
@@ -409,6 +415,7 @@ impl ActionService {
             .settings
             .get_api_key(&data.route.provider.id)?
             .filter(|v| !v.trim().is_empty())
+            .or_else(|| (!data.route.provider.requires_api_key()).then(String::new))
             .ok_or_else(|| {
                 ActionServiceError::Validation("请先为服务商保存 API Key；词典查询仍可使用".into())
             })?;
@@ -621,11 +628,11 @@ mod tests {
     fn freeform_translation_question_keeps_history_without_translation_instructions() {
         let history = vec![ChatMessage::system("Translate everything".into()),
             ChatMessage::user("hello".into()), ChatMessage::assistant("你好".into())];
-        let messages = build_translation_continue_messages(None, &history, "解释一下用法").unwrap();
+        let messages = build_translation_continue_messages(None, &history, "解释一下用法", &[]).unwrap();
         assert_eq!(&messages[..2], &history[1..]);
         assert_eq!(messages[2], ChatMessage::user("解释一下用法".into()));
         assert!(messages.iter().all(|m| m.role != ChatRole::System));
-        let messages = build_translation_continue_messages(Some("词典参考"), &history, "为什么？").unwrap();
+        let messages = build_translation_continue_messages(Some("词典参考"), &history, "为什么？", &[]).unwrap();
         assert_eq!(messages[0].content, "词典参考");
         assert_eq!(messages.last().unwrap().content, "为什么？");
     }
@@ -668,6 +675,85 @@ mod tests {
         closed.cancellation.unwrap().cancel();
         assert!(second.cancellation.is_cancelled());
         assert!(reserve_lookup(&mut sessions, "one").is_err());
+    }
+
+    #[test]
+    fn dictionary_ai_uses_the_selected_providers_authentication_policy() {
+        use crate::models::ProviderKind;
+
+        for (kind, base_url, saved_key, allowed) in [
+            (ProviderKind::Dsh, "http://localhost:3080", false, true),
+            (ProviderKind::Dsh, "http://127.0.0.1:3080", false, true),
+            (ProviderKind::Dsh, "http://[::1]:3080", false, true),
+            (ProviderKind::Dsh, "http://192.168.1.10:3080", false, false),
+            (ProviderKind::Dsh, "http://192.168.1.10:3080", true, true),
+            (ProviderKind::Openai, "http://localhost:3080", false, false),
+        ] {
+            for (status, selected_model) in [
+                ("missing", false), ("found", false),
+                ("missing", true), ("found", true),
+            ] {
+                let directory = tempfile::tempdir().unwrap();
+                let repository = Arc::new(
+                    SettingsRepository::new(directory.path().join("settings.json")).unwrap(),
+                );
+                let service = ActionService::new(repository.clone()).unwrap();
+                let mut settings = repository.get_settings();
+                let provider = &mut settings.providers[0];
+                provider.kind = kind;
+                provider.base_url = base_url.into();
+                provider.models = vec![serde_json::from_value(
+                    serde_json::json!({"id":"one/same", "name":"Test"}),
+                ).unwrap()];
+                let provider_id = provider.id.clone();
+                let action = settings.actions.iter_mut().find(|a| a.id == "translate").unwrap();
+                action.provider_id = Some(provider_id.clone());
+                action.model_id = (!selected_model).then(|| "one/same".into());
+                if saved_key {
+                    repository.set_provider_api_key(&provider_id, "test-secret").unwrap();
+                }
+                let mut state = ActionServiceState::default();
+                shell(&mut state.sessions, "one");
+                let request = ExecuteActionRequest {
+                    session_id: "one".into(),
+                    window_label: "result/one".into(),
+                    action_id: "translate".into(),
+                    text: "defer attachment".into(),
+                    cursor: None,
+                    target_language: None,
+                };
+                let mut dictionary = DictionarySession::new(&request, request.text.clone());
+                dictionary.snapshot.status = status.into();
+                state.dictionaries.insert("one".into(), dictionary);
+
+                let result = service.prepare_dictionary_ai(
+                    &mut state, &settings, "one",
+                    selected_model.then_some(provider_id.as_str()),
+                    selected_model.then_some("one/same"),
+                );
+                assert_eq!(result.is_ok(), allowed, "{kind:?} {base_url} {status}");
+                if allowed {
+                    assert_eq!(state.dictionaries["one"].snapshot.mode, "ai");
+                    assert_eq!(state.contexts["one"].route.model, "one/same");
+                    let reservation = state.reserve_retry(
+                        "one", "ai-retry".into(), RetryPreparationOptions::default(),
+                        tokio::time::Instant::now(),
+                    ).unwrap();
+                    let resolved = resolve_request_config(
+                        &reservation.seed, &settings, &reservation.reservation.ticket,
+                    ).unwrap();
+                    let prepared = service.prepare_with_runtime(
+                        reservation.reservation.ticket, resolved, CancellationToken::new(),
+                        tokio::time::Instant::now(), ActionKind::Translate,
+                    ).unwrap();
+                    assert_eq!(prepared.api_key.is_empty(), !saved_key);
+                } else {
+                    assert!(result.unwrap_err().to_string().contains("API Key"));
+                    assert!(state.contexts.is_empty());
+                    assert_eq!(state.dictionaries["one"].snapshot.mode, "dictionary");
+                }
+            }
+        }
     }
 
     #[test]

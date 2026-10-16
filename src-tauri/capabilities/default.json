@@ -5,6 +5,7 @@
     "windows": [
         "settings",
         "selection-toolbar",
+        "quick-ask",
         "selection-result-*"
     ],
     "permissions": [

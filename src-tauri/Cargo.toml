@@ -1,6 +1,6 @@
 [package]
 name = "popper"
-version = "0.5.10"
+version = "0.5.12"
 description = "Popper, a lightweight macOS and Windows selection assistant built with Tauri"
 authors = ["Popper contributors"]
 edition = "2021"
@@ -34,6 +34,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tauri-plugin-global-shortcut = "=2.3.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

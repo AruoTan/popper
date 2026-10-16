@@ -1,4 +1,4 @@
-//! Reusable gateway resources. Remote Agent sessions remain request-owned.
+//! Reusable gateway resources. Remote Agent sessions are owned by Popper conversations.
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use futures_util::{SinkExt, StreamExt};
@@ -39,6 +39,11 @@ struct CacheEntry {
     used_at: Instant,
 }
 impl DshService {
+    #[cfg(test)]
+    pub(super) fn clear_gateway_cache(&self) {
+        self.gateways.lock().clear();
+    }
+
     pub(crate) fn new() -> Result<Self, TransportFailure> {
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -116,6 +121,18 @@ pub(super) struct Gateway {
     mux: AsyncMutex<Option<Arc<Mux>>>,
 }
 impl Gateway {
+    pub(super) fn after_promotion(&self) -> Arc<Self> {
+        // Keep other result windows' active temporary streams independent.
+        Arc::new(Self {
+            rpc: self.rpc.clone(),
+            workspaces: AsyncMutex::new(HashMap::new()),
+            mux: AsyncMutex::new(None),
+        })
+    }
+    pub(super) fn authentication_matches(&self, base: &str, key: &str) -> bool {
+        self.rpc.base == base.trim_end_matches('/') && self.rpc.key == key
+    }
+
     pub async fn check_stream(&self) -> Result<(), TransportFailure> {
         // Probe with a short-lived connection; do not create an Agent or retain
         // an event client that could receive unrelated GUI interactions.
@@ -215,6 +232,7 @@ impl Rpc {
     }
     async fn auth_headers(&self) -> Result<header::HeaderMap, TransportFailure> {
         let mut headers = header::HeaderMap::new();
+        headers.insert("x-dsh-client", header::HeaderValue::from_static("app"));
         if self.key.is_empty() {
             loop {
                 self.authenticate().await?;
@@ -240,16 +258,134 @@ impl Rpc {
             *cookie = None;
         }
     }
+    /// Binary uploads are a plain HTTP result, not a server-response RPC envelope.
+    pub async fn upload_file(
+        &self,
+        session_id: &str,
+        name: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String, TransportFailure> {
+        let bytes = bytes::Bytes::from(bytes);
+        let mut endpoint = url::Url::parse(&format!("{}/api/session/uploadFileBinary", self.base))
+            .map_err(|_| invalid())?;
+        endpoint
+            .query_pairs_mut()
+            .append_pair("sessionId", session_id)
+            .append_pair("name", name);
+        for attempt in 0..2 {
+            let headers = self.auth_headers().await?;
+            let response = self
+                .client
+                .post(endpoint.clone())
+                .headers(headers.clone())
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .timeout(Duration::from_secs(60))
+                .body(bytes.clone())
+                .send()
+                .await
+                .map_err(|error| {
+                    let mut failure = failure(
+                        if error.is_timeout() {
+                            "DSH_ATTACHMENT_UPLOAD_TIMEOUT"
+                        } else {
+                            "DSH_ATTACHMENT_UPLOAD_NETWORK_ERROR"
+                        },
+                        if error.is_timeout() {
+                            "DSH 附件上传超时，请重试"
+                        } else {
+                            "DSH 附件上传失败，请检查网关连接"
+                        },
+                    );
+                    failure.retryable = true;
+                    failure
+                })?;
+            let status = response.status().as_u16();
+            if status == 401 && self.key.is_empty() && attempt == 0 {
+                // Authentication rejection precedes upload admission. A network
+                // failure is never automatically retried, since it may be accepted.
+                self.invalidate_cookie(headers.get(header::COOKIE)).await;
+                continue;
+            }
+            if !response.status().is_success() {
+                let message = match status {
+                    401 | 403 => "DSH 附件上传认证失败，请检查 DSH_API_KEY 或本地自动登录".into(),
+                    404 | 405 => "当前 DSH 后端未提供附件上传接口，请检查后端版本".into(),
+                    413 => "DSH 拒绝附件大小，请缩小文件后重试".into(),
+                    _ => format!("DSH 附件上传返回 HTTP {status}"),
+                };
+                let mut error = failure("DSH_ATTACHMENT_UPLOAD_HTTP_ERROR", message);
+                error.retryable = status >= 500 || matches!(status, 408 | 429);
+                error.status = Some(status);
+                return Err(error);
+            }
+            let body = read_body(response).await.map_err(|mut error| {
+                if error.code == "DSH_NETWORK_ERROR" {
+                    error.retryable = true;
+                }
+                error
+            })?;
+            let envelope: Value = serde_json::from_slice(&body).map_err(|_| {
+                failure(
+                    "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+                    "DSH 附件上传响应无效",
+                )
+            })?;
+            match envelope["ok"].as_bool() {
+                Some(true) => {
+                    let receipt = envelope["value"]["receiptId"]
+                        .as_str()
+                        .filter(|receipt| {
+                            !receipt.trim().is_empty()
+                                && receipt.len() <= 512
+                                && !receipt.chars().any(char::is_control)
+                        })
+                        .ok_or_else(|| {
+                            failure(
+                                "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+                                "DSH 未返回有效的附件上传回执",
+                            )
+                        })?;
+                    return Ok(receipt.to_owned());
+                }
+                Some(false) => {
+                    return Err(failure(
+                        "DSH_ATTACHMENT_UPLOAD_REJECTED",
+                        format!(
+                            "DSH 附件上传失败：{}",
+                            safe_message(&envelope["error"], &self.key)
+                        ),
+                    ))
+                }
+                None => {
+                    return Err(failure(
+                        "DSH_ATTACHMENT_UPLOAD_INVALID_RESPONSE",
+                        "DSH 附件上传响应缺少 ok 状态",
+                    ))
+                }
+            }
+        }
+        Err(failure(
+            "DSH_ATTACHMENT_UPLOAD_AUTH_ERROR",
+            "DSH 附件上传认证失败",
+        ))
+    }
+
     pub async fn call(&self, method: &str, args: Value) -> Result<Value, TransportFailure> {
         let rpc_id = Uuid::new_v4().to_string();
         let body = json!({"type":"client-request", "rpcId":rpc_id, "method":method, "payload":{"args":args}});
         for attempt in 0..2 {
             let headers = self.auth_headers().await?;
-            let response = self
+            let request = self
                 .client
                 .post(format!("{}/api/{method}", self.base))
                 .headers(headers.clone())
-                .json(&body)
+                .json(&body);
+            let request = if method == "temporary/save" {
+                request.timeout(Duration::from_secs(60))
+            } else {
+                request
+            };
+            let response = request
                 .send()
                 .await
                 .map_err(|_| {
@@ -265,6 +401,14 @@ impl Rpc {
                 continue;
             }
             if !response.status().is_success() {
+                if method == "temporary/save" && !matches!(status, 401 | 403) {
+                    let envelope = read_body(response).await.ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+                    let code = envelope.as_ref()
+                        .filter(|value| value["type"] == "server-response" && value["rpcId"] == rpc_id && value["result"]["ok"] == false)
+                        .and_then(|value| value["result"]["error"]["code"].as_str());
+                    return Err(save_failure(code, Some(status)));
+                }
                 let mut error = failure(
                     "DSH_HTTP_ERROR",
                     match status {
@@ -286,6 +430,9 @@ impl Rpc {
             }
             return match envelope["result"]["ok"].as_bool() {
                 Some(true) => envelope["result"].get("value").cloned().ok_or_else(invalid),
+                Some(false) if method == "temporary/save" => Err(save_failure(
+                    envelope["result"]["error"]["code"].as_str(), Some(status),
+                )),
                 Some(false) => Err(failure(
                     "DSH_RPC_ERROR",
                     safe_message(&envelope["result"]["error"], &self.key),
@@ -295,6 +442,20 @@ impl Rpc {
         }
         Err(invalid())
     }
+}
+
+fn save_failure(code: Option<&str>, status: Option<u16>) -> TransportFailure {
+    let (code, message) = match (code, status) {
+        (Some("temporary/session-active"), _) => ("DSH_SESSION_ACTIVE", "DSH 会话仍有生成、子任务或后台工作，请结束或取消后再保存"),
+        (Some("temporary/expired"), _) | (_, Some(410)) => ("DSH_SESSION_EXPIRED", "DSH 临时会话已过期清理，无法保存"),
+        (Some("temporary/not-found"), _) => ("DSH_NO_SESSION", "DSH 临时会话不存在，无法保存"),
+        (Some("temporary/not-ready"), _) | (_, Some(503)) => ("DSH_NOT_READY", "DSH 临时会话服务尚未就绪，请稍后重试"),
+        (None, Some(404)) => ("DSH_SAVE_UNSUPPORTED", "DSH 未提供保存接口，请安装并启用 dsh-temporary-sessions 插件"),
+        _ => ("DSH_SAVE_FAILED", "保存 DSH 会话失败，请重试；保存接口支持重复提交"),
+    };
+    let mut error = failure(code, message);
+    error.status = status;
+    error
 }
 async fn read_body(response: Response) -> Result<Vec<u8>, TransportFailure> {
     let mut bytes = Vec::new();

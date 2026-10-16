@@ -154,6 +154,7 @@ export interface ResultOutputProps {
   contentScalarCount: number
   contentRevision: number
   revealCommitted: boolean
+  attachments?: ReadonlyMap<string, { name: string; mime: string; kind: string; data: string }>
   onOpenExternal(url: string): void
   loader?: RetryableMarkdownLoader
   scheduler?: MarkdownTaskScheduler
@@ -244,15 +245,17 @@ function RichMarkdownOutput({
   component: RichMarkdown,
   content,
   streaming,
+  attachments,
   onOpenExternal
 }: {
   component: MarkdownGeneration['Component']
   content: string
   streaming: boolean
+  attachments?: ReadonlyMap<string, { name: string; mime: string; kind: string; data: string }>
   onOpenExternal(url: string): void
 }): JSX.Element {
   const renderedContent = useStreamingMarkdownContent(content, streaming)
-  return <RichMarkdown content={renderedContent} onOpenExternal={onOpenExternal} />
+  return <RichMarkdown content={renderedContent} attachments={attachments} onOpenExternal={onOpenExternal} />
 }
 
 function ResultOutputInstance({
@@ -261,6 +264,7 @@ function ResultOutputInstance({
   content,
   contentScalarCount,
   revealCommitted,
+  attachments,
   onOpenExternal,
   loader = safeMarkdownLoader,
   scheduler = browserMarkdownScheduler,
@@ -319,6 +323,7 @@ function ResultOutputInstance({
             component={RichMarkdown}
             content={content}
             streaming={outputIsStreaming}
+            attachments={attachments}
             onOpenExternal={onOpenExternal}
           />
         </RichCommitMarker>

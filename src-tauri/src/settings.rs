@@ -179,6 +179,9 @@ impl SettingsRepository {
             if let Some(value) = update.tray_enabled {
                 settings.tray_enabled = value;
             }
+            if let Some(value) = update.quick_ask_shortcut {
+                settings.quick_ask_shortcut = value;
+            }
             if let Some(value) = update.locale {
                 settings.locale = value;
             }
@@ -249,6 +252,7 @@ impl SettingsRepository {
             *settings = AppSettings {
                 version: SETTINGS_VERSION,
                 tray_enabled: public.tray_enabled,
+                quick_ask_shortcut: public.quick_ask_shortcut,
                 locale: public.locale,
                 translate: public.translate,
                 result: public.result,
@@ -734,7 +738,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         }
         removed
     });
-    if version == Some(SETTINGS_VERSION as u64) || matches!(version, Some(12 | 13 | 14 | 15)) {
+    if version == Some(SETTINGS_VERSION as u64) || matches!(version, Some(12 | 13 | 14 | 15 | 16)) {
         let missing_tray_default = value.get("trayEnabled").is_none();
         let missing_result_defaults = value.pointer("/result/dismissMode").is_none()
             || value.pointer("/result/fontSize").is_none();
@@ -1037,6 +1041,7 @@ fn migrate_v1(mut value: serde_json::Value) -> Result<LoadedSettings, SettingsEr
     let settings = AppSettings {
         version: SETTINGS_VERSION,
         tray_enabled: true,
+        quick_ask_shortcut: crate::models::default_quick_ask_shortcut(),
         locale: legacy.locale,
         translate: legacy.translate,
         result: Default::default(),
@@ -1351,6 +1356,43 @@ mod tests {
         repository
             .set_provider_api_key(DEFAULT_PROVIDER_ID, api_key)
             .unwrap();
+    }
+
+    #[test]
+    fn quick_ask_shortcut_defaults_on_upgrade_and_survives_restart() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let original = AppSettings::default();
+        let mut legacy = serde_json::to_value(&original).unwrap();
+        legacy["version"] = 16.into();
+        legacy.as_object_mut().unwrap().remove("quickAskShortcut");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let secrets = Arc::new(MemorySecrets::default());
+        let repository = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
+        assert_eq!(
+            repository.get_settings().quick_ask_shortcut,
+            "Control+Shift+Space"
+        );
+        assert_eq!(repository.get_settings().providers, original.providers);
+        assert!(repository
+            .update(SettingsUpdate {
+                quick_ask_shortcut: Some("Space".into()),
+                ..Default::default()
+            })
+            .is_err());
+        repository
+            .update(SettingsUpdate {
+                quick_ask_shortcut: Some("Alt+KeyK".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        drop(repository);
+        let reopened = SettingsRepository::with_secret_store(&path, secrets).unwrap();
+        assert_eq!(
+            reopened.get_public_settings().unwrap().quick_ask_shortcut,
+            "Alt+KeyK"
+        );
+        assert_eq!(reopened.get_settings().version, SETTINGS_VERSION);
     }
 
     #[test]

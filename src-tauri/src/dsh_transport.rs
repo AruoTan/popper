@@ -1,16 +1,18 @@
 //! DSH Docker gateway adapter, pinned to the native 0.2.0-rc.2 protocol.
 //! Local clients use the gateway's automatic Cookie login; remote clients use a gateway key.
-use std::{collections::HashSet, ops::ControlFlow, time::Duration};
+use std::{collections::HashSet, ops::ControlFlow, sync::Arc, time::Duration};
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+#[path = "dsh_transport/attachments.rs"]
+mod attachments;
 #[path = "dsh_transport/connection.rs"]
 mod connection;
 pub(crate) use connection::DshService;
-use connection::MuxItem;
+use connection::{Gateway, MuxItem};
 
 use crate::{
     models::{
@@ -174,8 +176,7 @@ impl DshService {
 }
 
 fn prompt_text(messages: &Value) -> Result<String, TransportFailure> {
-    // Fresh native sessions make retries and model switches independent. Popper's
-    // bounded, committed transcript supplies the conversation for each generation.
+    // Bootstrap a new remote conversation with Popper's current context.
     let messages = messages.as_array().ok_or_else(invalid)?;
     let mut prompt =
         String::from("以下是 Popper 提交的对话。请根据对话中的任务要求回答最新用户消息。\n");
@@ -185,6 +186,126 @@ fn prompt_text(messages: &Value) -> Result<String, TransportFailure> {
         prompt.push_str(&format!("\n<{role}>\n{content}\n</{role}>\n"));
     }
     Ok(prompt)
+}
+
+/// Owned by one Popper result session, independent of the gateway cache lifetime.
+/// The turn lock prevents a retry from racing the preceding remote cancel.
+#[derive(Default)]
+pub(crate) struct DshConversation {
+    state: tokio::sync::Mutex<Option<RemoteConversation>>,
+}
+
+struct RemoteConversation {
+    gateway: Arc<Gateway>,
+    provider_id: String,
+    workspace: String,
+    session_id: String,
+    system: Option<String>,
+    initialized: bool,
+    saved: bool,
+    resume_required: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DshSessionState {
+    pub provider_id: String,
+    pub session_id: String,
+    pub saved: bool,
+}
+
+impl RemoteConversation {
+    fn status(&self) -> DshSessionState {
+        DshSessionState {
+            provider_id: self.provider_id.clone(),
+            session_id: self.session_id.clone(),
+            saved: self.saved,
+        }
+    }
+}
+
+impl DshConversation {
+    pub(crate) async fn status(&self, provider_id: &str) -> Option<DshSessionState> {
+        self.state
+            .lock()
+            .await
+            .as_ref()
+            .filter(|remote| remote.provider_id == provider_id)
+            .map(RemoteConversation::status)
+    }
+
+    pub(crate) async fn save(&self, provider_id: &str) -> Result<DshSessionState, TransportFailure> {
+        // Never queue a save behind a running turn and unexpectedly save later.
+        let mut state = self.state.try_lock().map_err(|_| {
+            failure("DSH_SESSION_ACTIVE", "请先等待或停止当前生成，再保存会话")
+        })?;
+        let remote = state
+            .as_mut()
+            .filter(|remote| remote.provider_id == provider_id)
+            .ok_or_else(|| failure("DSH_NO_SESSION", "尚未创建 DSH 会话，请先发送消息"))?;
+        if remote.saved {
+            return Ok(remote.status());
+        }
+        // A lost receipt may still mean the server promoted the session. Resume
+        // by ID on the next turn, on a fresh mux, even when saving returns an error.
+        remote.resume_required = true;
+        remote.gateway = remote.gateway.after_promotion();
+        let result = remote
+            .gateway
+            .rpc
+            .call(
+                "temporary/save",
+                json!({"request":{"sessionId":remote.session_id}}),
+            )
+            .await?;
+        if result["sessionId"].as_str() != Some(remote.session_id.as_str())
+            || result["temporary"] != false
+            || result["reconnectRequired"] != true
+            || !result["workspaceId"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+            || !result["savedSessionIds"].as_array().is_some_and(|ids| {
+                ids.iter().any(|id| id.as_str() == Some(remote.session_id.as_str()))
+            })
+        {
+            return Err(invalid());
+        }
+        remote.saved = true;
+        Ok(remote.status())
+    }
+}
+
+fn system_text(messages: &Value) -> Result<Option<String>, TransportFailure> {
+    let messages = messages.as_array().ok_or_else(invalid)?;
+    let systems = messages
+        .iter()
+        .filter(|message| message["role"] == "system")
+        .map(|message| message["content"].as_str().ok_or_else(invalid))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((!systems.is_empty()).then(|| systems.join("\n\n")))
+}
+
+fn incremental_prompt(
+    messages: &Value,
+    previous_system: &Option<String>,
+) -> Result<String, TransportFailure> {
+    let latest = messages
+        .as_array()
+        .and_then(|messages| messages.last())
+        .filter(|message| message["role"] == "user")
+        .ok_or_else(invalid)?;
+    let text = latest["content"].as_str().ok_or_else(invalid)?;
+    let system = system_text(messages)?;
+    if &system == previous_system {
+        return Ok(text.to_owned());
+    }
+    // Update task instructions without replaying source text, answers or files.
+    Ok(format!(
+        "本轮任务指令（替换之前的任务指令）：\n<system>\n{}\n</system>\n\n<user>\n{text}\n</user>",
+        system
+            .as_deref()
+            .unwrap_or("根据已有对话回答最新问题，不再执行之前的单次任务。")
+    ))
 }
 
 #[derive(Default)]
@@ -339,6 +460,8 @@ struct DshTiming {
     model_ready_ms: Option<u64>,
     socket_ready_ms: Option<u64>,
     follow_ready_ms: Option<u64>,
+    attachment_ready_ms: Option<u64>,
+    attachment_count: usize,
     prompt_sent_ms: Option<u64>,
     prompt_ack_ms: Option<u64>,
     first_event_ms: Option<u64>,
@@ -349,6 +472,7 @@ struct DshTiming {
     total_ms: u64,
     auth_reused: bool,
     workspace_reused: bool,
+    session_reused: bool,
     socket_reused: bool,
     prompt_correlated: bool,
     ack_error: Option<&'static str>,
@@ -361,6 +485,7 @@ fn elapsed(budget: &GenerationBudget, at: Instant) -> u64 {
 }
 
 impl DshService {
+    #[cfg(test)]
     pub(crate) async fn generate<D, T, N>(
         &self,
         request_id: &str,
@@ -369,6 +494,85 @@ impl DshService {
         model: &str,
         thinking_plan: &ThinkingRequestPlan,
         messages: &Value,
+        cancellation: &CancellationToken,
+        budget: &GenerationBudget,
+        delta: D,
+        thinking: T,
+        notice: N,
+    ) -> Result<TransportSuccess, TransportFailure>
+    where
+        D: FnMut(String) -> ControlFlow<()>,
+        T: FnMut(String) -> ControlFlow<()>,
+        N: FnMut(String),
+    {
+        self.generate_with_attachments(
+            request_id,
+            provider,
+            key,
+            model,
+            thinking_plan,
+            messages,
+            &[],
+            cancellation,
+            budget,
+            delta,
+            thinking,
+            notice,
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn generate_with_attachments<D, T, N>(
+        &self,
+        request_id: &str,
+        provider: &ProviderConfig,
+        key: &str,
+        model: &str,
+        thinking_plan: &ThinkingRequestPlan,
+        messages: &Value,
+        attachments: &[crate::quick_ask::Attachment],
+        cancellation: &CancellationToken,
+        budget: &GenerationBudget,
+        delta: D,
+        thinking: T,
+        notice: N,
+    ) -> Result<TransportSuccess, TransportFailure>
+    where
+        D: FnMut(String) -> ControlFlow<()>,
+        T: FnMut(String) -> ControlFlow<()>,
+        N: FnMut(String),
+    {
+        self.generate_in_conversation(
+            &DshConversation::default(),
+            request_id,
+            provider,
+            key,
+            model,
+            thinking_plan,
+            messages,
+            attachments,
+            attachments,
+            cancellation,
+            budget,
+            delta,
+            thinking,
+            notice,
+        )
+        .await
+    }
+
+    pub(crate) async fn generate_in_conversation<D, T, N>(
+        &self,
+        conversation: &DshConversation,
+        request_id: &str,
+        provider: &ProviderConfig,
+        key: &str,
+        model: &str,
+        thinking_plan: &ThinkingRequestPlan,
+        messages: &Value,
+        attachments: &[crate::quick_ask::Attachment],
+        latest_attachments: &[crate::quick_ask::Attachment],
         cancellation: &CancellationToken,
         budget: &GenerationBudget,
         mut delta: D,
@@ -380,11 +584,46 @@ impl DshService {
         T: FnMut(String) -> ControlFlow<()>,
         N: FnMut(String),
     {
-        let gateway = self.gateway(provider, key)?;
+        let mut remote = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(cancelled()),
+            _ = tokio::time::sleep_until(budget.total_deadline) => return Err(failure("TOTAL_TIMEOUT", "DSH 生成超时")),
+            state = conversation.state.lock() => state,
+        };
+        let workspace = provider.dsh_workspace.as_deref().unwrap_or("/workspace");
+        let compatible = remote.as_ref().is_some_and(|state| {
+            state.provider_id == provider.id
+                && state
+                    .gateway
+                    .authentication_matches(&provider.base_url, key)
+                && state.workspace == workspace
+        });
+        let gateway = if compatible {
+            remote.as_ref().ok_or_else(invalid)?.gateway.clone()
+        } else {
+            self.gateway(provider, key)?
+        };
         let (upstream_provider, upstream_model) = split_model_id(model)?;
-        let prompt = prompt_text(messages)?;
+        let initialized = compatible && remote.as_ref().is_some_and(|state| state.initialized);
+        let system = system_text(messages)?;
+        let prompt = if initialized {
+            incremental_prompt(messages, &remote.as_ref().ok_or_else(invalid)?.system)?
+        } else {
+            prompt_text(messages)?
+        };
+        let attachments = if initialized {
+            latest_attachments
+        } else {
+            attachments
+        };
+        crate::quick_ask::validate_attachments(attachments)
+            .map_err(|message| failure("DSH_ATTACHMENT_INVALID", message))?;
         let rpc = &gateway.rpc;
-        let mut session_id = None;
+        let mut session_id = if compatible {
+            remote.as_ref().map(|state| state.session_id.clone())
+        } else {
+            None
+        };
         let mut output = Output::default();
         let mut timing = DshTiming {
             request_id: request_id.to_owned(),
@@ -393,33 +632,59 @@ impl DshService {
         let operation = async {
             timing.auth_reused = rpc.authenticate().await?;
             timing.auth_ready_ms = Some(elapsed(budget, Instant::now()));
-            // Agent setup and WebSocket readiness are independent; only the prompt
-            // depends on both. Fresh Agent sessions preserve retry/model isolation.
+            // Model selection and WebSocket readiness are independent. Preserve
+            // the window's remote Agent across turns and model changes.
             let prepare_session = async {
-                let (workspace_id, reused) = gateway
-                    .workspace(provider.dsh_workspace.as_deref().unwrap_or("/workspace"))
-                    .await?;
-                timing.workspace_reused = reused;
-                timing.workspace_ready_ms = Some(elapsed(budget, Instant::now()));
-                let created = match rpc
-                    .call(
-                        "session/create",
-                        json!({"request":{"workspaceId":workspace_id}}),
-                    )
-                    .await
-                {
-                    Ok(created) => created,
-                    Err(error) => {
-                        gateway.invalidate_workspaces().await;
-                        return Err(error);
+                let id = if let Some(id) = session_id.as_ref() {
+                    timing.session_reused = true;
+                    if remote.as_ref().is_some_and(|state| state.resume_required) {
+                        // Temporary workspace IDs belong to the old runtime.
+                        let resumed = rpc
+                            .call("session/create", json!({"request":{"sessionId":id}}))
+                            .await?;
+                        if resumed["sessionId"].as_str() != Some(id.as_str()) {
+                            return Err(invalid());
+                        }
+                        remote.as_mut().ok_or_else(invalid)?.resume_required = false;
                     }
+                    id.clone()
+                } else {
+                    let (workspace_id, reused) = gateway
+                        .workspace(provider.dsh_workspace.as_deref().unwrap_or("/workspace"))
+                        .await?;
+                    timing.workspace_reused = reused;
+                    timing.workspace_ready_ms = Some(elapsed(budget, Instant::now()));
+                    let created = match rpc
+                        .call(
+                            "session/create",
+                            json!({"request":{"workspaceId":workspace_id}}),
+                        )
+                        .await
+                    {
+                        Ok(created) => created,
+                        Err(error) => {
+                            gateway.invalidate_workspaces().await;
+                            return Err(error);
+                        }
+                    };
+                    let id = created["sessionId"]
+                        .as_str()
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(invalid)?
+                        .to_owned();
+                    session_id = Some(id.clone());
+                    *remote = Some(RemoteConversation {
+                        gateway: gateway.clone(),
+                        provider_id: provider.id.clone(),
+                        workspace: workspace.to_owned(),
+                        session_id: id.clone(),
+                        system: None,
+                        initialized: false,
+                        saved: false,
+                        resume_required: false,
+                    });
+                    id
                 };
-                let id = created["sessionId"]
-                    .as_str()
-                    .filter(|id| !id.is_empty())
-                    .ok_or_else(invalid)?
-                    .to_owned();
-                session_id = Some(id.clone());
                 timing.session_ready_ms = Some(elapsed(budget, Instant::now()));
                 notice(format!("DSH 会话：{}（可在 {} 查看）", id, rpc.base));
                 let mut selection =
@@ -467,8 +732,12 @@ impl DshService {
                 .await
                 .map_err(|_| failure("DSH_STREAM_TIMEOUT", "DSH 会话订阅就绪超时"))??;
             timing.follow_ready_ms = Some(elapsed(budget, Instant::now()));
+            let content =
+                attachments::prompt_content(rpc, id, prompt, attachments, &mut notice).await?;
+            timing.attachment_ready_ms = Some(elapsed(budget, Instant::now()));
+            timing.attachment_count = attachments.len();
             let args = json!({"request":{"sessionId":id, "requestId":request_id,
-                "mode":"queue", "content":[{"type":"text", "text":prompt}]}});
+                "mode":"queue", "content":content}});
             let prompt_call = rpc.call("session/prompt", args);
             tokio::pin!(prompt_call);
             timing.prompt_sent_ms = Some(elapsed(budget, Instant::now()));
@@ -492,7 +761,15 @@ impl DshService {
                         if value["type"] == "event" {
                             let event = &value["event"];
                             if event["type"] == "turn/start" { server_turn_start = event["time"].as_u64(); }
-                            if event["type"] == "user/message" && event["data"]["source"]["rpcId"] == request_id { timing.prompt_correlated = true; }
+                            if event["type"] == "user/message" && event["data"]["source"]["rpcId"] == request_id {
+                                timing.prompt_correlated = true;
+                                if let Some(state) = remote.as_mut() {
+                                    state.initialized = true;
+                                    state.system = system.clone();
+                                }
+                            }
+                            // Late events from a previous turn must not finish this request.
+                            if !timing.prompt_correlated { continue; }
                             if event["type"] == "tool/call" {
                                 let name = event["data"]["name"].as_str().unwrap_or("工具");
                                 notice(format!("DSH 正在调用 {}", name.chars().take(80).collect::<String>()));
@@ -502,6 +779,7 @@ impl DshService {
                                 timing.server_turn_ms = server_turn_start.and_then(|start| event["time"].as_u64().and_then(|end| end.checked_sub(start)));
                             }
                         }
+                        if !timing.prompt_correlated { continue; }
                         if value["type"] == "assistant-stream" && value["frame"]["chunk"]["type"] == "reasoning-delta" {
                             timing.first_reasoning_ms.get_or_insert(now);
                         }
@@ -513,7 +791,13 @@ impl DshService {
                     receipt = &mut prompt_call, if !acknowledged => {
                         timing.prompt_ack_ms = Some(elapsed(budget, Instant::now()));
                         match receipt {
-                            Ok(value) if value["accepted"] == true => acknowledged = true,
+                            Ok(value) if value["accepted"] == true => {
+                                acknowledged = true;
+                                if let Some(state) = remote.as_mut() {
+                                    state.initialized = true;
+                                    state.system = system.clone();
+                                }
+                            },
                             Ok(_) => return Err(invalid()),
                             Err(error) if timing.prompt_correlated => { timing.ack_error = Some(error.code); acknowledged = true; }
                             Err(error) => return Err(error),
@@ -551,6 +835,12 @@ impl DshService {
             eprintln!("[dsh-network] {record}");
         }
         if let Err(mut error) = result {
+            if !attachments.is_empty()
+                && timing.prompt_sent_ms.is_none()
+                && error.code == "TOTAL_TIMEOUT"
+            {
+                error.retryable = true;
+            }
             error.content_seen = !output.content.is_empty();
             return Err(error);
         }

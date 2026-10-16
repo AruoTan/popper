@@ -31,6 +31,7 @@ export default defineConfig({
     target: 'safari15',
     rollupOptions: {
       input: {
+        quickAsk: fromRoot('src/renderer/quick-ask/index.html'),
         toolbar: fromRoot('src/renderer/toolbar/index.html'),
         result: fromRoot('src/renderer/result/index.html'),
         settings: fromRoot('src/renderer/settings/index.html'),

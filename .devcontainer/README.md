@@ -28,7 +28,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 - rust-analyzer 保留源码分析，但关闭保存时 Cargo 检查、构建脚本执行和过程宏展开，避免编辑时触发原生编译。补全和诊断并不完整，尤其是宏生成代码及 Windows 条件编译代码；不能代替 CI。配置含义见 [rust-analyzer 官方说明](https://rust-analyzer.github.io/book/configuration)。
 - Node 镜像标签、Rust 和 pnpm 版本显式固定；npm/Cargo 使用仓库锁文件。Debian 软件包与镜像标签不是不可变快照，不承诺逐字节复现或离线首次构建。
 - 源码绑定到 `/workspaces/popper`，没有本机盘符或用户名依赖，面向 amd64/arm64 Linux 容器；不同架构各自构建，不共享二进制缓存。
-- `node_modules` 使用容器专属命名卷，遮盖宿主依赖；pnpm store 与 Cargo target 放在独立缓存卷，不使用宿主 `src-tauri/target`。卷名包含容器标识，避免不同工作区相互污染。
+- `node_modules` 使用包含容器标识的专属命名卷，遮盖宿主依赖；pnpm store 与 Cargo target 放在挂载到 `/home/node/.cache` 的 `dev-cache` 卷，不使用宿主 `src-tauri/target`。pnpm 11 通过 `PNPM_CONFIG_STORE_DIR=/home/node/.cache/pnpm-store` 固定 store 路径；`npm_config_store_dir` 不适用于此版本。重建后可在项目目录运行 `pnpm store path`，应输出 `/home/node/.cache/pnpm-store/v11`。
 - 以非 root 的 `node` 用户开发；初始化仅对两个卷根目录修正权限。Rust 工具链在镜像内，Cargo 下载缓存在容器用户目录，重建后可重新下载。
 - 宿主只需 Docker 和编辑器，无需安装 Node、pnpm 或 Cargo。配置不自动注入密钥；编辑器自身的 Git/SSH 凭据转发仍由编辑器设置控制。
 

@@ -6,6 +6,7 @@ import type {
 } from "./dictionary";
 import type {
   ActionStreamEvent,
+  DshSessionState,
   Point,
   ProviderCreateInput,
   ProviderModel,
@@ -26,6 +27,7 @@ export type Unsubscribe = () => void;
 
 export interface RuntimeDiagnostics {
   selectionMonitorError?: string;
+  quickAskShortcutError?: string;
 }
 
 export interface AccessibilityStatus {
@@ -119,14 +121,28 @@ export interface SelectionDetectionDebug {
   stepsTruncated?: boolean;
 }
 
+export interface QuickAskAttachment {
+  name: string;
+  mime: string;
+  data: string;
+  kind: "image" | "text" | "file";
+}
+
 export interface WindowPopperApi {
+  /** Settings recorder only; prevents its own global shortcut from opening the composer. */
+  setQuickAskShortcutRecording?(recording: boolean): Promise<void>;
+  submitQuickAsk?(question: string, attachments: QuickAskAttachment[]): Promise<RunActionResult>;
+  closeQuickAsk?(): Promise<void>;
+  quickAskReady?(): Promise<void>;
+  reportQuickAskSize?(height: number): Promise<void>;
+  onQuickAskOpened?(listener: () => void): Unsubscribe;
   /** Runtime only; resets to false on every app launch. */
   getSelectionDetectionDebugEnabled?(): Promise<boolean>;
   setSelectionDetectionDebugEnabled?(enabled: boolean): Promise<boolean>;
   onSelectionDetectionDebugChanged?(listener: (enabled: boolean) => void): Unsubscribe;
   /** Result window only, scoped to its original selection timestamp. */
   getSelectionDetectionDebug?(sessionId: string): Promise<SelectionDetectionDebug | null>;
-  submitTranslation?(sessionId: string, text: string): Promise<TranslationSubmission>;
+  submitTranslation?(sessionId: string, text: string, attachments?: QuickAskAttachment[]): Promise<TranslationSubmission>;
   translationInputSuggestions?(
     sessionId: string,
     requestId: string,
@@ -211,7 +227,9 @@ export interface WindowPopperApi {
   hideResultSelection?(sessionId: string): Promise<void>;
   cancelAction(sessionId?: string): Promise<void>;
   retryAction(sessionId?: string, options?: ActionRetryOptions): Promise<RunActionResult>;
-  continueAction?(sessionId: string, question: string): Promise<RunActionResult>;
+  continueAction?(sessionId: string, question: string, attachments?: QuickAskAttachment[]): Promise<RunActionResult>;
+  dshSessionState?(sessionId: string, requestId: string): Promise<DshSessionState | null>;
+  saveDshSession?(sessionId: string, requestId: string): Promise<DshSessionState>;
   copyText(text: string): Promise<void>;
   openExternal(url: string): Promise<void>;
   openSettings?(options?: OpenSettingsOptions): Promise<void>;

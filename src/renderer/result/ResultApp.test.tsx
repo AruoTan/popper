@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { StrictMode } from "react";
 
@@ -60,6 +60,13 @@ function resultSnapshot(
 
 const completedSession = resultSnapshot();
 const askCompletedSession = resultSnapshot({ actionId: "ask-ai" });
+
+function dshSettings(): PublicSettings {
+  const settings = settingsWithFontSize();
+  return { ...settings, providers: settings.providers.map((provider) => ({
+    ...provider, kind: "dsh", baseUrl: "http://localhost:3080", keyConfigured: false,
+  })) };
+}
 
 function dictionaryFixture(): DictionarySnapshot {
   return {
@@ -217,6 +224,74 @@ beforeEach(() => {
   startDragging.mockResolvedValue(undefined);
   startResizeDragging.mockReset();
   startResizeDragging.mockResolvedValue(undefined);
+});
+
+describe("DSH session saving", () => {
+  const remote = { providerId: "openai-compatible", sessionId: "temporary-session-1", saved: false };
+
+  it("only offers saving for DSH, and blocks duplicate saves and new turns while saving", async () => {
+    const pending = deferred<typeof remote>();
+    const saveDshSession = vi.fn().mockReturnValue(pending.promise);
+    const dshSessionState = vi.fn().mockResolvedValue(remote);
+    const view = await renderResult(completedSession, dshSettings(), { dshSessionState, saveDshSession });
+    const button = await screen.findByRole("button", { name: "保存会话" });
+    await waitFor(() => expect(button).toBeEnabled());
+    expect(dshSessionState).toHaveBeenCalledWith("session-1", completedSession.requestId);
+    fireEvent.click(button);
+    expect(screen.getByRole("button", { name: "保存中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "切换模型" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "继续提问" })).toBeDisabled();
+    fireEvent.click(button);
+    expect(saveDshSession).toHaveBeenCalledTimes(1);
+    expect(saveDshSession).toHaveBeenCalledWith("session-1", completedSession.requestId);
+    await act(async () => pending.resolve({ ...remote, saved: true }));
+    expect(await screen.findByRole("button", { name: "已保存" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "重试" })).toBeEnabled();
+    view.unmount();
+    vi.resetModules();
+    await renderResult();
+    expect(screen.queryByRole("button", { name: "保存会话" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the save button available for a manual retry after an active-session error", async () => {
+    const saveDshSession = vi.fn()
+      .mockRejectedValueOnce(new Error("DSH 会话仍有生成、子任务或后台工作，请结束或取消后再保存"))
+      .mockResolvedValueOnce({ ...remote, saved: true });
+    await renderResult(completedSession, dshSettings(), {
+      dshSessionState: vi.fn().mockResolvedValue(remote), saveDshSession,
+    });
+    const button = screen.getByRole("button", { name: "保存会话" });
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByRole("alert")).toHaveTextContent("后台工作");
+    await waitFor(() => expect(button).toBeEnabled());
+    fireEvent.click(button);
+    expect(await screen.findByRole("button", { name: "已保存" })).toBeDisabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("waits for a remote session and disables saving during generation", async () => {
+    const dshSessionState = vi.fn().mockResolvedValue(null);
+    const view = await renderResult(completedSession, dshSettings(), { dshSessionState });
+    await waitFor(() => expect(dshSessionState).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: "保存会话" })).toBeDisabled();
+    view.unmount();
+    vi.resetModules();
+    dshSessionState.mockClear();
+    await renderResult(resultSnapshot({ status: "streaming", content: "", contentScalarCount: 0 }), dshSettings(), { dshSessionState });
+    expect(screen.getByRole("button", { name: "保存会话" })).toBeDisabled();
+    expect(dshSessionState).not.toHaveBeenCalled();
+  });
+
+  it("restores the saved state when the result window reconnects", async () => {
+    const saveDshSession = vi.fn();
+    await renderResult(completedSession, dshSettings(), {
+      dshSessionState: vi.fn().mockResolvedValue({ ...remote, saved: true }), saveDshSession,
+    });
+    expect(await screen.findByRole("button", { name: "已保存" })).toBeDisabled();
+    expect(saveDshSession).not.toHaveBeenCalled();
+  });
 });
 
 afterEach(() => {
@@ -871,6 +946,14 @@ describe("ResultApp window interactions", () => {
     await waitFor(() => expect(api.closeResult).toHaveBeenCalledWith("session-1"));
   });
 
+  it("renders a selection-free quick ask result without an original-text toggle", async () => {
+    const snapshot = resultSnapshot({ actionId: "ask-ai", quickAsk: true, conversation: [{ role: "user", content: "Explain Docker" }] });
+    snapshot.selection.text = "";
+    await renderResult(snapshot);
+    expect(await screen.findByText("Explain Docker")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "显示原文" })).not.toBeInTheDocument();
+  });
+
   it("renders model output as Markdown inside the result window", async () => {
     const content = [
       "# Markdown 标题",
@@ -971,6 +1054,186 @@ describe("ResultApp window interactions", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("上下文过长");
     expect(input).toHaveValue("继续说明");
+  });
+
+  it("does not show attachment controls in non-DSH mode", async () => {
+    await renderResult(askCompletedSession);
+    expect(screen.queryByRole("button", { name: "添加附件" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "发送追问" })).toBeNull();
+    expect(screen.queryByLabelText("选择追问附件")).toBeNull();
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+  });
+
+  it("supports attachments in follow-up for DSH mode and submits them with question", async () => {
+    const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
+    const attachBtn = screen.getByRole("button", { name: "添加附件" });
+    const sendBtn = screen.getByRole("button", { name: "发送追问" });
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+
+    expect(attachBtn).toBeInTheDocument();
+    expect(sendBtn).toBeInTheDocument();
+    expect(sendBtn).toBeDisabled();
+
+    const file = new File(["test doc content"], "doc.txt", { type: "text/plain" });
+    const picker = screen.getByLabelText("选择追问附件");
+    fireEvent.change(picker, { target: { files: [file] } });
+
+    await screen.findByRole("region", { name: "追问附件预览" });
+    expect(screen.getByText("doc.txt")).toBeInTheDocument();
+    expect(screen.getByText("1 KB")).toBeInTheDocument();
+    expect(container.querySelector(".result-window")).toHaveClass(
+      "result-window--followup-has-attachments",
+    );
+
+    fireEvent.change(input, { target: { value: "请分析此文档" } });
+    expect(sendBtn).toBeEnabled();
+
+    fireEvent.click(sendBtn);
+
+    await waitFor(() => {
+      expect(continueAction).toHaveBeenCalledWith(
+        "session-1",
+        "请分析此文档",
+        [expect.objectContaining({ name: "doc.txt", kind: "text", data: "test doc content" })],
+      );
+    });
+
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+  });
+
+  it("allows removing attachments before sending in DSH mode", async () => {
+    await renderResult(askCompletedSession, dshSettings());
+    const picker = screen.getByLabelText("选择追问附件");
+    const file = new File(["test doc content"], "doc.txt", { type: "text/plain" });
+    fireEvent.change(picker, { target: { files: [file] } });
+
+    await screen.findByRole("region", { name: "追问附件预览" });
+    expect(screen.getByRole("button", { name: "发送追问" })).toBeEnabled();
+    const removeBtn = screen.getByRole("button", { name: "移除 doc.txt" });
+    fireEvent.click(removeBtn);
+
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+    expect(screen.getByRole("button", { name: "发送追问" })).toBeDisabled();
+  });
+
+  it.each(["click", "Enter"])("sends attachment-only DSH messages via %s and keeps the user turn", async (method) => {
+    const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(continueAction).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("选择追问附件"), {
+      target: { files: [new File(["attachment contents"], "only.txt", { type: "text/plain" })] },
+    });
+    const send = screen.getByRole("button", { name: "发送追问" });
+    await waitFor(() => expect(send).toBeEnabled());
+    if (method === "click") fireEvent.click(send);
+    else fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(continueAction).toHaveBeenCalledExactlyOnceWith("session-1", "", [
+      expect.objectContaining({ name: "only.txt", kind: "text", data: "attachment contents" }),
+    ]));
+    expect(input).toHaveValue("");
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+    const userTurn = container.querySelector<HTMLElement>(".result-turn--user");
+    expect(userTurn).not.toBeNull();
+    expect(within(userTurn!).getByText("only.txt")).toBeInTheDocument();
+  });
+
+  it("routes attachment-only input from the translation window to AI", async () => {
+    const submitTranslation = vi.fn().mockResolvedValue({ route: "ai", requestId: "request-followup" });
+    const { continueAction } = await renderResult(completedSession, dshSettings(), { submitTranslation });
+    fireEvent.change(screen.getByLabelText("选择追问附件"), {
+      target: { files: [new File(["translate me"], "translate.txt", { type: "text/plain" })] },
+    });
+    const send = screen.getByRole("button", { name: "发送追问" });
+    await waitFor(() => expect(send).toBeEnabled());
+    fireEvent.click(send);
+    await waitFor(() => expect(submitTranslation).toHaveBeenCalledExactlyOnceWith("session-1", "", [
+      expect.objectContaining({ name: "translate.txt", data: "translate me" }),
+    ]));
+    expect(continueAction).not.toHaveBeenCalled();
+  });
+
+  it("handles drag-drop and paste of attachments in DSH mode", async () => {
+    const { container } = await renderResult(askCompletedSession, dshSettings());
+    const resultWindow = container.querySelector(".result-window")!;
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+
+    fireEvent.dragEnter(resultWindow, { dataTransfer: { types: ["Files"] } });
+    expect(container.querySelector(".result-window__drop-hint")).toBeInTheDocument();
+
+    fireEvent.dragLeave(resultWindow);
+    expect(container.querySelector(".result-window__drop-hint")).toBeNull();
+
+    const file = new File(["file content"], "dropped.txt", { type: "text/plain" });
+    fireEvent.dragEnter(resultWindow, { dataTransfer: { types: ["Files"] } });
+    fireEvent.drop(resultWindow, { dataTransfer: { files: [file] } });
+
+    await screen.findByRole("region", { name: "追问附件预览" });
+    expect(screen.getByText("dropped.txt")).toBeInTheDocument();
+
+    const image = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], "pasted.png", {
+      type: "image/png",
+    });
+    fireEvent.paste(input, { clipboardData: { files: [image] } });
+
+    await screen.findByText("pasted.png");
+  });
+
+  it.each(["失败提问", ""])("restores attachments with question %j if backend rejects or streaming fails in DSH mode", async (question) => {
+    const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
+    continueAction.mockResolvedValueOnce({ accepted: false, message: "服务商拒绝" });
+
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+    const picker = screen.getByLabelText("选择追问附件");
+    const file = new File(["some doc"], "reject.txt", { type: "text/plain" });
+    fireEvent.change(picker, { target: { files: [file] } });
+    await screen.findByText("reject.txt");
+
+    fireEvent.change(input, { target: { value: question } });
+    const sendBtn = screen.getByRole("button", { name: "发送追问" });
+    fireEvent.click(sendBtn);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("服务商拒绝");
+    expect(input).toHaveValue(question);
+    expect(screen.getByText("reject.txt")).toBeInTheDocument();
+
+    // Now test restore on streaming failure
+    continueAction.mockResolvedValueOnce({ accepted: true, requestId: "request-followup" });
+    fireEvent.click(sendBtn);
+
+    await waitFor(() => expect(continueAction).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
+
+    const store = await import("./actionEventStore");
+    act(() => {
+      store.hydrateActionEventStore({
+        ...askCompletedSession,
+        requestId: "request-followup",
+        status: "error",
+        content: "",
+        contentScalarCount: 0,
+        errorMessage: "流式传输异常",
+        retryable: true,
+      });
+    });
+
+    await waitFor(() => expect(input).toHaveValue(question));
+    const previewRegion = await screen.findByRole("region", { name: "追问附件预览" });
+    expect(within(previewRegion).getByText("reject.txt")).toBeInTheDocument();
+  });
+
+  it("displays native translation retry errors instead of a generic fallback", async () => {
+    const { retryAction } = await renderResult();
+    retryAction.mockRejectedValueOnce("请先为服务商保存 API Key；词典查询仍可使用");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "请先为服务商保存 API Key；词典查询仍可使用",
+    );
+    expect(screen.queryByText("无法重试当前操作")).toBeNull();
   });
 
   it("restores an accepted follow-up question if streaming later fails", async () => {

@@ -7,7 +7,7 @@
 1. 将源码和 `.github` 配置提交、推送到 GitHub 仓库。工作流首次必须存在于默认分支，Actions 页面才会显示手动运行按钮。
 2. 打开 **Actions → Build Windows installer → Run workflow**，选择待构建分支并运行。
 3. 成功后，在该次运行的 **Artifacts** 下载 `Popper-windows-x64-运行编号`，解压得到 `.exe` 和 `SHA256SUMS.txt`。
-4. 可用 PowerShell 的 `Get-FileHash .\Popper_0.5.9_x64-setup.exe -Algorithm SHA256` 与校验文件比对（文件名随版本变化）。
+4. 可用 PowerShell 的 `Get-FileHash .\Popper_0.5.12_x64-setup.exe -Algorithm SHA256` 与校验文件比对（文件名随版本变化）。
 
 工作流仅手动触发，不因 push/PR 自动消耗构建额度，不创建 Release、不推送提交、不需要发布令牌或签名密钥。产物保留 14 天；请及时下载。私有仓库需留意账户的 Actions 分钟数、存储额度及组织策略。
 
@@ -19,7 +19,8 @@
 - 任一步骤失败都会停止；仅成功产物上传。任务最多运行 60 分钟，同一分支的并发构建不会相互中断。
 - 第三方 Actions 固定到提交 SHA，仓库权限只有 `contents: read`。升级 Actions 时同步核对官方版本与 SHA。
 - 缓存 pnpm store，以及 Cargo 下载缓存和 `src-tauri/target` 内的依赖编译产物，覆盖验证与 release 打包。Rust 缓存由工具链、编译环境和 Cargo 清单/锁文件区分；锁文件变化时可回用旧缓存，由 Cargo 判断需要重编译的依赖。应用自身及安装包由当前源码重新生成。
-- CI 专用配置只关闭重复的 `beforeBuildCommand`，使用前先检查本次验证生成的四个 HTML 入口；本地 `pnpm package:windows` 仍自动构建前端。验证、打包和产物校验的耗时写入 Actions 运行摘要。
+- CI 专用配置只关闭重复的 `beforeBuildCommand`，使用前先检查本次验证生成的五个 HTML 入口（包含快捷提问）；本地 `pnpm package:windows` 仍自动构建前端。验证、打包、产物校验和 release 启动检查的耗时写入 Actions 运行摘要。
+- 打包后实际启动 release 程序，要求 20 秒内写入当前进程的 `ready` 日志且保持运行；失败时不上传安装包。`startup.log` 仅保留在运行机器本地。
 - 首次构建、缓存被清理或工具链升级时仍需冷编译；后续缓存命中时才有主要收益，具体节省时间需比较云端运行。GitHub 的系统镜像和 NASM 软件包会更新，因此不承诺逐字节可复现。
 
 安装包仍是未签名测试包，可能触发 SmartScreen。云端单元测试不能替代 Zotero、Chrome 等桌面应用中的真实划词、快捷键和剪贴板回归。

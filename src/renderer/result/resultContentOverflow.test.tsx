@@ -66,7 +66,7 @@ describe('result content overflow', () => {
     expect(result.current).toEqual({ isOverflowing: false, trackMarginPx: 0 })
   })
 
-  it('enables native scrolling for overflow and limits its track to the middle half', async () => {
+  it('enables native scrolling for overflow without limiting its track', async () => {
     const scroller = document.createElement('div')
     const inner = document.createElement('div')
     setGeometry(scroller, 320, 321)
@@ -87,10 +87,10 @@ describe('result content overflow', () => {
       await new Promise((resolve) => window.requestAnimationFrame(resolve))
     })
 
-    expect(result.current).toEqual({ isOverflowing: true, trackMarginPx: 80 })
+    expect(result.current).toEqual({ isOverflowing: true, trackMarginPx: 0 })
   })
 
-  it('never leaves more than half of an odd-height viewport for the track', () => {
+  it('keeps trackMarginPx at 0 regardless of viewport height to give user full control of scrollbar', () => {
     const scroller = document.createElement('div')
     const inner = document.createElement('div')
     setGeometry(scroller, 485, 900)
@@ -103,7 +103,8 @@ describe('result content overflow', () => {
       useResultContentOverflow(scrollRef, observedRef, true)
     ))
 
-    expect(result.current.trackMarginPx).toBe(122)
-    expect(485 - result.current.trackMarginPx * 2).toBeLessThanOrEqual(485 / 2)
+    expect(result.current.trackMarginPx).toBe(0)
+    expect(result.current.isOverflowing).toBe(true)
   })
 })
+
