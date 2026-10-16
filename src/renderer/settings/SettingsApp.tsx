@@ -24,6 +24,7 @@ import {
   CircleAlert,
   Eye,
   EyeOff,
+  Globe,
   GripVertical,
   KeyRound,
   LoaderCircle,
@@ -35,6 +36,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ShieldBan,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -100,7 +102,7 @@ type ModelPickerState = {
   remoteModels: ProviderModel[];
   checkedIds: Set<string>;
 };
-type SettingsSectionId = "general" | "selection" | "language";
+type SettingsSectionId = "general" | "actions" | "language";
 type SelectionSubTab = "actions" | "result" | "filter";
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
@@ -118,11 +120,11 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     caption: "服务商与选区访问",
   },
   {
-    id: "selection",
-    label: "划词",
-    blurb: "配置划词工具栏动作、结果窗口展示行为与应用过滤规则。",
-    icon: MousePointer2,
-    caption: "动作、结果与过滤",
+    id: "actions",
+    label: "动作",
+    blurb: "配置划词动作、快捷提问、结果窗口展示行为与应用过滤规则。",
+    icon: WandSparkles,
+    caption: "划词动作与快捷提问",
   },
   {
     id: "language",
@@ -139,8 +141,8 @@ const SETTINGS_SELECTION_SUBTAB_STORAGE_KEY = "popper.settings.selection-subtab"
 function restoredSettingsSection(): SettingsSectionId {
   try {
     const value = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
-    if (value === "actions" || value === "result" || value === "filter") {
-      return "selection";
+    if (value === "selection" || value === "result" || value === "filter" || value === "actions") {
+      return "actions";
     }
     return SETTINGS_SECTIONS.some((section) => section.id === value)
       ? (value as SettingsSectionId)
@@ -155,7 +157,7 @@ function restoredSelectionSubTab(): SelectionSubTab {
     const prevSection = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
     if (prevSection === "result") return "result";
     if (prevSection === "filter") return "filter";
-    if (prevSection === "actions") return "actions";
+    if (prevSection === "actions" || prevSection === "selection") return "actions";
 
     const value = window.sessionStorage.getItem(SETTINGS_SELECTION_SUBTAB_STORAGE_KEY);
     return value === "actions" || value === "result" || value === "filter" ? value : "actions";
@@ -362,17 +364,20 @@ export function SettingsApp(): JSX.Element {
       setActiveSection("general");
       targetId = "providers-title";
     } else if (focus === "actions" || focus === "selection") {
-      setActiveSection("selection");
+      setActiveSection("actions");
       setSelectionSubTab("actions");
       targetId = "actions-title";
     } else if (focus === "result") {
-      setActiveSection("selection");
+      setActiveSection("actions");
       setSelectionSubTab("result");
       targetId = "result-title";
     } else if (focus === "filter") {
-      setActiveSection("selection");
+      setActiveSection("actions");
       setSelectionSubTab("filter");
       targetId = "filter-title";
+    } else if (focus === "quick-ask" || focus === "quickAsk") {
+      setActiveSection("actions");
+      targetId = "quick-ask-title";
     }
     if (targetId) {
       const scrollTargetId = targetId;
@@ -1130,48 +1135,7 @@ export function SettingsApp(): JSX.Element {
         <div className="settings-shell__content" key={activeSection}>
           {activeSection === "general" && (
             <>
-              <section className="settings-section settings-section--enter" aria-label="使用提示">
-                <div className="settings-tip" role="note">
-                  <span className="settings-tip__label">使用提示</span>
-                  <p>
-                    选中文字后长按右键 <kbd>250 ms</kbd> 唤出工具栏，短按仍是普通右键。
-                  </p>
-                </div>
-              </section>
-
-              <section className="settings-section" aria-labelledby="quick-ask-title">
-                <div className="section-heading">
-                  <div>
-                    <h2 id="quick-ask-title">快捷提问</h2>
-                    <p>无需划词，随时向 AI 提问；支持添加图片、文档和文本附件。</p>
-                  </div>
-                </div>
-                <div className="settings-card quick-ask-setting">
-                  <label className="quick-ask-setting__label" htmlFor="quick-ask-shortcut">
-                    <strong>唤出快捷键</strong>
-                    <span>修改后点击「保存设置」生效。</span>
-                  </label>
-                  <div className="quick-ask-setting__controls">
-                    <ShortcutRecorder
-                      value={draft.quickAskShortcut}
-                      disabled={busy}
-                      onChange={(shortcut) => changeDraft((current) => ({ ...current, quickAskShortcut: shortcut }))}
-                    />
-                    <button
-                      className="button button--quiet quick-ask-setting__reset"
-                      type="button"
-                      disabled={busy || draft.quickAskShortcut === "Control+Shift+Space"}
-                      onClick={() => changeDraft((current) => ({ ...current, quickAskShortcut: "Control+Shift+Space" }))}
-                    >
-                      <RefreshCw size={13} aria-hidden="true" />
-                      恢复默认
-                    </button>
-                  </div>
-                </div>
-                {accessibility?.diagnostics?.quickAskShortcutError && <p className="field-error" role="alert">{accessibility.diagnostics.quickAskShortcutError}，请更换组合键并保存。</p>}
-              </section>
-
-              <section className="settings-section" aria-labelledby="providers-title">
+              <section className="settings-section settings-section--enter" aria-labelledby="providers-title">
                 <div className="section-heading section-heading--actions">
                   <div>
                     <h2 id="providers-title">AI 服务商与模型</h2>
@@ -1522,19 +1486,57 @@ export function SettingsApp(): JSX.Element {
             </>
           )}
 
-          {activeSection === "selection" && (
+          {activeSection === "actions" && (
             <section
               className="settings-section settings-section--enter"
-              aria-labelledby="selection-title"
+              aria-label="动作设置"
             >
-              <div className="section-heading selection-main-heading">
+              <div className="settings-group" id="quick-ask-title">
+                <div className="section-heading section-heading--compact">
+                  <div>
+                    <h3 className="settings-subheading">快捷提问</h3>
+                    <p>无需划词，随时向 AI 提问；支持添加图片、文档和文本附件。</p>
+                  </div>
+                </div>
+                <div className="settings-card quick-ask-setting">
+                  <div className="quick-ask-setting__label">
+                    <strong>唤出快捷键</strong>
+                    <span>修改后点击「保存设置」生效。</span>
+                  </div>
+                  <div className="quick-ask-setting__controls">
+                    <ShortcutRecorder
+                      value={draft.quickAskShortcut}
+                      disabled={busy}
+                      onChange={(shortcut) => changeDraft((current) => ({ ...current, quickAskShortcut: shortcut }))}
+                    />
+                    <button
+                      className="button button--quiet quick-ask-setting__reset"
+                      type="button"
+                      disabled={busy || draft.quickAskShortcut === "Control+Shift+Space"}
+                      onClick={() => changeDraft((current) => ({ ...current, quickAskShortcut: "Control+Shift+Space" }))}
+                    >
+                      <RefreshCw size={13} aria-hidden="true" />
+                      恢复默认
+                    </button>
+                  </div>
+                </div>
+                {accessibility?.diagnostics?.quickAskShortcutError && (
+                  <p className="field-error" role="alert">
+                    {accessibility.diagnostics.quickAskShortcutError}，请更换组合键并保存。
+                  </p>
+                )}
+              </div>
+
+              <div className="section-heading section-heading--compact selection-ask-heading" id="selection-ask-title">
                 <div>
-                  <h2 id="selection-title">{activeMeta.label}</h2>
-                  <p>{activeMeta.blurb}</p>
+                  <h3 className="settings-subheading">划词提问</h3>
+                  <p>
+                    选中文字后长按右键 <kbd>250 ms</kbd> 唤出工具栏，短按仍是普通右键。
+                  </p>
                 </div>
               </div>
 
-              <div className="selection-subnav" role="tablist" aria-label="划词配置选项卡">
+              <div className="selection-subnav" role="tablist" aria-label="动作配置选项卡">
                 <button
                   type="button"
                   role="tab"
@@ -1545,7 +1547,7 @@ export function SettingsApp(): JSX.Element {
                   onClick={() => handleSelectSubTab("actions")}
                 >
                   <WandSparkles size={15} aria-hidden="true" />
-                  <span className="selection-subnav__label">工具栏动作</span>
+                  <span className="selection-subnav__label">划词动作</span>
                   <span className="selection-subnav__badge">
                     {enabledActions.length} / {MAX_ENABLED_ACTIONS}
                   </span>
@@ -1598,11 +1600,10 @@ export function SettingsApp(): JSX.Element {
                   aria-labelledby="selection-tab-actions"
                   className="selection-subpanel selection-subpanel--enter"
                 >
-                  <div className="section-heading section-heading--actions">
-                    <div>
-                      <h3 className="settings-subheading" id="actions-title">工具栏动作</h3>
-                      <p>决定工具栏显示哪些功能，可拖拽排序；启用的会出现在划词工具栏。</p>
-                    </div>
+                  <div className="selection-actions-bar" id="actions-title">
+                    <p className="selection-actions-bar__tip">
+                      拖拽或勾选可调整在划词工具栏中出现的动作及排序，最多启用 {MAX_ENABLED_ACTIONS} 个。
+                    </p>
                     <button className="button" type="button" onClick={() => setEditor("new")}>
                       <Plus size={15} />
                       添加动作
@@ -1660,14 +1661,7 @@ export function SettingsApp(): JSX.Element {
                   aria-labelledby="selection-tab-result"
                   className="selection-subpanel selection-subpanel--enter"
                 >
-                  <div className="section-heading">
-                    <div>
-                      <h3 className="settings-subheading" id="result-title">结果窗口</h3>
-                      <p>结果窗口出现位置、默认大小、排版字号以及关闭方式。</p>
-                    </div>
-                  </div>
-
-                  <div className="settings-group">
+                  <div className="settings-group" id="result-title">
                     <h4 className="settings-group__title">位置与尺寸</h4>
                     <div className="settings-card settings-card--rows">
                       <SettingSwitch
@@ -1840,69 +1834,132 @@ export function SettingsApp(): JSX.Element {
                   aria-labelledby="selection-tab-filter"
                   className="selection-subpanel selection-subpanel--enter"
                 >
-                  <div className="section-heading">
-                    <div>
-                      <h3 className="settings-subheading" id="filter-title">应用过滤</h3>
-                      <p>限制仅在特定应用中启用划词，或排除干扰较多的应用。</p>
-                    </div>
-                  </div>
-
-                  <div className="settings-group">
-                    <h4 className="settings-group__title">生效策略</h4>
-                    <div className="settings-card settings-card--rows">
-                      <div className="setting-row setting-row--stackable">
+                  <div className="settings-group" id="filter-title">
+                    <div className="settings-card filter-panel-card">
+                      <div className="filter-mode-header">
                         <div>
                           <strong>过滤模式</strong>
-                          <p>选择全部应用、仅列表应用或排除列表应用。</p>
+                          <p>选择划词工具栏在不同应用程序中的响应规则。</p>
                         </div>
-                        <StyledSelect
-                          className="compact-control"
-                          aria-label="过滤模式"
-                          value={draft.filter.mode}
-                          onChange={(val) =>
+                      </div>
+
+                      <div className="filter-mode-grid" role="radiogroup" aria-label="过滤策略选择">
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={draft.filter.mode === "default"}
+                          className={`filter-card-option ${draft.filter.mode === "default" ? "is-selected" : ""}`}
+                          onClick={() =>
                             changeDraft((current) => ({
                               ...current,
-                              filter: {
-                                ...current.filter,
-                                mode: val as PublicSettings["filter"]["mode"],
-                              },
+                              filter: { ...current.filter, mode: "default" },
                             }))
                           }
-                          options={[
-                            { value: "default", label: "所有应用" },
-                            { value: "whitelist", label: "仅列表应用" },
-                            { value: "blacklist", label: "排除列表应用" },
-                          ]}
-                        />
+                        >
+                          <div className="filter-card-option__icon">
+                            <Globe size={18} aria-hidden="true" />
+                          </div>
+                          <div className="filter-card-option__body">
+                            <span className="filter-card-option__title">所有应用</span>
+                            <span className="filter-card-option__desc">
+                              在所有支持的软件中启用划词工具栏，无需规则维护
+                            </span>
+                          </div>
+                          <div className="filter-card-option__indicator" aria-hidden="true">
+                            {draft.filter.mode === "default" && <Check size={14} />}
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={draft.filter.mode === "blacklist"}
+                          className={`filter-card-option ${draft.filter.mode === "blacklist" ? "is-selected" : ""}`}
+                          onClick={() =>
+                            changeDraft((current) => ({
+                              ...current,
+                              filter: { ...current.filter, mode: "blacklist" },
+                            }))
+                          }
+                        >
+                          <div className="filter-card-option__icon filter-card-option__icon--danger">
+                            <ShieldBan size={18} aria-hidden="true" />
+                          </div>
+                          <div className="filter-card-option__body">
+                            <span className="filter-card-option__title">排除列表（黑名单）</span>
+                            <span className="filter-card-option__desc">
+                              在下方指定的应用中静默禁用，其余软件中正常触发
+                            </span>
+                          </div>
+                          <div className="filter-card-option__indicator" aria-hidden="true">
+                            {draft.filter.mode === "blacklist" && <Check size={14} />}
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          role="radio"
+                          aria-checked={draft.filter.mode === "whitelist"}
+                          className={`filter-card-option ${draft.filter.mode === "whitelist" ? "is-selected" : ""}`}
+                          onClick={() =>
+                            changeDraft((current) => ({
+                              ...current,
+                              filter: { ...current.filter, mode: "whitelist" },
+                            }))
+                          }
+                        >
+                          <div className="filter-card-option__icon filter-card-option__icon--success">
+                            <ShieldCheck size={18} aria-hidden="true" />
+                          </div>
+                          <div className="filter-card-option__body">
+                            <span className="filter-card-option__title">仅列表应用（白名单）</span>
+                            <span className="filter-card-option__desc">
+                              仅在下方指定的软件中响应划词，避免意外打扰
+                            </span>
+                          </div>
+                          <div className="filter-card-option__indicator" aria-hidden="true">
+                            {draft.filter.mode === "whitelist" && <Check size={14} />}
+                          </div>
+                        </button>
                       </div>
-                      {draft.filter.mode === "default" && (
-                        <div className="filter-mode-hint">
+
+                      {draft.filter.mode === "default" ? (
+                        <div className="filter-mode-hint filter-mode-hint--banner">
                           <Sparkles size={16} className="filter-mode-hint__icon" aria-hidden="true" />
                           <p>划词工具栏将在所有应用中响应，无需额外配置排除或白名单规则。</p>
                         </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {draft.filter.mode !== "default" && (
-                    <div className="settings-group">
-                      <div className="settings-group__header-with-badge">
-                        <h4 className="settings-group__title">
-                          {draft.filter.mode === "whitelist" ? "白名单应用列表" : "排除应用列表"}
-                        </h4>
-                        <span className="filter-count-badge">
-                          已配置 {draft.filter.applications.length} 项
-                        </span>
-                      </div>
-                      <div className="settings-card settings-card--rows">
-                        <label className="setting-row setting-row--column">
-                          <div>
-                            <strong>应用列表</strong>
-                            <p>每行填写一个应用名称、Bundle ID 或可执行文件名。</p>
+                      ) : (
+                        <div className="filter-list-editor">
+                          <div className="filter-list-editor__header">
+                            <div className="filter-list-editor__title">
+                              <strong>
+                                {draft.filter.mode === "whitelist" ? "白名单应用列表" : "排除应用列表"}
+                              </strong>
+                              <span className="filter-count-badge">
+                                已配置 {draft.filter.applications.length} 项
+                              </span>
+                            </div>
+                            {draft.filter.applications.length > 0 && (
+                              <button
+                                type="button"
+                                className="button button--ghost button--tiny"
+                                onClick={() =>
+                                  changeDraft((current) => ({
+                                    ...current,
+                                    filter: { ...current.filter, applications: [] },
+                                  }))
+                                }
+                              >
+                                <Trash2 size={13} aria-hidden="true" />
+                                清空列表
+                              </button>
+                            )}
                           </div>
+
                           <textarea
                             className="control filter-list-input"
-                            placeholder={"例如：\nCode\nGoogle Chrome\ncom.apple.Terminal\nnotepad.exe"}
+                            aria-label="应用过滤列表"
+                            placeholder={"每行填写一个应用名称、Bundle ID 或可执行文件名，例如：\nCode\nGoogle Chrome\ncom.apple.Terminal\nnotepad.exe"}
                             value={draft.filter.applications.join("\n")}
                             onChange={(event) =>
                               changeDraft((current) => ({
@@ -1917,16 +1974,40 @@ export function SettingsApp(): JSX.Element {
                               }))
                             }
                           />
-                        </label>
-                        <div className="filter-list-tips">
-                          <span>常用示例：</span>
-                          <code>Code</code>
-                          <code>chrome.exe</code>
-                          <code>com.apple.Terminal</code>
+
+                          <div className="filter-list-tools">
+                            <div className="filter-list-presets">
+                              <span className="filter-list-presets__label">快速添加常用：</span>
+                              {["Code", "Google Chrome", "com.apple.Terminal", "notepad.exe"].map((preset) => (
+                                <button
+                                  key={preset}
+                                  type="button"
+                                  className="filter-preset-chip"
+                                  disabled={draft.filter.applications.includes(preset)}
+                                  onClick={() =>
+                                    changeDraft((current) => ({
+                                      ...current,
+                                      filter: {
+                                        ...current.filter,
+                                        applications: current.filter.applications.includes(preset)
+                                          ? current.filter.applications
+                                          : [...current.filter.applications, preset],
+                                      },
+                                    }))
+                                  }
+                                >
+                                  + {preset}
+                                </button>
+                              ))}
+                            </div>
+                            <p className="filter-list-guidance">
+                              提示：支持按行输入应用程序名（如 Google Chrome）、Bundle ID（如 com.apple.Terminal）或可执行文件名（如 Code.exe）。
+                            </p>
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </section>
@@ -1935,109 +2016,109 @@ export function SettingsApp(): JSX.Element {
           {activeSection === "language" && (
             <section
               className="settings-section settings-section--enter"
-              aria-labelledby="language-title"
+              aria-label="语言设置"
             >
-              <div className="section-heading">
-                <div>
-                  <h2 id="language-title">{activeMeta.label}</h2>
-                  <p>{activeMeta.blurb}</p>
-                </div>
-              </div>
-              <div className="settings-card settings-card--rows">
-                <div className="setting-row">
-                  <div>
-                    <strong>AI 默认回复语言</strong>
-                    <p>仅影响使用 {"{{language}}"} 的动作（如总结、解释），不改变设置界面语言。</p>
+              <div className="settings-group" id="language-title">
+                <h4 className="settings-group__title">回复偏好</h4>
+                <div className="settings-card settings-card--rows">
+                  <div className="setting-row">
+                    <div>
+                      <strong>AI 默认回复语言</strong>
+                      <p>仅影响使用 {"{{language}}"} 的动作（如总结、解释），不改变设置界面语言。</p>
+                    </div>
+                    <StyledSelect
+                      className="compact-control"
+                      aria-label="AI 默认回复语言"
+                      value={draft.locale}
+                      onChange={(val) =>
+                        changeDraft((current) => ({
+                          ...current,
+                          locale: val as SupportedLocale,
+                        }))
+                      }
+                      options={[
+                        { value: "zh-CN", label: "简体中文" },
+                        { value: "en-US", label: "English" },
+                      ]}
+                    />
                   </div>
-                  <StyledSelect
-                    className="compact-control"
-                    aria-label="AI 默认回复语言"
-                    value={draft.locale}
-                    onChange={(val) =>
-                      changeDraft((current) => ({
-                        ...current,
-                        locale: val as SupportedLocale,
-                      }))
-                    }
-                    options={[
-                      { value: "zh-CN", label: "简体中文" },
-                      { value: "en-US", label: "English" },
-                    ]}
-                  />
                 </div>
               </div>
-              <div className="settings-card form-grid settings-card--follow">
-                <div className="field">
-                  <span className="field__label">翻译主要语言</span>
-                  <StyledSelect
-                    aria-label="翻译主要语言"
-                    value={draft.translate.primaryLanguage}
-                    onChange={(val) => {
-                      const primaryLanguage = val as TranslationLanguage;
-                      changeDraft((current) => {
-                        const alternateLanguage =
-                          current.translate.alternateLanguage === primaryLanguage
-                            ? primaryLanguage === "zh-CN"
-                              ? "en-US"
-                              : "zh-CN"
-                            : current.translate.alternateLanguage;
-                        return {
+              <div className="settings-group">
+                <h4 className="settings-group__title">翻译与查词</h4>
+                <div className="settings-card form-grid settings-card--follow">
+                  <div className="field">
+                    <span className="field__label">翻译主要语言</span>
+                    <StyledSelect
+                      aria-label="翻译主要语言"
+                      value={draft.translate.primaryLanguage}
+                      onChange={(val) => {
+                        const primaryLanguage = val as TranslationLanguage;
+                        changeDraft((current) => {
+                          const alternateLanguage =
+                            current.translate.alternateLanguage === primaryLanguage
+                              ? primaryLanguage === "zh-CN"
+                                ? "en-US"
+                                : "zh-CN"
+                              : current.translate.alternateLanguage;
+                          return {
+                            ...current,
+                            translate: { ...current.translate, primaryLanguage, alternateLanguage },
+                          };
+                        });
+                      }}
+                      options={TRANSLATION_LANGUAGES.map((code) => ({
+                        value: code,
+                        label: TRANSLATION_LANGUAGE_NAMES[code],
+                      }))}
+                    />
+                  </div>
+                  <div className="field">
+                    <span className="field__label">翻译另一语言</span>
+                    <StyledSelect
+                      aria-label="翻译另一语言"
+                      value={draft.translate.alternateLanguage}
+                      onChange={(val) => {
+                        const alternateLanguage = val as TranslationLanguage;
+                        changeDraft((current) => {
+                          const primaryLanguage =
+                            current.translate.primaryLanguage === alternateLanguage
+                              ? alternateLanguage === "zh-CN"
+                                ? "en-US"
+                                : "zh-CN"
+                              : current.translate.primaryLanguage;
+                          return {
+                            ...current,
+                            translate: { ...current.translate, primaryLanguage, alternateLanguage },
+                          };
+                        });
+                      }}
+                      options={TRANSLATION_LANGUAGES.map((code) => ({
+                        value: code,
+                        label: TRANSLATION_LANGUAGE_NAMES[code],
+                      }))}
+                    />
+                  </div>
+                  <div className="field--wide">
+                    <SettingSwitch
+                      title="英文短文本优先查词"
+                      description="内置翻译对 1–5 个英文词调用有道联想与释义；无词条时转 AI。查词无需配置模型。"
+                      checked={draft.translate.dictionaryEnabled}
+                      onChange={(dictionaryEnabled) =>
+                        changeDraft((current) => ({
                           ...current,
-                          translate: { ...current.translate, primaryLanguage, alternateLanguage },
-                        };
-                      });
-                    }}
-                    options={TRANSLATION_LANGUAGES.map((code) => ({
-                      value: code,
-                      label: TRANSLATION_LANGUAGE_NAMES[code],
-                    }))}
-                  />
+                          translate: { ...current.translate, dictionaryEnabled },
+                        }))
+                      }
+                    />
+                  </div>
+                  <DictionarySettings />
+                  <p className="translation-summary field--wide">
+                    默认：检测到 {TRANSLATION_LANGUAGE_NAMES[draft.translate.primaryLanguage]} 时译为{" "}
+                    {TRANSLATION_LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然；
+                    其他语种默认译为中文，中文默认译为英语。结果框可切换为日语、韩语、俄语、德语、法语等。
+                  </p>
                 </div>
-                <div className="field">
-                  <span className="field__label">翻译另一语言</span>
-                  <StyledSelect
-                    aria-label="翻译另一语言"
-                    value={draft.translate.alternateLanguage}
-                    onChange={(val) => {
-                      const alternateLanguage = val as TranslationLanguage;
-                      changeDraft((current) => {
-                        const primaryLanguage =
-                          current.translate.primaryLanguage === alternateLanguage
-                            ? alternateLanguage === "zh-CN"
-                              ? "en-US"
-                              : "zh-CN"
-                            : current.translate.primaryLanguage;
-                        return {
-                          ...current,
-                          translate: { ...current.translate, primaryLanguage, alternateLanguage },
-                        };
-                      });
-                    }}
-                    options={TRANSLATION_LANGUAGES.map((code) => ({
-                      value: code,
-                      label: TRANSLATION_LANGUAGE_NAMES[code],
-                    }))}
-                  />
-                </div>
-                <div className="field--wide">
-                  <SettingSwitch
-                    title="英文短文本优先查词"
-                    description="内置翻译对 1–5 个英文词调用有道联想与释义；无词条时转 AI。查词无需配置模型。"
-                    checked={draft.translate.dictionaryEnabled}
-                    onChange={(dictionaryEnabled) =>
-                      changeDraft((current) => ({
-                        ...current,
-                        translate: { ...current.translate, dictionaryEnabled },
-                      }))
-                    }
-                  />
-                </div>
-                <DictionarySettings />
-                <p className="translation-summary field--wide">
-                  默认：检测到 {TRANSLATION_LANGUAGE_NAMES[draft.translate.primaryLanguage]} 时译为{" "}
-                  {TRANSLATION_LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然；
-                  其他语种默认译为中文，中文默认译为英语。结果框可切换为日语、韩语、俄语、德语、法语等。
-                </p>
               </div>
             </section>
           )}

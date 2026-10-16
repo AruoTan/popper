@@ -20,6 +20,7 @@ export function ShortcutRecorder({ value, disabled = false, onChange }: Shortcut
   const nativeQueue = useRef<Promise<void>>(Promise.resolve());
   const active = useRef(false);
   const lastValue = useRef(value);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Serialize begin/end so a delayed native acknowledgement cannot leave
   // the global shortcut suspended after cancellation or component unmount.
@@ -87,6 +88,20 @@ export function ShortcutRecorder({ value, disabled = false, onChange }: Shortcut
     }
   };
 
+  useEffect(() => {
+    if (!recording && !preparing) return;
+    const onPointerDown = (event: PointerEvent): void => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        finish();
+        setFeedback("idle");
+      }
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [recording, preparing]);
+
   const keys = recording ? pressedKeys : displayQuickAskShortcut(value).split(" + ");
   const hint = preparing
     ? "准备录制…"
@@ -95,7 +110,10 @@ export function ShortcutRecorder({ value, disabled = false, onChange }: Shortcut
       : feedback === "success" ? "已更新，保存后生效" : feedback === "error" ? message : "点击修改快捷键";
 
   return (
-    <div className={`shortcut-recorder ${recording ? "shortcut-recorder--recording" : ""} ${feedback === "error" ? "shortcut-recorder--error" : ""}`}>
+    <div
+      ref={containerRef}
+      className={`shortcut-recorder ${recording ? "shortcut-recorder--recording" : ""} ${feedback === "error" ? "shortcut-recorder--error" : ""}`}
+    >
       <button
         id="quick-ask-shortcut"
         className="shortcut-recorder__control"

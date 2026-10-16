@@ -119,6 +119,8 @@ select:not([multiple])[size="1"] {
   flex-shrink: 0;
   color: var(--text-tertiary);
   stroke-width: 1.75;
+  transition: transform 200ms cubic-bezier(0.2, 0, 0, 1), color 150ms ease;
+  transform-origin: center;
 }
 
 button:disabled,

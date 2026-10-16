@@ -32,20 +32,21 @@ function stubScrollIntoView(): ReturnType<typeof vi.fn> {
 
 async function goToSettingsSection(label: string): Promise<void> {
   await screen.findByRole("navigation", { name: "设置分区" });
+  const getActionsButton = () => screen.queryByRole("button", { name: "动作" }) ?? screen.getByRole("button", { name: "划词" });
   if (label === "动作" || label === "划词") {
-    fireEvent.click(screen.getByRole("button", { name: "划词" }));
-    const tab = screen.queryByRole("tab", { name: /工具栏动作/ });
+    fireEvent.click(getActionsButton());
+    const tab = screen.queryByRole("tab", { name: /划词动作/ }) ?? screen.queryByRole("tab", { name: /工具栏动作/ });
     if (tab) fireEvent.click(tab);
     return;
   }
   if (label === "结果") {
-    fireEvent.click(screen.getByRole("button", { name: "划词" }));
+    fireEvent.click(getActionsButton());
     const tab = screen.queryByRole("tab", { name: /结果窗口/ });
     if (tab) fireEvent.click(tab);
     return;
   }
   if (label === "过滤") {
-    fireEvent.click(screen.getByRole("button", { name: "划词" }));
+    fireEvent.click(getActionsButton());
     const tab = screen.queryByRole("tab", { name: /应用过滤/ });
     if (tab) fireEvent.click(tab);
     return;
@@ -92,8 +93,13 @@ describe("SettingsApp provider deletion", () => {
     const save = vi.fn(async () => DEFAULT_PUBLIC_SETTINGS);
     installDefaultBridge({ updateSettings: save });
     render(<SettingsApp />);
+    await goToSettingsSection("动作");
     const shortcut = await screen.findByLabelText("快捷提问快捷键");
     expect(shortcut).toHaveTextContent(/Ctrl.*Shift.*Space/);
+    fireEvent.click(screen.getByText("唤出快捷键"));
+    expect(shortcut).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByText("修改后点击「保存设置」生效。"));
+    expect(shortcut).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(shortcut);
     await waitFor(() => expect(shortcut).toHaveAttribute("aria-pressed", "true"));
     fireEvent.keyDown(shortcut, { key: "k", code: "KeyK", ctrlKey: true, altKey: true });
@@ -284,7 +290,8 @@ describe("SettingsApp provider deletion", () => {
     installDefaultBridge();
     render(<SettingsApp />);
 
-    expect(await screen.findByText("使用提示")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "AI 服务商与模型" })).toBeInTheDocument();
+    expect(screen.queryByText(/长按右键/)).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "通用" })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "启用划词助手" })).not.toBeInTheDocument();
     expect(screen.queryByText("工具条显示")).not.toBeInTheDocument();
@@ -292,15 +299,19 @@ describe("SettingsApp provider deletion", () => {
     expect(screen.queryByRole("button", { name: "划词获取" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("默认划词获取方式")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "通用" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("heading", { name: "AI 服务商与模型" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "服务商" })).not.toBeInTheDocument();
-    expect(screen.queryByText("查看右键长按使用提示与系统选区访问状态。")).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "工具栏动作" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "动作配置选项卡" })).not.toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "使用百度" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /添加搜索引擎/ })).not.toBeInTheDocument();
 
     await goToSettingsSection("动作");
-    expect(await screen.findByRole("heading", { name: "工具栏动作" })).toBeInTheDocument();
+    expect(await screen.findByRole("tablist", { name: "动作配置选项卡" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /划词动作/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByText(/长按右键/)).toBeInTheDocument();
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+    expect(screen.getByRole("toolbar", { name: "工具栏实时预览" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "动作" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "划词动作" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "AI 服务商与模型" })).not.toBeInTheDocument();
   });
 
@@ -334,14 +345,12 @@ describe("SettingsApp provider deletion", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
-  it("places collapsed providers between usage tips and selection access", async () => {
+  it("places collapsed providers before selection access", async () => {
     installDefaultBridge();
     render(<SettingsApp />);
 
     const providers = await screen.findByRole("heading", { name: "AI 服务商与模型" });
-    const tips = screen.getByText("使用提示");
     const selection = screen.getByRole("heading", { name: "Windows 选区访问" });
-    expect(tips.compareDocumentPosition(providers) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(providers.compareDocumentPosition(selection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const toggle = screen.getByRole("button", { name: "展开OpenAI Compatible配置" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -443,8 +452,7 @@ describe("SettingsApp provider deletion", () => {
     fireEvent.click(screen.getByRole("combobox", { name: "关闭方式" }));
     fireEvent.click(screen.getByRole("option", { name: "手动关闭" }));
     await goToSettingsSection("过滤");
-    fireEvent.click(screen.getByRole("combobox", { name: "过滤模式" }));
-    fireEvent.click(screen.getByRole("option", { name: "排除列表应用" }));
+    fireEvent.click(screen.getByRole("radio", { name: /排除列表/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(window._popper_.updateSettings).toHaveBeenCalledWith(expect.objectContaining({
       locale: "en-US",
@@ -465,8 +473,9 @@ describe("SettingsApp provider deletion", () => {
     render(<SettingsApp />);
 
     expect(await screen.findByText("请配置动作")).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "工具栏动作" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "划词" })).toHaveAttribute("aria-current", "page");
+    expect(await screen.findByRole("tab", { name: /划词动作/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("toolbar", { name: "工具栏实时预览" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "动作" })).toHaveAttribute("aria-current", "page");
     await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
   });
 
@@ -521,7 +530,7 @@ describe("SettingsApp provider deletion", () => {
     } as unknown as WindowPopperApi;
 
     render(<SettingsApp />);
-    await screen.findByText("使用提示");
+    await screen.findByRole("heading", { name: "AI 服务商与模型" });
     fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
 
     const banner = await screen.findByText("保存失败了");
@@ -631,7 +640,10 @@ describe("SettingsApp provider deletion", () => {
       onSettingsChanged: vi.fn(() => () => undefined),
     } as unknown as WindowPopperApi;
     render(<SettingsApp />);
-    expect(await screen.findByRole("note")).toHaveTextContent(/长按右键 250 ms/);
+    await goToSettingsSection("动作");
+    expect(await screen.findByText(/长按右键/)).toBeInTheDocument();
+    expect(screen.getByText("250 ms")).toBeInTheDocument();
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
     expect(screen.queryByRole("radiogroup", { name: "触发方式" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("捕获当前选区快捷键")).not.toBeInTheDocument();
   });
@@ -1357,12 +1369,24 @@ describe("SettingsApp provider deletion", () => {
     const navItems = within(nav)
       .getAllByRole("button")
       .map((btn) => btn.getAttribute("aria-label"));
-    expect(navItems).toEqual(["通用", "划词", "语言"]);
+    expect(navItems).toEqual(["通用", "动作", "语言"]);
     expect(within(nav).queryByRole("button", { name: "结果" })).not.toBeInTheDocument();
     expect(within(nav).queryByRole("button", { name: "过滤" })).not.toBeInTheDocument();
 
-    fireEvent.click(within(nav).getByRole("button", { name: "划词" }));
-    expect(await screen.findByRole("heading", { name: "划词" })).toBeInTheDocument();
+    fireEvent.click(within(nav).getByRole("button", { name: "动作" }));
+    expect(await screen.findByRole("tablist", { name: "动作配置选项卡" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "动作" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "划词动作" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "快捷提问" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "划词提问" })).toBeInTheDocument();
+    expect(screen.getByText(/长按右键/)).toBeInTheDocument();
+    expect(screen.queryByRole("note")).not.toBeInTheDocument();
+
+    const quickAskHeading = screen.getByRole("heading", { name: "快捷提问" });
+    const selectionAskHeading = screen.getByRole("heading", { name: "划词提问" });
+    const tablist = screen.getByRole("tablist", { name: "动作配置选项卡" });
+    expect(quickAskHeading.compareDocumentPosition(selectionAskHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(selectionAskHeading.compareDocumentPosition(tablist) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     const subTabs = screen.getAllByRole("tab").map((tab) => tab.id);
     expect(subTabs).toEqual([
@@ -1372,19 +1396,27 @@ describe("SettingsApp provider deletion", () => {
     ]);
 
     // Subtab 1: actions
-    expect(screen.getByRole("tab", { name: /工具栏动作/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /划词动作/ })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("toolbar", { name: "工具栏实时预览" })).toBeInTheDocument();
 
     // Switch to Subtab 2: result
     fireEvent.click(screen.getByRole("tab", { name: /结果窗口/ }));
     expect(screen.getByRole("tab", { name: /结果窗口/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("heading", { name: "结果窗口" })).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "跟随鼠标位置" })).toBeInTheDocument();
     expect(screen.getByRole("slider", { name: "结果文字大小" })).toBeInTheDocument();
 
     // Switch to Subtab 3: filter
     fireEvent.click(screen.getByRole("tab", { name: /应用过滤/ }));
     expect(screen.getByRole("tab", { name: /应用过滤/ })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("combobox", { name: "过滤模式" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "应用过滤" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /所有应用/ })).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "过滤模式" })).not.toBeInTheDocument();
+
+    // Switch to language section and verify no redundant "语言" heading
+    fireEvent.click(within(nav).getByRole("button", { name: "语言" }));
+    expect(await screen.findByRole("combobox", { name: "AI 默认回复语言" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "语言" })).not.toBeInTheDocument();
   });
 });
 

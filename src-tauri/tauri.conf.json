@@ -15,7 +15,7 @@
                 "create": false,
                 "title": "Popper 设置面板",
                 "url": "settings/index.html",
-                "width": 960,
+                "width": 980,
                 "height": 780,
                 "minWidth": 760,
                 "minHeight": 600,

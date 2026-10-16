@@ -174,7 +174,7 @@ export function StyledSelect({
 
   return (
     <div
-      className={["styled-select", className].filter(Boolean).join(" ")}
+      className={["styled-select", open ? "is-open" : "", className].filter(Boolean).join(" ")}
       ref={containerRef}
       onKeyDown={handleKeyDown}
       onBlur={(event) => {
@@ -204,7 +204,7 @@ export function StyledSelect({
           />
           <button
             type="button"
-            className="styled-select__toggle"
+            className={`styled-select__toggle${open ? " is-open" : ""}`}
             aria-label={`${open ? "收起" : "展开"}${ariaLabel}候选`}
             tabIndex={-1}
             disabled={disabled}
