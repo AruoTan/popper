@@ -100,12 +100,8 @@ type ModelPickerState = {
   remoteModels: ProviderModel[];
   checkedIds: Set<string>;
 };
-type SettingsSectionId =
-  | "general"
-  | "actions"
-  | "language"
-  | "result"
-  | "filter";
+type SettingsSectionId = "general" | "selection" | "language";
+type SelectionSubTab = "actions" | "result" | "filter";
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsSectionId;
@@ -122,11 +118,11 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     caption: "服务商与选区访问",
   },
   {
-    id: "actions",
-    label: "动作",
-    blurb: "决定工具栏显示哪些功能，可拖拽排序；启用的会出现在划词工具栏。",
-    icon: WandSparkles,
-    caption: "工具栏与自定义动作",
+    id: "selection",
+    label: "划词",
+    blurb: "配置划词工具栏动作、结果窗口展示行为与应用过滤规则。",
+    icon: MousePointer2,
+    caption: "动作、结果与过滤",
   },
   {
     id: "language",
@@ -135,32 +131,36 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     icon: Languages,
     caption: "回复与翻译偏好",
   },
-  {
-    id: "result",
-    label: "结果",
-    blurb: "结果窗口出现位置、默认大小，以及点击外部时如何关闭。",
-    icon: Monitor,
-    caption: "窗口外观与行为",
-  },
-  {
-    id: "filter",
-    label: "过滤",
-    blurb: "可限制只在部分应用中启用划词，或排除干扰较多的应用。",
-    icon: ListFilter,
-    caption: "应用范围与排除列表",
-  },
 ];
 
 const SETTINGS_ACTIVE_SECTION_STORAGE_KEY = "popper.settings.active-section";
+const SETTINGS_SELECTION_SUBTAB_STORAGE_KEY = "popper.settings.selection-subtab";
 
 function restoredSettingsSection(): SettingsSectionId {
   try {
     const value = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
+    if (value === "actions" || value === "result" || value === "filter") {
+      return "selection";
+    }
     return SETTINGS_SECTIONS.some((section) => section.id === value)
       ? (value as SettingsSectionId)
       : "general";
   } catch {
     return "general";
+  }
+}
+
+function restoredSelectionSubTab(): SelectionSubTab {
+  try {
+    const prevSection = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
+    if (prevSection === "result") return "result";
+    if (prevSection === "filter") return "filter";
+    if (prevSection === "actions") return "actions";
+
+    const value = window.sessionStorage.getItem(SETTINGS_SELECTION_SUBTAB_STORAGE_KEY);
+    return value === "actions" || value === "result" || value === "filter" ? value : "actions";
+  } catch {
+    return "actions";
   }
 }
 
@@ -284,6 +284,15 @@ export function SettingsApp(): JSX.Element {
   const [modelPicker, setModelPicker] = useState<ModelPickerState | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>(restoredSettingsSection);
+  const [selectionSubTab, setSelectionSubTab] = useState<SelectionSubTab>(restoredSelectionSubTab);
+  const handleSelectSubTab = useCallback((subTab: SelectionSubTab) => {
+    setSelectionSubTab(subTab);
+    try {
+      window.sessionStorage.setItem(SETTINGS_SELECTION_SUBTAB_STORAGE_KEY, subTab);
+    } catch {
+      // ignore
+    }
+  }, []);
   const activeSectionRef = useRef(activeSection);
   activeSectionRef.current = activeSection;
   const dirtyRef = useRef(false);
@@ -352,9 +361,18 @@ export function SettingsApp(): JSX.Element {
     if (focus === "providers") {
       setActiveSection("general");
       targetId = "providers-title";
-    } else if (focus === "actions") {
-      setActiveSection("actions");
+    } else if (focus === "actions" || focus === "selection") {
+      setActiveSection("selection");
+      setSelectionSubTab("actions");
       targetId = "actions-title";
+    } else if (focus === "result") {
+      setActiveSection("selection");
+      setSelectionSubTab("result");
+      targetId = "result-title";
+    } else if (focus === "filter") {
+      setActiveSection("selection");
+      setSelectionSubTab("filter");
+      targetId = "filter-title";
     }
     if (targetId) {
       const scrollTargetId = targetId;
@@ -1504,62 +1522,413 @@ export function SettingsApp(): JSX.Element {
             </>
           )}
 
-          {activeSection === "actions" && (
+          {activeSection === "selection" && (
             <section
               className="settings-section settings-section--enter"
-              aria-labelledby="actions-title"
+              aria-labelledby="selection-title"
             >
-              <div className="section-heading section-heading--actions">
+              <div className="section-heading selection-main-heading">
                 <div>
-                  <h2 id="actions-title">工具栏动作</h2>
+                  <h2 id="selection-title">{activeMeta.label}</h2>
                   <p>{activeMeta.blurb}</p>
                 </div>
-                <button className="button" type="button" onClick={() => setEditor("new")}>
-                  <Plus size={15} />
-                  添加动作
+              </div>
+
+              <div className="selection-subnav" role="tablist" aria-label="划词配置选项卡">
+                <button
+                  type="button"
+                  role="tab"
+                  id="selection-tab-actions"
+                  aria-selected={selectionSubTab === "actions"}
+                  aria-controls="selection-panel-actions"
+                  className={`selection-subnav__item ${selectionSubTab === "actions" ? "is-selected" : ""}`}
+                  onClick={() => handleSelectSubTab("actions")}
+                >
+                  <WandSparkles size={15} aria-hidden="true" />
+                  <span className="selection-subnav__label">工具栏动作</span>
+                  <span className="selection-subnav__badge">
+                    {enabledActions.length} / {MAX_ENABLED_ACTIONS}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="selection-tab-result"
+                  aria-selected={selectionSubTab === "result"}
+                  aria-controls="selection-panel-result"
+                  className={`selection-subnav__item ${selectionSubTab === "result" ? "is-selected" : ""}`}
+                  onClick={() => handleSelectSubTab("result")}
+                >
+                  <Monitor size={15} aria-hidden="true" />
+                  <span className="selection-subnav__label">结果窗口</span>
+                  <span className="selection-subnav__badge">
+                    {draft.result.dismissMode === "blur"
+                      ? "失焦关闭"
+                      : draft.result.dismissMode === "pointer-leave"
+                        ? "移出关闭"
+                        : "手动关闭"}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="selection-tab-filter"
+                  aria-selected={selectionSubTab === "filter"}
+                  aria-controls="selection-panel-filter"
+                  className={`selection-subnav__item ${selectionSubTab === "filter" ? "is-selected" : ""}`}
+                  onClick={() => handleSelectSubTab("filter")}
+                >
+                  <ListFilter size={15} aria-hidden="true" />
+                  <span className="selection-subnav__label">应用过滤</span>
+                  <span className="selection-subnav__badge">
+                    {draft.filter.mode === "default"
+                      ? "全部应用"
+                      : draft.filter.mode === "whitelist"
+                        ? `白名单 (${draft.filter.applications.length})`
+                        : `黑名单 (${draft.filter.applications.length})`}
+                  </span>
                 </button>
               </div>
-              <div className="settings-card toolbar-preview-card">
-                <span className="toolbar-preview-label">实时预览</span>
-                <div className="toolbar-preview" role="toolbar" aria-label="工具栏实时预览">
-                  <div className="toolbar-pill">
-                    <ToolbarActions actions={getToolbarActions(draft.actions)} preview />
+
+              {selectionSubTab === "actions" && (
+                <div
+                  key="selection-panel-actions"
+                  id="selection-panel-actions"
+                  role="tabpanel"
+                  aria-labelledby="selection-tab-actions"
+                  className="selection-subpanel selection-subpanel--enter"
+                >
+                  <div className="section-heading section-heading--actions">
+                    <div>
+                      <h3 className="settings-subheading" id="actions-title">工具栏动作</h3>
+                      <p>决定工具栏显示哪些功能，可拖拽排序；启用的会出现在划词工具栏。</p>
+                    </div>
+                    <button className="button" type="button" onClick={() => setEditor("new")}>
+                      <Plus size={15} />
+                      添加动作
+                    </button>
+                  </div>
+                  <div className="settings-card toolbar-preview-card">
+                    <span className="toolbar-preview-label">实时预览</span>
+                    <div className="toolbar-preview" role="toolbar" aria-label="工具栏实时预览">
+                      <div className="toolbar-pill">
+                        <ToolbarActions actions={getToolbarActions(draft.actions)} preview />
+                      </div>
+                    </div>
+                    <p className="toolbar-preview-note">
+                      问 AI 是固定在工具栏最前方的内置功能，不计入动作数量。
+                    </p>
+                  </div>
+                  <DndContext
+                    sensors={dragSensors}
+                    collisionDetection={closestCenter}
+                    onDragStart={handleDragStart}
+                    onDragCancel={() => setDraggingId(null)}
+                    onDragEnd={handleDragEnd}
+                  >
+                    <div className="action-zones">
+                      <ActionZone
+                        title="显示在工具栏"
+                        count={`${enabledActions.length} / ${MAX_ENABLED_ACTIONS}`}
+                        actions={enabledActions}
+                        enabled
+                        draggingId={draggingId}
+                        onEdit={setEditor}
+                        onDelete={removeAction}
+                        onToggle={(action) => moveToZone(action.id, false, disabledActions.length)}
+                      />
+                      <ActionZone
+                        title="未显示"
+                        count={`${disabledActions.length}`}
+                        actions={disabledActions}
+                        enabled={false}
+                        draggingId={draggingId}
+                        onEdit={setEditor}
+                        onDelete={removeAction}
+                        onToggle={(action) => moveToZone(action.id, true, enabledActions.length)}
+                      />
+                    </div>
+                  </DndContext>
+                </div>
+              )}
+
+              {selectionSubTab === "result" && (
+                <div
+                  key="selection-panel-result"
+                  id="selection-panel-result"
+                  role="tabpanel"
+                  aria-labelledby="selection-tab-result"
+                  className="selection-subpanel selection-subpanel--enter"
+                >
+                  <div className="section-heading">
+                    <div>
+                      <h3 className="settings-subheading" id="result-title">结果窗口</h3>
+                      <p>结果窗口出现位置、默认大小、排版字号以及关闭方式。</p>
+                    </div>
+                  </div>
+
+                  <div className="settings-group">
+                    <h4 className="settings-group__title">位置与尺寸</h4>
+                    <div className="settings-card settings-card--rows">
+                      <SettingSwitch
+                        title="跟随鼠标位置"
+                        description="在点击动作时的鼠标附近打开结果，空间不足时自动翻转。"
+                        checked={draft.result.followCursor}
+                        onChange={(followCursor) =>
+                          changeDraft((current) => ({
+                            ...current,
+                            result: { ...current.result, followCursor },
+                          }))
+                        }
+                      />
+                      <SettingSwitch
+                        title="记住结果框尺寸"
+                        description={
+                          draft.result.lastSize
+                            ? `当前记忆：${Math.round(draft.result.lastSize.width)} × ${Math.round(draft.result.lastSize.height)}`
+                            : "用户调整后，下次沿用相同逻辑尺寸。"
+                        }
+                        checked={draft.result.rememberSize}
+                        onChange={(rememberSize) =>
+                          changeDraft((current) => ({
+                            ...current,
+                            result: { ...current.result, rememberSize },
+                          }))
+                        }
+                        extra={
+                          draft.result.lastSize ? (
+                            <button
+                              className="button button--quiet"
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void resetResultSize()}
+                            >
+                              重置尺寸
+                            </button>
+                          ) : undefined
+                        }
+                      />
+                      <SettingSwitch
+                        title="默认置顶"
+                        description="新打开的结果窗口保持在其他窗口上方；也可在窗口标题栏临时切换。"
+                        checked={draft.result.defaultPinned}
+                        onChange={(defaultPinned) =>
+                          changeDraft((current) => ({
+                            ...current,
+                            result: { ...current.result, defaultPinned },
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="settings-group">
+                    <h4 className="settings-group__title">阅读与排版</h4>
+                    <div className="settings-card settings-card--rows">
+                      <div className="setting-row">
+                        <div>
+                          <strong>结果文字大小</strong>
+                          <p>调整翻译、总结、解释等结果正文的字号。</p>
+                        </div>
+                        <div className="range-control">
+                          <input
+                            type="range"
+                            aria-label="结果文字大小"
+                            min={RESULT_FONT_SIZE_MIN}
+                            max={RESULT_FONT_SIZE_MAX}
+                            step={1}
+                            value={draft.result.fontSize}
+                            onChange={(event) =>
+                              changeDraft((current) => ({
+                                ...current,
+                                result: { ...current.result, fontSize: Number(event.target.value) },
+                              }))
+                            }
+                          />
+                          <span>{draft.result.fontSize} px</span>
+                        </div>
+                      </div>
+                      <div className="setting-row">
+                        <div>
+                          <strong>窗口透明度</strong>
+                          <p>内容和控件会保持统一透明度。</p>
+                        </div>
+                        <div className="range-control">
+                          <input
+                            type="range"
+                            min={20}
+                            max={100}
+                            value={Math.round(draft.result.opacity * 100)}
+                            onChange={(event) =>
+                              changeDraft((current) => ({
+                                ...current,
+                                result: { ...current.result, opacity: Number(event.target.value) / 100 },
+                              }))
+                            }
+                          />
+                          <span>{Math.round(draft.result.opacity * 100)}%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="settings-group">
+                    <h4 className="settings-group__title">关闭规则</h4>
+                    <div className="settings-card settings-card--rows">
+                      <div className="setting-row">
+                        <div>
+                          <strong>关闭方式</strong>
+                          <p>仅未置顶窗口执行；置顶窗口始终忽略自动关闭。</p>
+                        </div>
+                        <StyledSelect
+                          className="result-mode-control"
+                          aria-label="关闭方式"
+                          value={draft.result.dismissMode}
+                          onChange={(val) =>
+                            changeDraft((current) => ({
+                              ...current,
+                              result: {
+                                ...current.result,
+                                dismissMode: val as PublicSettings["result"]["dismissMode"],
+                              },
+                            }))
+                          }
+                          options={[
+                            { value: "blur", label: "失去焦点时关闭（推荐）" },
+                            { value: "pointer-leave", label: "鼠标移出后关闭" },
+                            { value: "manual", label: "手动关闭" },
+                          ]}
+                        />
+                      </div>
+                      {draft.result.dismissMode === "pointer-leave" && (
+                        <div className="setting-row">
+                          <div>
+                            <strong>移出延迟</strong>
+                            <p>短暂移出不会误关窗口。</p>
+                          </div>
+                          <div className="range-control">
+                            <input
+                              type="range"
+                              min={100}
+                              max={2000}
+                              step={50}
+                              value={draft.result.dismissDelayMs}
+                              onChange={(event) =>
+                                changeDraft((current) => ({
+                                  ...current,
+                                  result: {
+                                    ...current.result,
+                                    dismissDelayMs: Number(event.target.value),
+                                  },
+                                }))
+                              }
+                            />
+                            <span>{draft.result.dismissDelayMs} ms</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-                <p className="toolbar-preview-note">
-                  问 AI 是固定在工具栏最前方的内置功能，不计入动作数量。
-                </p>
-              </div>
-              <DndContext
-                sensors={dragSensors}
-                collisionDetection={closestCenter}
-                onDragStart={handleDragStart}
-                onDragCancel={() => setDraggingId(null)}
-                onDragEnd={handleDragEnd}
-              >
-                <div className="action-zones">
-                  <ActionZone
-                    title="显示在工具栏"
-                    count={`${enabledActions.length} / ${MAX_ENABLED_ACTIONS}`}
-                    actions={enabledActions}
-                    enabled
-                    draggingId={draggingId}
-                    onEdit={setEditor}
-                    onDelete={removeAction}
-                    onToggle={(action) => moveToZone(action.id, false, disabledActions.length)}
-                  />
-                  <ActionZone
-                    title="未显示"
-                    count={`${disabledActions.length}`}
-                    actions={disabledActions}
-                    enabled={false}
-                    draggingId={draggingId}
-                    onEdit={setEditor}
-                    onDelete={removeAction}
-                    onToggle={(action) => moveToZone(action.id, true, enabledActions.length)}
-                  />
+              )}
+
+              {selectionSubTab === "filter" && (
+                <div
+                  key="selection-panel-filter"
+                  id="selection-panel-filter"
+                  role="tabpanel"
+                  aria-labelledby="selection-tab-filter"
+                  className="selection-subpanel selection-subpanel--enter"
+                >
+                  <div className="section-heading">
+                    <div>
+                      <h3 className="settings-subheading" id="filter-title">应用过滤</h3>
+                      <p>限制仅在特定应用中启用划词，或排除干扰较多的应用。</p>
+                    </div>
+                  </div>
+
+                  <div className="settings-group">
+                    <h4 className="settings-group__title">生效策略</h4>
+                    <div className="settings-card settings-card--rows">
+                      <div className="setting-row setting-row--stackable">
+                        <div>
+                          <strong>过滤模式</strong>
+                          <p>选择全部应用、仅列表应用或排除列表应用。</p>
+                        </div>
+                        <StyledSelect
+                          className="compact-control"
+                          aria-label="过滤模式"
+                          value={draft.filter.mode}
+                          onChange={(val) =>
+                            changeDraft((current) => ({
+                              ...current,
+                              filter: {
+                                ...current.filter,
+                                mode: val as PublicSettings["filter"]["mode"],
+                              },
+                            }))
+                          }
+                          options={[
+                            { value: "default", label: "所有应用" },
+                            { value: "whitelist", label: "仅列表应用" },
+                            { value: "blacklist", label: "排除列表应用" },
+                          ]}
+                        />
+                      </div>
+                      {draft.filter.mode === "default" && (
+                        <div className="filter-mode-hint">
+                          <Sparkles size={16} className="filter-mode-hint__icon" aria-hidden="true" />
+                          <p>划词工具栏将在所有应用中响应，无需额外配置排除或白名单规则。</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {draft.filter.mode !== "default" && (
+                    <div className="settings-group">
+                      <div className="settings-group__header-with-badge">
+                        <h4 className="settings-group__title">
+                          {draft.filter.mode === "whitelist" ? "白名单应用列表" : "排除应用列表"}
+                        </h4>
+                        <span className="filter-count-badge">
+                          已配置 {draft.filter.applications.length} 项
+                        </span>
+                      </div>
+                      <div className="settings-card settings-card--rows">
+                        <label className="setting-row setting-row--column">
+                          <div>
+                            <strong>应用列表</strong>
+                            <p>每行填写一个应用名称、Bundle ID 或可执行文件名。</p>
+                          </div>
+                          <textarea
+                            className="control filter-list-input"
+                            placeholder={"例如：\nCode\nGoogle Chrome\ncom.apple.Terminal\nnotepad.exe"}
+                            value={draft.filter.applications.join("\n")}
+                            onChange={(event) =>
+                              changeDraft((current) => ({
+                                ...current,
+                                filter: {
+                                  ...current.filter,
+                                  applications: event.target.value
+                                    .split(/\r?\n/u)
+                                    .map((line) => line.trim())
+                                    .filter(Boolean),
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                        <div className="filter-list-tips">
+                          <span>常用示例：</span>
+                          <code>Code</code>
+                          <code>chrome.exe</code>
+                          <code>com.apple.Terminal</code>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </DndContext>
+              )}
             </section>
           )}
 
@@ -1669,232 +2038,6 @@ export function SettingsApp(): JSX.Element {
                   {TRANSLATION_LANGUAGE_NAMES[draft.translate.alternateLanguage]}，反之亦然；
                   其他语种默认译为中文，中文默认译为英语。结果框可切换为日语、韩语、俄语、德语、法语等。
                 </p>
-              </div>
-            </section>
-          )}
-
-          {activeSection === "result" && (
-            <section
-              className="settings-section settings-section--enter"
-              aria-labelledby="result-title"
-            >
-              <div className="section-heading">
-                <div>
-                  <h2 id="result-title">结果窗口</h2>
-                  <p>{activeMeta.blurb}</p>
-                </div>
-              </div>
-              <div className="settings-card settings-card--rows">
-                <SettingSwitch
-                  title="跟随鼠标位置"
-                  description="在点击动作时的鼠标附近打开结果，空间不足时自动翻转。"
-                  checked={draft.result.followCursor}
-                  onChange={(followCursor) =>
-                    changeDraft((current) => ({
-                      ...current,
-                      result: { ...current.result, followCursor },
-                    }))
-                  }
-                />
-                <SettingSwitch
-                  title="记住结果框尺寸"
-                  description={
-                    draft.result.lastSize
-                      ? `当前记忆：${Math.round(draft.result.lastSize.width)} × ${Math.round(draft.result.lastSize.height)}`
-                      : "用户调整后，下次沿用相同逻辑尺寸。"
-                  }
-                  checked={draft.result.rememberSize}
-                  onChange={(rememberSize) =>
-                    changeDraft((current) => ({
-                      ...current,
-                      result: { ...current.result, rememberSize },
-                    }))
-                  }
-                  extra={
-                    draft.result.lastSize ? (
-                      <button
-                        className="button button--quiet"
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void resetResultSize()}
-                      >
-                        重置尺寸
-                      </button>
-                    ) : undefined
-                  }
-                />
-                <SettingSwitch
-                  title="默认置顶"
-                  description="新打开的结果窗口保持在其他窗口上方；也可在窗口标题栏临时切换。"
-                  checked={draft.result.defaultPinned}
-                  onChange={(defaultPinned) =>
-                    changeDraft((current) => ({
-                      ...current,
-                      result: { ...current.result, defaultPinned },
-                    }))
-                  }
-                />
-                <div className="setting-row">
-                  <div>
-                    <strong>结果文字大小</strong>
-                    <p>调整翻译、总结、解释等结果正文的字号。</p>
-                  </div>
-                  <div className="range-control">
-                    <input
-                      type="range"
-                      aria-label="结果文字大小"
-                      min={RESULT_FONT_SIZE_MIN}
-                      max={RESULT_FONT_SIZE_MAX}
-                      step={1}
-                      value={draft.result.fontSize}
-                      onChange={(event) =>
-                        changeDraft((current) => ({
-                          ...current,
-                          result: { ...current.result, fontSize: Number(event.target.value) },
-                        }))
-                      }
-                    />
-                    <span>{draft.result.fontSize} px</span>
-                  </div>
-                </div>
-                <div className="setting-row">
-                  <div>
-                    <strong>关闭方式</strong>
-                    <p>仅未置顶窗口执行；置顶窗口始终忽略自动关闭。</p>
-                  </div>
-                  <StyledSelect
-                    className="result-mode-control"
-                    aria-label="关闭方式"
-                    value={draft.result.dismissMode}
-                    onChange={(val) =>
-                      changeDraft((current) => ({
-                        ...current,
-                        result: {
-                          ...current.result,
-                          dismissMode: val as PublicSettings["result"]["dismissMode"],
-                        },
-                      }))
-                    }
-                    options={[
-                      { value: "blur", label: "失去焦点时关闭（推荐）" },
-                      { value: "pointer-leave", label: "鼠标移出后关闭" },
-                      { value: "manual", label: "手动关闭" },
-                    ]}
-                  />
-                </div>
-                {draft.result.dismissMode === "pointer-leave" && (
-                  <div className="setting-row">
-                    <div>
-                      <strong>移出延迟</strong>
-                      <p>短暂移出不会误关窗口。</p>
-                    </div>
-                    <div className="range-control">
-                      <input
-                        type="range"
-                        min={100}
-                        max={2000}
-                        step={50}
-                        value={draft.result.dismissDelayMs}
-                        onChange={(event) =>
-                          changeDraft((current) => ({
-                            ...current,
-                            result: {
-                              ...current.result,
-                              dismissDelayMs: Number(event.target.value),
-                            },
-                          }))
-                        }
-                      />
-                      <span>{draft.result.dismissDelayMs} ms</span>
-                    </div>
-                  </div>
-                )}
-                <div className="setting-row">
-                  <div>
-                    <strong>窗口透明度</strong>
-                    <p>内容和控件会保持统一透明度。</p>
-                  </div>
-                  <div className="range-control">
-                    <input
-                      type="range"
-                      min={20}
-                      max={100}
-                      value={Math.round(draft.result.opacity * 100)}
-                      onChange={(event) =>
-                        changeDraft((current) => ({
-                          ...current,
-                          result: { ...current.result, opacity: Number(event.target.value) / 100 },
-                        }))
-                      }
-                    />
-                    <span>{Math.round(draft.result.opacity * 100)}%</span>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
-
-          {activeSection === "filter" && (
-            <section
-              className="settings-section settings-section--enter"
-              aria-labelledby="filter-title"
-            >
-              <div className="section-heading">
-                <div>
-                  <h2 id="filter-title">应用过滤</h2>
-                  <p>{activeMeta.blurb}</p>
-                </div>
-              </div>
-              <div className="settings-card settings-card--rows">
-                <div className="setting-row setting-row--stackable">
-                  <div>
-                    <strong>过滤模式</strong>
-                    <p>选择全部应用、仅列表应用或排除列表应用。</p>
-                  </div>
-                  <StyledSelect
-                    className="compact-control"
-                    aria-label="过滤模式"
-                    value={draft.filter.mode}
-                    onChange={(val) =>
-                      changeDraft((current) => ({
-                        ...current,
-                        filter: {
-                          ...current.filter,
-                          mode: val as PublicSettings["filter"]["mode"],
-                        },
-                      }))
-                    }
-                    options={[
-                      { value: "default", label: "所有应用" },
-                      { value: "whitelist", label: "仅列表应用" },
-                      { value: "blacklist", label: "排除列表应用" },
-                    ]}
-                  />
-                </div>
-                {draft.filter.mode !== "default" && (
-                  <label className="setting-row setting-row--column">
-                    <div>
-                      <strong>应用列表</strong>
-                      <p>每行填写一个应用名称、Bundle ID 或可执行文件名。</p>
-                    </div>
-                    <textarea
-                      className="control filter-list-input"
-                      value={draft.filter.applications.join("\n")}
-                      onChange={(event) =>
-                        changeDraft((current) => ({
-                          ...current,
-                          filter: {
-                            ...current.filter,
-                            applications: event.target.value
-                              .split(/\r?\n/u)
-                              .map((line) => line.trim())
-                              .filter(Boolean),
-                          },
-                        }))
-                      }
-                    />
-                  </label>
-                )}
               </div>
             </section>
           )}
