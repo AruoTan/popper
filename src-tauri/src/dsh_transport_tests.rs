@@ -285,7 +285,7 @@ async fn mock_gateway_options(
                                     match signal.unwrap() {
                                         MockSignal::Disconnect => { let _ = socket.close(None).await; break; }
                                         MockSignal::Prompt(session, request_id) => {
-                                            if hold && request_id != "unblocked-request" { continue; }
+                                            if hold && !request_id.starts_with("unblocked-") { continue; }
                                             let Some(stream_id) = follows.iter().find(|(_, current)| **current == session).map(|(id, _)| id.clone()) else { continue; };
                                             let text = if session == "remote-session" { "你好" } else { "第二轮" };
                                             let frames = vec![
@@ -2371,73 +2371,126 @@ async fn conversation_changes_destination_without_reusing_foreign_sessions_or_re
 #[tokio::test]
 async fn cancelled_conversation_retries_in_same_session_and_ignores_old_turn_events() {
     use std::sync::atomic::Ordering;
-    let gateway = mock_gateway(true, false).await;
-    let service = Arc::new(DshService::new().unwrap());
-    let conversation = Arc::new(DshConversation::default());
-    let config = provider(gateway.base.clone());
-    let cancellation = CancellationToken::new();
-    let first = {
-        let service = service.clone();
-        let conversation = conversation.clone();
-        let config = config.clone();
-        let cancellation = cancellation.clone();
-        tokio::spawn(async move {
+    // Receiving an HTTP request is not proof that the client has processed its
+    // acknowledgement. Hold both the acknowledgement and output to make the
+    // cancellation point deterministic, with and without existing context.
+    for initialized in [false, true] {
+        let gateway = mock_gateway_options(true, false, false, true).await;
+        let service = Arc::new(DshService::new().unwrap());
+        let conversation = Arc::new(DshConversation::default());
+        let config = provider(gateway.base.clone());
+        let messages = json!([
+            {"role":"system","content":"Answer concisely"},
+            {"role":"user","content":"Question"}
+        ]);
+        if initialized {
+            // A correlated completed turn proves admission even while its HTTP
+            // acknowledgement remains blocked by the same gate.
             conversation_turn(
                 &service,
                 &conversation,
                 &config,
                 "test-dsh-key",
-                "blocked",
+                "unblocked-bootstrap",
                 "one/same",
-                &json!([{"role":"user","content":"Question"}]),
-                &[],
-                &[],
-                &cancellation,
-            )
-            .await
-        })
-    };
-    wait_for_calls(&gateway, "session/prompt", 1).await;
-    cancellation.cancel();
-    assert_eq!(first.await.unwrap().unwrap_err().code, "CANCELLED");
-    wait_for_calls(&gateway, "session/cancel", 1).await;
-    gateway.stale_follow_events.store(true, Ordering::SeqCst);
-    let next = {
-        let service = service.clone();
-        let conversation = conversation.clone();
-        let config = config.clone();
-        tokio::spawn(async move {
-            conversation_turn(
-                &service,
-                &conversation,
-                &config,
-                "test-dsh-key",
-                "unblocked-request",
-                "one/same",
-                &json!([{"role":"user","content":"Question"}]),
+                &messages,
                 &[],
                 &[],
                 &CancellationToken::new(),
             )
             .await
-        })
-    };
-    assert_eq!(next.await.unwrap().unwrap().content, "你好");
-    let calls = gateway.calls.lock().unwrap();
-    assert_eq!(
-        calls
+            .unwrap();
+        }
+        let prior_prompts = usize::from(initialized);
+        let cancellation = CancellationToken::new();
+        let first = {
+            let service = service.clone();
+            let conversation = conversation.clone();
+            let config = config.clone();
+            let cancellation = cancellation.clone();
+            let messages = messages.clone();
+            tokio::spawn(async move {
+                conversation_turn(
+                    &service,
+                    &conversation,
+                    &config,
+                    "test-dsh-key",
+                    "blocked",
+                    "one/same",
+                    &messages,
+                    &[],
+                    &[],
+                    &cancellation,
+                )
+                .await
+            })
+        };
+        wait_for_calls(&gateway, "session/prompt", prior_prompts + 1).await;
+        cancellation.cancel();
+        assert_eq!(first.await.unwrap().unwrap_err().code, "CANCELLED");
+        wait_for_calls(&gateway, "session/cancel", 1).await;
+        {
+            let remote = conversation.state.lock().await;
+            let remote = remote.as_ref().unwrap();
+            assert_eq!(remote.initialized, initialized);
+            assert_eq!(
+                remote.system.as_deref(),
+                initialized.then_some("Answer concisely")
+            );
+        }
+        gateway.stale_follow_events.store(true, Ordering::SeqCst);
+        gateway.ack_gate.add_permits(3);
+        let next = {
+            let service = service.clone();
+            let conversation = conversation.clone();
+            let config = config.clone();
+            tokio::spawn(async move {
+                conversation_turn(
+                    &service,
+                    &conversation,
+                    &config,
+                    "test-dsh-key",
+                    "unblocked-request",
+                    "one/same",
+                    &messages,
+                    &[],
+                    &[],
+                    &CancellationToken::new(),
+                )
+                .await
+            })
+        };
+        assert_eq!(next.await.unwrap().unwrap().content, "你好");
+        let calls = gateway.calls.lock().unwrap();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call["method"] == "session/create")
+                .count(),
+            1
+        );
+        let prompts: Vec<_> = calls
             .iter()
-            .filter(|call| call["method"] == "session/create")
-            .count(),
-        1
-    );
-    let prompts: Vec<_> = calls
-        .iter()
-        .filter(|call| call["method"] == "session/prompt")
-        .map(|call| &call["payload"]["args"]["request"])
-        .collect();
-    assert_eq!(prompts[0]["sessionId"], prompts[1]["sessionId"]);
-    assert_eq!(prompts[1]["content"][0]["text"], "Question");
+            .filter(|call| call["method"] == "session/prompt")
+            .map(|call| &call["payload"]["args"]["request"])
+            .collect();
+        assert_eq!(prompts.len(), prior_prompts + 2);
+        assert!(prompts
+            .iter()
+            .all(|prompt| prompt["sessionId"] == prompts[0]["sessionId"]));
+        let bootstrap_prompt = prompts[0]["content"][0]["text"].as_str().unwrap();
+        assert!(bootstrap_prompt.contains("Answer concisely"));
+        assert!(bootstrap_prompt.contains("Question"));
+        let expected_prompt = if initialized {
+            "Question"
+        } else {
+            bootstrap_prompt
+        };
+        assert_eq!(
+            prompts.last().unwrap()["content"][0]["text"],
+            expected_prompt
+        );
+    }
 }
 
 #[tokio::test]
