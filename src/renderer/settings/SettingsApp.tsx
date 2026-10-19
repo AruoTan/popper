@@ -91,7 +91,7 @@ import {
   sortAndNumberActions,
 } from "./settingsForm";
 import { settingsGuidanceInbox, type SettingsGuidanceLease } from "./settingsGuidanceInbox";
-import { StyledSelect } from "./StyledSelect";
+import { StyledSelect } from "../components/StyledSelect";
 
 type Operation = string | null;
 type Banner = { kind: "success" | "error"; text: string } | null;

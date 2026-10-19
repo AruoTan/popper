@@ -2,7 +2,7 @@ import type { JSX } from "react";
 
 import { ActionIcon } from "../components/ActionIcon";
 import { LUCIDE_ICON_NAMES, isLucideIconName } from "../components/lucideIconRegistry";
-import { StyledSelect } from "./StyledSelect";
+import { StyledSelect } from "../components/StyledSelect";
 
 const ICON_OPTIONS = LUCIDE_ICON_NAMES.map((name) => ({ value: name, label: name }));
 
