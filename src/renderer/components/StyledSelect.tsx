@@ -19,6 +19,7 @@ interface StyledSelectProps {
   value: string;
   onChange: (value: string) => void;
   className?: string;
+  menuMinWidth?: number;
   "aria-label": string;
   disabled?: boolean;
   editable?: boolean;
@@ -29,7 +30,7 @@ interface StyledSelectProps {
 
 export function StyledSelect({
   options, value, onChange, className, "aria-label": ariaLabel,
-  disabled = false, editable = false, invalid, placeholder, maxLength,
+  disabled = false, editable = false, invalid, placeholder, maxLength, menuMinWidth = 180,
 }: StyledSelectProps): JSX.Element {
   const id = useId();
   const [open, setOpen] = useState(false);
@@ -87,14 +88,14 @@ export function StyledSelect({
     const below = height + offsetY - rect.bottom - 12;
     const above = rect.top - offsetY - 12;
     const upwards = below < 240 && above > below;
-    const menuWidth = Math.min(Math.max(rect.width, 180), width - 16);
+    const menuWidth = Math.min(Math.max(rect.width, menuMinWidth), width - 16);
     setPosition({
       left: Math.max(offsetX + 8, Math.min(rect.left, offsetX + width - menuWidth - 8)),
       width: menuWidth,
       maxHeight: Math.max(0, Math.min(280, upwards ? above : below)),
       ...(upwards ? { bottom: window.innerHeight - rect.top + 5 } : { top: rect.bottom + 5 }),
     });
-  }, [open, visibleOptions.length]);
+  }, [open, visibleOptions.length, menuMinWidth]);
 
   useEffect(() => {
     if (!open) return;
@@ -236,6 +237,7 @@ export function StyledSelect({
         <ul
           id={`${id}-listbox`}
           className="styled-select__dropdown"
+          data-no-drag
           role="listbox"
           aria-label={ariaLabel}
           ref={listRef}
