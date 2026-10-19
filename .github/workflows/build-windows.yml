@@ -21,6 +21,10 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTUP_TOOLCHAIN: 1.97.1-x86_64-pc-windows-msvc
       CARGO_INCREMENTAL: "0"
+      # CI needs test results, not large MSVC debug-symbol/PDB files. Keep
+      # debug assertions and overflow checks; release settings are unchanged.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
 
     steps:
       - name: Check out source
@@ -61,6 +65,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed' }
 
       - name: Set up Rust and NASM
+        id: native-tools
         run: |
           rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
@@ -71,6 +76,8 @@ jobs:
             throw 'NASM executable was not installed at the expected location'
           }
           $nasmDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          $tauriCache = Join-Path $env:LOCALAPPDATA 'tauri'
+          "tauri-cache=$tauriCache" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Cache Rust dependencies and compilation artifacts
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
@@ -78,6 +85,8 @@ jobs:
           workspaces: src-tauri -> target
           key: windows-2022-x64-msvc
           cache-bin: "false"
+          # NSIS, its Tauri plugin and WebView2 installer downloads are reusable.
+          cache-directories: ${{ steps.native-tools.outputs.tauri-cache }}
 
       - name: Verify and package Windows x64
         run: ./.github/scripts/build-windows.ps1

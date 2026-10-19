@@ -15,11 +15,14 @@
 
 - Node 22.22.0、Rust 1.97.1 MSVC，与开发容器版本保持一致；pnpm 精确版本从 `package.json` 读取。
 - 通过 `pnpm install --frozen-lockfile` 安装依赖，自动发现 runner 的 Visual Studio/Windows SDK；安装并优先使用 NASM，避免 Strawberry Perl 同名工具干扰。
-- 运行完整的 `pnpm verify:windows`，成功后复用本次生成的前端产物运行 `pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked`，最后运行 `pnpm verify:artifacts:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
+- 依次运行 `pnpm typecheck`、`pnpm test`、`pnpm build:web` 和 `pnpm test:rust:windows`，成功后复用本次生成的前端产物运行 `pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked`，最后运行 `pnpm verify:artifacts:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
+- CI 中的 Rust 全目标测试包含编译、链接和测试执行，因此不再紧接着重复运行同目标的 `cargo check --all-targets`；本地 `pnpm verify:windows` 仍保留原有完整命令。全部前端和 Rust 测试仍执行。
 - 任一步骤失败都会停止；仅成功产物上传。任务最多运行 60 分钟，同一分支的并发构建不会相互中断。
 - 第三方 Actions 固定到提交 SHA，仓库权限只有 `contents: read`。升级 Actions 时同步核对官方版本与 SHA。
 - 缓存 pnpm store，以及 Cargo 下载缓存和 `src-tauri/target` 内的依赖编译产物，覆盖验证与 release 打包。Rust 缓存由工具链、编译环境和 Cargo 清单/锁文件区分；锁文件变化时可回用旧缓存，由 Cargo 判断需要重编译的依赖。应用自身及安装包由当前源码重新生成。
-- CI 专用配置只关闭重复的 `beforeBuildCommand`，使用前先检查本次验证生成的五个 HTML 入口（包含快捷提问）；本地 `pnpm package:windows` 仍自动构建前端。验证、打包、产物校验和 release 启动检查的耗时写入 Actions 运行摘要。
+- 仅在 CI 设置 `CARGO_PROFILE_DEV_DEBUG=0`、`CARGO_PROFILE_TEST_DEBUG=0`，减少 Windows 测试构建的调试符号/PDB 生成及缓存体积；保留 debug assertions、溢出检查及 release 构建配置。配置变化后首次运行需要重建对应依赖缓存。
+- 同时缓存 `%LOCALAPPDATA%/tauri` 中的 NSIS、Tauri 插件和 WebView2 安装器下载，避免后续打包重复下载；Tauri 继续负责工具版本及已有校验逻辑。
+- CI 专用配置只关闭重复的 `beforeBuildCommand`，使用前先检查本次验证生成的五个 HTML 入口（包含快捷提问）；本地 `pnpm package:windows` 仍自动构建前端。TypeScript 检查、前端测试、前端构建、Rust 测试、打包、产物校验和 release 启动检查分别计时并写入 Actions 运行摘要，便于比较缓存命中后的各阶段耗时。
 - 打包后实际启动 release 程序，要求 20 秒内写入当前进程的 `ready` 日志且保持运行；失败时不上传安装包。`startup.log` 仅保留在运行机器本地。
 - 首次构建、缓存被清理或工具链升级时仍需冷编译；后续缓存命中时才有主要收益，具体节省时间需比较云端运行。GitHub 的系统镜像和 NASM 软件包会更新，因此不承诺逐字节可复现。
 
@@ -27,4 +30,4 @@
 
 此配置需推送后完成首次云端运行验证；本地语法检查不等同于 CI 已通过。
 
-参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Windows runner 环境](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)、[Rust 缓存策略](https://github.com/Swatinem/rust-cache)、[GitHub Actions 缓存](https://github.com/actions/cache)。
+参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Windows runner 环境](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)、[Rust 缓存策略](https://github.com/Swatinem/rust-cache)、[Cargo 测试目标](https://doc.rust-lang.org/cargo/commands/cargo-test.html)、[Cargo 编译配置](https://doc.rust-lang.org/cargo/reference/profiles.html)、[GitHub Actions 缓存](https://github.com/actions/cache)。
