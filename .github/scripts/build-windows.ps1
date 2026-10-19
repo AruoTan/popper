@@ -47,9 +47,16 @@ if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain unavailable' }
 nasm -v
 if ($LASTEXITCODE -ne 0) { throw 'NASM unavailable' }
 
-Invoke-BuildStage 'Windows verification' { pnpm verify:windows }
+# Keep the verification stages separate so the run summary identifies the
+# remaining bottleneck. All-target cargo tests compile the same Rust targets
+# as check:rust:windows and additionally link/run them; do not repeat cargo
+# check afterwards. The standalone local verify:windows command stays intact.
+Invoke-BuildStage 'TypeScript checks' { pnpm typecheck }
+Invoke-BuildStage 'Frontend tests' { pnpm test }
+Invoke-BuildStage 'Frontend production build' { pnpm build:web }
+Invoke-BuildStage 'Windows Rust tests (all targets)' { pnpm test:rust:windows }
 
-# verify:windows just built these files from this checkout. Reuse them only in
+# The frontend stage just built these files from this checkout. Reuse them only in
 # this CI invocation; ordinary local packaging still runs beforeBuildCommand.
 foreach ($page in @('settings', 'toolbar', 'result', 'startup', 'quick-ask')) {
     $html = Join-Path 'dist' "$page/index.html"
