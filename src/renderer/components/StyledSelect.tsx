@@ -5,9 +5,12 @@ import {
   type CSSProperties, type JSX, type KeyboardEvent,
 } from "react";
 
+import "./StyledSelect.css";
+
 export interface SelectOption {
   value: string;
   label: string;
+  shortLabel?: string;
   group?: string;
 }
 
@@ -45,7 +48,8 @@ export function StyledSelect({
   const pageStart = editable && !searching && selectedIndex >= 100 ? selectedIndex - 50 : 0;
   const visibleOptions = editable ? filtered.slice(pageStart, pageStart + 100) : filtered;
   const activeOption = visibleOptions[activeIndex];
-  const selectedLabel = options.find((option) => option.value === value)?.label ?? value;
+  const selectedOption = options.find((option) => option.value === value);
+  const selectedLabel = selectedOption?.shortLabel ?? selectedOption?.label ?? value;
 
   function close(): void {
     setOpen(false);
@@ -106,6 +110,7 @@ export function StyledSelect({
     window.addEventListener("scroll", scroll, true);
     window.addEventListener("resize", close);
     window.addEventListener("blur", close);
+    window.addEventListener("pagehide", close);
     window.visualViewport?.addEventListener("resize", close);
     window.visualViewport?.addEventListener("scroll", close);
     return () => {
@@ -113,6 +118,7 @@ export function StyledSelect({
       window.removeEventListener("scroll", scroll, true);
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
+      window.removeEventListener("pagehide", close);
       window.visualViewport?.removeEventListener("resize", close);
       window.visualViewport?.removeEventListener("scroll", close);
     };

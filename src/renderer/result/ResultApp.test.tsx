@@ -8,6 +8,7 @@ import {
   type DictionarySnapshot,
   type PublicSettings,
   type ResultSessionSnapshot,
+  type RunActionResult,
   type WindowPopperApi,
 } from "../../shared";
 import type { ResultSessionBootstrap } from "./resultSessionBootstrap";
@@ -857,7 +858,7 @@ describe("ResultApp window interactions", () => {
       act(() => pendingSession.resolve(completedSession));
       await screen.findByRole("combobox", { name: "翻译目标语言" });
       expect(container.querySelector(".translation-route__code")).toHaveTextContent("EN");
-      expect(container.querySelector(".translation-route__target > span")).toHaveTextContent("CN");
+      expect(container.querySelector(".translation-route__target .styled-select__value")).toHaveTextContent("CN");
 
       const actions = container.querySelector(".result-window-actions")!;
       const buttons = [...actions.querySelectorAll("button")];
@@ -879,6 +880,52 @@ describe("ResultApp window interactions", () => {
     } finally {
       userAgent.mockRestore();
     }
+  });
+
+  it.each([
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) WebView2",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit",
+  ])("uses the shared language menu without triggering window shortcuts on %s", async (agent) => {
+    const userAgent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue(agent);
+    try {
+      const { api, container } = await renderResult();
+      const trigger = await screen.findByRole("combobox", { name: "翻译目标语言" });
+      expect(trigger).toHaveTextContent("CN");
+      expect(container.querySelector(".translation-route select")).not.toBeInTheDocument();
+      fireEvent.click(trigger);
+      const menu = screen.getByRole("listbox", { name: "翻译目标语言" });
+      expect(container.contains(menu)).toBe(false);
+      expect(screen.getByRole("option", { name: "简体中文" })).toHaveAttribute("aria-selected", "true");
+      fireEvent.keyDown(trigger, { key: "r" });
+      expect(api.retryAction).not.toHaveBeenCalled();
+      fireEvent.keyDown(trigger, { key: "Escape" });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(api.closeResult).not.toHaveBeenCalled();
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+      fireEvent.keyDown(trigger, { key: "Enter" });
+      await waitFor(() => expect(api.retryAction).toHaveBeenCalledWith("session-1", { targetLanguage: "en-US" }));
+      expect(trigger).toHaveTextContent("EN");
+      expect(trigger).toHaveFocus();
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    } finally {
+      userAgent.mockRestore();
+    }
+  });
+
+  it("disables language selection during a retry and restores it if the retry is rejected", async () => {
+    const pending = deferred<RunActionResult>();
+    const retryAction = vi.fn(() => pending.promise);
+    await renderResult(completedSession, settingsWithFontSize(), { retryAction });
+    const trigger = await screen.findByRole("combobox", { name: "翻译目标语言" });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("option", { name: "日本語" }));
+    expect(trigger).toBeDisabled();
+    expect(trigger).toHaveTextContent("JA");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    act(() => pending.resolve({ accepted: false, message: "暂时无法切换语言" }));
+    await waitFor(() => expect(trigger).not.toBeDisabled());
+    expect(trigger).toHaveTextContent("CN");
   });
 
   it("keeps translation metadata in the compact header and applies result font size", async () => {
@@ -921,9 +968,8 @@ describe("ResultApp window interactions", () => {
       expect(api.retryAction).toHaveBeenCalledWith("session-1", undefined);
     });
 
-    fireEvent.change(screen.getByRole("combobox", { name: "翻译目标语言" }), {
-      target: { value: "en-US" },
-    });
+    fireEvent.click(screen.getByRole("combobox", { name: "翻译目标语言" }));
+    fireEvent.click(screen.getByRole("option", { name: "English" }));
     await waitFor(() => {
       expect(api.retryAction).toHaveBeenLastCalledWith("session-1", {
         targetLanguage: "en-US",

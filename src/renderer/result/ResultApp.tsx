@@ -38,6 +38,7 @@ import {
   RESULT_FONT_SIZE_MIN,
   TRANSLATION_LANGUAGES,
   TRANSLATION_LANGUAGE_CODES,
+  TRANSLATION_LANGUAGE_NAMES,
   countUnicodeScalars,
   defaultTranslationTarget,
   detectTranslationLanguage,
@@ -50,6 +51,7 @@ import {
   type ResultSessionSnapshot,
   type TranslationLanguage,
 } from "../../shared";
+import { StyledSelect } from "../components/StyledSelect";
 import { PopperIcon } from "../components/PopperIcon";
 import { SelectionDetectionDebugPanel } from "./SelectionDetectionDebugPanel";
 import { runDetached } from "../lib/asyncEffects";
@@ -146,7 +148,8 @@ function isEditableTarget(target: EventTarget | null): boolean {
     target instanceof HTMLInputElement ||
     target instanceof HTMLTextAreaElement ||
     target instanceof HTMLSelectElement ||
-    (target instanceof HTMLElement && target.isContentEditable)
+    (target instanceof HTMLElement &&
+      (target.isContentEditable || target.closest('[role="combobox"]') !== null))
   );
 }
 
@@ -1339,57 +1342,22 @@ function ResultSessionApp({
             <h1>{action?.name ?? "AI 结果"}</h1>
             {translationRoute ? (
               <div className="translation-route" aria-label="翻译方向" data-no-drag>
-                {windowsRenderer ? (
-                  <>
-                    <span className="translation-route__code">
-                      {TRANSLATION_LANGUAGE_CODES[translationRoute.detected]}
-                    </span>
-                    <ArrowRight className="translation-route__arrow" size={10} />
-                    <span
-                      className="translation-route__target"
-                      data-disabled={translationSwitching ? "true" : undefined}
-                    >
-                      <span aria-hidden="true">
-                        {TRANSLATION_LANGUAGE_CODES[translationRoute.target]}
-                      </span>
-                      <ChevronDown className="dropdown-chevron" size={9} aria-hidden="true" />
-                      <select
-                        className="translation-route__native-select"
-                        aria-label="翻译目标语言"
-                        value={translationRoute.target}
-                        disabled={translationSwitching}
-                        onChange={(event) =>
-                          changeTranslationTarget(event.target.value as TranslationLanguage)
-                        }
-                      >
-                        {TRANSLATION_LANGUAGES.map((code) => (
-                          <option key={code} value={code}>
-                            {TRANSLATION_LANGUAGE_CODES[code]}
-                          </option>
-                        ))}
-                      </select>
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span>{TRANSLATION_LANGUAGE_CODES[translationRoute.detected]}</span>
-                    <ArrowRight size={11} />
-                    <select
-                      aria-label="翻译目标语言"
-                      value={translationRoute.target}
-                      disabled={translationSwitching}
-                      onChange={(event) =>
-                        changeTranslationTarget(event.target.value as TranslationLanguage)
-                      }
-                    >
-                      {TRANSLATION_LANGUAGES.map((code) => (
-                        <option key={code} value={code}>
-                          {TRANSLATION_LANGUAGE_CODES[code]}
-                        </option>
-                      ))}
-                    </select>
-                  </>
-                )}
+                <span className="translation-route__code">
+                  {TRANSLATION_LANGUAGE_CODES[translationRoute.detected]}
+                </span>
+                <ArrowRight className="translation-route__arrow" size={10} />
+                <StyledSelect
+                  className="translation-route__target"
+                  aria-label="翻译目标语言"
+                  value={translationRoute.target}
+                  disabled={translationSwitching}
+                  onChange={(value) => changeTranslationTarget(value as TranslationLanguage)}
+                  options={TRANSLATION_LANGUAGES.map((code) => ({
+                    value: code,
+                    label: TRANSLATION_LANGUAGE_NAMES[code],
+                    shortLabel: TRANSLATION_LANGUAGE_CODES[code],
+                  }))}
+                />
               </div>
             ) : null}
             {effectiveModelRoute && modelChoices.length > 0 ? (

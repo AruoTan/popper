@@ -17,7 +17,7 @@ import {
 } from '../../shared'
 import { isLucideIconName } from '../components/lucideIconRegistry'
 import { ActionIconPicker } from './ActionIconPicker'
-import { StyledSelect } from './StyledSelect'
+import { StyledSelect } from '../components/StyledSelect'
 
 const ACTION_KIND_NAMES: Readonly<Record<ActionKind, string>> = {
   translate: '翻译',
