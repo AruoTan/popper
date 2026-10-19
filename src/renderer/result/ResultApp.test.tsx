@@ -913,6 +913,34 @@ describe("ResultApp window interactions", () => {
     }
   });
 
+  it.each([
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) WebView2",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X) AppleWebKit",
+  ])("clicks a portalled language option without starting native window dragging on %s", async (agent) => {
+    const userAgent = vi.spyOn(window.navigator, "userAgent", "get").mockReturnValue(agent);
+    try {
+      const { api } = await renderResult();
+      const trigger = await screen.findByRole("combobox", { name: "翻译目标语言" });
+      fireEvent.click(trigger);
+      const menu = screen.getByRole("listbox", { name: "翻译目标语言" });
+      fireEvent.pointerDown(menu, { button: 0, isPrimary: true });
+      expect(startDragging).not.toHaveBeenCalled();
+      const option = screen.getByRole("option", { name: "English" });
+      const label = within(option).getByText("English");
+      expect(fireEvent.pointerDown(label, { button: 0, isPrimary: true })).toBe(true);
+      fireEvent.mouseDown(label, { button: 0 });
+      fireEvent.pointerUp(label, { button: 0, isPrimary: true });
+      fireEvent.mouseUp(label, { button: 0 });
+      fireEvent.click(label);
+      expect(startDragging).not.toHaveBeenCalled();
+      await waitFor(() => expect(api.retryAction).toHaveBeenCalledWith("session-1", { targetLanguage: "en-US" }));
+      expect(trigger).toHaveTextContent("EN");
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    } finally {
+      userAgent.mockRestore();
+    }
+  });
+
   it("disables language selection during a retry and restores it if the retry is rejected", async () => {
     const pending = deferred<RunActionResult>();
     const retryAction = vi.fn(() => pending.promise);

@@ -1196,7 +1196,15 @@ function ResultSessionApp({
   };
 
   const startWindowDrag = (event: ReactPointerEvent<HTMLElement>): void => {
-    if (event.button !== 0 || !event.isPrimary || isInteractiveElement(event.target)) return;
+    // Portal menus still bubble through this header in React, even though
+    // their DOM nodes live outside it. Only actual header content may drag.
+    if (
+      event.button !== 0 ||
+      !event.isPrimary ||
+      !(event.target instanceof Node) ||
+      !event.currentTarget.contains(event.target) ||
+      isInteractiveElement(event.target)
+    ) return;
     event.preventDefault();
     runDetached(getCurrentWindow().startDragging(), {
       scope: "result",
@@ -1348,6 +1356,7 @@ function ResultSessionApp({
                 <ArrowRight className="translation-route__arrow" size={10} />
                 <StyledSelect
                   className="translation-route__target"
+                  menuMinWidth={136}
                   aria-label="翻译目标语言"
                   value={translationRoute.target}
                   disabled={translationSwitching}
