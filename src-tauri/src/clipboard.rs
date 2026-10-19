@@ -10,6 +10,12 @@ const WINDOWS_CLIPBOARD_TEXT_LIMIT: usize = 1_000_000;
 #[cfg(target_os = "windows")]
 const WINDOWS_CLIPBOARD_SNAPSHOT_LIMIT: usize = 64 * 1024 * 1024;
 
+#[cfg(any(target_os = "windows", test))]
+#[path = "clipboard_snapshot.rs"]
+mod snapshot;
+#[cfg(target_os = "windows")]
+pub(crate) use snapshot::{retry_snapshot, SnapshotError, SnapshotStage, SNAPSHOT_ATTEMPTS};
+
 #[cfg(target_os = "windows")]
 pub(crate) struct WindowsClipboardSnapshot {
     formats: Vec<WindowsClipboardFormatSnapshot>,
@@ -65,7 +71,7 @@ pub(crate) fn write_text(text: &str) -> Result<(), String> {
 /// cycles can recurse through delayed OLE renderers and overflow the helper's
 /// stack, so only self-contained formats are retained here.
 #[cfg(target_os = "windows")]
-pub(crate) fn snapshot_windows_clipboard() -> Option<WindowsClipboardSnapshot> {
+pub(crate) fn snapshot_windows_clipboard() -> Result<WindowsClipboardSnapshot, SnapshotError> {
     use std::{slice, thread, time::Duration};
 
     use windows::Win32::{
@@ -96,6 +102,12 @@ pub(crate) fn snapshot_windows_clipboard() -> Option<WindowsClipboardSnapshot> {
     }
 
     let sequence = unsafe { windows::Win32::System::DataExchange::GetClipboardSequenceNumber() };
+    let failure = |stage, format, native_error| SnapshotError {
+        stage,
+        format,
+        native_error,
+        sequence,
+    };
     retry_operation(
         WINDOWS_CLIPBOARD_ATTEMPTS,
         || unsafe { OpenClipboard(None) },
@@ -104,19 +116,20 @@ pub(crate) fn snapshot_windows_clipboard() -> Option<WindowsClipboardSnapshot> {
             thread::sleep(Duration::from_millis(delay_ms));
         },
     )
-    .ok()?;
+    .map_err(|error| failure(SnapshotStage::Open, None, Some(error.code().0 as u32)))?;
     let _clipboard = ClipboardGuard;
     if !windows_clipboard_sequence_matches(sequence) {
-        return None;
+        return Err(failure(SnapshotStage::SequenceChanged, None, None));
     }
 
     unsafe { SetLastError(WIN32_ERROR(0)) };
     let format_count = unsafe { CountClipboardFormats() };
     if format_count == 0 {
-        if unsafe { GetLastError() }.0 != 0 {
-            return None;
+        let error = unsafe { GetLastError() }.0;
+        if error != 0 {
+            return Err(failure(SnapshotStage::CountFormats, None, Some(error)));
         }
-        return Some(WindowsClipboardSnapshot {
+        return Ok(WindowsClipboardSnapshot {
             formats: Vec::new(),
             was_empty: true,
             sequence,
@@ -127,24 +140,42 @@ pub(crate) fn snapshot_windows_clipboard() -> Option<WindowsClipboardSnapshot> {
     let mut total_bytes = 0usize;
     let mut format = 0u32;
     loop {
+        unsafe { SetLastError(WIN32_ERROR(0)) };
         format = unsafe { EnumClipboardFormats(format) };
         if format == 0 {
+            let error = unsafe { GetLastError() }.0;
+            if error != 0 {
+                return Err(failure(SnapshotStage::EnumerateFormats, None, Some(error)));
+            }
             break;
         }
         if windows_clipboard_format_is_skipped(format) {
             continue;
         }
 
-        let handle = unsafe { GetClipboardData(format) }.ok()?;
+        let handle = unsafe { GetClipboardData(format) }.map_err(|error| {
+            failure(
+                SnapshotStage::ReadFormat,
+                Some(format),
+                Some(error.code().0 as u32),
+            )
+        })?;
         let (data, kind) = if format == u32::from(CF_ENHMETAFILE.0) {
             let metafile = HENHMETAFILE(handle.0);
             let size = unsafe { GetEnhMetaFileBits(metafile, None) } as usize;
             if size == 0 {
                 continue;
             }
+            if size > WINDOWS_CLIPBOARD_SNAPSHOT_LIMIT.saturating_sub(total_bytes) {
+                return Err(failure(SnapshotStage::SizeLimit, Some(format), None));
+            }
             let mut data = vec![0u8; size];
             if unsafe { GetEnhMetaFileBits(metafile, Some(&mut data)) } as usize != size {
-                return None;
+                return Err(failure(
+                    SnapshotStage::ReadMetafile,
+                    Some(format),
+                    Some(unsafe { GetLastError() }.0),
+                ));
             }
             (data, WindowsClipboardFormatKind::EnhancedMetafile)
         } else {
@@ -153,9 +184,16 @@ pub(crate) fn snapshot_windows_clipboard() -> Option<WindowsClipboardSnapshot> {
             if size == 0 {
                 continue;
             }
+            if size > WINDOWS_CLIPBOARD_SNAPSHOT_LIMIT.saturating_sub(total_bytes) {
+                return Err(failure(SnapshotStage::SizeLimit, Some(format), None));
+            }
             let pointer = unsafe { GlobalLock(global) }.cast::<u8>();
             if pointer.is_null() {
-                return None;
+                return Err(failure(
+                    SnapshotStage::LockMemory,
+                    Some(format),
+                    Some(unsafe { GetLastError() }.0),
+                ));
             }
             let _lock = GlobalLockGuard(global);
             (
@@ -163,17 +201,18 @@ pub(crate) fn snapshot_windows_clipboard() -> Option<WindowsClipboardSnapshot> {
                 WindowsClipboardFormatKind::GlobalMemory,
             )
         };
-        total_bytes = total_bytes.checked_add(data.len())?;
-        if total_bytes > WINDOWS_CLIPBOARD_SNAPSHOT_LIMIT {
-            return None;
-        }
+        // Each allocation was checked against the remaining limit above.
+        total_bytes += data.len();
         formats.push(WindowsClipboardFormatSnapshot { format, data, kind });
     }
 
-    if formats.is_empty() || !windows_clipboard_sequence_matches(sequence) {
-        return None;
+    if formats.is_empty() {
+        return Err(failure(SnapshotStage::NoRestorableFormats, None, None));
     }
-    windows_clipboard_sequence_matches(sequence).then_some(WindowsClipboardSnapshot {
+    if !windows_clipboard_sequence_matches(sequence) {
+        return Err(failure(SnapshotStage::SequenceChanged, None, None));
+    }
+    Ok(WindowsClipboardSnapshot {
         formats,
         was_empty: false,
         sequence,

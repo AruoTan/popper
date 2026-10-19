@@ -211,6 +211,8 @@ const CLIPBOARD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CLIPBOARD_POLL_ATTEMPTS: usize = 120;
 const CLIPBOARD_STABLE_POLLS: usize = 2;
 const CLIPBOARD_PHASE_BUDGET: Duration = Duration::from_millis(1_200);
+const CLIPBOARD_SNAPSHOT_BUDGET: Duration = Duration::from_millis(240);
+const CLIPBOARD_SNAPSHOT_RETRY_DELAY: Duration = Duration::from_millis(12);
 // Acrobat and DocBox do not reliably implement WM_COPY or UIA TextPattern.
 // Their native selections are exposed through Ctrl+C with a shorter poll
 // cadence. Acrobat may publish several clipboard formats before final text.
@@ -3896,43 +3898,113 @@ impl CaptureEngine {
             trace_selection_route("clipboard-recovery-interrupted", source_window, process_id);
             return Ok(None);
         }
-        // A delayed PDF format can arrive between OleGetClipboard and the
-        // sequence check. Reconcile the retained previous transaction once,
-        // then take a fresh snapshot. Never loop indefinitely and never
-        // replace a clipboard update that is not source-owned.
-        let (snapshot, baseline_sequence) = {
-            let mut snapshot = None;
-            for attempt in 0..2 {
-                let Some(candidate) = clipboard::snapshot_windows_clipboard() else {
-                    trace_selection_route("clipboard-snapshot-failed", source_window, process_id);
-                    return Ok(None);
-                };
+        // Back up before injecting copy. A clipboard owner may still be
+        // rendering a format, or another reader may briefly hold the lock.
+        // Retry only this read-only stage, with fresh context validation and
+        // a shared deadline. Never proceed with a missing/partial snapshot.
+        let snapshot_deadline = self
+            .deadline
+            .get()
+            .min(Instant::now() + CLIPBOARD_SNAPSHOT_BUDGET);
+        let snapshot = clipboard::retry_snapshot(
+            || {
+                let candidate = clipboard::snapshot_windows_clipboard()?;
                 let candidate_sequence = candidate.sequence();
                 if clipboard::windows_clipboard_sequence() == candidate_sequence {
-                    snapshot = Some((candidate, candidate_sequence));
-                    break;
+                    Ok(candidate)
+                } else {
+                    Err(clipboard::SnapshotError {
+                        stage: clipboard::SnapshotStage::SequenceChanged,
+                        format: None,
+                        native_error: None,
+                        sequence: candidate_sequence,
+                    })
                 }
-                trace_selection_route("clipboard-snapshot-raced", source_window, process_id);
-                if attempt == 0 {
-                    if !self.reconcile_clipboard_recovery(
+            },
+            |attempt| {
+                let context_valid = |parents: &mut Option<Option<HashMap<u32, u32>>>| {
+                    Instant::now() < snapshot_deadline
+                        && copy_shortcut_is_safe_to_inject(control)
+                        && clipboard_capture_context_is_valid_with_lazy_parents(
+                            source_window,
+                            process_id,
+                            parents,
+                            control,
+                        )
+                };
+                if attempt > 0 {
+                    let due = Instant::now() + CLIPBOARD_SNAPSHOT_RETRY_DELAY;
+                    while Instant::now() < due {
+                        if !context_valid(process_parents) {
+                            trace_selection_route(
+                                "clipboard-snapshot-interrupted",
+                                source_window,
+                                process_id,
+                            );
+                            return false;
+                        }
+                        pump_sta_messages();
+                        thread::sleep(
+                            due.saturating_duration_since(Instant::now())
+                                .min(Duration::from_millis(4)),
+                        );
+                    }
+                    if !context_valid(process_parents) {
+                        trace_selection_route(
+                            "clipboard-snapshot-interrupted",
+                            source_window,
+                            process_id,
+                        );
+                        return false;
+                    }
+                    // No recovery ledger (or a preserved user clipboard) is
+                    // a normal result, not grounds to abort a fresh backup.
+                    self.reconcile_clipboard_recovery(
                         request,
                         process_id,
                         source_window,
                         process_parents,
                         control,
-                    ) {
-                        return Ok(None);
-                    }
-                    if control.is_cancelled() {
-                        return Ok(None);
-                    }
+                    );
                 }
-            }
-            let Some(snapshot) = snapshot else {
-                return Ok(None);
-            };
-            snapshot
+                if !context_valid(process_parents) {
+                    trace_selection_route(
+                        "clipboard-snapshot-interrupted",
+                        source_window,
+                        process_id,
+                    );
+                    return false;
+                }
+                true
+            },
+            |attempt, error| {
+                let details = serde_json::json!({
+                    "attempt":attempt + 1,"maxAttempts":clipboard::SNAPSHOT_ATTEMPTS,
+                    "stage":error.stage.as_str(),"formatId":error.format,
+                    "nativeError":error.native_error.map(|code| format!("0x{code:08X}")),
+                    "expectedSequence":error.sequence,"currentSequence":clipboard::windows_clipboard_sequence(),
+                    "retryable":error.retryable(),
+                    "remainingMs":snapshot_deadline.saturating_duration_since(Instant::now()).as_secs_f64()*1000.0,
+                });
+                selection_debug::record("clipboard.snapshot-failed", details.clone());
+                if selection_trace_enabled() || selection_detection_debug_enabled() {
+                    trace_selection_line(format!("[selection-clipboard-snapshot] {details}"));
+                }
+            },
+        );
+        let Some(snapshot) = snapshot else {
+            trace_selection_route("clipboard-snapshot-failed", source_window, process_id);
+            return Ok(None);
         };
+        if Instant::now() >= snapshot_deadline {
+            trace_selection_route(
+                "clipboard-snapshot-budget-exceeded",
+                source_window,
+                process_id,
+            );
+            return Ok(None);
+        }
+        let baseline_sequence = snapshot.sequence();
         let clipboard_deadline = Instant::now()
             .checked_add(clipboard_profile.phase_budget())
             .unwrap_or_else(Instant::now)

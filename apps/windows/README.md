@@ -183,6 +183,26 @@ rectangles, stability, and initial **and** revalidated health. They distinguish
 entering the guarded-copy route from successfully returning clipboard text.
 Existing clipboard protection, injection and restoration are unchanged.
 
+Before guarded Ctrl+C, the helper retries transient clipboard backup failures
+at most three times, with 12 ms between attempts and a 240 ms backup-stage
+budget inside the existing capture timeout. Each attempt revalidates source
+foreground, cancellation and active user shortcuts. Snapshots release the
+clipboard lock before waiting. Unsupported/oversized backups remain terminal;
+no synthetic copy is injected unless a valid backup is available.
+
+`[selection-clipboard-snapshot]` trace lines and the
+`clipboard.snapshot-failed` DEV report steps include the attempt number,
+failure stage, clipboard format ID, native error, expected/current sequence
+and remaining backup budget. They do not include clipboard contents.
+`clipboard-snapshot-failed` is the final abort marker; an earlier detailed
+failure can recover on a later attempt. For desktop acceptance, test guarded
+copy in Zotero after copying text, an image and files in another app; verify
+the original clipboard can still be pasted afterward. Also test while another
+process briefly holds the clipboard open, then while it holds it beyond the
+budget. The first case should recover if the lock is released in time; the
+second must stop without injecting copy. Type or switch apps during a retry
+to confirm cancellation, and inspect the log when no toolbar opens.
+
 The same report is written to
 `%LOCALAPPDATA%\Popper\selection-diagnostic.log`. Empty, failed or cancelled
 captures can be diagnosed there even when no result window opens. Selected and
