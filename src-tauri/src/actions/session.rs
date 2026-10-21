@@ -82,19 +82,9 @@ pub(super) struct RequestStreamState {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct DeadlineGeneration(u64);
 
-impl DeadlineGeneration {
-    fn checked_next(self) -> Option<Self> {
-        (self.0 < MAX_WIRE_COUNTER).then(|| Self(self.0 + 1))
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TimerDirective {
     None,
-    Schedule {
-        deadline: tokio::time::Instant,
-        generation: DeadlineGeneration,
-    },
     Cancel,
 }
 
@@ -102,11 +92,6 @@ pub(super) enum TimerDirective {
 pub(super) enum DeltaTransition {
     Ignored,
     Stale,
-    Buffered {
-        deadline: tokio::time::Instant,
-        generation: DeadlineGeneration,
-        timer: TimerDirective,
-    },
     Emitted {
         event: ActionStreamEvent,
         timer: TimerDirective,
@@ -713,52 +698,6 @@ impl SessionTable {
             event,
             timer: TimerDirective::None,
         })
-    }
-
-    pub(super) fn flush_due_delta(
-        &mut self,
-        ticket: &RequestTicket,
-        generation: DeadlineGeneration,
-        now: tokio::time::Instant,
-    ) -> Result<Option<ActionStreamEvent>, SessionError> {
-        let Some(SessionEntry::Open(state)) = self.entries.get_mut(&ticket.session_id) else {
-            return Ok(None);
-        };
-        if !matches!(
-            &state.request_slot,
-            RequestSlot::Running { ticket: active, .. } if active == ticket
-        ) {
-            return Ok(None);
-        }
-        let Some(stream) = state.request_stream.as_ref() else {
-            return Ok(None);
-        };
-        let Some(deadline) = stream.deadline else {
-            return Ok(None);
-        };
-        if stream.deadline_generation != generation || now < deadline || stream.pending.is_empty() {
-            return Ok(None);
-        }
-
-        let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
-        let pending_limit = preflight_pending_limit(state, 1, sequence)?;
-        let delta = {
-            let stream = state
-                .request_stream
-                .as_mut()
-                .expect("matching Running request must own a stream");
-            let delta = take_pending(stream);
-            stream.last_emit_at = Some(now);
-            delta
-        };
-        let event = enqueue_payload_at(
-            state,
-            ticket,
-            sequence,
-            ActionStreamPayload::Delta { delta },
-        );
-        apply_pending_limit_plan(state, pending_limit);
-        Ok(Some(event))
     }
 
     #[allow(dead_code)]

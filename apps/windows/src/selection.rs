@@ -70,7 +70,7 @@ use windows::{
                 PROCESS_QUERY_LIMITED_INFORMATION,
             },
             Variant::{
-                VariantClear, VARIANT, VT_ARRAY, VT_BOOL, VT_BSTR, VT_DISPATCH, VT_I4, VT_UNKNOWN,
+                VariantClear, VARIANT, VT_ARRAY, VT_BSTR, VT_DISPATCH, VT_I4, VT_UNKNOWN,
                 VT_VARIANT,
             },
         },
@@ -177,10 +177,6 @@ const EM_GETPASSWORDCHAR_MESSAGE: u32 = 0x00D2;
 // expose a direct accSelection, so give them the shortest bounded probe.
 const PDF_ACCESSIBILITY_PROBE_BUDGET: Duration = Duration::from_millis(36);
 const OFFICE_ACCESSIBILITY_PROBE_BUDGET: Duration = Duration::from_millis(56);
-const MODIFIER_RELEASE_ATTEMPTS: usize = 12;
-const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(500);
-const DOUBLE_CLICK_DISTANCE_SQUARED: f64 = 16.0;
-const MAX_DRAG_DURATION: Duration = Duration::from_secs(15);
 // Longer / slower drags need the host to finish committing the selection
 // *before* any capture attempt.
 const CAPTURE_SETTLE_MEDIUM_DISTANCE_SQUARED: i64 = 2_500; // ~50 px
@@ -495,23 +491,12 @@ enum RawInput {
 #[derive(Debug, Clone, Copy, Default)]
 struct ModifierSnapshot {
     shift: bool,
-    control: bool,
-    alt: bool,
-    windows: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct RawPoint {
     x: i32,
     y: i32,
-}
-
-impl RawPoint {
-    fn distance_squared(self, other: Self) -> f64 {
-        let dx = f64::from(self.x) - f64::from(other.x);
-        let dy = f64::from(self.y) - f64::from(other.y);
-        dx * dx + dy * dy
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -630,10 +615,6 @@ impl CaptureCoordinator {
             active: None,
             queued: None,
         })
-    }
-
-    fn is_active(&self) -> bool {
-        self.active.is_some()
     }
 
     fn active_is_manual(&self) -> bool {
@@ -1756,6 +1737,7 @@ impl SelectionWorker {
         }
     }
 
+    #[cfg(test)]
     fn schedule_capture(&mut self, request: CaptureRequest, source_root_window: isize) {
         self.schedule_capture_with_options(request, source_root_window, 0, None);
     }
@@ -2690,6 +2672,7 @@ fn parent_capture_context_is_valid(
 }
 
 /// Pure predicate for unit tests of parent acceptance (no live HWND/API).
+#[cfg(test)]
 fn parent_capture_accepts(
     foreground_matches_source_hwnd: bool,
     foreground_pid: u32,
@@ -6386,11 +6369,6 @@ fn variant_type(value: &VARIANT) -> u16 {
     unsafe { value.Anonymous.Anonymous.vt.0 }
 }
 
-fn variant_bool_is_true(value: &VARIANT) -> bool {
-    variant_type(value) == VT_BOOL.0
-        && unsafe { value.Anonymous.Anonymous.Anonymous.boolVal.0 != 0 }
-}
-
 fn variant_selection_active_end_is_set(value: &VARIANT) -> bool {
     // UIA_SelectionActiveEndAttributeId is returned as the non-zero
     // TextRangeSelectionActiveEnd enum (Start/End). Empty, mixed, and
@@ -7785,9 +7763,6 @@ fn key_is_down(virtual_key: u16) -> bool {
 fn current_modifiers() -> ModifierSnapshot {
     ModifierSnapshot {
         shift: key_is_down(VK_SHIFT.0),
-        control: key_is_down(VK_CONTROL.0),
-        alt: key_is_down(VK_MENU.0),
-        windows: key_is_down(VK_LWIN.0) || key_is_down(VK_RWIN.0),
     }
 }
 

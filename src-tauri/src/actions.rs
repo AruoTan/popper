@@ -15,9 +15,9 @@ mod dictionary_session;
 pub use dictionary_session::TranslationSubmission;
 
 use session::{
-    CancelTransition, DeadlineGeneration, DeltaTransition, EmitOutcome, FlusherLease,
-    InitialReservationInput, RequestTicket, Reservation, SessionError, SessionFailure,
-    SessionTable, TerminalKind, TerminalTransition, TimerDirective, TransitionResult,
+    CancelTransition, DeltaTransition, EmitOutcome, FlusherLease, InitialReservationInput,
+    RequestTicket, Reservation, SessionError, SessionFailure, SessionTable, TerminalKind,
+    TerminalTransition, TimerDirective, TransitionResult,
 };
 
 use crate::{
@@ -1306,48 +1306,6 @@ impl ActionService {
         }
     }
 
-    fn schedule_timer<R: Runtime + 'static>(
-        &self,
-        app: &AppHandle<R>,
-        ticket: &RequestTicket,
-        directive: TimerDirective,
-    ) {
-        let TimerDirective::Schedule {
-            deadline,
-            generation,
-        } = directive
-        else {
-            return;
-        };
-        let service = self.clone();
-        let app = app.clone();
-        let ticket = ticket.clone();
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep_until(deadline).await;
-            service.flush_due_delta(&app, ticket, generation);
-        });
-    }
-
-    fn flush_due_delta<R: Runtime>(
-        &self,
-        app: &AppHandle<R>,
-        ticket: RequestTicket,
-        generation: DeadlineGeneration,
-    ) {
-        let emitted = self
-            .inner
-            .state
-            .lock()
-            .sessions
-            .flush_due_delta(&ticket, generation, tokio::time::Instant::now())
-            .ok()
-            .flatten()
-            .is_some();
-        if emitted {
-            self.start_flusher_if_needed(app, &ticket.session_id);
-        }
-    }
-
     pub async fn test_provider_connection(&self, provider_id: &str) -> ConnectionTestResult {
         self.provider_models_result(provider_id, true).await
     }
@@ -1865,12 +1823,7 @@ impl ActionService {
     ) -> bool {
         let transition = self.inner.state.lock().submit_delta(ticket, delta, now);
         match transition {
-            Ok(DeltaTransition::Buffered { timer, .. }) => {
-                self.schedule_timer(app, ticket, timer);
-                true
-            }
-            Ok(DeltaTransition::Emitted { timer, .. }) => {
-                self.schedule_timer(app, ticket, timer);
+            Ok(DeltaTransition::Emitted { .. }) => {
                 self.start_flusher_if_needed(app, &ticket.session_id);
                 true
             }
@@ -1892,12 +1845,7 @@ impl ActionService {
             .lock()
             .submit_thinking_delta(ticket, delta, now);
         match transition {
-            Ok(DeltaTransition::Buffered { timer, .. }) => {
-                self.schedule_timer(app, ticket, timer);
-                true
-            }
-            Ok(DeltaTransition::Emitted { timer, .. }) => {
-                self.schedule_timer(app, ticket, timer);
+            Ok(DeltaTransition::Emitted { .. }) => {
                 self.start_flusher_if_needed(app, &ticket.session_id);
                 true
             }
@@ -3181,11 +3129,9 @@ mod tests {
                 delta.to_owned(),
                 tokio::time::Instant::now(),
             ) {
-                Ok(
-                    DeltaTransition::Ignored
-                    | DeltaTransition::Buffered { .. }
-                    | DeltaTransition::Emitted { .. },
-                ) => ControlFlow::Continue(()),
+                Ok(DeltaTransition::Ignored | DeltaTransition::Emitted { .. }) => {
+                    ControlFlow::Continue(())
+                }
                 Ok(DeltaTransition::Stale) | Err(_) => ControlFlow::Break(()),
             }
         }

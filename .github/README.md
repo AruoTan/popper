@@ -31,6 +31,7 @@ Release 工作流在仓库内串行执行。安装包由本次运行构建并校
 - 依次运行 `pnpm typecheck`、`pnpm test`、`pnpm build:web` 和 `pnpm test:rust:windows`，成功后复用本次生成的前端产物运行 `pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked`，最后运行 `pnpm verify:artifacts:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
 - CI 中的 Rust 全目标测试包含编译、链接和测试执行，因此不再紧接着重复运行同目标的 `cargo check --all-targets`；本地 `pnpm verify:windows` 仍保留原有完整命令。全部前端和 Rust 测试仍执行。
 - 任一步骤失败都会停止；仅成功产物上传。任务最多运行 60 分钟，同一分支的并发构建不会相互中断。
+- Actions 自身使用 Node.js 24 运行时（包括 Rust 缓存）；这与构建项目的 Node 22.22.0 独立。`setup-node` 关闭自动 npm 缓存，pnpm store 由显式缓存步骤管理。
 - 第三方 Actions 固定到提交 SHA，构建工作流权限只有 `contents: read`。升级 Actions 时同步核对官方版本与 SHA。
 - 缓存 pnpm store，以及 Cargo 下载缓存和 `src-tauri/target` 内的依赖编译产物，覆盖验证与 release 打包。Rust 缓存由工具链、编译环境和 Cargo 清单/锁文件区分；锁文件变化时可回用旧缓存，由 Cargo 判断需要重编译的依赖。应用自身及安装包由当前源码重新生成。
 - 仅在 CI 设置 `CARGO_PROFILE_DEV_DEBUG=0`、`CARGO_PROFILE_TEST_DEBUG=0`，减少 Windows 测试构建的调试符号/PDB 生成及缓存体积；保留 debug assertions、溢出检查及 release 构建配置。配置变化后首次运行需要重建对应依赖缓存。
