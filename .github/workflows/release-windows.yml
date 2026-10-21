@@ -1,0 +1,135 @@
+name: Release Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: Keep the release as a draft for review
+        type: boolean
+        default: true
+      prerelease:
+        description: Mark the release as a prerelease
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Serialize releases across branches because they can contain the same version.
+concurrency:
+  group: windows-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+    steps:
+      - name: Check out the selected source commit and tags
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.22.0"
+
+      - name: Validate version and tag
+        id: metadata
+        run: node .github/scripts/release-metadata.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Check that the release does not already exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+        run: |
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | .tag_name' > "$RUNNER_TEMP/release-tags.txt"
+          if grep -Fxq -- "$RELEASE_TAG" "$RUNNER_TEMP/release-tags.txt"; then
+            echo "::error::Release $RELEASE_TAG already exists (possibly as a draft). Update the version or manage the existing release."
+            exit 1
+          fi
+
+  build:
+    needs: prepare
+    uses: ./.github/workflows/build-windows.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Check out the source commit and current tags
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22.22.0"
+
+      - name: Recheck the release tag after the build
+        run: node .github/scripts/release-metadata.mjs
+
+      - name: Download this run's verified installer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Popper-windows-x64-${{ github.run_number }}
+          path: release-assets
+
+      - name: Verify downloaded checksums
+        working-directory: release-assets
+        run: |
+          test -s "Popper_${RELEASE_VERSION}_x64-setup.exe"
+          test -s SHA256SUMS.txt
+          sha256sum --check --strict SHA256SUMS.txt
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEEP_DRAFT: ${{ inputs.draft }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | .tag_name' > "$RUNNER_TEMP/release-tags.txt"
+          if grep -Fxq -- "$RELEASE_TAG" "$RUNNER_TEMP/release-tags.txt"; then
+            echo "::error::Release $RELEASE_TAG was created during the build; refusing to create a duplicate."
+            exit 1
+          fi
+          cat > release-notes.md <<EOF
+          Windows x64 installer for Popper ${RELEASE_VERSION}.
+
+          Source commit: ${GITHUB_SHA}
+
+          Download the installer and SHA256SUMS.txt below.
+          EOF
+          args=("$RELEASE_TAG" "release-assets/Popper_${RELEASE_VERSION}_x64-setup.exe" "release-assets/SHA256SUMS.txt"
+            --target "$GITHUB_SHA" --title "Popper $RELEASE_TAG" --draft
+            --notes-file release-notes.md --generate-notes)
+          if [[ "$PRERELEASE" == true ]]; then
+            args+=(--prerelease)
+          fi
+          # Upload into a draft before optionally publishing the completed release.
+          gh release create "${args[@]}"
+          if [[ "$KEEP_DRAFT" != true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
+          release_url=$(gh release view "$RELEASE_TAG" --json url --jq .url)
+          printf '## Popper %s\n\n- Release: %s\n- Draft: %s\n- Prerelease: %s\n' \
+            "$RELEASE_VERSION" "$release_url" "$KEEP_DRAFT" "$PRERELEASE" >> "$GITHUB_STEP_SUMMARY"
