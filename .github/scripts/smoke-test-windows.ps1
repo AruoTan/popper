@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Executable
+    [string]$Executable,
+    [switch]$Portable
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,7 +10,13 @@ Set-StrictMode -Version Latest
 # Library tests do not exercise native application startup. Check the actual
 # release executable and keep its diagnostics local to the Windows runner.
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
-$logPath = Join-Path $env:LOCALAPPDATA 'Popper/startup.log'
+$installedLog = Join-Path $env:LOCALAPPDATA 'Popper/startup.log'
+$installedLogHash = if (Test-Path -LiteralPath $installedLog) { (Get-FileHash -LiteralPath $installedLog).Hash } else { '' }
+$dataRoot = Join-Path (Split-Path $executablePath) 'data'
+$logPath = if ($Portable) { Join-Path $dataRoot 'logs/startup.log' } else { $installedLog }
+if ($Portable -and -not (Test-Path -LiteralPath (Join-Path (Split-Path $executablePath) 'portable.flag'))) {
+    throw 'Portable smoke test requires portable.flag beside the executable'
+}
 $startedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $process = Start-Process -FilePath $executablePath -PassThru
 $deadline = [DateTime]::UtcNow.AddSeconds(20)
@@ -23,8 +30,15 @@ try {
         if (Test-Path -LiteralPath $logPath) {
             $log = Get-Content -LiteralPath $logPath -Raw -Encoding utf8
             if ($log -match "(?m)^(\d+) process=$($process.Id) ready\r?$" -and [long]$Matches[1] -ge $startedAtMs) {
-                $ready = $true
-                break
+                # WebView creation is queued on Windows. A cold profile can
+                # finish after the native app's ready event; allow the same
+                # bounded startup window for its actual data to appear.
+                $webviewRoot = Join-Path $dataRoot 'webview'
+                if (-not $Portable -or ((Test-Path -LiteralPath $webviewRoot) -and
+                    @(Get-ChildItem -LiteralPath $webviewRoot -Force).Count -gt 0)) {
+                    $ready = $true
+                    break
+                }
             }
         }
         Start-Sleep -Milliseconds 200
@@ -36,6 +50,20 @@ try {
     $process.Refresh()
     if ($process.HasExited) {
         throw "Popper exited immediately after startup (exit $($process.ExitCode))"
+    }
+    if ($Portable) {
+        foreach ($path in @('config/settings.json', 'webview')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $dataRoot $path))) {
+                throw "Portable startup did not create data/$path"
+            }
+        }
+        if (@(Get-ChildItem -LiteralPath (Join-Path $dataRoot 'webview') -Force).Count -eq 0) {
+            throw 'Portable WebView did not use data/webview'
+        }
+        $currentInstalledLogHash = if (Test-Path -LiteralPath $installedLog) { (Get-FileHash -LiteralPath $installedLog).Hash } else { '' }
+        if ($currentInstalledLogHash -ne $installedLogHash) {
+            throw 'Portable startup wrote to the installed startup log'
+        }
     }
     Write-Host "Popper release startup passed (PID $($process.Id))."
 }

@@ -2287,8 +2287,15 @@ impl SelectionHelperProcess {
         } else {
             Stdio::null()
         };
-        let mut child = Command::new(executable)
-            .arg(SELECTION_HELPER_FLAG)
+        let mut command = Command::new(executable);
+        command.arg(SELECTION_HELPER_FLAG);
+        if let Some(root) = &crate::app_paths::get()
+            .map_err(|_| SelectionError::Internal)?
+            .data_root
+        {
+            command.arg("--data-dir").arg(root);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(helper_stderr)
@@ -7926,8 +7933,7 @@ fn selection_trace_enabled() -> bool {
 }
 
 fn selection_trace_directory() -> Option<std::path::PathBuf> {
-    std::env::var_os("LOCALAPPDATA")
-        .map(|directory| std::path::PathBuf::from(directory).join("Popper"))
+    crate::app_paths::logs_directory()
 }
 
 fn trace_selection_line(line: String) {

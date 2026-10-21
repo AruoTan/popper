@@ -120,7 +120,7 @@ pub fn show_startup_notice(app: &AppHandle, kind: StartupNoticeKind) -> tauri::R
         width: 268.0,
         height: 54.0,
     };
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         label,
         WebviewUrl::App(format!("startup/index.html?kind={}", kind.query_value()).into()),
@@ -139,8 +139,8 @@ pub fn show_startup_notice(app: &AppHandle, kind: StartupNoticeKind) -> tauri::R
     .skip_taskbar(true)
     .focusable(false)
     .focused(false)
-    .visible(false)
-    .build()?;
+    .visible(false);
+    let window = configure_webview_storage(builder)?.build()?;
 
     let cursor = app
         .cursor_position()
@@ -520,7 +520,7 @@ impl WindowCoordinator {
         }
 
         let size = self.state.lock().toolbar_size;
-        let window = WebviewWindowBuilder::new(
+        let builder = WebviewWindowBuilder::new(
             app,
             TOOLBAR_LABEL,
             WebviewUrl::App("toolbar/index.html".into()),
@@ -540,8 +540,8 @@ impl WindowCoordinator {
         .focusable(false)
         .focused(false)
         .accept_first_mouse(true)
-        .visible(false)
-        .build()?;
+        .visible(false);
+        let window = configure_webview_storage(builder)?.build()?;
 
         if let Err(error) = configure_toolbar_native(&window) {
             let _ = window.destroy();
@@ -1152,7 +1152,7 @@ impl WindowCoordinator {
         // The renderer owns the visible surface and already provides its own
         // rounded background. A native shadow around the transparent WebView
         // creates a second rectangular card, especially noticeable over PDFs.
-        let builder = builder.shadow(false);
+        let builder = configure_webview_storage(builder.shadow(false))?;
         let window = match builder
             .build()
             .map_err(|error| result_window_step_error("webview creation", error))
@@ -3454,7 +3454,7 @@ pub fn show_quick_ask_window(app: &AppHandle) -> tauri::Result<()> {
         let _ = tauri::Emitter::emit_to(app, "quick-ask", "popper:quick-ask-opened", ());
         return Ok(());
     }
-    let window = WebviewWindowBuilder::new(
+    let builder = WebviewWindowBuilder::new(
         app,
         "quick-ask",
         WebviewUrl::App("quick-ask/index.html".into()),
@@ -3471,11 +3471,24 @@ pub fn show_quick_ask_window(app: &AppHandle) -> tauri::Result<()> {
     .always_on_top(true)
     .skip_taskbar(true)
     .visible(false)
-    .focused(false)
-    .build()?;
+    .focused(false);
+    let window = configure_webview_storage(builder)?.build()?;
     position_quick_ask_window(app, &window, 230.0)?;
     // Its renderer reveals it after installing listeners and committing the input.
     Ok(())
+}
+
+fn configure_webview_storage<'a, R: tauri::Runtime, M: tauri::Manager<R>>(
+    builder: WebviewWindowBuilder<'a, R, M>,
+) -> tauri::Result<WebviewWindowBuilder<'a, R, M>> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::app_paths::configure_webview(builder)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(builder)
+    }
 }
 
 fn quick_ask_layout_in_area(

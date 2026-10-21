@@ -4,6 +4,8 @@ pub mod actions;
 mod clipboard;
 mod quick_ask;
 mod local_secrets;
+#[cfg(any(target_os = "windows", test))]
+mod app_paths;
 pub mod models;
 mod openai_protocol;
 mod openai_transport;
@@ -32,6 +34,11 @@ static WINDOWS_RUNTIME_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    if let Err(error) = app_paths::get() {
+        startup::storage_failure(&error);
+        return;
+    }
     startup::initialize();
     startup::stage("building application");
     let builder = tauri::Builder::default();
@@ -40,7 +47,26 @@ pub fn run() {
     // owns the tray, hooks and settings repository; another launch opens the
     // existing process's settings even when its tray is disabled.
     #[cfg(target_os = "windows")]
-    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        // Never redirect a portable launch into an installed profile (or a
+        // different portable directory) that happens to be running already.
+        let compatible = (|| -> Result<bool, String> {
+            let executable = args.first().ok_or("无法识别启动程序")?;
+            let executable = std::path::PathBuf::from(executable);
+            let executable = if executable.is_absolute() {
+                executable
+            } else {
+                std::path::PathBuf::from(cwd).join(executable)
+            };
+            app_paths::get()?.accepts_launch(
+                &executable,
+                args.iter().skip(1).map(|value| std::ffi::OsString::from(value.as_str())),
+            )
+        })();
+        if !matches!(compatible, Ok(true)) {
+            startup::storage_failure("另一个 Popper 数据目录正在使用中。请先退出正在运行的 Popper，再切换安装版、便携版或自定义数据目录。");
+            return;
+        }
         // The single-instance plugin initializes before configured webviews.
         // Remember an exceptionally early second launch and consume it at the
         // end of the primary process setup instead of losing the request.
@@ -68,9 +94,25 @@ pub fn run() {
 
             startup::stage("loading settings");
             let settings_path = app.path().app_config_dir()?.join("settings.json");
-            let settings = Arc::new(SettingsRepository::new_with_legacy_migration(
-                settings_path,
-            )?);
+            #[cfg(target_os = "windows")]
+            let settings_path = app_paths::get()
+                .map_err(std::io::Error::other)?
+                .settings_path(settings_path);
+            #[cfg(target_os = "windows")]
+            let isolated_storage = app_paths::get()
+                .map_err(std::io::Error::other)?
+                .data_root
+                .is_some();
+            #[cfg(not(target_os = "windows"))]
+            let isolated_storage = false;
+            // A portable profile starts independently. The historical product
+            // rename migration only applies to installed profiles.
+            let settings = if isolated_storage {
+                SettingsRepository::new(settings_path)?
+            } else {
+                SettingsRepository::new_with_legacy_migration(settings_path)?
+            };
+            let settings = Arc::new(settings);
             startup::stage("initializing HTTP clients");
             let actions = ActionService::new(settings.clone())?;
             startup::stage("initializing selection monitor");
@@ -91,7 +133,10 @@ pub fn run() {
                 .iter()
                 .find(|window| window.label == "settings")
                 .ok_or("缺少设置窗口配置")?;
-            tauri::WebviewWindowBuilder::from_config(&handle, settings_window)?.build()?;
+            let builder = tauri::WebviewWindowBuilder::from_config(&handle, settings_window)?;
+            #[cfg(target_os = "windows")]
+            let builder = app_paths::configure_webview(builder)?;
+            builder.build()?;
             startup::stage("creating toolbar");
             handle
                 .state::<RuntimeState>()
