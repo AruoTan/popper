@@ -1,6 +1,6 @@
 # Popper
 
-Windows portable ZIPs and Scoop installation keep settings, local secrets, logs and WebView data in `data` beside the executable. Scoop persists this directory under `persist/popper/data`. See the [Windows portable guide](./WINDOWS_PORTABLE.md) for installation, upgrades and importing an installed profile.
+Windows portable ZIPs store `config`, `logs` and `webview` beside the executable. Scoop persists only `config` and `logs` under `persist/popper`; WebView data is recreated for each version. See the [Windows portable guide](./WINDOWS_PORTABLE.md) for installation, upgrades and importing an installed profile.
 
 **English** | [中文](./README.md)
 

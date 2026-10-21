@@ -1,5 +1,5 @@
 param(
-    [string]$DataDirectory = (Join-Path $PSScriptRoot 'data'),
+    [string]$DataDirectory = $PSScriptRoot,
     [string]$SourceDirectory = (Join-Path $env:APPDATA 'com.local.popper')
 )
 

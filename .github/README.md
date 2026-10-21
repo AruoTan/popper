@@ -38,7 +38,7 @@ Release 工作流在仓库内串行执行。所有附件由本次运行构建并
 - 同时缓存 `%LOCALAPPDATA%/tauri` 中的 NSIS、Tauri 插件和 WebView2 安装器下载，避免后续打包重复下载；Tauri 继续负责工具版本及已有校验逻辑。
 - CI 专用配置只关闭重复的 `beforeBuildCommand`，使用前先检查本次验证生成的五个 HTML 入口（包含快捷提问）；本地 `pnpm package:windows` 仍自动构建前端。TypeScript 检查、前端测试、前端构建、Rust 测试、打包、产物校验和 release 启动检查分别计时并写入 Actions 运行摘要，便于比较缓存命中后的各阶段耗时。
 - 打包后实际启动 release 程序，要求 20 秒内写入当前进程的 `ready` 日志且保持运行；失败时不上传安装包。`startup.log` 仅保留在运行机器本地。
-- 复用同一 release 程序生成白名单便携 ZIP；先验证配置导入、ZIP 内容及 Scoop 清单生成，再实际解压并通过目录联接模拟两次 Scoop 版本启动。配置必须保留，WebView 必须写入便携数据目录，安装版启动日志必须保持不变。便携文件、清单、三个附件的 SHA-256 汇总到 `bundle/distribution` 后上传。
+- 复用同一 release 程序生成白名单便携 ZIP；先验证配置导入、ZIP 内容及 Scoop 清单生成，再实际解压并通过目录联接模拟两次 Scoop 版本启动。配置和日志必须保留，WebView 必须写入程序旁的 webview 且不跨版本共享，安装版启动日志必须保持不变。便携文件、清单、三个附件的 SHA-256 汇总到 `bundle/distribution` 后上传。
 - `popper.json` 在构建时使用实际 ZIP 的 SHA-256 和 `GITHUB_REPOSITORY` 生成；通过 Release 的 `releases/latest/download/popper.json` URL 提供 Scoop 安装和更新。构建任务不修改仓库清单或推送提交，权限仍为只读。
 - 首次构建、缓存被清理或工具链升级时仍需冷编译；后续缓存命中时才有主要收益，具体节省时间需比较云端运行。GitHub 的系统镜像和 NASM 软件包会更新，因此不承诺逐字节可复现。
 

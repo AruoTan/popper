@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createScoopManifest, prepareReleaseAssets } from "./prepare-release-assets.mjs";
 
-test("Scoop manifest pins the portable version and hash and persists the entire profile", () => {
+test("Scoop manifest pins the portable version and hash and persists only config and logs", () => {
   const manifest = createScoopManifest({ version: "1.2.3", repository: "example/popper", hash: "a".repeat(64) });
   assert.equal(manifest.architecture["64bit"].url, "https://github.com/example/popper/releases/download/v1.2.3/Popper_1.2.3_x64-portable.zip");
   assert.equal(manifest.architecture["64bit"].hash, "a".repeat(64));
-  assert.equal(manifest.persist, "data");
+  assert.deepEqual(manifest.persist, ["config", "logs"]);
   assert.deepEqual(manifest.shortcuts, [["popper.exe", "Popper"]]);
   assert.deepEqual(manifest.bin, [["popper.exe", "popper"]]);
   assert.equal(manifest.env_set, undefined);
