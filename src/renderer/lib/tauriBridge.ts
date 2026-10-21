@@ -199,8 +199,7 @@ function parseAccessibility(value: unknown): AccessibilityStatus {
     platform,
     trusted,
     canRequest: record.canRequest === true,
-    // Keep the renderer compatible with a 0.3.5 backend during hot reload.
-    available: typeof record.available === "boolean" ? record.available : trusted,
+    available: record.available === true,
     diagnostics,
   };
 }
@@ -225,25 +224,9 @@ function definePopperApi(value: WindowPopperApi): void {
   });
 }
 
-/** Compatibility-only adapter for renderers built before the product rename. */
-function defineLegacySelectionBarAlias(value: WindowPopperApi): void {
-  if ("selectionBar" in window) return;
-  Object.defineProperty(window, "selectionBar", {
-    configurable: false,
-    enumerable: false,
-    writable: false,
-    value,
-  });
-}
-
 /** Installs the narrow renderer API before React mounts. */
 export function installTauriBridge(): void {
   if ("_popper_" in window && window._popper_) {
-    defineLegacySelectionBarAlias(window._popper_);
-    return;
-  }
-  if ("selectionBar" in window && window.selectionBar) {
-    definePopperApi(window.selectionBar);
     return;
   }
 
@@ -598,5 +581,4 @@ export function installTauriBridge(): void {
   };
 
   definePopperApi(api);
-  defineLegacySelectionBarAlias(api);
 }

@@ -27,10 +27,6 @@ const KEY_LENGTH: usize = 32;
 const NONCE_LENGTH: usize = 12;
 const MAX_ENCRYPTED_FILE_SIZE: u64 = 1_048_576;
 const ASSOCIATED_DATA: &[u8] = b"com.local.popper/api-keys/v1";
-// Keep the historical AAD literal so existing installations can decrypt API
-// keys written before the Popper product rename.
-const LEGACY_V1_ASSOCIATED_DATA: &[u8] = b"com.local.selectionbar/api-keys/v1";
-
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EncryptedSecretsFile {
@@ -167,28 +163,11 @@ fn decrypt_entries(
     nonce_bytes: &[u8],
     key_bytes: &[u8; KEY_LENGTH],
 ) -> Result<HashMap<String, String>, SettingsError> {
-    let mut legacy_ciphertext = ciphertext.to_vec();
-    decrypt_entries_with_aad(ciphertext, nonce_bytes, key_bytes, ASSOCIATED_DATA).or_else(|_| {
-        decrypt_entries_with_aad(
-            &mut legacy_ciphertext,
-            nonce_bytes,
-            key_bytes,
-            LEGACY_V1_ASSOCIATED_DATA,
-        )
-    })
-}
-
-fn decrypt_entries_with_aad(
-    ciphertext: &mut [u8],
-    nonce_bytes: &[u8],
-    key_bytes: &[u8; KEY_LENGTH],
-    associated_data: &[u8],
-) -> Result<HashMap<String, String>, SettingsError> {
     let key = aead_key(key_bytes)?;
     let nonce =
         Nonce::try_assume_unique_for_key(nonce_bytes).map_err(|_| SettingsError::SecretStorage)?;
     let plaintext = key
-        .open_in_place(nonce, Aad::from(associated_data), ciphertext)
+        .open_in_place(nonce, Aad::from(ASSOCIATED_DATA), ciphertext)
         .map_err(|_| SettingsError::SecretStorage)?;
     serde_json::from_slice(plaintext).map_err(|_| SettingsError::SecretStorage)
 }
@@ -387,46 +366,6 @@ mod tests {
             reopened.get("provider-a").unwrap().as_deref(),
             Some("sk-local-secret")
         );
-    }
-
-    #[test]
-    fn opens_the_existing_v1_encrypted_store_format() {
-        let directory = tempdir().unwrap();
-        let data_path = directory.path().join(ENCRYPTED_SECRETS_FILE_NAME);
-        let key_path = directory.path().join(LOCAL_SECRET_KEY_FILE_NAME);
-
-        // Compatibility fixture generated with AES-256-GCM using a 32-byte
-        // 0x42 key, a 12-byte 0x24 nonce, and the original v1 associated data.
-        // Keeping the ciphertext fixed detects accidental changes to the file
-        // version, AAD, tag placement, key length, or Base64 convention.
-        fs::write(&key_path, [0x42_u8; KEY_LENGTH]).unwrap();
-        fs::write(
-            &data_path,
-            br#"{
-              "version": 1,
-              "nonce": "JCQkJCQkJCQkJCQk",
-              "ciphertext": "brO0M4awr1pDmg/LzVu+zQmCCR/Gzj4M2YmvNTu1hmdraT3gX36Ib75r3NI1z8Hrlc82cu302KPhtNYk2TZEXn0KkKQM"
-            }"#,
-        )
-        .unwrap();
-
-        let store = LocalEncryptedStore::new(data_path, key_path).unwrap();
-
-        assert_eq!(
-            store
-                .get("provider-api-key:openai-compatible")
-                .unwrap()
-                .as_deref(),
-            Some("sk-legacy-v1")
-        );
-        assert_eq!(FORMAT_VERSION, 1);
-        assert_eq!(
-            LEGACY_V1_ASSOCIATED_DATA,
-            b"com.local.selectionbar/api-keys/v1"
-        );
-        assert_eq!(ASSOCIATED_DATA, b"com.local.popper/api-keys/v1");
-        assert_eq!(ENCRYPTED_SECRETS_FILE_NAME, "api-keys.enc.json");
-        assert_eq!(LOCAL_SECRET_KEY_FILE_NAME, ".api-keys.key");
     }
 
     #[test]

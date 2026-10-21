@@ -43,6 +43,7 @@ describe('promptAfterKindChange', () => {
         id: 'provider-one',
         name: '服务商一',
         enabled: true,
+        kind: "openai" as const,
         baseUrl: 'https://example.com/v1',
         keyConfigured: true,
         models: [{ id: 'model-one', name: '模型一', thinkingLevels: [] }]
@@ -97,6 +98,7 @@ describe('CustomActionDialog model + thinking', () => {
       },
       providers: [{
         id: 'provider-one', name: 'Provider', enabled: true,
+        kind: "openai" as const,
         baseUrl: 'https://example.com/v1', keyConfigured: true,
         models: [{ id: 'model-one', name: 'Model', thinkingLevels: [] }]
       }],
@@ -134,6 +136,7 @@ describe('CustomActionDialog model + thinking', () => {
         id: 'provider-one',
         name: '服务商一',
         enabled: true,
+        kind: "openai" as const,
         baseUrl: 'https://example.com/v1',
         keyConfigured: true,
         models: [{
@@ -172,6 +175,7 @@ describe('CustomActionDialog model + thinking', () => {
           id: 'provider-off',
           name: '已关闭',
           enabled: false,
+          kind: "openai" as const,
           baseUrl: 'https://example.com/v1',
           keyConfigured: true,
           models: [{ id: 'hidden-model', name: '隐藏模型', thinkingLevels: [] }]
@@ -180,6 +184,7 @@ describe('CustomActionDialog model + thinking', () => {
           id: 'provider-on',
           name: '启用',
           enabled: true,
+          kind: "openai" as const,
           baseUrl: 'https://example.com/v1',
           keyConfigured: true,
           models: [{ id: 'deepseek-r1', name: 'DeepSeek R1', thinkingLevels: [] }]
@@ -203,6 +208,7 @@ describe('CustomActionDialog model + thinking', () => {
         id: 'provider-one',
         name: '服务商一',
         enabled: true,
+        kind: "openai" as const,
         baseUrl: 'https://example.com/v1',
         keyConfigured: true,
         models: [{ id: 'model-plain', name: '普通模型', thinkingLevels: [] }]

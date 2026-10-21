@@ -697,7 +697,7 @@ describe("ResultApp window interactions", () => {
     flush.mockRestore();
   });
 
-  it("accepts the Task 4 bootstrap prop while the legacy adapter remains active", async () => {
+  it("starts the result session through its bootstrap interface", async () => {
     const bootstrap: ResultSessionBootstrap = {
       sessionId: "session-1",
       start: vi.fn().mockResolvedValue(completedSession),
@@ -1518,6 +1518,7 @@ describe("ResultApp window interactions", () => {
       id: "provider-two",
       name: "备用服务商",
       enabled: true,
+      kind: "openai",
       baseUrl: "http://localhost:11434/v1",
       keyConfigured: true,
       models: [

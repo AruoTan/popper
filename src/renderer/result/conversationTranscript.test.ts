@@ -96,20 +96,17 @@ describe('conversationTranscript', () => {
     expect(patchStreamingAssistant(turns, '回复', true)).toBe(turns)
   })
 
-  it('parses turn content and extracts legacy attachment annotations', () => {
+  it('preserves attachment-like text without inventing attachments', () => {
     const parsed = parseTurnContent('这是一张图\n\n附件：demo.png、spec.pdf')
-    expect(parsed.text).toBe('这是一张图')
-    expect(parsed.attachments).toEqual([
-      { name: 'demo.png', mime: '', kind: 'image', data: '' },
-      { name: 'spec.pdf', mime: '', kind: 'file', data: '' }
-    ])
+    expect(parsed.text).toBe('这是一张图\n\n附件：demo.png、spec.pdf')
+    expect(parsed.attachments).toEqual([])
   })
 
-  it('prefers explicit attachments over parsed legacy text', () => {
+  it('keeps explicit attachments separate from message text', () => {
     const parsed = parseTurnContent('这是一张图\n\n附件：demo.png', [
       { name: 'demo.png', mime: 'image/png', kind: 'image', data: 'base64data' }
     ])
-    expect(parsed.text).toBe('这是一张图')
+    expect(parsed.text).toBe('这是一张图\n\n附件：demo.png')
     expect(parsed.attachments).toEqual([
       { name: 'demo.png', mime: 'image/png', kind: 'image', data: 'base64data' }
     ])

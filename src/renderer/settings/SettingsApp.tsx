@@ -225,7 +225,7 @@ function accessibilityPresentation(status: AccessibilityStatus | null): {
   detail: string;
   button: string;
 } {
-  const available = status?.available ?? status?.trusted ?? false;
+  const available = status?.available ?? false;
   const monitorError = status?.diagnostics?.selectionMonitorError;
   if (status?.platform === "windows") {
     return {
@@ -628,13 +628,7 @@ export function SettingsApp(): JSX.Element {
     for (const [providerId, rawKey] of pendingKeyWrites) {
       const apiKey = rawKey.trim();
       try {
-        if (window._popper_.setProviderApiKey) {
-          saved = await window._popper_.setProviderApiKey(providerId, apiKey);
-        } else if (providerId === saved.providers[0]?.id && window._popper_.setApiKey) {
-          saved = await window._popper_.setApiKey(apiKey);
-        } else {
-          throw new Error("当前后端尚不支持为多个服务商保存密钥");
-        }
+        saved = await window._popper_.setProviderApiKey(providerId, apiKey);
         remainingInputs[providerId] = apiKey;
       } catch (error) {
         const refreshed = await window._popper_.getSettings().catch(() => saved);
@@ -707,6 +701,7 @@ export function SettingsApp(): JSX.Element {
       id,
       name: `服务商 ${(draft?.providers.length ?? 0) + 1}`,
       enabled: true,
+      kind: "openai",
       baseUrl: DEFAULT_OPENAI_BASE_URL,
       keyConfigured: false,
       models: [],
@@ -728,7 +723,7 @@ export function SettingsApp(): JSX.Element {
   };
 
   const changeProviderKind = (providerId: string, kind: "openai" | "dsh"): void => {
-    if ((draft?.providers.find((provider) => provider.id === providerId)?.kind ?? "openai") === kind) return;
+    if (draft?.providers.find((provider) => provider.id === providerId)?.kind === kind) return;
     changeDraft((current) => ({
       ...current,
       providers: current.providers.map((provider) => provider.id === providerId ? {
@@ -768,13 +763,7 @@ export function SettingsApp(): JSX.Element {
     setOperation(`key:${provider.id}`);
     setBanner(null);
     try {
-      if (window._popper_.clearProviderApiKey) {
-        await window._popper_.clearProviderApiKey(provider.id);
-      } else if (draft?.providers[0]?.id === provider.id && window._popper_.clearApiKey) {
-        await window._popper_.clearApiKey();
-      } else {
-        throw new Error("当前后端尚不支持清除该服务商密钥");
-      }
+      await window._popper_.clearProviderApiKey(provider.id);
       setDraft((current) =>
         current
           ? {
@@ -813,11 +802,7 @@ export function SettingsApp(): JSX.Element {
       return;
     }
     try {
-      const result = window._popper_.testProviderConnection
-        ? await window._popper_.testProviderConnection(provider.id)
-        : window._popper_.testConnection
-          ? await window._popper_.testConnection()
-          : { ok: false as const, message: "当前后端尚未提供连接测试接口" };
+      const result = await window._popper_.testProviderConnection(provider.id);
       if (result.ok) {
         const suffix = result.models.length ? `，发现 ${result.models.length} 个模型` : "";
         setBanner({ kind: "success", text: `“${provider.name}”连接成功${suffix}` });
@@ -840,13 +825,7 @@ export function SettingsApp(): JSX.Element {
       return;
     }
     try {
-      const result = window._popper_.listProviderModels
-        ? await window._popper_.listProviderModels(provider.id)
-        : window._popper_.testProviderConnection
-          ? await window._popper_.testProviderConnection(provider.id)
-          : window._popper_.testConnection
-            ? await window._popper_.testConnection()
-            : { ok: false as const, message: "当前后端尚未提供模型列表接口" };
+      const result = await window._popper_.listProviderModels(provider.id);
       if (!result.ok) {
         setBanner({ kind: "error", text: result.message });
         return;
@@ -1242,7 +1221,7 @@ export function SettingsApp(): JSX.Element {
                           <span className="field__label">接入方式</span>
                           <StyledSelect
                             aria-label={`${provider.name}接入方式`}
-                            value={provider.kind ?? "openai"}
+                            value={provider.kind}
                             disabled={busy}
                             options={[
                               { value: "openai", label: "OpenAI 兼容接口" },

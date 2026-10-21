@@ -514,9 +514,7 @@ struct CaptureRequest {
     #[serde(default)]
     clipboard_sequence_at_start: Option<u32>,
     /// Mouse-down hold time in ms. Used for settle delay on slow careful
-    /// multi-paragraph selections. Default 0 keeps older helper frames
-    /// deserializable.
-    #[serde(default)]
+    /// multi-paragraph selections.
     press_duration_ms: u32,
     #[serde(default)]
     mouse_gesture: Option<MouseGesture>,
@@ -1020,7 +1018,6 @@ enum HelperCommand {
         /// so it must not use its own process identity to reject Popper UIA
         /// providers.
         popper_process_id: u32,
-        #[serde(default)]
         debug_generation: u64,
     },
     SetDetectionDebug {
@@ -10311,7 +10308,7 @@ mod tests {
     }
 
     #[test]
-    fn helper_protocol_carries_runtime_debug_updates_and_defaults_legacy_captures_to_off() {
+    fn helper_protocol_carries_debug_updates_and_requires_a_capture_debug_generation() {
         let command = HelperCommand::SetDetectionDebug { generation: 2 };
         let mut bytes = Vec::new();
         write_helper_frame(&mut bytes, &command).unwrap();
@@ -10319,17 +10316,14 @@ mod tests {
             read_helper_frame::<HelperCommand>(&mut bytes.as_slice()).unwrap(),
             Some(HelperCommand::SetDetectionDebug { generation: 2 })
         ));
-        let legacy = serde_json::json!({"Capture": {
+        let incomplete = serde_json::json!({"Capture": {
             "request_id": 1,
             "request": test_capture_request(SelectionTrigger::Manual),
             "source_window": 42,
             "source_process_id": 100,
             "popper_process_id": 200
         }});
-        assert!(matches!(
-            serde_json::from_value::<HelperCommand>(legacy).unwrap(),
-            HelperCommand::Capture { debug_generation: 0, .. }
-        ));
+        assert!(serde_json::from_value::<HelperCommand>(incomplete).is_err());
     }
 
     #[test]
@@ -10574,19 +10568,19 @@ mod tests {
         };
         assert_eq!(decoded, health);
         assert_eq!(debug.unwrap()["steps"][0]["stage"], "route.clipboard");
-        let mut legacy = serde_json::to_value(&event).unwrap();
+        let mut without_debug = serde_json::to_value(&event).unwrap();
         // HelperEvent is externally tagged: the fields live inside Result.
-        let removed = legacy
+        let removed = without_debug
             .get_mut("Result")
             .and_then(serde_json::Value::as_object_mut)
             .expect("serialized Result event")
             .remove("debug");
         assert!(
             removed.is_some(),
-            "legacy fixture must omit an existing debug field"
+            "fixture must omit an existing optional debug field"
         );
         assert!(matches!(
-            serde_json::from_value::<HelperEvent>(legacy).unwrap(),
+            serde_json::from_value::<HelperEvent>(without_debug).unwrap(),
             HelperEvent::Result { debug: None, .. }
         ));
         assert_eq!(SELECTION_HELPER_PROTOCOL_VERSION, 3);
@@ -10627,19 +10621,19 @@ mod tests {
             panic!("result frame");
         };
         assert_eq!(decoded, health);
-        let mut legacy = serde_json::to_value(&health).unwrap();
-        let removed = legacy.as_object_mut().unwrap().remove("clickValidation");
+        let mut without_click_validation = serde_json::to_value(&health).unwrap();
+        let removed = without_click_validation.as_object_mut().unwrap().remove("clickValidation");
         assert!(removed.is_some());
-        let decoded: SelectionHealthResult = serde_json::from_value(legacy).unwrap();
+        let decoded: SelectionHealthResult = serde_json::from_value(without_click_validation).unwrap();
         assert!(decoded.click_validation.is_none());
         assert_eq!(decoded.reason, DetectionReason::ClickOutsideSelection);
     }
 
     #[test]
-    fn older_capture_request_without_mouse_context_remains_deserializable() {
+    fn capture_request_round_trips_without_a_mouse_gesture() {
         let request = test_capture_request(SelectionTrigger::Manual);
         let mut value = serde_json::to_value(request).unwrap();
-        value.as_object_mut().unwrap().remove("mouse_gesture");
+        value["mouse_gesture"] = serde_json::Value::Null;
         let decoded: CaptureRequest = serde_json::from_value(value).unwrap();
         assert!(decoded.mouse_gesture.is_none());
     }

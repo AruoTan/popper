@@ -192,7 +192,7 @@ export function ToolbarApp(): JSX.Element {
       setSettings(nextSettings);
     });
     const unsubscribeToolbarPointer =
-      window._popper_.onToolbarPointer?.((pointer) => {
+      window._popper_.onToolbarPointer((pointer) => {
         if (!pointer.inside) {
           setHoveredControlId(null);
           return;
@@ -203,12 +203,12 @@ export function ToolbarApp(): JSX.Element {
         setHoveredControlId((currentControlId) =>
           currentControlId === nextControlId ? currentControlId : nextControlId,
         );
-      }) ?? (() => undefined);
+      });
 
     // Native dismiss force-hides the window; clear React selection so a
     // single outside click does not leave a stale toolbar shell.
     const unsubscribeDismiss =
-      window._popper_.onToolbarDismissed?.((payload) => {
+      window._popper_.onToolbarDismissed((payload) => {
         clearRetainedToolbarFocus();
         selectionGenerationRef.current += 1;
         operationGenerationRef.current += 1;
@@ -220,7 +220,7 @@ export function ToolbarApp(): JSX.Element {
         setMessage("");
         setAskExpanded(false);
         setAskQuestion("");
-      }) ?? (() => undefined);
+      });
 
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {

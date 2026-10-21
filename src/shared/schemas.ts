@@ -4,7 +4,6 @@ import { dictionarySnapshotSchema } from './dictionary'
 import {
   AI_OUTPUT_LIMIT,
   AI_TEXT_LIMIT,
-  DEFAULT_RESULT_FONT_SIZE,
   MAX_ACTIONS,
   MAX_ENABLED_ACTIONS,
   MAX_PROVIDERS,
@@ -91,11 +90,7 @@ export const aiActionKindSchema = z.enum([
   'ask'
 ])
 export const actionKindSchema = aiActionKindSchema
-/** @deprecated Prefer ActionKind. */
-export const actionTypeSchema = actionKindSchema
 export type ActionKind = z.infer<typeof actionKindSchema>
-/** @deprecated Prefer ActionKind. */
-export type ActionType = ActionKind
 
 export const actionIdSchema = z
   .string()
@@ -194,7 +189,7 @@ export const actionsSchema = z
 
 export const translationSettingsSchema = z
   .object({
-    dictionaryEnabled: z.boolean().default(true),
+    dictionaryEnabled: z.boolean(),
     primaryLanguage: translationLanguageSchema,
     alternateLanguage: translationLanguageSchema
   })
@@ -222,13 +217,12 @@ const providerMetadataShape = {
     .max(64)
     .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u, '服务商 ID 格式无效'),
   name: z.string().trim().min(1).max(80),
-  /** Missing on legacy settings: OpenAI-compatible transport. */
-  kind: z.enum(['openai', 'dsh']).optional(),
+  kind: z.enum(['openai', 'dsh']),
   /** Path inside the DSH container, not a path on this computer. */
   dshWorkspace: z.string().trim().min(1).max(2048)
     .refine((value) => value.startsWith('/') && !value.includes('\0'), 'DSH 工作区必须是容器内的绝对路径（如 /workspace）').optional(),
   /** When false, hidden from action model pickers and the result model switcher. */
-  enabled: z.boolean().default(true),
+  enabled: z.boolean(),
   baseUrl: z
     .string()
     .trim()
@@ -298,16 +292,15 @@ export const resultSettingsSchema = z
     followCursor: z.boolean(),
     rememberSize: z.boolean(),
     defaultPinned: z.boolean(),
-    dismissMode: resultDismissModeSchema.default('blur'),
+    dismissMode: resultDismissModeSchema,
     dismissDelayMs: z.number().int().min(100).max(5_000),
     opacity: z.number().finite().min(0.2).max(1),
     fontSize: z
       .number()
       .int()
       .min(RESULT_FONT_SIZE_MIN)
-      .max(RESULT_FONT_SIZE_MAX)
-      .default(DEFAULT_RESULT_FONT_SIZE),
-    lastSize: windowSizeSchema.nullable().default(null)
+      .max(RESULT_FONT_SIZE_MAX),
+    lastSize: windowSizeSchema.nullable()
   })
   .strict()
 export type ResultSettings = z.infer<typeof resultSettingsSchema>
@@ -330,9 +323,9 @@ export const defaultAiModelSchema = z.object({
 
 const commonSettingsShape = {
   version: z.literal(SETTINGS_VERSION),
-  trayEnabled: z.boolean().default(true),
-  defaultAi: defaultAiModelSchema.default({ providerId: "", modelId: "" }),
-  quickAskShortcut: quickAskShortcutSchema.default("Control+Shift+Space"),
+  trayEnabled: z.boolean(),
+  defaultAi: defaultAiModelSchema,
+  quickAskShortcut: quickAskShortcutSchema,
   locale: supportedLocaleSchema,
   translate: translationSettingsSchema,
   result: resultSettingsSchema,
@@ -416,7 +409,7 @@ export const providerUpdateInputSchema = z
   .object({
     name: z.string().trim().min(1).max(80).optional(),
     baseUrl: providerMetadataShape.baseUrl.optional(),
-    kind: providerMetadataShape.kind,
+    kind: providerMetadataShape.kind.optional(),
     dshWorkspace: providerMetadataShape.dshWorkspace,
     models: z.array(providerModelSchema).max(MAX_PROVIDER_MODELS).optional()
   })
@@ -620,16 +613,3 @@ export const externalUrlInputSchema = z
   .trim()
   .max(2_048)
   .refine(isSafeExternalUrl, '外部链接必须是安全的 HTTP(S) 地址')
-
-/** @deprecated Kept for legacy callers while provider-aware code migrates. */
-export const publicAiSettingsSchema = z
-  .object({
-    baseUrl: providerMetadataShape.baseUrl,
-    model: z.string().trim().max(256),
-    maxTextLength: z.number().int().positive().max(AI_TEXT_LIMIT)
-  })
-  .strict()
-/** @deprecated Kept for legacy callers while provider-aware code migrates. */
-export const aiSettingsSchema = publicAiSettingsSchema.extend({ apiKey: z.string().max(16_384) }).strict()
-export type PublicAiSettings = z.infer<typeof publicAiSettingsSchema>
-export type AiSettings = z.infer<typeof aiSettingsSchema>

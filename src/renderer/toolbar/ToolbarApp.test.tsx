@@ -65,6 +65,9 @@ describe("ToolbarApp", () => {
       .spyOn(HTMLElement.prototype, "getBoundingClientRect")
       .mockReturnValue(new DOMRect(0, 0, 212, 38));
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockReturnValue(settings.promise),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),
@@ -103,6 +106,9 @@ describe("ToolbarApp", () => {
       new DOMRect(0, 0, 212, 38),
     );
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),
@@ -132,6 +138,9 @@ describe("ToolbarApp", () => {
       .mockResolvedValue(DEFAULT_PUBLIC_SETTINGS);
     const presentToolbar = vi.fn().mockResolvedValue(true);
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings,
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),
@@ -156,6 +165,9 @@ describe("ToolbarApp", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const hideToolbar = vi.fn().mockRejectedValue(new Error("selected secret text"));
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),
@@ -199,6 +211,9 @@ describe("ToolbarApp", () => {
       new DOMRect(0, 0, 212, 38),
     );
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction,
@@ -265,6 +280,9 @@ describe("ToolbarApp", () => {
       new DOMRect(0, 0, 212, 38),
     );
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction,
@@ -331,6 +349,9 @@ describe("ToolbarApp", () => {
   it("releases pointer focus and forwards the pointer position to an action", async () => {
     const runAction = vi.fn().mockResolvedValue({ accepted: false, message: "暂不可用" });
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction,
@@ -359,6 +380,9 @@ describe("ToolbarApp", () => {
     const openSettings = vi.fn().mockResolvedValue(undefined);
     const hideToolbar = vi.fn().mockResolvedValue(undefined);
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({
@@ -389,6 +413,9 @@ describe("ToolbarApp", () => {
   it("keeps keyboard actions operable without relying on pointer coordinates", async () => {
     const runAction = vi.fn().mockResolvedValue({ accepted: false, message: "暂不可用" });
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction,
@@ -449,6 +476,9 @@ describe("ToolbarApp", () => {
     const hideToolbar = vi.fn().mockResolvedValue(undefined);
     const reportToolbarSize = vi.fn().mockResolvedValue(undefined);
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction,
@@ -508,6 +538,9 @@ describe("ToolbarApp", () => {
     const hideToolbar = vi.fn().mockReturnValue(pendingHide.promise);
     const presentToolbar = vi.fn().mockResolvedValue(true);
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn(),
@@ -564,6 +597,9 @@ describe("ToolbarApp", () => {
     const setToolbarInputMode = vi.fn().mockResolvedValue(true);
     const reportToolbarSize = vi.fn().mockResolvedValue(undefined);
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn(),
@@ -596,6 +632,9 @@ describe("ToolbarApp", () => {
     const hideToolbar = vi.fn().mockResolvedValue(undefined);
     const presentToolbar = vi.fn().mockResolvedValue(true);
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction,
@@ -638,6 +677,9 @@ describe("ToolbarApp", () => {
   it("clears focus left in the singleton toolbar when a new selection arrives", async () => {
     let selectionListener: ((payload: SelectionPayload) => void) | undefined;
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),
@@ -675,6 +717,9 @@ describe("ToolbarApp", () => {
 
   it("moves explicit hover feedback between controls and clears it on leave", async () => {
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),
@@ -721,6 +766,8 @@ describe("ToolbarApp", () => {
     let pointerListener: ((pointer: { x: number; y: number; inside: boolean }) => void) | undefined;
     const unsubscribePointer = vi.fn();
     const api = {
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),
@@ -771,6 +818,9 @@ describe("ToolbarApp", () => {
   it("clears the explicit hover left in the singleton toolbar for a new selection", async () => {
     let selectionListener: ((payload: SelectionPayload) => void) | undefined;
     const api = {
+      onToolbarPointer: vi.fn().mockReturnValue(() => undefined),
+      onToolbarDismissed: vi.fn().mockReturnValue(() => undefined),
+
       getSettings: vi.fn().mockResolvedValue(DEFAULT_PUBLIC_SETTINGS),
       getCurrentSelection: vi.fn().mockResolvedValue(selection),
       runAction: vi.fn().mockResolvedValue({ accepted: true }),

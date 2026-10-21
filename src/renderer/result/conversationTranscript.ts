@@ -19,20 +19,7 @@ export function parseTurnContent(content: string, attachments?: TranscriptAttach
   text: string
   attachments: TranscriptAttachment[]
 } {
-  const match = content.match(/^(.*?)(?:\n\n附件[：:]\s*(.+))?$/s)
-  const text = (match?.[1] ?? content).trim()
-  const rawAttachmentNames = match?.[2] ? match[2].split(/[、,，\s]+/).filter(Boolean) : []
-
-  let list: TranscriptAttachment[] = attachments && attachments.length > 0 ? [...attachments] : []
-  if (list.length === 0 && rawAttachmentNames.length > 0) {
-    list = rawAttachmentNames.map((name) => ({
-      name,
-      mime: '',
-      kind: /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name) ? 'image' : 'file',
-      data: ''
-    }))
-  }
-  return { text, attachments: list }
+  return { text: content.trim(), attachments: attachments ? [...attachments] : [] }
 }
 
 export function transcriptFromSnapshot(

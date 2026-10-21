@@ -439,6 +439,7 @@ describe("SettingsApp provider deletion", () => {
         {
           id: "new-provider",
           name: "服务商 2",
+          kind: "openai",
           baseUrl: "https://new.example.com/v1",
           keyConfigured: false,
           enabled: true,
