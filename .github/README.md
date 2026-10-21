@@ -9,7 +9,20 @@
 3. 成功后，在该次运行的 **Artifacts** 下载 `Popper-windows-x64-运行编号`，解压得到 `.exe` 和 `SHA256SUMS.txt`。
 4. 可用 PowerShell 的 `Get-FileHash .\Popper_0.5.12_x64-setup.exe -Algorithm SHA256` 与校验文件比对（文件名随版本变化）。
 
-工作流仅手动触发，不因 push/PR 自动消耗构建额度，不创建 Release、不推送提交、不需要发布令牌或签名密钥。产物保留 14 天；请及时下载。私有仓库需留意账户的 Actions 分钟数、存储额度及组织策略。
+此构建工作流可单独手动触发，也可由下面的 Release 工作流调用；不因 push/PR 自动运行。单独构建不会创建 Release、不推送提交、不需要发布令牌或签名密钥。Actions 产物保留 14 天；请及时下载。私有仓库需留意账户的 Actions 分钟数、存储额度及组织策略。
+
+## 手动创建 GitHub Release
+
+1. 将这两个工作流推送到默认分支，然后打开 **Actions → Release Windows installer → Run workflow**。
+2. 选择待发布分支。版本号自动从该次提交的 `package.json` 读取，例如 `0.5.12` 对应标签 `v0.5.12`，无需预先创建标签；发布前自行更新项目各处版本号并提交。
+3. `draft` 默认勾选，生成 Release 草稿；取消勾选则在附件上传完成后直接发布。`prerelease` 用于标记预发布版本，默认不勾选。
+4. 工作流复用完整的 Windows 测试、打包和启动检查，将本次运行的 `.exe` 与 `SHA256SUMS.txt` 上传至 Release，并自动生成更新说明。成功后可从运行摘要打开 Release；草稿在仓库 **Releases** 页面检查并发布。
+
+构建阶段只有 `contents: read`，仅 Release 任务使用 `contents: write` 和 GitHub 自动提供的 `GITHUB_TOKEN`，无需额外配置 PAT。仓库或组织策略需要允许该任务写入仓库内容。
+
+版本检查要求 `package.json`、Tauri 基础/Windows 配置、`Cargo.toml` 和 `Cargo.lock` 一致。标签始终对应本次选择的源码提交；已有标签指向其他提交会失败。已有同名 Release（含草稿）不会被覆盖：需要修改现有 Release 时手动处理，发布新版本时更新版本号。上传或发布中途失败可能留下草稿，可在 Releases 页面检查后处理。
+
+Release 工作流在仓库内串行执行。安装包由本次运行构建并校验，Release 附件不受 Actions 的 14 天保留期影响。目前仅包含 Windows x64 安装包。
 
 ## 流程与维护
 
@@ -18,7 +31,7 @@
 - 依次运行 `pnpm typecheck`、`pnpm test`、`pnpm build:web` 和 `pnpm test:rust:windows`，成功后复用本次生成的前端产物运行 `pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked`，最后运行 `pnpm verify:artifacts:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
 - CI 中的 Rust 全目标测试包含编译、链接和测试执行，因此不再紧接着重复运行同目标的 `cargo check --all-targets`；本地 `pnpm verify:windows` 仍保留原有完整命令。全部前端和 Rust 测试仍执行。
 - 任一步骤失败都会停止；仅成功产物上传。任务最多运行 60 分钟，同一分支的并发构建不会相互中断。
-- 第三方 Actions 固定到提交 SHA，仓库权限只有 `contents: read`。升级 Actions 时同步核对官方版本与 SHA。
+- 第三方 Actions 固定到提交 SHA，构建工作流权限只有 `contents: read`。升级 Actions 时同步核对官方版本与 SHA。
 - 缓存 pnpm store，以及 Cargo 下载缓存和 `src-tauri/target` 内的依赖编译产物，覆盖验证与 release 打包。Rust 缓存由工具链、编译环境和 Cargo 清单/锁文件区分；锁文件变化时可回用旧缓存，由 Cargo 判断需要重编译的依赖。应用自身及安装包由当前源码重新生成。
 - 仅在 CI 设置 `CARGO_PROFILE_DEV_DEBUG=0`、`CARGO_PROFILE_TEST_DEBUG=0`，减少 Windows 测试构建的调试符号/PDB 生成及缓存体积；保留 debug assertions、溢出检查及 release 构建配置。配置变化后首次运行需要重建对应依赖缓存。
 - 同时缓存 `%LOCALAPPDATA%/tauri` 中的 NSIS、Tauri 插件和 WebView2 安装器下载，避免后续打包重复下载；Tauri 继续负责工具版本及已有校验逻辑。
@@ -30,4 +43,4 @@
 
 此配置需推送后完成首次云端运行验证；本地语法检查不等同于 CI 已通过。
 
-参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[Windows runner 环境](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)、[Rust 缓存策略](https://github.com/Swatinem/rust-cache)、[Cargo 测试目标](https://doc.rust-lang.org/cargo/commands/cargo-test.html)、[Cargo 编译配置](https://doc.rust-lang.org/cargo/reference/profiles.html)、[GitHub Actions 缓存](https://github.com/actions/cache)。
+参考：[手动触发工作流](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)、[复用工作流](https://docs.github.com/en/actions/how-tos/reuse-automations/reuse-workflows)、[GitHub CLI 创建 Release](https://cli.github.com/manual/gh_release_create)、[Windows runner 环境](https://github.com/actions/runner-images/blob/main/images/windows/Windows2022-Readme.md)、[Rust 缓存策略](https://github.com/Swatinem/rust-cache)、[Cargo 测试目标](https://doc.rust-lang.org/cargo/commands/cargo-test.html)、[Cargo 编译配置](https://doc.rust-lang.org/cargo/reference/profiles.html)、[GitHub Actions 缓存](https://github.com/actions/cache)。
