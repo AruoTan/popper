@@ -93,13 +93,15 @@ jobs:
       - name: Verify and package Windows x64
         run: ./.github/scripts/build-windows.ps1
 
-      - name: Upload installer and checksums
+      - name: Upload installer, portable ZIP, Scoop manifest and checksums
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Popper-windows-x64-${{ github.run_number }}
           path: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*_x64-setup.exe
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/distribution/*_x64-setup.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/distribution/*_x64-portable.zip
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/distribution/popper.json
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/distribution/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
           compression-level: 0

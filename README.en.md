@@ -1,5 +1,7 @@
 # Popper
 
+Windows portable ZIPs and Scoop installation keep settings, local secrets, logs and WebView data in `data` beside the executable. Scoop persists this directory under `persist/popper/data`. See the [Windows portable guide](./WINDOWS_PORTABLE.md) for installation, upgrades and importing an installed profile.
+
 **English** | [中文](./README.md)
 
 Popper is a lightweight desktop selection assistant for **macOS 12+ Apple Silicon (M-series)** and **Windows 10/11 x64**, built with Tauri 2, Rust, React, and TypeScript.

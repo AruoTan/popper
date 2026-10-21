@@ -12,6 +12,8 @@ Popper 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon�
 
 不在 Windows 本机安装编译工具也可构建安装包：参见 [GitHub Actions 云端打包](./.github/README.md)。
 
+Windows 支持便携 ZIP 和 Scoop 安装，配置、密钥及日志保存在程序旁的 `data`；Scoop 将其保留在 `persist/popper/data`。安装、升级与配置迁移见 [Windows 便携版说明](./WINDOWS_PORTABLE.md)。
+
 ## 界面预览
 
 ### 设置 · AI 服务商与模型

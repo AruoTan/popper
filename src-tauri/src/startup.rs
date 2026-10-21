@@ -37,8 +37,8 @@ pub(crate) fn initialize() {
 
 fn diagnostic_path() -> PathBuf {
     #[cfg(target_os = "windows")]
-    if let Some(directory) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
-        return PathBuf::from(directory).join("Popper").join("startup.log");
+    if let Some(directory) = crate::app_paths::logs_directory() {
+        return directory.join("startup.log");
     }
     std::env::temp_dir().join("Popper").join("startup.log")
 }
@@ -91,15 +91,27 @@ pub(crate) fn failure(message: &str) {
 
 #[cfg(target_os = "windows")]
 fn show_failure() {
+    let log_path = LOG_PATH.get().cloned().unwrap_or_else(diagnostic_path);
+    show_failure_message(&format!(
+        "Popper 启动失败。\n\n诊断日志：\n{}\n\n请将此日志提供给开发者以定位原因。",
+        log_path.display()
+    ));
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn storage_failure(error: &str) {
+    // Storage selection failed before logging is initialized. Report the
+    // actual error without silently writing to another user profile.
+    eprintln!("Popper storage: {error}");
+    show_failure_message(&format!("Popper 无法初始化数据目录。\n\n{error}"));
+}
+
+#[cfg(target_os = "windows")]
+fn show_failure_message(message: &str) {
     use windows::{
         core::PCWSTR,
         Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK},
     };
-    let log_path = LOG_PATH.get().cloned().unwrap_or_else(diagnostic_path);
-    let message = format!(
-        "Popper 启动失败。\n\n诊断日志：\n{}\n\n请将此日志提供给开发者以定位原因。",
-        log_path.display()
-    );
     let message: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
     let title: Vec<u16> = "Popper 启动失败".encode_utf16().chain(Some(0)).collect();
     unsafe {

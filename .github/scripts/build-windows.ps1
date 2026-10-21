@@ -53,6 +53,11 @@ if ($LASTEXITCODE -ne 0) { throw 'NASM unavailable' }
 # check afterwards. The standalone local verify:windows command stays intact.
 Invoke-BuildStage 'TypeScript checks' { pnpm typecheck }
 Invoke-BuildStage 'Frontend tests' { pnpm test }
+Invoke-BuildStage 'Portable packaging tests' {
+    node --test apps/windows/scripts/prepare-release-assets.test.mjs
+    if ($LASTEXITCODE -ne 0) { throw 'Release asset tests failed' }
+    & (Join-Path $PSScriptRoot '../../apps/windows/scripts/test-portable.ps1')
+}
 Invoke-BuildStage 'Frontend production build' { pnpm build:web }
 Invoke-BuildStage 'Windows Rust tests (all targets)' { pnpm test:rust:windows }
 
@@ -74,9 +79,17 @@ Invoke-BuildStage 'Windows release startup' {
     & (Join-Path $PSScriptRoot 'smoke-test-windows.ps1') -Executable 'src-tauri/target/x86_64-pc-windows-msvc/release/popper.exe'
 }
 
+Invoke-BuildStage 'Windows portable ZIP' { pnpm package:portable:windows }
 $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-$bundleDirectory = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis'
-foreach ($filename in @("Popper_${version}_x64-setup.exe", 'SHA256SUMS.txt')) {
+Invoke-BuildStage 'Windows portable startup and persistence' {
+    & (Join-Path $PSScriptRoot '../../apps/windows/scripts/verify-portable.ps1') -Archive "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/Popper_${version}_x64-portable.zip"
+}
+Invoke-BuildStage 'Windows release assets and Scoop manifest' {
+    node apps/windows/scripts/prepare-release-assets.mjs
+}
+
+$bundleDirectory = 'src-tauri/target/x86_64-pc-windows-msvc/release/bundle/distribution'
+foreach ($filename in @("Popper_${version}_x64-setup.exe", "Popper_${version}_x64-portable.zip", 'popper.json', 'SHA256SUMS.txt')) {
     $artifact = Join-Path $bundleDirectory $filename
     if (-not (Test-Path -LiteralPath $artifact -PathType Leaf) -or (Get-Item -LiteralPath $artifact).Length -eq 0) {
         throw "Missing or empty build artifact: $artifact"
@@ -87,8 +100,8 @@ foreach ($filename in @("Popper_${version}_x64-setup.exe", 'SHA256SUMS.txt')) {
 ## Popper $version — Windows x64
 
 - Source commit: $env:GITHUB_SHA
-- Windows verification, installer checks and release startup passed.
-- Download the installer and SHA256SUMS.txt from this run's Artifacts section.
+- Windows verification, installer/portable startup and persistence checks passed.
+- Download the installer, portable ZIP, popper.json and SHA256SUMS.txt from this run's Artifacts section.
 - Unsigned test installer; SmartScreen warnings are possible.
 - Native selection behavior still requires manual desktop regression testing.
 "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

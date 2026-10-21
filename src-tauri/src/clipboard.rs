@@ -729,13 +729,10 @@ fn trace_windows_clipboard_text_status(sequence: u32, status: &'static str) {
     use std::{
         cell::RefCell,
         io::Write,
-        path::PathBuf,
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    let trace_directory = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|directory| directory.join("Popper"));
+    let trace_directory = crate::app_paths::logs_directory();
     let environment_enabled = std::env::var_os("POPPER_SELECTION_TRACE").is_some_and(|value| {
         let value = value.to_string_lossy();
         value == "1" || value.eq_ignore_ascii_case("true")
