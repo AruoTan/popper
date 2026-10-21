@@ -98,20 +98,7 @@ pub fn run() {
             let settings_path = app_paths::get()
                 .map_err(std::io::Error::other)?
                 .settings_path(settings_path);
-            #[cfg(target_os = "windows")]
-            let isolated_storage = app_paths::get()
-                .map_err(std::io::Error::other)?
-                .data_root
-                .is_some();
-            #[cfg(not(target_os = "windows"))]
-            let isolated_storage = false;
-            // A portable profile starts independently. The historical product
-            // rename migration only applies to installed profiles.
-            let settings = if isolated_storage {
-                SettingsRepository::new(settings_path)?
-            } else {
-                SettingsRepository::new_with_legacy_migration(settings_path)?
-            };
+            let settings = SettingsRepository::new(settings_path)?;
             let settings = Arc::new(settings);
             startup::stage("initializing HTTP clients");
             let actions = ActionService::new(settings.clone())?;

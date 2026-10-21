@@ -169,20 +169,14 @@ export interface WindowPopperApi {
   createProvider?(input: ProviderCreateInput): Promise<PublicSettings>;
   updateProvider?(providerId: string, update: ProviderUpdateInput): Promise<PublicSettings>;
   deleteProvider?(providerId: string): Promise<PublicSettings>;
-  setProviderApiKey?(providerId: string, apiKey: string): Promise<PublicSettings>;
-  clearProviderApiKey?(providerId: string): Promise<PublicSettings>;
+  setProviderApiKey(providerId: string, apiKey: string): Promise<PublicSettings>;
+  clearProviderApiKey(providerId: string): Promise<PublicSettings>;
   /** Settings window only: load a saved provider key for masked display. */
   getProviderApiKey?(providerId: string): Promise<string | null>;
-  testProviderConnection?(providerId: string): Promise<ConnectionTestResult>;
+  testProviderConnection(providerId: string): Promise<ConnectionTestResult>;
   /** List remote models without writing settings (selective pick). */
-  listProviderModels?(providerId: string): Promise<ConnectionTestResult>;
+  listProviderModels(providerId: string): Promise<ConnectionTestResult>;
   syncProviderModels?(providerId: string): Promise<ProviderModelsSyncResult>;
-  /** @deprecated Use setProviderApiKey. */
-  setApiKey?(apiKey: string): Promise<PublicSettings>;
-  /** @deprecated Use clearProviderApiKey. */
-  clearApiKey?(): Promise<PublicSettings>;
-  /** @deprecated Use testProviderConnection. */
-  testConnection?(): Promise<ConnectionTestResult>;
   getAccessibilityStatus(): Promise<AccessibilityStatus>;
   requestAccessibility(): Promise<AccessibilityStatus>;
   getCurrentSelection?(): Promise<SelectionPayload | null>;
@@ -247,20 +241,16 @@ export interface WindowPopperApi {
   onResultSelectionHold?(listener: () => void): Unsubscribe;
   /**
    * Native pointer movement for the non-activating selection toolbar.
-   * Optional so a renderer can still hot-reload against an older backend.
    */
-  onToolbarPointer?(listener: (event: ToolbarPointerEvent) => void): Unsubscribe;
+  onToolbarPointer(listener: (event: ToolbarPointerEvent) => void): Unsubscribe;
   /**
    * Native force-dismiss of the selection toolbar (outside click / Escape).
-   * Optional so a renderer can still hot-reload against an older backend.
    */
-  onToolbarDismissed?(listener: (payload: ToolbarDismissedEvent) => void): Unsubscribe;
+  onToolbarDismissed(listener: (payload: ToolbarDismissedEvent) => void): Unsubscribe;
 }
 
 declare global {
   interface Window {
     _popper_: WindowPopperApi;
-    /** @deprecated Use _popper_. */
-    selectionBar: WindowPopperApi;
   }
 }

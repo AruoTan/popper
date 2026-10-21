@@ -23,7 +23,7 @@ Popper/
 
 需要系统已安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。ZIP 不包含 Runtime；系统运行库、Windows 自身的临时文件和系统诊断不属于 Popper 的配置目录。
 
-手动升级时先退出 Popper，将新版解压到新目录，然后把旧版的 `config` 和 `logs` 移到新版程序旁；`webview` 可由新版重新生成。从旧 `data` 布局升级时，启动新版前将 `data/config`、`data/logs` 分别移到新版程序根目录，确认配置正常后再处理旧目录。发布 ZIP 只包含程序、便携标记、许可与说明文件，不包含用户数据。
+手动升级时先退出 Popper，将新版解压到新目录，然后把旧版的 `config` 和 `logs` 移到新版程序旁；`webview` 可由新版重新生成。发布 ZIP 只包含程序、便携标记、许可与说明文件，不包含用户数据。
 
 ## Scoop 安装与升级
 
@@ -49,8 +49,6 @@ scoop update popper
 ```
 
 程序从自己的目录分别访问 `config`、`logs` 和 `webview`。`webview` 位于当前程序版本目录，不纳入持久化，升级时重新生成。无需设置环境变量，也不假定 Scoop 安装在用户主目录。开始菜单快捷方式和 `popper` 命令均由 Scoop 创建。升级、卸载前的清单检查要求 Popper 已退出。
-
-从旧版 Scoop 布局升级时，安装脚本在新持久化目录不存在的情况下，将 `persist/popper/data/config` 和 `data/logs` 完整复制到 `persist/popper/config` 和 `logs`，保留原目录作为备份；不迁移 WebView 数据，也不覆盖已存在的新配置。确认升级正常后可手动清理旧的 `persist/popper/data`。
 
 通过 `releases/latest/download/popper.json` 安装时，Scoop 更新读取同一清单 URL，跟随最新正式版。预发布版可从对应 Release 的 `popper.json` 附件 URL 安装；固定版本 URL 会继续跟踪该固定清单，需显式切换 URL 才能跟随其他版本。草稿附件须先发布才能公开安装。
 
@@ -78,6 +76,8 @@ $popperDirectory = scoop prefix popper
 ```powershell
 & .\Import-InstalledSettings.ps1 -SourceDirectory 'D:\Old Popper Config' -DataDirectory 'D:\Popper Data'
 ```
+
+配置读取使用当前 v17 格式，不自动转换开发阶段的旧格式、旧产品名目录或旧 `data` 布局。安装版与便携版之间仍可使用上述脚本复制当前格式的配置和密钥。
 
 ## 自定义目录与运行模式
 

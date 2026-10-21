@@ -172,6 +172,7 @@ describe("Tauri renderer bridge", () => {
     });
 
     installTauriBridge();
+    expect("selectionBar" in window).toBe(false);
 
     await expect(window._popper_.getCurrentSelection?.()).resolves.toBeNull();
     await expect(window._popper_.getSelectionDetectionDebug?.("session-1")).resolves.toBeNull();
@@ -547,7 +548,7 @@ describe("Tauri renderer bridge", () => {
     consoleWarn.mockRestore();
   });
 
-  it("defaults runtime availability safely when hot reloading against the 0.3.5 backend", async () => {
+  it("does not infer runtime availability from permission alone", async () => {
     listenMock.mockResolvedValue(() => undefined);
     invokeMock.mockResolvedValue({ platform: "windows", trusted: true, canRequest: false });
 
@@ -557,7 +558,7 @@ describe("Tauri renderer bridge", () => {
       platform: "windows",
       trusted: true,
       canRequest: false,
-      available: true,
+      available: false,
       diagnostics: {},
     });
   });

@@ -19,8 +19,6 @@ export const TARGET_LANGUAGE_PLACEHOLDER = "{{target_language}}";
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const DEFAULT_PROVIDER_ID = "openai-compatible";
 export const DEFAULT_PROVIDER_NAME = "OpenAI Compatible";
-/** @deprecated Models now live under providers. */
-export const DEFAULT_MODEL = "";
 
 export const DEFAULT_LOCALE = "zh-CN" as const;
 export const DEFAULT_TRANSLATION_PAIR = {

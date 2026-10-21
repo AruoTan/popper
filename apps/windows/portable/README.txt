@@ -5,8 +5,6 @@ Keep portable.flag beside the executable. The config, logs and webview
 directories are created beside popper.exe. Exit Popper before copying or upgrading.
 For a manual upgrade, extract into a new folder and move config and logs into it.
 WebView data can be recreated. The ZIP never contains a user profile.
-When upgrading from the old layout, move data/config and data/logs beside the
-new executable before launching. Keep the old data folder until verified.
 
 Microsoft Edge WebView2 Runtime is required:
 https://developer.microsoft.com/microsoft-edge/webview2/
@@ -26,6 +24,4 @@ before switching profiles; installed and portable modes share a single instance.
 For Scoop, install popper.json from the GitHub Release. Its persist definition
 links config and logs to Scoop's persist/popper/config and persist/popper/logs.
 WebView data stays in the app version directory and is not persisted.
-Legacy persist/popper/data/config and logs are copied when the new directories
-do not exist; the old data is kept. Ordinary uninstall retains persisted data;
-a purge uninstall removes it.
+Ordinary uninstall retains persisted config and logs; a purge uninstall removes them.

@@ -11,7 +11,7 @@ try {
     $source = Join-Path $temporary 'source'
     $data = Join-Path $temporary 'portable data'
     $null = New-Item -ItemType Directory -Path $source -Force
-    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":1}')
+    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":17}')
     [System.IO.File]::WriteAllText((Join-Path $source 'api-keys.enc.json'), 'test ciphertext')
     [System.IO.File]::WriteAllText((Join-Path $source '.api-keys.key'), 'test local key')
     & $import -DataDirectory $data -SourceDirectory $source
@@ -27,6 +27,12 @@ try {
     try { & $import -DataDirectory $brokenData -SourceDirectory $source } catch { $refused = $true }
     Assert-True ($refused -and -not (Test-Path -LiteralPath $brokenData)) 'Import accepted ciphertext without its key'
 
+    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":16}')
+    $refused = $false
+    try { & $import -DataDirectory $brokenData -SourceDirectory $source } catch { $refused = $true }
+    Assert-True ($refused -and -not (Test-Path -LiteralPath $brokenData)) 'Import accepted an unsupported settings format'
+    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":17}')
+
     # The packaged import script defaults to config beside the script/executable.
     [System.IO.File]::WriteAllText((Join-Path $source '.api-keys.key'), 'test local key')
     $defaultRoot = Join-Path $temporary 'default portable'
@@ -36,35 +42,13 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $defaultRoot 'config/.api-keys.key')) 'Import did not default to the executable root'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $defaultRoot 'data'))) 'Import created the legacy data directory'
 
-    # Exercise the actual generated Scoop pre_install, including legacy migration.
+    # Exercise the actual generated Scoop pre_install, without legacy migration.
     Push-Location $projectRoot
     try {
         $manifest = (& node --input-type=module -e 'import {createScoopManifest} from "./apps/windows/scripts/prepare-release-assets.mjs"; console.log(JSON.stringify(createScoopManifest({version:"1.2.3",repository:"example/popper",hash:"a".repeat(64)})));') | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0) { throw 'Cannot generate Scoop test manifest' }
     } finally { Pop-Location }
     $preInstall = [scriptblock]::Create(($manifest.pre_install -join "`n"))
-    $persist_dir = Join-Path $temporary 'persist/popper'
-    $dir = Join-Path $temporary 'apps/popper/new'
-    $null = New-Item -ItemType Directory -Path $dir -Force
-    foreach ($name in @('config', 'logs', 'webview')) {
-        $null = New-Item -ItemType Directory -Path (Join-Path $persist_dir "data/$name") -Force
-    }
-    foreach ($name in @('settings.json', 'api-keys.enc.json', '.api-keys.key')) {
-        Copy-Item -LiteralPath (Join-Path $source $name) -Destination (Join-Path $persist_dir "data/config/$name")
-    }
-    [System.IO.File]::WriteAllText((Join-Path $persist_dir 'data/logs/previous.log'), 'previous log')
-    [System.IO.File]::WriteAllText((Join-Path $persist_dir 'data/webview/cache'), 'old cache')
-    & $preInstall
-    foreach ($name in @('settings.json', 'api-keys.enc.json', '.api-keys.key')) {
-        Assert-True ((Get-FileHash -LiteralPath (Join-Path $source $name)).Hash -eq (Get-FileHash -LiteralPath (Join-Path $persist_dir "config/$name")).Hash) "Scoop migration changed $name"
-    }
-    Assert-True ([System.IO.File]::ReadAllText((Join-Path $persist_dir 'logs/previous.log')) -eq 'previous log') 'Scoop migration lost logs'
-    Assert-True (Test-Path -LiteralPath (Join-Path $persist_dir 'data/config/.api-keys.key')) 'Scoop migration removed the legacy profile'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $persist_dir 'webview'))) 'Scoop migrated WebView data'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $dir 'data'))) 'Scoop created a legacy data directory'
-    [System.IO.File]::WriteAllText((Join-Path $persist_dir 'config/settings.json'), 'new settings')
-    & $preInstall
-    Assert-True ([System.IO.File]::ReadAllText((Join-Path $persist_dir 'config/settings.json')) -eq 'new settings') 'Scoop migration overwrote the new profile'
     $persist_dir = Join-Path $temporary 'fresh persist/popper'
     $dir = Join-Path $temporary 'fresh apps/popper/new'
     & $preInstall

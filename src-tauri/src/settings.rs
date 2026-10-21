@@ -6,7 +6,6 @@ use std::{
 };
 
 use parking_lot::RwLock;
-use serde::Deserialize;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -15,22 +14,12 @@ pub(crate) mod atomic_file;
 
 use crate::local_secrets::LocalEncryptedStore;
 use crate::models::{
-    ActionDefinition, ActionKind, AppSettings, CreateProviderInput, Locale, ProviderConfig,
-    ProviderModel, PublicSettings, ResultDismissMode, SettingsUpdate, TranslationSettings,
-    UpdateProviderInput, WindowSize, DEFAULT_ASK_PROMPT, DEFAULT_EXPLAIN_PROMPT,
-    DEFAULT_PROVIDER_ID, DEFAULT_REFINE_PROMPT, DEFAULT_SUMMARY_PROMPT, DEFAULT_TRANSLATE_PROMPT,
-    LEGACY_V11_CONCISE_EXPLAIN_PROMPT, LEGACY_V11_CONCISE_TRANSLATE_PROMPT,
-    LEGACY_V11_EXPLAIN_PROMPT, LEGACY_V11_SUMMARY_PROMPT, LEGACY_V11_TIGHT_EXPLAIN_PROMPT,
-    LEGACY_V11_TRANSLATE_PROMPT, LEGACY_V3_EXPLAIN_PROMPT, LEGACY_V3_REFINE_PROMPT,
-    LEGACY_V3_SUMMARY_PROMPT, LEGACY_V3_TRANSLATE_PROMPT, LEGACY_V4_EXPLAIN_PROMPT,
-    LEGACY_V4_REFINE_PROMPT, LEGACY_V4_SUMMARY_PROMPT, LEGACY_V4_TRANSLATE_PROMPT,
-    LEGACY_V5_TRANSLATE_PROMPT, SETTINGS_VERSION,
+    ActionDefinition, ActionKind, AppSettings, CreateProviderInput, ProviderConfig,
+    PublicSettings, SettingsUpdate, UpdateProviderInput, WindowSize, SETTINGS_VERSION,
 };
 
 const SECRET_ACCOUNT_PREFIX: &str = "provider-api-key:";
 const MAX_API_KEY_LENGTH: usize = 16_384;
-// Historical directory name retained only for one-time product rename migration.
-const LEGACY_APP_CONFIG_DIRECTORY: &str = "com.local.selectionbar";
 
 #[derive(Debug, Error)]
 pub enum SettingsError {
@@ -76,29 +65,6 @@ impl SettingsRepository {
         Self::with_secret_store(path, secrets)
     }
 
-    pub fn new_with_legacy_migration(path: impl Into<PathBuf>) -> Result<Self, SettingsError> {
-        let path = path.into();
-        let repository = Self::new(&path)?;
-        let Some(legacy_path) = legacy_settings_path(&path) else {
-            return Ok(repository);
-        };
-        if !legacy_path.exists() {
-            return Ok(repository);
-        }
-
-        let legacy = match Self::new(legacy_path) {
-            Ok(legacy) => legacy,
-            Err(_) => {
-                eprintln!("[settings] legacy configuration could not be read; migration skipped");
-                return Ok(repository);
-            }
-        };
-        if repository.import_legacy_if_pristine(&legacy).is_err() {
-            eprintln!("[settings] legacy configuration migration failed; current settings kept");
-        }
-        Ok(repository)
-    }
-
     pub fn with_secret_store(
         path: impl Into<PathBuf>,
         secrets: Arc<dyn SecretStore>,
@@ -111,15 +77,6 @@ impl SettingsRepository {
             secrets,
         };
 
-        if let Some(key) = loaded
-            .legacy_api_key
-            .as_deref()
-            .filter(|key| !key.trim().is_empty())
-        {
-            repository
-                .secrets
-                .set(&secret_account(DEFAULT_PROVIDER_ID), key.trim())?;
-        }
         if loaded.must_persist {
             repository.persist(&repository.state.read())?;
         }
@@ -446,65 +403,6 @@ impl SettingsRepository {
         self.secrets.get(&secret_account(provider_id))
     }
 
-    fn import_legacy_if_pristine(
-        &self,
-        legacy: &SettingsRepository,
-    ) -> Result<bool, SettingsError> {
-        let current = self.get_settings();
-        let defaults = AppSettings::default()
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        if current != defaults || self.has_configured_secret()? {
-            return Ok(false);
-        }
-
-        let legacy_settings = legacy.get_settings();
-        if !has_usable_ai_route(&legacy_settings) {
-            return Ok(false);
-        }
-
-        let mut secret_snapshots = Vec::new();
-        for provider in &legacy_settings.providers {
-            let account = secret_account(&provider.id);
-            let Some(secret) = legacy.secrets.get(&account)? else {
-                continue;
-            };
-            let previous = self.secrets.get(&account)?;
-            if previous.as_deref() == Some(secret.as_str()) {
-                continue;
-            }
-            secret_snapshots.push((account.clone(), previous));
-            if let Err(error) = self.secrets.set(&account, &secret) {
-                return match self.restore_secret_snapshots(&secret_snapshots) {
-                    Ok(()) => Err(error),
-                    Err(rollback_error) => Err(rollback_error),
-                };
-            }
-        }
-
-        if let Err(error) = self.persist(&legacy_settings) {
-            return match self.restore_secret_snapshots(&secret_snapshots) {
-                Ok(()) => Err(error),
-                Err(rollback_error) => Err(rollback_error),
-            };
-        }
-        *self.state.write() = legacy_settings;
-        Ok(true)
-    }
-
-    fn has_configured_secret(&self) -> Result<bool, SettingsError> {
-        for provider in &self.state.read().providers {
-            if self
-                .secrets
-                .get(&secret_account(&provider.id))?
-                .is_some_and(|secret| !secret.trim().is_empty())
-            {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
     fn ensure_provider(&self, provider_id: &str) -> Result<(), SettingsError> {
         if self
             .state
@@ -655,41 +553,8 @@ fn secret_account(provider_id: &str) -> String {
     format!("{SECRET_ACCOUNT_PREFIX}{provider_id}")
 }
 
-fn legacy_settings_path(settings_path: &Path) -> Option<PathBuf> {
-    let current_directory = settings_path.parent()?;
-    if current_directory.file_name()?.to_string_lossy() == LEGACY_APP_CONFIG_DIRECTORY {
-        return None;
-    }
-    Some(
-        current_directory
-            .parent()?
-            .join(LEGACY_APP_CONFIG_DIRECTORY)
-            .join(settings_path.file_name()?),
-    )
-}
-
-fn has_usable_ai_route(settings: &AppSettings) -> bool {
-    if !settings.default_ai.model_id.is_empty() {
-        return true;
-    }
-    settings.actions.iter().any(|action| {
-        if !action.kind.is_ai() {
-            return false;
-        }
-        let (Some(provider_id), Some(model_id)) =
-            (action.provider_id.as_deref(), action.model_id.as_deref())
-        else {
-            return false;
-        };
-        settings.providers.iter().any(|provider| {
-            provider.id == provider_id && provider.models.iter().any(|model| model.id == model_id)
-        })
-    })
-}
-
 struct LoadedSettings {
     settings: AppSettings,
-    legacy_api_key: Option<String>,
     must_persist: bool,
 }
 
@@ -699,7 +564,6 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
             settings: AppSettings::default()
                 .normalize_and_validate()
                 .map_err(SettingsError::Validation)?,
-            legacy_api_key: None,
             must_persist: true,
         });
     }
@@ -707,246 +571,22 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
     if bytes.len() > 5 * 1024 * 1024 {
         return Err(SettingsError::Validation("设置文件体积异常".to_owned()));
     }
-    let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let version = value.get("version").and_then(serde_json::Value::as_u64);
-    // Seed the new default once from the old effective Ask route. An explicitly
-    // empty default remains empty on subsequent starts.
-    let missing_default_ai = value.get("defaultAi").is_none();
-    if missing_default_ai {
-        let route = value.get("actions").and_then(|actions| actions.as_array()).and_then(|actions| {
-            actions.iter().filter(|action| action.get("kind").and_then(|v| v.as_str()) == Some("ask"))
-                .chain(actions.iter()).find_map(|action| {
-                    let provider_id = action.get("providerId")?.as_str()?;
-                    let model_id = action.get("modelId")?.as_str()?;
-                    let valid = value.get("providers")?.as_array()?.iter().any(|provider| {
-                        provider.get("id").and_then(|v| v.as_str()) == Some(provider_id)
-                            && provider.get("models").and_then(|v| v.as_array()).is_some_and(|models| {
-                                models.iter().any(|model| model.get("id").and_then(|v| v.as_str()) == Some(model_id))
-                            })
-                    });
-                    (valid && !model_id.is_empty()).then(|| serde_json::json!({ "providerId": provider_id, "modelId": model_id }))
-                })
-        }).unwrap_or_else(|| serde_json::json!({ "providerId": "", "modelId": "" }));
-        if let Some(object) = value.as_object_mut() {
-            object.insert("defaultAi".to_owned(), route);
-        }
-    }
-    let retired_actions_removed = remove_retired_actions_value(&mut value);
-    // Discard retired configuration before validating.
-    let had_retired_settings = value.as_object_mut().is_some_and(|object| {
-        let mut removed = false;
-        for key in [
-            "selectionCapture",
-            "captureShortcut",
-            "trigger",
-            "enabled",
-            "toolbar",
-            "application",
-        ] {
-            removed |= object.remove(key).is_some();
-        }
-        removed
-    });
-    if version == Some(SETTINGS_VERSION as u64) || matches!(version, Some(12 | 13 | 14 | 15 | 16)) {
-        let missing_tray_default = value.get("trayEnabled").is_none();
-        let missing_result_defaults = value.pointer("/result/dismissMode").is_none()
-            || value.pointer("/result/fontSize").is_none();
-        let had_quote_action = value_has_quote_action(&value);
-        migrate_quote_to_ask_value(&mut value);
-        let mut settings: AppSettings = serde_json::from_value(value)?;
-        let persisted_settings = settings.clone();
-        migrate_default_action_prompts(&mut settings);
-        heal_orphan_provider_references(&mut settings);
-        let normalized = settings
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        let must_persist = version != Some(SETTINGS_VERSION as u64)
-            || missing_default_ai
-            || missing_tray_default
-            || had_retired_settings
-            || missing_result_defaults
-            || retired_actions_removed
-            || had_quote_action
-            || normalized != persisted_settings;
-        return Ok(LoadedSettings {
-            settings: normalized,
-            legacy_api_key: None,
-            must_persist,
-        });
-    }
-    if version == Some(11) {
-        migrate_quote_to_ask_value(&mut value);
-        let mut settings: AppSettings = serde_json::from_value(value)?;
-        migrate_default_action_prompts(&mut settings);
-        heal_orphan_provider_references(&mut settings);
-        let settings = settings
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        return Ok(LoadedSettings {
-            settings,
-            legacy_api_key: None,
-            must_persist: true,
-        });
-    }
-    if version == Some(10) {
-        migrate_quote_to_ask_value(&mut value);
-        let mut settings: AppSettings = serde_json::from_value(value)?;
-        migrate_default_action_prompts(&mut settings);
-        heal_orphan_provider_references(&mut settings);
-        let settings = settings
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        return Ok(LoadedSettings {
-            settings,
-            legacy_api_key: None,
-            must_persist: true,
-        });
-    }
-    if version == Some(9) {
-        migrate_quote_to_ask_value(&mut value);
-        let mut settings: AppSettings = serde_json::from_value(value)?;
-        migrate_default_action_prompts(&mut settings);
-        heal_orphan_provider_references(&mut settings);
-        let settings = settings
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        return Ok(LoadedSettings {
-            settings,
-            legacy_api_key: None,
-            must_persist: true,
-        });
-    }
-    if version == Some(8) {
-        migrate_quote_to_ask_value(&mut value);
-        let mut settings: AppSettings = serde_json::from_value(value)?;
-        migrate_default_action_prompts(&mut settings);
-        heal_orphan_provider_references(&mut settings);
-        let settings = settings
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        return Ok(LoadedSettings {
-            settings,
-            legacy_api_key: None,
-            must_persist: true,
-        });
-    }
-    if matches!(version, Some(3 | 4 | 5 | 6 | 7)) {
-        migrate_quote_to_ask_value(&mut value);
-        let mut settings: AppSettings = serde_json::from_value(value)?;
-        migrate_default_action_prompts(&mut settings);
-        heal_orphan_provider_references(&mut settings);
-        let settings = settings
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        return Ok(LoadedSettings {
-            settings,
-            legacy_api_key: None,
-            must_persist: true,
-        });
-    }
-    if version == Some(2) {
-        // v2 already has the complete provider/action model. Parsing it as v1
-        // would silently discard per-action provider/model bindings. v3 was a
-        // one-time behavior migration: old persisted `manual` becomes the new
-        // default `blur`. Later versions also upgrade only untouched built-in
-        // prompts.
-        migrate_quote_to_ask_value(&mut value);
-        let mut settings: AppSettings = serde_json::from_value(value)?;
-        settings.result.dismiss_mode = ResultDismissMode::Blur;
-        migrate_default_action_prompts(&mut settings);
-        heal_orphan_provider_references(&mut settings);
-        let settings = settings
-            .normalize_and_validate()
-            .map_err(SettingsError::Validation)?;
-        return Ok(LoadedSettings {
-            settings,
-            legacy_api_key: None,
-            must_persist: true,
-        });
-    }
-    if version.is_some_and(|version| version != 1) {
+    let mut settings: AppSettings = serde_json::from_slice(&bytes)?;
+    if settings.version != SETTINGS_VERSION {
         return Err(SettingsError::Validation(
             "设置文件版本不受当前应用支持".to_owned(),
         ));
     }
-    // Electron Store wrapped the v1 payload in a top-level `settings` field.
-    // The old Electron ciphertext cannot and must not be treated as plaintext
-    // here; the user can re-enter it into the local encrypted store.
-    let legacy_value = value
-        .get("settings")
-        .filter(|candidate| candidate.is_object())
-        .cloned()
-        .unwrap_or(value);
-    migrate_v1(legacy_value)
-}
-
-fn migrate_default_action_prompts(settings: &mut AppSettings) {
-    for action in settings.actions.iter_mut() {
-        let is_builtin = matches!(
-            (action.kind, action.id.as_str()),
-            (ActionKind::Translate, "translate")
-                | (ActionKind::Summary, "summary")
-                | (ActionKind::Explain, "explain")
-                | (ActionKind::Refine, "refine")
-        );
-        if !is_builtin {
-            continue;
-        }
-        let replacement = match action.kind {
-            ActionKind::Translate
-                if matches!(
-                    action.prompt.as_deref(),
-                    Some(
-                        LEGACY_V3_TRANSLATE_PROMPT
-                            | LEGACY_V4_TRANSLATE_PROMPT
-                            | LEGACY_V5_TRANSLATE_PROMPT
-                            | LEGACY_V11_TRANSLATE_PROMPT
-                            | LEGACY_V11_CONCISE_TRANSLATE_PROMPT
-                    )
-                ) =>
-            {
-                Some(DEFAULT_TRANSLATE_PROMPT)
-            }
-            ActionKind::Summary
-                if matches!(
-                    action.prompt.as_deref(),
-                    Some(
-                        LEGACY_V3_SUMMARY_PROMPT
-                            | LEGACY_V4_SUMMARY_PROMPT
-                            | LEGACY_V11_SUMMARY_PROMPT
-                    )
-                ) =>
-            {
-                Some(DEFAULT_SUMMARY_PROMPT)
-            }
-            ActionKind::Explain
-                if matches!(
-                    action.prompt.as_deref(),
-                    Some(
-                        LEGACY_V3_EXPLAIN_PROMPT
-                            | LEGACY_V4_EXPLAIN_PROMPT
-                            | LEGACY_V11_EXPLAIN_PROMPT
-                            | LEGACY_V11_CONCISE_EXPLAIN_PROMPT
-                            | LEGACY_V11_TIGHT_EXPLAIN_PROMPT
-                    )
-                ) =>
-            {
-                Some(DEFAULT_EXPLAIN_PROMPT)
-            }
-            ActionKind::Refine
-                if matches!(
-                    action.prompt.as_deref(),
-                    Some(LEGACY_V3_REFINE_PROMPT | LEGACY_V4_REFINE_PROMPT)
-                ) =>
-            {
-                Some(DEFAULT_REFINE_PROMPT)
-            }
-            _ => None,
-        };
-        if let Some(prompt) = replacement {
-            action.prompt = Some(prompt.to_owned());
-        }
-    }
+    let persisted = settings.clone();
+    // Repair dangling model references without migrating historical formats.
+    heal_orphan_provider_references(&mut settings);
+    let settings = settings
+        .normalize_and_validate()
+        .map_err(SettingsError::Validation)?;
+    Ok(LoadedSettings {
+        must_persist: settings != persisted,
+        settings,
+    })
 }
 
 fn heal_orphan_provider_references(settings: &mut AppSettings) {
@@ -997,362 +637,6 @@ fn heal_orphan_provider_references(settings: &mut AppSettings) {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyAiSettings {
-    #[serde(default = "default_base_url")]
-    base_url: String,
-    #[serde(default)]
-    model: String,
-    #[serde(default)]
-    api_key: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyAction {
-    id: String,
-    name: String,
-    icon: String,
-    #[serde(rename = "type")]
-    kind: ActionKind,
-    enabled: bool,
-    order: u32,
-    #[serde(default)]
-    prompt: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacySettings {
-    #[serde(default)]
-    locale: Locale,
-    #[serde(default)]
-    translate: TranslationSettings,
-    #[serde(default)]
-    ai: LegacyAiSettings,
-    #[serde(default)]
-    actions: Vec<LegacyAction>,
-}
-
-fn migrate_v1(mut value: serde_json::Value) -> Result<LoadedSettings, SettingsError> {
-    remove_retired_actions_value(&mut value);
-    let legacy: LegacySettings = serde_json::from_value(value)?;
-    let model = legacy.ai.model.trim().to_owned();
-    let provider = ProviderConfig {
-        id: DEFAULT_PROVIDER_ID.to_owned(),
-        name: "OpenAI Compatible".to_owned(),
-        kind: crate::models::ProviderKind::Openai,
-        dsh_workspace: None,
-        enabled: true,
-        base_url: legacy.ai.base_url,
-        models: if model.is_empty() {
-            Vec::new()
-        } else {
-            vec![ProviderModel {
-                id: model.clone(),
-                name: model.clone(),
-                thinking_levels: Vec::new(),
-                thinking_capability: None,
-            }]
-        },
-    };
-    let defaults = AppSettings::default();
-    let default_actions = defaults
-        .actions
-        .iter()
-        .map(|action| (action.kind, action.clone()))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut actions = if legacy.actions.is_empty() {
-        defaults.actions.clone()
-    } else {
-        legacy
-            .actions
-            .into_iter()
-            .map(|action| {
-                let default_prompt = default_actions
-                    .get(&action.kind)
-                    .and_then(|action| action.prompt.clone());
-                ActionDefinition {
-                    id: action.id,
-                    name: action.name,
-                    icon: action.icon,
-                    kind: action.kind,
-                    enabled: action.enabled,
-                    order: action.order,
-                    prompt: if action.kind.is_ai() {
-                        action.prompt.or(default_prompt)
-                    } else {
-                        None
-                    },
-                    provider_id: if action.kind == ActionKind::Ask {
-                        Some(String::new())
-                    } else if action.kind.is_ai() {
-                        Some(DEFAULT_PROVIDER_ID.to_owned())
-                    } else {
-                        None
-                    },
-                    model_id: if action.kind == ActionKind::Ask {
-                        Some(String::new())
-                    } else if action.kind.is_ai() {
-                        Some(model.clone())
-                    } else {
-                        None
-                    },
-                    thinking_mode: crate::models::ThinkingMode::Off,
-                }
-            })
-            .collect()
-    };
-    for new_kind in [ActionKind::Refine, ActionKind::Ask] {
-        if !actions.iter().any(|action| action.kind == new_kind) {
-            if let Some(default) = default_actions.get(&new_kind) {
-                let mut added = default.clone();
-                added.enabled = actions.iter().filter(|action| action.enabled).count() < 8;
-                added.order = actions.len() as u32;
-                added.model_id = (added.kind.is_ai() && added.kind != ActionKind::Ask)
-                    .then(|| model.clone());
-                actions.push(added);
-            }
-        }
-    }
-    let mut settings = AppSettings {
-        version: SETTINGS_VERSION,
-        tray_enabled: true,
-        quick_ask_shortcut: crate::models::default_quick_ask_shortcut(),
-        default_ai: crate::models::DefaultAiModel {
-            provider_id: if model.is_empty() {
-                String::new()
-            } else {
-                DEFAULT_PROVIDER_ID.to_owned()
-            },
-            model_id: model.clone(),
-        },
-        locale: legacy.locale,
-        translate: legacy.translate,
-        result: Default::default(),
-        filter: Default::default(),
-        providers: vec![provider],
-        actions,
-    };
-    heal_orphan_provider_references(&mut settings);
-    let settings = settings
-        .normalize_and_validate()
-        .map_err(SettingsError::Validation)?;
-    Ok(LoadedSettings {
-        settings,
-        legacy_api_key: (!legacy.ai.api_key.trim().is_empty()).then_some(legacy.ai.api_key),
-        must_persist: true,
-    })
-}
-
-fn default_base_url() -> String {
-    "https://api.openai.com/v1".to_owned()
-}
-
-/// Remove retired action kinds before deserialization, including v1's type alias.
-fn remove_retired_actions_value(value: &mut serde_json::Value) -> bool {
-    let Some(object) = value.as_object_mut() else {
-        return false;
-    };
-    let legacy_v1 = object
-        .get("version")
-        .and_then(serde_json::Value::as_u64)
-        .is_none_or(|version| version == 1);
-    let mut changed = false;
-    for key in [
-        "searchEngine",
-        "searchTemplate",
-        "searchEngines",
-        "activeSearchEngineId",
-    ] {
-        changed |= object.remove(key).is_some();
-    }
-    if let Some(actions) = object
-        .get_mut("actions")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        let original_len = actions.len();
-        actions.retain(|action| {
-            !matches!(
-                action
-                    .get("kind")
-                    .or_else(|| action.get("type"))
-                    .and_then(serde_json::Value::as_str),
-                Some("copy" | "search")
-            )
-        });
-        let removed = actions.len() != original_len;
-        changed |= removed;
-        let editable = |action: &serde_json::Value| {
-            !matches!(
-                action
-                    .get("kind")
-                    .or_else(|| action.get("type"))
-                    .and_then(serde_json::Value::as_str),
-                Some("ask" | "quote")
-            ) && action.get("id").and_then(serde_json::Value::as_str) != Some("ask-ai")
-        };
-        if removed && !actions.iter().any(editable) {
-            actions.extend(
-                serde_json::to_value(
-                    AppSettings::default()
-                        .actions
-                        .into_iter()
-                        .filter(|action| action.kind != ActionKind::Ask)
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .iter()
-                .cloned(),
-            );
-            // The v1 loader reads the legacy type key.
-            if legacy_v1 {
-                for action in actions.iter_mut() {
-                    let action = action.as_object_mut().unwrap();
-                    if let Some(kind) = action.remove("kind") {
-                        action.insert("type".to_owned(), kind);
-                    }
-                }
-            }
-        }
-        if removed
-            && !actions.iter().any(|action| {
-                editable(action)
-                    && action.get("enabled").and_then(serde_json::Value::as_bool) == Some(true)
-            })
-        {
-            if let Some(action) = actions
-                .iter_mut()
-                .find(|action| editable(action))
-                .and_then(serde_json::Value::as_object_mut)
-            {
-                action.insert("enabled".to_owned(), true.into());
-            }
-        }
-        for (order, action) in actions.iter_mut().enumerate() {
-            if let Some(action) = action.as_object_mut() {
-                changed |= action.remove("searchEngineId").is_some();
-                if removed {
-                    action.insert("order".to_owned(), (order as u64).into());
-                }
-            }
-        }
-    }
-    changed
-}
-
-fn value_has_quote_action(value: &serde_json::Value) -> bool {
-    value
-        .get("actions")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|actions| {
-            actions.iter().any(|action| {
-                let kind = action
-                    .get("kind")
-                    .or_else(|| action.get("type"))
-                    .and_then(serde_json::Value::as_str);
-                let id = action.get("id").and_then(serde_json::Value::as_str);
-                kind == Some("quote") || id == Some("quote")
-            })
-        })
-}
-
-/// Rewrite local quote clipboard actions into the ask-ai AI action (SETTINGS_VERSION 11).
-fn migrate_quote_to_ask_value(value: &mut serde_json::Value) {
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-    let Some(actions) = object
-        .get_mut("actions")
-        .and_then(serde_json::Value::as_array_mut)
-    else {
-        return;
-    };
-
-    let mut saw_ask = false;
-    let mut rewritten = Vec::with_capacity(actions.len());
-    for action in actions.drain(..) {
-        let Some(action_object) = action.as_object() else {
-            rewritten.push(action);
-            continue;
-        };
-        let kind = action_object
-            .get("kind")
-            .or_else(|| action_object.get("type"))
-            .and_then(serde_json::Value::as_str);
-        let id = action_object.get("id").and_then(serde_json::Value::as_str);
-        let is_quote = kind == Some("quote") || id == Some("quote");
-        let is_ask = kind == Some("ask") || id == Some("ask-ai");
-        if is_quote || is_ask {
-            if saw_ask {
-                continue;
-            }
-            saw_ask = true;
-            let name = action_object
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty() && *value != "引用")
-                .unwrap_or("问AI");
-            let icon = action_object
-                .get("icon")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty() && *value != "quote")
-                .unwrap_or("message-circle-question");
-            let enabled = action_object
-                .get("enabled")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true);
-            let order = action_object
-                .get("order")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(6);
-            let prompt = action_object
-                .get("prompt")
-                .and_then(serde_json::Value::as_str)
-                .filter(|value| value.contains("{{text}}"))
-                .unwrap_or(DEFAULT_ASK_PROMPT);
-            let provider_id = "";
-            let model_id = "";
-            let thinking_mode = action_object
-                .get("thinkingMode")
-                .cloned()
-                .unwrap_or_else(|| serde_json::Value::String("off".to_owned()));
-            rewritten.push(serde_json::json!({
-                "id": "ask-ai",
-                "name": name,
-                "icon": icon,
-                "kind": "ask",
-                "enabled": enabled,
-                "order": order,
-                "prompt": prompt,
-                "providerId": provider_id,
-                "modelId": model_id,
-                "thinkingMode": thinking_mode,
-            }));
-            continue;
-        }
-        rewritten.push(action);
-    }
-    for (order, action) in rewritten.iter_mut().enumerate() {
-        if let Some(object) = action.as_object_mut() {
-            object.insert(
-                "order".to_owned(),
-                serde_json::Value::Number((order as u64).into()),
-            );
-        }
-    }
-    *actions = rewritten;
-    object.insert(
-        "version".to_owned(),
-        serde_json::Value::Number(SETTINGS_VERSION.into()),
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, sync::Mutex};
@@ -1361,7 +645,8 @@ mod tests {
 
     use super::*;
     use crate::models::{
-        ThinkingCapability, ThinkingCapabilitySource, ThinkingDialect, ThinkingLevel,
+        ProviderModel, ThinkingCapability, ThinkingCapabilitySource, ThinkingDialect, ThinkingLevel,
+        DEFAULT_PROVIDER_ID,
     };
 
     #[derive(Default)]
@@ -1442,6 +727,89 @@ mod tests {
     }
 
     #[test]
+    fn current_settings_and_secrets_reopen_without_rewriting_or_reseeding() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository = SettingsRepository::new(&path).unwrap();
+        configure_ai_repository(&repository, "current-model", "sk-current");
+        repository
+            .set_eudic_authorization("current-authorization")
+            .unwrap();
+        let mut actions = repository.get_settings().actions;
+        actions[0].prompt = Some("自定义翻译：{{text}}".to_owned());
+        repository
+            .update(SettingsUpdate {
+                actions: Some(actions),
+                default_ai: Some(Default::default()),
+                tray_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+        let expected = repository.get_settings();
+        let original = fs::read(&path).unwrap();
+        let encrypted_path = path.with_file_name(crate::local_secrets::ENCRYPTED_SECRETS_FILE_NAME);
+        let encrypted = fs::read(&encrypted_path).unwrap();
+        drop(repository);
+
+        let reopened = SettingsRepository::new(&path).unwrap();
+        assert_eq!(reopened.get_settings(), expected);
+        assert_eq!(
+            reopened
+                .get_api_key(DEFAULT_PROVIDER_ID)
+                .unwrap()
+                .as_deref(),
+            Some("sk-current")
+        );
+        assert_eq!(
+            reopened.eudic_authorization().unwrap().as_deref(),
+            Some("current-authorization")
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(fs::read(&encrypted_path).unwrap(), encrypted);
+    }
+
+    #[test]
+    fn unsupported_settings_are_rejected_without_modifying_the_file() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let current = serde_json::to_value(AppSettings::default()).unwrap();
+        let mut invalid = Vec::new();
+        for version in (1..SETTINGS_VERSION).chain([SETTINGS_VERSION + 1]) {
+            let mut value = current.clone();
+            value["version"] = version.into();
+            invalid.push(value);
+        }
+        for field in ["version", "trayEnabled", "quickAskShortcut", "defaultAi"] {
+            let mut value = current.clone();
+            value.as_object_mut().unwrap().remove(field);
+            invalid.push(value);
+        }
+        let mut value = current.clone();
+        value["selectionCapture"] = serde_json::json!({});
+        invalid.push(value);
+        let mut value = current.clone();
+        let action = value["actions"][0].as_object_mut().unwrap();
+        let kind = action.remove("kind").unwrap();
+        action.insert("type".to_owned(), kind);
+        invalid.push(value);
+        let mut value = current.clone();
+        value["filter"] = serde_json::json!({"mode": "default", "list": []});
+        invalid.push(value);
+        let mut value = current;
+        value["providers"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("kind");
+        invalid.push(value);
+        for value in invalid {
+            let original = serde_json::to_vec_pretty(&value).unwrap();
+            fs::write(&path, &original).unwrap();
+            assert!(SettingsRepository::new(&path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
     fn default_ai_persists_without_action_overrides_and_clears_on_model_removal() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1480,44 +848,11 @@ mod tests {
     }
 
     #[test]
-    fn default_ai_upgrades_old_ask_once_and_does_not_reseed_an_empty_default() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        configure_ai_repository(&repository, "legacy-model", "key");
-        let mut legacy = serde_json::to_value(repository.get_settings()).unwrap();
-        legacy.as_object_mut().unwrap().remove("defaultAi");
-        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let reopened =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        assert_eq!(reopened.get_settings().default_ai.model_id, "legacy-model");
-        reopened
-            .update(SettingsUpdate {
-                default_ai: Some(Default::default()),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap()
-                .get_settings()
-                .default_ai,
-            Default::default()
-        );
-    }
-
-    #[test]
-    fn quick_ask_shortcut_defaults_on_upgrade_and_survives_restart() {
+    fn quick_ask_shortcut_survives_restart() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let original = AppSettings::default();
-        let mut legacy = serde_json::to_value(&original).unwrap();
-        legacy["version"] = 16.into();
-        legacy.as_object_mut().unwrap().remove("quickAskShortcut");
-        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
         let secrets = Arc::new(MemorySecrets::default());
         let repository = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
         assert_eq!(
@@ -1547,12 +882,10 @@ mod tests {
     }
 
     #[test]
-    fn tray_preference_defaults_for_existing_settings_and_survives_restart() {
+    fn tray_preference_survives_restart() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
-        let mut legacy = serde_json::to_value(AppSettings::default()).unwrap();
-        legacy.as_object_mut().unwrap().remove("trayEnabled");
-        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(&AppSettings::default()).unwrap()).unwrap();
         let secrets = Arc::new(MemorySecrets::default());
         let repository = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
         assert!(repository.get_public_settings().unwrap().tray_enabled);
@@ -1620,20 +953,6 @@ mod tests {
     }
 
     #[test]
-    fn existing_translation_settings_default_dictionary_on_and_preserve_off() {
-        let old = serde_json::json!({"primaryLanguage":"zh-CN","alternateLanguage":"en-US"});
-        let migrated: TranslationSettings = serde_json::from_value(old.clone()).unwrap();
-        assert!(migrated.dictionary_enabled);
-        let mut disabled = old;
-        disabled["dictionaryEnabled"] = serde_json::json!(false);
-        assert!(
-            !serde_json::from_value::<TranslationSettings>(disabled)
-                .unwrap()
-                .dictionary_enabled
-        );
-    }
-
-    #[test]
     fn fresh_repository_has_only_the_default_openai_address_and_no_api_key() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1688,163 +1007,6 @@ mod tests {
             Some("sk-encrypted-locally")
         );
         assert!(reopened.get_public_settings().unwrap().providers[0].key_configured);
-    }
-
-    #[test]
-    fn imports_pristine_popper_settings_and_secrets_from_the_legacy_directory() {
-        let root = tempdir().unwrap();
-        let legacy_path = root
-            .path()
-            .join(LEGACY_APP_CONFIG_DIRECTORY)
-            .join("settings.json");
-        let current_path = root.path().join("com.local.popper").join("settings.json");
-        let legacy = SettingsRepository::new(&legacy_path).unwrap();
-        configure_ai_repository(&legacy, "legacy-model", "legacy-secret");
-        drop(legacy);
-
-        let migrated = SettingsRepository::new_with_legacy_migration(&current_path).unwrap();
-        let settings = migrated.get_settings();
-        assert_eq!(settings.providers[0].name, "Configured Provider");
-        assert_eq!(settings.providers[0].models[0].id, "legacy-model");
-        assert!(settings
-            .actions
-            .iter()
-            .filter(|action| action.kind.is_ai() && action.kind != ActionKind::Ask)
-            .all(|action| action.model_id.as_deref() == Some("legacy-model")));
-        assert_eq!(settings.default_ai.model_id, "legacy-model");
-        assert_eq!(
-            migrated
-                .get_api_key(DEFAULT_PROVIDER_ID)
-                .unwrap()
-                .as_deref(),
-            Some("legacy-secret")
-        );
-        let encrypted = fs::read_to_string(
-            current_path.with_file_name(crate::local_secrets::ENCRYPTED_SECRETS_FILE_NAME),
-        )
-        .unwrap();
-        assert!(!encrypted.contains("legacy-secret"));
-    }
-
-    #[test]
-    fn legacy_import_never_overwrites_configured_popper_settings() {
-        let root = tempdir().unwrap();
-        let legacy_path = root
-            .path()
-            .join(LEGACY_APP_CONFIG_DIRECTORY)
-            .join("settings.json");
-        let current_path = root.path().join("com.local.popper").join("settings.json");
-        let legacy = SettingsRepository::new(&legacy_path).unwrap();
-        configure_ai_repository(&legacy, "legacy-model", "legacy-secret");
-        let current = SettingsRepository::new(&current_path).unwrap();
-        configure_ai_repository(&current, "current-model", "current-secret");
-        drop((legacy, current));
-
-        let reopened = SettingsRepository::new_with_legacy_migration(&current_path).unwrap();
-        assert_eq!(
-            reopened.get_settings().providers[0].models[0].id,
-            "current-model"
-        );
-        assert_eq!(
-            reopened
-                .get_api_key(DEFAULT_PROVIDER_ID)
-                .unwrap()
-                .as_deref(),
-            Some("current-secret")
-        );
-    }
-
-    #[test]
-    fn migrates_v1_provider_model_actions_and_plain_key() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        fs::write(
-            &path,
-            r#"{
-              "version": 1,
-              "enabled": true,
-              "captureShortcut": "",
-              "locale": "zh-CN",
-              "searchEngines": [
-                {
-                  "id": "google",
-                  "name": "Google",
-                  "template": "https://www.google.com/search?q={{text}}",
-                  "builtin": true
-                },
-                {
-                  "id": "bing-china",
-                  "name": "Bing",
-                  "template": "https://cn.bing.com/search?q={{text}}",
-                  "builtin": true
-                },
-                {
-                  "id": "baidu",
-                  "name": "百度",
-                  "template": "https://www.baidu.com/s?wd={{text}}",
-                  "builtin": true
-                }
-              ],
-              "activeSearchEngineId": "google",
-              "translate": {"primaryLanguage":"zh-CN","alternateLanguage":"en-US"},
-              "ai": {"baseUrl":"https://example.com/v1","model":"gpt-test","apiKey":"legacy-secret"},
-              "actions": [
-                {"id":"copy","name":"复制","icon":"copy","type":"copy","enabled":true,"order":0},
-                {"id":"translate","name":"翻译","icon":"languages","type":"translate","enabled":true,"order":1}
-              ]
-            }"#,
-        )
-        .unwrap();
-        let secrets = Arc::new(MemorySecrets::default());
-        let repository = SettingsRepository::with_secret_store(&path, secrets).unwrap();
-        let settings = repository.get_settings();
-        assert_eq!(settings.version, SETTINGS_VERSION);
-        assert_eq!(settings.providers[0].models[0].id, "gpt-test");
-        assert_eq!(settings.actions[0].model_id.as_deref(), Some("gpt-test"));
-        assert!(repository.get_public_settings().unwrap().providers[0].key_configured);
-        assert!(!fs::read_to_string(path).unwrap().contains("legacy-secret"));
-    }
-
-    #[test]
-    fn persists_new_result_defaults_when_loading_older_v2_settings() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-        let result = value
-            .get_mut("result")
-            .and_then(serde_json::Value::as_object_mut)
-            .unwrap();
-        result.remove("dismissMode");
-        result.remove("fontSize");
-        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let settings = repository.get_settings();
-        assert_eq!(
-            settings.result.dismiss_mode,
-            crate::models::ResultDismissMode::Blur
-        );
-        assert_eq!(
-            settings.result.font_size,
-            crate::models::DEFAULT_RESULT_FONT_SIZE
-        );
-
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(
-            persisted
-                .pointer("/result/dismissMode")
-                .and_then(|value| value.as_str()),
-            Some("blur")
-        );
-        assert_eq!(
-            persisted
-                .pointer("/result/fontSize")
-                .and_then(|value| value.as_u64()),
-            Some(14)
-        );
     }
 
     #[test]
@@ -2041,601 +1203,6 @@ mod tests {
             .get(&secret_account(DEFAULT_PROVIDER_ID))
             .unwrap()
             .is_none());
-    }
-
-    #[test]
-    fn migrates_electron_store_wrapped_v1_settings() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        fs::write(
-            &path,
-            r#"{
-              "settings": {
-                "version": 1,
-                "enabled": false,
-                "searchTemplate": "https://example.com/?q={{text}}",
-                "ai": {"baseUrl":"https://gateway.example/v1","model":"model-a"},
-                "actions": [{"id":"copy","type":"copy","name":"复制","icon":"copy","enabled":true,"order":0}]
-              },
-              "encryptedApiKey": "not-plaintext-and-not-migrated"
-            }"#,
-        )
-        .unwrap();
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let settings = repository.get_settings();
-        assert!(serde_json::to_value(&settings)
-            .unwrap()
-            .get("enabled")
-            .is_none());
-        assert_eq!(settings.providers[0].base_url, "https://gateway.example/v1");
-        assert_eq!(settings.providers[0].models[0].id, "model-a");
-        assert!(!fs::read_to_string(path)
-            .unwrap()
-            .contains("encryptedApiKey"));
-    }
-
-    #[test]
-    fn migrates_v2_without_losing_provider_action_or_secret_binding() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut v2 = AppSettings::default();
-        v2.version = 2;
-        v2.result.dismiss_mode = ResultDismissMode::Manual;
-        v2.providers[0].name = "Private Gateway".to_owned();
-        v2.providers[0].base_url = "http://gateway.example/v1".to_owned();
-        v2.providers[0].models = vec![ProviderModel {
-            id: "model-selected".to_owned(),
-            name: "Selected Model".to_owned(),
-            thinking_levels: Vec::new(),
-            thinking_capability: None,
-        }];
-        for action in v2.actions.iter_mut().filter(|action| action.kind.is_ai()) {
-            action.model_id = Some("model-selected".to_owned());
-        }
-        v2.actions[0].prompt = Some("保留这个自定义提示词：{{text}}".to_owned());
-        let mut value = serde_json::to_value(v2).unwrap();
-        value
-            .pointer_mut("/result")
-            .and_then(serde_json::Value::as_object_mut)
-            .unwrap()
-            .remove("fontSize");
-        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-        let secrets = Arc::new(MemorySecrets::default());
-        secrets
-            .set(
-                &secret_account(DEFAULT_PROVIDER_ID),
-                "provider-specific-key",
-            )
-            .unwrap();
-        let repository = SettingsRepository::with_secret_store(&path, secrets).unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(migrated.version, SETTINGS_VERSION);
-        assert_eq!(migrated.result.dismiss_mode, ResultDismissMode::Blur);
-        assert_eq!(
-            migrated.result.font_size,
-            crate::models::DEFAULT_RESULT_FONT_SIZE
-        );
-        assert_eq!(migrated.providers[0].name, "Private Gateway");
-        assert_eq!(migrated.providers[0].models[0].id, "model-selected");
-        assert_eq!(
-            migrated.actions[0].prompt.as_deref(),
-            Some("保留这个自定义提示词：{{text}}")
-        );
-        assert_eq!(
-            migrated.actions[0].model_id.as_deref(),
-            Some("model-selected")
-        );
-        assert!(repository.get_public_settings().unwrap().providers[0].key_configured);
-
-        let persisted: serde_json::Value =
-            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(persisted["version"], SETTINGS_VERSION);
-        assert_eq!(persisted["result"]["dismissMode"], "blur");
-    }
-
-    #[test]
-    fn migrates_only_canonical_untouched_v3_default_prompts() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut v3 = AppSettings::default();
-        v3.version = 3;
-        let translate = v3
-            .actions
-            .iter_mut()
-            .find(|action| action.kind == ActionKind::Translate)
-            .unwrap();
-        translate.prompt = Some(LEGACY_V3_TRANSLATE_PROMPT.to_owned());
-        let mut second_translate = translate.clone();
-        second_translate.id = "translate-second".to_owned();
-        second_translate.name = "第二个翻译".to_owned();
-        second_translate.enabled = false;
-        second_translate.order = v3.actions.len() as u32;
-        v3.actions.push(second_translate);
-        v3.actions
-            .iter_mut()
-            .find(|action| action.kind == ActionKind::Summary)
-            .unwrap()
-            .prompt = Some(LEGACY_V3_SUMMARY_PROMPT.to_owned());
-        v3.actions
-            .iter_mut()
-            .find(|action| action.kind == ActionKind::Refine)
-            .unwrap()
-            .prompt = Some(LEGACY_V3_REFINE_PROMPT.to_owned());
-        let explain = v3
-            .actions
-            .iter_mut()
-            .find(|action| action.kind == ActionKind::Explain)
-            .unwrap();
-        explain.prompt = Some("保留用户自己的解释规则：{{text}}".to_owned());
-        fs::write(&path, serde_json::to_vec_pretty(&v3).unwrap()).unwrap();
-
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(migrated.version, SETTINGS_VERSION);
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.kind == ActionKind::Translate)
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_TRANSLATE_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.kind == ActionKind::Explain)
-                .and_then(|action| action.prompt.as_deref()),
-            Some("保留用户自己的解释规则：{{text}}")
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "translate-second")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(LEGACY_V3_TRANSLATE_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "summary")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_SUMMARY_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "refine")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_REFINE_PROMPT)
-        );
-    }
-
-    #[test]
-    fn migrates_only_canonical_untouched_v4_default_prompts() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut v4 = AppSettings::default();
-        v4.version = 4;
-        for action in &mut v4.actions {
-            action.prompt = match action.kind {
-                ActionKind::Translate => Some(LEGACY_V4_TRANSLATE_PROMPT.to_owned()),
-                ActionKind::Summary => Some(LEGACY_V4_SUMMARY_PROMPT.to_owned()),
-                ActionKind::Explain => Some(LEGACY_V4_EXPLAIN_PROMPT.to_owned()),
-                ActionKind::Refine => Some(LEGACY_V4_REFINE_PROMPT.to_owned()),
-                _ => action.prompt.clone(),
-            };
-        }
-        let summary = v4
-            .actions
-            .iter_mut()
-            .find(|action| action.kind == ActionKind::Summary)
-            .unwrap();
-        summary.prompt = Some(LEGACY_V4_SUMMARY_PROMPT.to_owned());
-        let mut second_summary = summary.clone();
-        second_summary.id = "summary-second".to_owned();
-        second_summary.name = "第二个总结".to_owned();
-        second_summary.enabled = false;
-        second_summary.order = v4.actions.len() as u32;
-        second_summary.prompt = Some("保留新增动作自己的总结规则：{{text}}".to_owned());
-        v4.actions.push(second_summary);
-        fs::write(&path, serde_json::to_vec_pretty(&v4).unwrap()).unwrap();
-
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(migrated.version, SETTINGS_VERSION);
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "summary")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_SUMMARY_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "summary-second")
-                .and_then(|action| action.prompt.as_deref()),
-            Some("保留新增动作自己的总结规则：{{text}}")
-        );
-        for (id, expected) in [
-            ("translate", DEFAULT_TRANSLATE_PROMPT),
-            ("summary", DEFAULT_SUMMARY_PROMPT),
-            ("explain", DEFAULT_EXPLAIN_PROMPT),
-            ("refine", DEFAULT_REFINE_PROMPT),
-        ] {
-            assert_eq!(
-                migrated
-                    .actions
-                    .iter()
-                    .find(|action| action.id == id)
-                    .and_then(|action| action.prompt.as_deref()),
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn migrates_v10_quote_action_to_ask_ai() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut current = AppSettings::default();
-        // Force a v10-shaped file with the legacy quote clipboard action.
-        current.version = 10;
-        if let Some(ask) = current
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "ask-ai")
-        {
-            ask.id = "quote".to_owned();
-            ask.name = "引用".to_owned();
-            ask.icon = "quote".to_owned();
-            ask.kind = ActionKind::Ask; // will be rewritten via JSON kind
-            ask.enabled = false;
-            ask.prompt = None;
-            ask.provider_id = None;
-            ask.model_id = None;
-        }
-        let mut value = serde_json::to_value(&current).unwrap();
-        if let Some(actions) = value
-            .get_mut("actions")
-            .and_then(serde_json::Value::as_array_mut)
-        {
-            for action in actions {
-                let Some(object) = action.as_object_mut() else {
-                    continue;
-                };
-                if object.get("id").and_then(serde_json::Value::as_str) == Some("quote") {
-                    object.insert(
-                        "kind".to_owned(),
-                        serde_json::Value::String("quote".to_owned()),
-                    );
-                    object.remove("prompt");
-                    object.remove("providerId");
-                    object.remove("modelId");
-                    object.remove("thinkingMode");
-                }
-            }
-        }
-        if let Some(object) = value.as_object_mut() {
-            object.insert("version".to_owned(), serde_json::Value::Number(10.into()));
-        }
-        fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
-
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(migrated.version, SETTINGS_VERSION);
-        let ask = migrated
-            .actions
-            .iter()
-            .find(|action| action.id == "ask-ai")
-            .expect("quote becomes ask-ai");
-        assert_eq!(ask.kind, ActionKind::Ask);
-        assert_eq!(ask.name, "问AI");
-        assert_eq!(ask.icon, "message-circle-question");
-        // Preserves the previous quote enabled flag (fixture uses false).
-        assert!(!ask.enabled);
-        assert_eq!(ask.prompt.as_deref(), Some(DEFAULT_ASK_PROMPT));
-        assert!(migrated.actions.iter().all(|action| action.id != "quote"));
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .filter(|action| action.kind == ActionKind::Ask)
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn upgrades_only_the_untouched_builtin_v5_translation_prompt() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut current = AppSettings::default();
-        current.version = 5;
-        current
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "translate")
-            .unwrap()
-            .prompt = Some(LEGACY_V5_TRANSLATE_PROMPT.to_owned());
-        let mut custom_translation = current
-            .actions
-            .iter()
-            .find(|action| action.id == "translate")
-            .unwrap()
-            .clone();
-        custom_translation.id = "translate-second".to_owned();
-        custom_translation.name = "第二个翻译".to_owned();
-        custom_translation.enabled = false;
-        custom_translation.order = current.actions.len() as u32;
-        custom_translation.prompt = Some(LEGACY_V5_TRANSLATE_PROMPT.to_owned());
-        current.actions.push(custom_translation);
-        fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
-
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "translate")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_TRANSLATE_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "translate-second")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(LEGACY_V5_TRANSLATE_PROMPT)
-        );
-        assert!(fs::read_to_string(path)
-            .unwrap()
-            .contains("You are a professional multilingual translator."));
-    }
-
-    #[test]
-    fn upgrades_only_canonical_untouched_v11_default_prompts() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut current = AppSettings::default();
-        current.version = 11;
-        current
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "translate")
-            .unwrap()
-            .prompt = Some(LEGACY_V11_TRANSLATE_PROMPT.to_owned());
-        current
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "summary")
-            .unwrap()
-            .prompt = Some(LEGACY_V11_SUMMARY_PROMPT.to_owned());
-        current
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "explain")
-            .unwrap()
-            .prompt = Some(LEGACY_V11_EXPLAIN_PROMPT.to_owned());
-        let mut custom_explain = current
-            .actions
-            .iter()
-            .find(|action| action.id == "explain")
-            .unwrap()
-            .clone();
-        custom_explain.id = "explain-custom".to_owned();
-        custom_explain.name = "自定义解释".to_owned();
-        custom_explain.enabled = false;
-        custom_explain.order = current.actions.len() as u32;
-        custom_explain.prompt = Some(LEGACY_V11_EXPLAIN_PROMPT.to_owned());
-        current.actions.push(custom_explain);
-        fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
-
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "translate")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_TRANSLATE_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "summary")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_SUMMARY_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "explain")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_EXPLAIN_PROMPT)
-        );
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "explain-custom")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(LEGACY_V11_EXPLAIN_PROMPT)
-        );
-        assert!(DEFAULT_EXPLAIN_PROMPT.contains("整体解释"));
-        assert!(DEFAULT_EXPLAIN_PROMPT.contains("核心意思"));
-        assert!(!DEFAULT_EXPLAIN_PROMPT.contains("必要上下文"));
-    }
-
-    #[test]
-    fn migrates_tight_explain_default_that_mentioned_necessary_context() {
-        let directory = tempdir().unwrap();
-        let path = directory.path().join("settings.json");
-        let mut current = AppSettings::default();
-        current
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "explain")
-            .unwrap()
-            .prompt = Some(LEGACY_V11_TIGHT_EXPLAIN_PROMPT.to_owned());
-        fs::write(&path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
-
-        let repository =
-            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                .unwrap();
-        let migrated = repository.get_settings();
-        assert_eq!(
-            migrated
-                .actions
-                .iter()
-                .find(|action| action.id == "explain")
-                .and_then(|action| action.prompt.as_deref()),
-            Some(DEFAULT_EXPLAIN_PROMPT)
-        );
-    }
-
-    #[test]
-    fn retires_local_actions_and_persists_ai_configuration() {
-        for version in [2, 7, 8, 9, 10, 11, 15, SETTINGS_VERSION] {
-            let directory = tempdir().unwrap();
-            let path = directory.path().join("settings.json");
-            let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-            value["version"] = version.into();
-            value["searchEngines"] = serde_json::json!([]);
-            value["activeSearchEngineId"] = "baidu".into();
-            let mut ai = value["actions"][0].clone();
-            ai["id"] = "copy".into();
-            ai["prompt"] = "Custom task {{text}}".into();
-            value["actions"] = serde_json::json!([
-                {"id":"copy", "kind":"copy", "name":"复制", "icon":"copy", "enabled":true, "order":0},
-                {"id":"search-custom", "type":"search", "name":"搜索", "icon":"search", "enabled":true, "order":1, "searchEngineId":"baidu"},
-                ai
-            ]);
-            fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-            let repository =
-                SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                    .unwrap();
-            let settings = repository.get_settings();
-            let ai = settings
-                .actions
-                .iter()
-                .find(|action| action.id == "copy")
-                .unwrap();
-            assert_eq!(ai.kind, ActionKind::Translate);
-            assert_eq!(ai.prompt.as_deref(), Some("Custom task {{text}}"));
-            assert_eq!(ai.provider_id.as_deref(), Some(DEFAULT_PROVIDER_ID));
-            assert_eq!(ai.model_id.as_deref(), Some(""));
-            let persisted: serde_json::Value =
-                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            assert!(persisted.get("searchEngines").is_none());
-            assert!(persisted.get("activeSearchEngineId").is_none());
-            assert!(persisted["actions"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .all(|action| !matches!(action["kind"].as_str(), Some("copy" | "search"))));
-            assert_eq!(load_settings(&path).unwrap().settings, settings);
-            assert!(!load_settings(&path).unwrap().must_persist);
-        }
-    }
-
-    #[test]
-    fn retired_only_actions_receive_a_usable_toolbar() {
-        for version in [1, 15, SETTINGS_VERSION] {
-            for keep_disabled_ai in [false, true] {
-                let directory = tempdir().unwrap();
-                let path = directory.path().join("settings.json");
-                let mut value = serde_json::to_value(AppSettings::default()).unwrap();
-                value["version"] = version.into();
-                if version == 1 {
-                    value["ai"] = serde_json::json!({"baseUrl":"https://api.openai.com/v1"});
-                }
-                let mut ai = value["actions"][0].clone();
-                ai["enabled"] = false.into();
-                if version == 1 {
-                    let ai = ai.as_object_mut().unwrap();
-                    let kind = ai.remove("kind").unwrap();
-                    ai.insert("type".to_owned(), kind);
-                }
-                value["actions"] = serde_json::json!([{ "id":"copy", "type":"copy", "name":"复制", "icon":"copy", "enabled":true, "order":0 }]);
-                if keep_disabled_ai {
-                    value["actions"].as_array_mut().unwrap().push(ai);
-                }
-                fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
-                let loaded = load_settings(&path).unwrap();
-                assert!(loaded
-                    .settings
-                    .actions
-                    .iter()
-                    .any(|action| action.enabled && action.kind != ActionKind::Ask));
-                assert!(loaded.settings.normalize_and_validate().is_ok());
-            }
-        }
-    }
-
-    #[test]
-    fn retired_configuration_is_removed_without_changing_other_settings() {
-        for version in [5, 11, 12, 13, 14, SETTINGS_VERSION] {
-            let directory = tempdir().unwrap();
-            let path = directory.path().join("settings.json");
-            let settings = AppSettings::default();
-            let mut payload = serde_json::to_value(&settings).unwrap();
-            payload["version"] = serde_json::json!(version);
-            payload["enabled"] = serde_json::json!(false);
-            payload["toolbar"] = serde_json::json!({ "displayMode": "icon-only" });
-            payload["application"] = serde_json::json!({ "closeBehavior": "quit" });
-            payload["trigger"] = serde_json::json!({ "mode": "shortcut" });
-            payload["captureShortcut"] = serde_json::json!("CommandOrControl+Shift+F12");
-            payload["selectionCapture"] = serde_json::json!({
-                "defaultStrategy": "clipboard",
-                "applications": [{ "application": "reader.exe", "strategy": "selection-hook" }]
-            });
-            fs::write(&path, serde_json::to_vec_pretty(&payload).unwrap()).unwrap();
-
-            let repository =
-                SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
-                    .unwrap();
-            assert_eq!(repository.get_settings(), settings);
-            let persisted: serde_json::Value =
-                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            assert_eq!(persisted["version"], SETTINGS_VERSION);
-            for key in ["enabled", "toolbar", "application"] {
-                assert!(persisted.get(key).is_none());
-            }
-            assert!(persisted.get("selectionCapture").is_none());
-            assert!(persisted.get("trigger").is_none());
-            assert!(persisted.get("captureShortcut").is_none());
-            assert!(
-                serde_json::to_value(repository.get_public_settings().unwrap())
-                    .unwrap()
-                    .get("selectionCapture")
-                    .is_none()
-            );
-        }
     }
 
     #[test]
