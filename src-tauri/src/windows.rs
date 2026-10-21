@@ -388,6 +388,7 @@ impl WindowState {
     /// Records the toolbar's current selection ownership and returns the size
     /// that should be used for layout. Callers must drop the `WindowState` lock
     /// before any work that waits on the UI thread.
+    #[cfg(test)]
     fn commit_toolbar_selection(&mut self, selection_id: &str, anchor: Point) -> WindowSize {
         self.commit_toolbar_selection_with_placement(
             selection_id,
@@ -1621,14 +1622,6 @@ struct WindowLayout {
     coordinate_size: WindowSize,
 }
 
-fn toolbar_layout(
-    window: &WebviewWindow,
-    point: Point,
-    logical_size: WindowSize,
-) -> tauri::Result<WindowLayout> {
-    toolbar_layout_with_placement(window, point, logical_size, ToolbarPlacement::BottomMiddle)
-}
-
 fn toolbar_layout_with_placement(
     window: &WebviewWindow,
     point: Point,
@@ -1742,6 +1735,7 @@ fn result_position_around_center(
     }
 }
 
+#[cfg(test)]
 fn toolbar_position_in_area(
     point: Point,
     size: WindowSize,
@@ -2247,22 +2241,6 @@ fn restore_toolbar_input_visibility(window: &WebviewWindow) -> tauri::Result<()>
 fn activate_toolbar_input_window(window: &WebviewWindow) -> tauri::Result<bool> {
     window.set_focus()?;
     Ok(true)
-}
-
-#[cfg(target_os = "windows")]
-fn stage_windows_toolbar(
-    window: &WebviewWindow,
-    state: Arc<Mutex<WindowState>>,
-    selection_id: String,
-    anchor: Point,
-) -> tauri::Result<()> {
-    stage_windows_toolbar_with_placement(
-        window,
-        state,
-        selection_id,
-        anchor,
-        ToolbarPlacement::BottomMiddle,
-    )
 }
 
 #[cfg(target_os = "windows")]

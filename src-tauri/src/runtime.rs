@@ -38,8 +38,8 @@ use crate::{
     },
     settings::SettingsRepository,
     windows::{
-        restore_source_app_activation, result_label, DismissMode, Point as WindowPoint,
-        ResultWindowOptions, ToolbarPlacement, WindowCoordinator, WindowSize,
+        result_label, DismissMode, Point as WindowPoint, ResultWindowOptions, ToolbarPlacement,
+        WindowCoordinator, WindowSize,
     },
 };
 
@@ -1980,6 +1980,7 @@ fn trace_selection_timing(stage: &str, started: Instant) {
     }
 }
 
+#[cfg(test)]
 fn selection_monitor_disconnect_diagnostic(shutting_down: bool) -> Option<String> {
     (!shutting_down).then(|| SELECTION_MONITOR_DISCONNECTED_ERROR.to_owned())
 }
@@ -3096,7 +3097,7 @@ pub fn retry_action(
 }
 
 #[tauri::command]
-pub async fn dsh_session_state(
+pub(crate) async fn dsh_session_state(
     window: WebviewWindow,
     state: State<'_, RuntimeState>,
     session_id: String,
@@ -3107,7 +3108,7 @@ pub async fn dsh_session_state(
 }
 
 #[tauri::command]
-pub async fn save_dsh_session(
+pub(crate) async fn save_dsh_session(
     window: WebviewWindow,
     state: State<'_, RuntimeState>,
     session_id: String,

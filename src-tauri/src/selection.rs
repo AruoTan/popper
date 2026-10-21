@@ -677,7 +677,7 @@ fn direction_from_points(
     SelectionDirection::Unknown
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(test)]
 fn classify_windows_mouse_selection(
     start: SelectionPoint,
     end: SelectionPoint,
