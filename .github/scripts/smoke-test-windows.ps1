@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $executablePath = (Resolve-Path -LiteralPath $Executable).Path
 $installedLog = Join-Path $env:LOCALAPPDATA 'Popper/startup.log'
 $installedLogHash = if (Test-Path -LiteralPath $installedLog) { (Get-FileHash -LiteralPath $installedLog).Hash } else { '' }
-$dataRoot = Join-Path (Split-Path $executablePath) 'data'
+$dataRoot = Split-Path $executablePath
 $logPath = if ($Portable) { Join-Path $dataRoot 'logs/startup.log' } else { $installedLog }
 if ($Portable -and -not (Test-Path -LiteralPath (Join-Path (Split-Path $executablePath) 'portable.flag'))) {
     throw 'Portable smoke test requires portable.flag beside the executable'
@@ -54,11 +54,14 @@ try {
     if ($Portable) {
         foreach ($path in @('config/settings.json', 'webview')) {
             if (-not (Test-Path -LiteralPath (Join-Path $dataRoot $path))) {
-                throw "Portable startup did not create data/$path"
+                throw "Portable startup did not create $path beside the executable"
             }
         }
         if (@(Get-ChildItem -LiteralPath (Join-Path $dataRoot 'webview') -Force).Count -eq 0) {
-            throw 'Portable WebView did not use data/webview'
+            throw 'Portable WebView did not use webview beside the executable'
+        }
+        if (Test-Path -LiteralPath (Join-Path $dataRoot 'data')) {
+            throw 'Portable startup unexpectedly created the old data directory'
         }
         $currentInstalledLogHash = if (Test-Path -LiteralPath $installedLog) { (Get-FileHash -LiteralPath $installedLog).Hash } else { '' }
         if ($currentInstalledLogHash -ne $installedLogHash) {

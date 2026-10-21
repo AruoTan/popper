@@ -124,8 +124,8 @@ jobs:
           Download the installer or portable ZIP and SHA256SUMS.txt below.
           Scoop: scoop install https://github.com/${GH_REPO}/releases/latest/download/popper.json
           This version (including prereleases): https://github.com/${GH_REPO}/releases/download/${RELEASE_TAG}/popper.json
-          The portable/Scoop edition keeps configuration, keys, logs and WebView data in its data directory.
-          Scoop persists that directory under persist/popper/data. WebView2 Runtime is required.
+          The portable edition stores config, logs and webview beside the executable.
+          Scoop persists only config and logs under persist/popper; WebView data is recreated for each version. WebView2 Runtime is required.
           EOF
           args=("$RELEASE_TAG" "release-assets/Popper_${RELEASE_VERSION}_x64-setup.exe"
             "release-assets/Popper_${RELEASE_VERSION}_x64-portable.zip" "release-assets/popper.json" "release-assets/SHA256SUMS.txt"

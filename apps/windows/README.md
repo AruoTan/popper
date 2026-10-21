@@ -18,8 +18,8 @@ Shared toolbar, result window, settings UI, model requests, and most Rust runtim
 Portable ZIP packaging, Scoop installation and profile migration are documented
 in [Windows portable guide](../../WINDOWS_PORTABLE.md). The shared
 `src-tauri/src/app_paths.rs` selects the Windows data root before startup logging;
-portable logs and selection diagnostics use `data/logs`, and all WebViews use
-`data/webview`. The installed paths documented below apply when neither
+portable logs and selection diagnostics use `logs` beside the executable, and all WebViews use
+`webview` beside the executable. The installed paths documented below apply when neither
 `portable.flag` nor `--data-dir` is supplied.
 
 ## Application icons

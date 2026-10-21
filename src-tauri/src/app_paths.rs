@@ -47,7 +47,7 @@ impl AppPaths {
             .join("portable.flag")
             .try_exists()
             .map_err(|error| error.to_string())?;
-        let data_root = explicit_root.or_else(|| portable.then(|| directory.join("data")));
+        let data_root = explicit_root.or_else(|| portable.then(|| directory.to_path_buf()));
         let logs = match &data_root {
             Some(root) => root.join("logs"),
             None => local_app_data
@@ -61,8 +61,8 @@ impl AppPaths {
 
     fn prepare(&mut self) -> Result<(), String> {
         if let Some(root) = &self.data_root {
-            // Resolve Scoop's data junction before creating WebViews, so every
-            // window and the helper see the same stable, version-free location.
+            // Resolve the executable/custom root once. Scoop links config and
+            // logs individually; WebView data stays in the version directory.
             fs::create_dir_all(root)
                 .map_err(|error| format!("无法创建数据目录 {}：{error}", root.display()))?;
             let root = fs::canonicalize(root).map_err(|error| error.to_string())?;
@@ -184,11 +184,16 @@ mod tests {
         fs::write(&settings, "existing settings").unwrap();
         paths.prepare().unwrap();
         assert_eq!(fs::read_to_string(&settings).unwrap(), "existing settings");
+        assert_eq!(paths.logs, root.path().canonicalize().unwrap().join("logs"));
         assert_eq!(
-            paths.logs,
-            root.path().canonicalize().unwrap().join("data/logs")
+            settings,
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join("config/settings.json")
         );
-        assert!(root.path().join("data/webview").is_dir());
+        assert!(root.path().join("webview").is_dir());
+        assert!(!root.path().join("data").exists());
         assert_eq!(fs::read_dir(settings.parent().unwrap()).unwrap().count(), 1);
     }
 
@@ -246,7 +251,7 @@ mod tests {
     fn invalid_portable_storage_fails_without_falling_back_to_installed_mode() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("portable.flag"), "").unwrap();
-        fs::write(root.path().join("data"), "not a directory").unwrap();
+        fs::write(root.path().join("config"), "not a directory").unwrap();
         let mut paths = resolve(&root.path().join("popper.exe"), &[]).unwrap();
         assert!(paths.prepare().is_err());
         assert!(paths.data_root.is_some());
@@ -323,17 +328,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn scoop_style_data_link_resolves_to_persist_directory() {
+    fn scoop_persists_config_and_logs_but_recreates_webview_for_each_version() {
         let root = tempfile::tempdir().unwrap();
-        let persist = root.path().join("persist/popper/data");
-        let app = root.path().join("apps/popper/1.0.0");
-        fs::create_dir_all(&persist).unwrap();
-        fs::create_dir_all(&app).unwrap();
-        fs::write(app.join("portable.flag"), "").unwrap();
-        std::os::unix::fs::symlink(&persist, app.join("data")).unwrap();
-        let mut paths = resolve(&app.join("popper.exe"), &[]).unwrap();
-        paths.prepare().unwrap();
-        assert_eq!(paths.data_root, Some(persist.canonicalize().unwrap()));
-        assert!(paths.accepts_launch(&app.join("popper.exe"), []).unwrap());
+        let persist = root.path().join("persist/popper");
+        for name in ["config", "logs"] {
+            fs::create_dir_all(persist.join(name)).unwrap();
+        }
+        for version in ["1.0.0", "2.0.0"] {
+            let app = root.path().join("apps/popper").join(version);
+            fs::create_dir_all(&app).unwrap();
+            fs::write(app.join("portable.flag"), "").unwrap();
+            for name in ["config", "logs"] {
+                std::os::unix::fs::symlink(persist.join(name), app.join(name)).unwrap();
+            }
+            let mut paths = resolve(&app.join("popper.exe"), &[]).unwrap();
+            paths.prepare().unwrap();
+            let settings = paths.settings_path(PathBuf::new());
+            if version == "1.0.0" {
+                fs::write(&settings, "preserved settings").unwrap();
+                fs::write(paths.logs.join("previous.log"), "preserved log").unwrap();
+                fs::write(app.join("webview/cache"), "old cache").unwrap();
+            } else {
+                assert_eq!(fs::read_to_string(&settings).unwrap(), "preserved settings");
+                assert_eq!(
+                    fs::read_to_string(paths.logs.join("previous.log")).unwrap(),
+                    "preserved log"
+                );
+                assert_eq!(fs::read_dir(app.join("webview")).unwrap().count(), 0);
+            }
+            assert!(paths.accepts_launch(&app.join("popper.exe"), []).unwrap());
+            assert!(!app.join("data").exists());
+        }
+        assert!(!persist.join("webview").exists());
     }
 }
