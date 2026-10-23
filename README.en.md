@@ -12,7 +12,7 @@ Both platforms share the same renderer, settings, actions, model requests, strea
 
 ## Screen capture (Windows)
 
-Press `Ctrl+Shift+A` to capture the display under the pointer, select a region or a detected window/control, annotate it, and copy, save a PNG, pin it, or attach it to Quick Ask. `Ctrl+Shift+P` pins a clipboard image or restores the last closed image; `Ctrl+Shift+H` toggles all pinned images. Shortcuts are configurable. Images are retained only for the current app session; AI requests require explicit submission.
+Press `PrtSc` to capture the display under the pointer, select a region or a detected window/control, annotate it, and copy, save a PNG, pin it, or attach it to Quick Ask. `Ctrl+Shift+P` pins a clipboard image or restores the last closed image; `Ctrl+Shift+H` toggles all pinned images. Shortcuts are configurable. Images are retained only for the current app session; AI requests require explicit submission.
 
 See [Screen capture](./SCREEN_CAPTURE.md) for behavior, implementation boundaries, and desktop acceptance checks.
 

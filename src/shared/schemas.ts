@@ -313,7 +313,17 @@ export const filterSettingsSchema = z
   .strict()
 export type FilterSettings = z.infer<typeof filterSettingsSchema>
 
-const quickAskShortcutSchema = z.string().max(100).regex(/^(?:(?:Control|Alt|Shift|Super)\+)+(?:Space|Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/).refine((value) => { const modifiers = value.split("+").slice(0, -1); return new Set(modifiers).size === modifiers.length; }, "快捷键修饰键不能重复")
+const STANDALONE_SHORTCUT_KEY_PATTERN = '(?:PrintScreen|F(?:[1-9]|1[0-9]|2[0-4])|Pause|ScrollLock|Insert)'
+const ALL_SHORTCUT_KEY_PATTERN = '(?:PrintScreen|Pause|ScrollLock|Insert|Delete|Home|End|PageUp|PageDown|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Space|Tab|Enter|Backspace|CapsLock|NumLock|Escape|Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Numpad[0-9]|Numpad(?:Add|Subtract|Multiply|Divide|Decimal|Enter|Equal)|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)'
+
+const quickAskShortcutSchema = z
+  .string()
+  .max(100)
+  .regex(new RegExp(`^(?:${STANDALONE_SHORTCUT_KEY_PATTERN}|(?:(?:Control|Alt|Shift|Super)\\+)+${ALL_SHORTCUT_KEY_PATTERN})$`))
+  .refine((value) => {
+    const modifiers = value.split('+').slice(0, -1)
+    return new Set(modifiers).size === modifiers.length
+  }, '快捷键修饰键不能重复')
 
 export const captureSettingsSchema = z.object({
   shortcut: quickAskShortcutSchema,

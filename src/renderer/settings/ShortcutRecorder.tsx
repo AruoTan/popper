@@ -1,7 +1,7 @@
 import { Check, Keyboard, Pencil } from "lucide-react";
 import { useEffect, useRef, useState, type JSX } from "react";
 
-import { captureQuickAskShortcut, displayQuickAskShortcut } from "../quick-ask/shortcut";
+import { captureQuickAskShortcut, displayQuickAskShortcut, SHORTCUT_DISPLAY_NAMES } from "../quick-ask/shortcut";
 import { getErrorMessage } from "../lib/errors";
 
 const nativeRecordingQueues = new WeakMap<object, Promise<void>>();
@@ -150,8 +150,12 @@ export function ShortcutRecorder({ value, disabled = false, label = "快捷提�
           if (event.key === "Escape") { finish(); setFeedback("idle"); return; }
           if (event.nativeEvent.isComposing || event.repeat) return;
           setPressedKeys([
-            event.ctrlKey && "Ctrl", event.altKey && "Alt",
-            event.shiftKey && "Shift", event.metaKey && "Win / ⌘",
+            event.ctrlKey && "Ctrl",
+            event.metaKey && "Win / ⌘",
+            event.altKey && "Alt",
+            event.shiftKey && "Shift",
+            !/^(Control|Alt|Shift|Meta)(Left|Right)$/.test(event.code) &&
+              (SHORTCUT_DISPLAY_NAMES[event.code] ?? event.code.replace(/^Key|^Digit/, "")),
           ].filter((key): key is string => Boolean(key)));
           if (/^(Control|Alt|Shift|Meta)(Left|Right)$/.test(event.code)) {
             setFeedback("idle");
@@ -160,7 +164,7 @@ export function ShortcutRecorder({ value, disabled = false, label = "快捷提�
           const shortcut = captureQuickAskShortcut(event.nativeEvent);
           if (!shortcut) {
             setFeedback("error");
-            setMessage("请使用修饰键 + 字母、数字、空格或 F1–F24");
+            setMessage("请使用修饰键组合，或 PrtSc、F1–F12 等标准快捷键");
             return;
           }
           lastValue.current = shortcut;
@@ -171,8 +175,12 @@ export function ShortcutRecorder({ value, disabled = false, label = "快捷提�
         onKeyUp={(event) => {
           if (!recording) return;
           setPressedKeys([
-            event.ctrlKey && "Ctrl", event.altKey && "Alt",
-            event.shiftKey && "Shift", event.metaKey && "Win / ⌘",
+            event.ctrlKey && "Ctrl",
+            event.metaKey && "Win / ⌘",
+            event.altKey && "Alt",
+            event.shiftKey && "Shift",
+            !/^(Control|Alt|Shift|Meta)(Left|Right)$/.test(event.code) &&
+              (SHORTCUT_DISPLAY_NAMES[event.code] ?? event.code.replace(/^Key|^Digit/, "")),
           ].filter((key): key is string => Boolean(key)));
         }}
       >

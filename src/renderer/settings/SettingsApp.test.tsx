@@ -2,13 +2,13 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { StrictMode } from "react";
 
 import {
-  DEFAULT_ACTION_PROMPTS,
-  DEFAULT_PROVIDER_ID,
-  DEFAULT_PUBLIC_SETTINGS,
-  type PublicSettings,
-  type SettingsGuidance,
-  type SettingsUpdate,
-  type WindowPopperApi,
+    DEFAULT_ACTION_PROMPTS,
+    DEFAULT_PROVIDER_ID,
+    DEFAULT_PUBLIC_SETTINGS,
+    type PublicSettings,
+    type SettingsGuidance,
+    type SettingsUpdate,
+    type WindowPopperApi,
 } from "../../shared";
 import { SettingsApp } from "./SettingsApp";
 import { settingsGuidanceInbox } from "./settingsGuidanceInbox";
@@ -1397,7 +1397,7 @@ describe("SettingsApp provider deletion", () => {
     const navItems = within(nav)
       .getAllByRole("button")
       .map((btn) => btn.getAttribute("aria-label"));
-    expect(navItems).toEqual(["通用", "动作", "语言"]);
+    expect(navItems).toEqual(["通用", "动作", "屏幕", "语言"]);
     expect(within(nav).queryByRole("button", { name: "结果" })).not.toBeInTheDocument();
     expect(within(nav).queryByRole("button", { name: "过滤" })).not.toBeInTheDocument();
 
@@ -1405,6 +1405,8 @@ describe("SettingsApp provider deletion", () => {
     expect(await screen.findByRole("tablist", { name: "动作配置选项卡" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "动作" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "划词动作" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "屏幕捕捉" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("截图快捷键")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "快捷提问" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "划词提问" })).toBeInTheDocument();
     expect(screen.getByText(/长按右键/)).toBeInTheDocument();
@@ -1445,6 +1447,69 @@ describe("SettingsApp provider deletion", () => {
     fireEvent.click(within(nav).getByRole("button", { name: "语言" }));
     expect(await screen.findByRole("combobox", { name: "AI 默认回复语言" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "语言" })).not.toBeInTheDocument();
+
+    // Switch to screen section and verify no redundant "屏幕" heading
+    fireEvent.click(within(nav).getByRole("button", { name: "屏幕" }));
+    expect(await screen.findByRole("heading", { name: "截图与贴图" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "屏幕" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "截图快捷键" })).toBeInTheDocument();
+    expect(screen.getByText("PrtSc")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "贴图快捷键" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "显示／隐藏贴图快捷键" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开始截图" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "贴出图片" })).toBeInTheDocument();
+  });
+
+  it("configures and saves capture screen settings independently under 屏幕 section", async () => {
+    const startCapture = vi.fn(async () => {});
+    const pasteCapture = vi.fn(async () => {});
+    installDefaultBridge({ startCapture, pasteCapture });
+    render(<SettingsApp />);
+
+    await goToSettingsSection("屏幕");
+    expect(await screen.findByRole("heading", { name: "截图与贴图" })).toBeInTheDocument();
+
+    // Trigger action buttons
+    fireEvent.click(screen.getByRole("button", { name: "开始截图" }));
+    expect(startCapture).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "贴出图片" }));
+    expect(pasteCapture).toHaveBeenCalled();
+
+    // Change color and line width
+    const colorInput = screen.getByLabelText("默认标注颜色");
+    fireEvent.change(colorInput, { target: { value: "#00ff00" } });
+    const lineWidthInput = screen.getByLabelText("默认标注线宽");
+    fireEvent.change(lineWidthInput, { target: { value: "5" } });
+
+    // Save settings
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() =>
+      expect(window._popper_.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capture: expect.objectContaining({
+            color: "#00ff00",
+            lineWidth: 5,
+          }),
+        })
+      )
+    );
+  });
+
+  it("shows platform notice under 屏幕 section when platform is not windows", async () => {
+    installDefaultBridge({
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: "darwin" as const,
+        trusted: true,
+        canRequest: false,
+        available: true,
+        diagnostics: {},
+      })),
+    });
+    render(<SettingsApp />);
+
+    await goToSettingsSection("屏幕");
+    expect(await screen.findByText("屏幕捕捉目前仅支持 Windows 平台")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "截图与贴图" })).not.toBeInTheDocument();
   });
 });
 
