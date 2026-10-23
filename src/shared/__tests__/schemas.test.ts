@@ -552,11 +552,22 @@ describe('action stream event schemas', () => {
 describe('screen capture settings', () => {
   it('rejects shortcuts that collide after modifier reordering', () => {
     const settings = { ...structuredClone(DEFAULT_PUBLIC_SETTINGS) };
-    settings.capture.pasteShortcut = 'Shift+Control+KeyA';
+    settings.capture.pasteShortcut = 'PrintScreen';
     expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
     settings.capture.pasteShortcut = 'Control+Shift+KeyP';
     settings.quickAskShortcut = settings.capture.shortcut;
     expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+  });
+  it('accepts standalone functional keys and standard modifier combinations', () => {
+    const settings = { ...structuredClone(DEFAULT_PUBLIC_SETTINGS) };
+    settings.capture.shortcut = 'PrintScreen';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    settings.capture.shortcut = 'F12';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    settings.capture.shortcut = 'Super+Shift+KeyS';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    settings.capture.shortcut = 'Control+PrintScreen';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
   });
   it('validates annotation preferences and preserves explicit capture updates', () => {
     const capture = { ...DEFAULT_PUBLIC_SETTINGS.capture, color: '#12abEF', lineWidth: 32 };

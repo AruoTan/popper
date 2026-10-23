@@ -590,7 +590,15 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         if let Some(quick_ask) = object.get("quickAskShortcut").and_then(|value| value.as_str()) {
             let canonical = |value: &str| { let mut keys: Vec<_> = value.split('+').collect(); keys.sort_unstable(); keys.join("+") };
             for shortcut in [&mut capture.shortcut, &mut capture.paste_shortcut, &mut capture.toggle_pins_shortcut] {
-                if canonical(shortcut) == canonical(quick_ask) { *shortcut = shortcut.replacen("Control+", "Control+Alt+", 1); }
+                if canonical(shortcut) == canonical(quick_ask) {
+                    if shortcut.contains("Control+") {
+                        *shortcut = shortcut.replacen("Control+", "Control+Alt+", 1);
+                    } else if shortcut.contains("Super+") {
+                        *shortcut = shortcut.replacen("Super+", "Super+Alt+", 1);
+                    } else {
+                        *shortcut = format!("Alt+{shortcut}");
+                    }
+                }
             }
         }
         object.insert("capture".into(), serde_json::to_value(capture)?);
@@ -801,7 +809,7 @@ mod tests {
         repository.set_provider_api_key(DEFAULT_PROVIDER_ID, "upgrade-secret").unwrap();
         let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         legacy["version"] = 17.into();
-        legacy["quickAskShortcut"] = "Control+Shift+KeyA".into();
+        legacy["quickAskShortcut"] = "PrintScreen".into();
         legacy["actions"][0]["prompt"] = "自定义说明：{{text}}".into();
         legacy.as_object_mut().unwrap().remove("capture");
         fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
@@ -809,8 +817,8 @@ mod tests {
         let reopened = SettingsRepository::new(&path).unwrap();
         let settings = reopened.get_settings();
         assert_eq!(settings.version, 18);
-        assert_eq!(settings.quick_ask_shortcut, "Control+Shift+KeyA");
-        assert_eq!(settings.capture.shortcut, "Control+Alt+Shift+KeyA");
+        assert_eq!(settings.quick_ask_shortcut, "PrintScreen");
+        assert_eq!(settings.capture.shortcut, "Alt+PrintScreen");
         assert_eq!(settings.actions[0].prompt.as_deref(), Some("自定义说明：{{text}}"));
         assert_eq!(reopened.get_api_key(DEFAULT_PROVIDER_ID).unwrap().as_deref(), Some("upgrade-secret"));
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

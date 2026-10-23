@@ -420,7 +420,7 @@ pub struct CaptureSettings {
 }
 impl Default for CaptureSettings {
     fn default() -> Self {
-        Self { shortcut: "Control+Shift+KeyA".into(), paste_shortcut: "Control+Shift+KeyP".into(),
+        Self { shortcut: "PrintScreen".into(), paste_shortcut: "Control+Shift+KeyP".into(),
             toggle_pins_shortcut: "Control+Shift+KeyH".into(), color: "#ff4545".into(), line_width: 3 }
     }
 }

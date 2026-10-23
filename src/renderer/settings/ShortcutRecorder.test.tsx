@@ -120,7 +120,7 @@ it('serializes a delayed native recording handoff between shortcut controls', as
   let resolve!: () => void;
   setNative.mockImplementationOnce(() => new Promise<void>((done) => { resolve = done; }));
   render(<>
-    <ShortcutRecorder id="capture" label="截图快捷键" value="Control+Shift+KeyA" onChange={change} />
+    <ShortcutRecorder id="capture" label="截图快捷键" value="PrintScreen" onChange={change} />
     <ShortcutRecorder id="paste" label="贴图快捷键" value="Control+Shift+KeyP" onChange={change} />
   </>);
   const capture = screen.getByRole('button', { name: '截图快捷键' });

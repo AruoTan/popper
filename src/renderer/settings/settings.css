@@ -2830,3 +2830,38 @@ body {
   }
 }
 
+.capture-setting-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.capture-setting-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.capture-setting-field input[type="color"] {
+  width: 28px;
+  height: 28px;
+  padding: 1px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.capture-setting-field input[type="number"] {
+  height: 28px;
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-secondary, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font-size: 12px;
+}
+
+

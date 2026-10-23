@@ -29,6 +29,9 @@ describe('Quick Ask attachments and shortcuts', () => {
     const keys = { code: 'Space', ctrlKey: true, altKey: false, shiftKey: true, metaKey: false };
     expect(captureQuickAskShortcut(keys)).toBe('Control+Shift+Space');
     expect(captureQuickAskShortcut({ ...keys, code: 'KeyK', shiftKey: false })).toBe('Control+KeyK');
+    expect(captureQuickAskShortcut({ ...keys, ctrlKey: false, metaKey: true, code: 'KeyS' })).toBe('Super+Shift+KeyS');
+    expect(captureQuickAskShortcut({ ...keys, ctrlKey: false, shiftKey: false, code: 'PrintScreen' })).toBe('PrintScreen');
+    expect(captureQuickAskShortcut({ ...keys, ctrlKey: false, shiftKey: false, code: 'F12' })).toBe('F12');
     expect(captureQuickAskShortcut({ ...keys, code: 'ShiftLeft' })).toBeNull();
     expect(captureQuickAskShortcut({ ...keys, ctrlKey: false, shiftKey: false })).toBeNull();
   });
