@@ -7,7 +7,10 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, POINT, RECT},
         Graphics::Dwm::{
-            DwmFlush, DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+            DwmFlush, DwmGetWindowAttribute, DwmSetWindowAttribute, DWMSBT_NONE,
+            DWMWA_BORDER_COLOR, DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
+            DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_TRANSITIONS_FORCEDISABLED,
+            DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
         },
         UI::{
             Controls::Dialogs::{
@@ -43,6 +46,29 @@ pub fn restore_foreground(handle: usize) {
         if IsWindow(Some(handle)).as_bool() {
             let _ = SetForegroundWindow(handle);
         }
+    }
+}
+pub fn configure_capture_surface(hwnd: HWND) {
+    use std::ffi::c_void;
+
+    unsafe fn set_attribute<T: Copy>(
+        hwnd: HWND,
+        attribute: windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE,
+        value: &T,
+    ) {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            value as *const T as *const c_void,
+            std::mem::size_of::<T>() as u32,
+        );
+    }
+
+    unsafe {
+        set_attribute(hwnd, DWMWA_TRANSITIONS_FORCEDISABLED, &BOOL::from(true));
+        set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_DONOTROUND);
+        set_attribute(hwnd, DWMWA_BORDER_COLOR, &DWMWA_COLOR_NONE);
+        set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &DWMSBT_NONE);
     }
 }
 pub fn screen() -> Result<(xcap::Monitor, CaptureRect, f64), String> {

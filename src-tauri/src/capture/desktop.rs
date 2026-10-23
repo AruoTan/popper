@@ -190,6 +190,9 @@ pub fn notify(app: &AppHandle, message: &str) {
         .focused(false);
         if let Ok(builder) = crate::app_paths::configure_webview(builder) {
             if let Ok(window) = builder.build() {
+                if let Ok(hwnd) = window.hwnd() {
+                    platform::configure_capture_surface(hwnd);
+                }
                 if let Ok((_, screen, scale)) = platform::screen() {
                     let _ = window.set_position(PhysicalPosition::new(
                         screen.x + ((screen.width as f64 - 380.0 * scale) / 2.0) as i32,
@@ -325,6 +328,9 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .build()
         .map_err(|e| e.to_string())?;
+    if let Ok(hwnd) = window.hwnd() {
+        platform::configure_capture_surface(hwnd);
+    }
     window
         .set_position(PhysicalPosition::new(screen.x, screen.y))
         .map_err(|e| e.to_string())?;
@@ -470,6 +476,9 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
         session(app, window)?;
+        if let Ok(hwnd) = window.hwnd() {
+            platform::configure_capture_surface(hwnd);
+        }
         window
             .show()
             .and_then(|_| window.set_focus())
@@ -483,6 +492,9 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
             pin.visible && !pin.closed
         };
         if visible {
+            if let Ok(hwnd) = window.hwnd() {
+                platform::configure_capture_surface(hwnd);
+            }
             window.show().map_err(|e| e.to_string())?;
         }
         if let Some(pin) = manager(app).pins.lock().items.get_mut(id) {
@@ -763,6 +775,9 @@ fn create_pin(app: &AppHandle, bytes: Vec<u8>, width: u32, height: u32) -> Resul
             .map_err(|e| e.to_string())?
             .build()
             .map_err(|e| e.to_string())?;
+        if let Ok(hwnd) = window.hwnd() {
+            platform::configure_capture_surface(hwnd);
+        }
         window
             .set_size(PhysicalSize::new(width, height))
             .map_err(|e| e.to_string())?;
