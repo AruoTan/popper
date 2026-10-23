@@ -4,31 +4,36 @@ import { useEffect, useRef, useState, type JSX } from "react";
 import { captureQuickAskShortcut, displayQuickAskShortcut } from "../quick-ask/shortcut";
 import { getErrorMessage } from "../lib/errors";
 
+const nativeRecordingQueues = new WeakMap<object, Promise<void>>();
+
 interface ShortcutRecorderProps {
   value: string;
   disabled?: boolean;
+  label?: string;
+  id?: string;
   onChange: (shortcut: string) => void;
 }
 
-export function ShortcutRecorder({ value, disabled = false, onChange }: ShortcutRecorderProps): JSX.Element {
+export function ShortcutRecorder({ value, disabled = false, label = "快捷提问快捷键", id = "quick-ask-shortcut", onChange }: ShortcutRecorderProps): JSX.Element {
   const [recording, setRecording] = useState(false);
   const [preparing, setPreparing] = useState(false);
   const [feedback, setFeedback] = useState<"idle" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
   const [pressedKeys, setPressedKeys] = useState<string[]>([]);
   const generation = useRef(0);
-  const nativeQueue = useRef<Promise<void>>(Promise.resolve());
   const active = useRef(false);
   const lastValue = useRef(value);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Serialize begin/end so a delayed native acknowledgement cannot leave
-  // the global shortcut suspended after cancellation or component unmount.
+  // All recorders share one native queue so a delayed release from the
+  // previous control cannot re-enable global shortcuts during a new recording.
   const setNativeRecording = (enabled: boolean): Promise<void> => {
-    const next = nativeQueue.current.catch(() => {}).then(async () => {
-      await window._popper_.setQuickAskShortcutRecording?.(enabled);
+    const api = window._popper_;
+    const previous = nativeRecordingQueues.get(api) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(async () => {
+      await api.setQuickAskShortcutRecording?.(enabled);
     });
-    nativeQueue.current = next;
+    nativeRecordingQueues.set(api, next);
     return next;
   };
 
@@ -115,11 +120,11 @@ export function ShortcutRecorder({ value, disabled = false, onChange }: Shortcut
       className={`shortcut-recorder ${recording ? "shortcut-recorder--recording" : ""} ${feedback === "error" ? "shortcut-recorder--error" : ""}`}
     >
       <button
-        id="quick-ask-shortcut"
+        id={id}
         className="shortcut-recorder__control"
         type="button"
-        aria-label="快捷提问快捷键"
-        aria-describedby="quick-ask-shortcut-hint"
+        aria-label={label}
+        aria-describedby={`${id}-hint`}
         aria-pressed={recording}
         aria-busy={preparing}
         disabled={disabled}
@@ -182,7 +187,7 @@ export function ShortcutRecorder({ value, disabled = false, onChange }: Shortcut
         </span>
         {recording ? <span className="shortcut-recorder__record-dot" aria-hidden="true" /> : <Pencil size={12} className="shortcut-recorder__edit" aria-hidden="true" />}
       </button>
-      <span id="quick-ask-shortcut-hint" className="shortcut-recorder__hint" role="status">
+      <span id={`${id}-hint`} className="shortcut-recorder__hint" role="status">
         {feedback === "success" && !recording && <Check size={12} aria-hidden="true" />}
         {hint}
       </span>

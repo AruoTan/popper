@@ -58,9 +58,9 @@ describe('settings schemas and defaults', () => {
     expect(publicSettingsSchema.safeParse(DEFAULT_PUBLIC_SETTINGS).success).toBe(true);
   });
 
-  it('provides v17 defaults with only AI actions', () => {
+  it('provides v18 defaults with only AI actions', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
-    expect(DEFAULT_APP_SETTINGS.version).toBe(17)
+    expect(DEFAULT_APP_SETTINGS.version).toBe(18)
     expect(DEFAULT_APP_SETTINGS.providers[0]).toMatchObject({
       id: DEFAULT_PROVIDER_ID,
       enabled: true,
@@ -548,3 +548,20 @@ describe('action stream event schemas', () => {
     expect(resultRendererMarkerSchema.safeParse('firstDelta').success).toBe(false)
   })
 })
+
+describe('screen capture settings', () => {
+  it('rejects shortcuts that collide after modifier reordering', () => {
+    const settings = { ...structuredClone(DEFAULT_PUBLIC_SETTINGS) };
+    settings.capture.pasteShortcut = 'Shift+Control+KeyA';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+    settings.capture.pasteShortcut = 'Control+Shift+KeyP';
+    settings.quickAskShortcut = settings.capture.shortcut;
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+  });
+  it('validates annotation preferences and preserves explicit capture updates', () => {
+    const capture = { ...DEFAULT_PUBLIC_SETTINGS.capture, color: '#12abEF', lineWidth: 32 };
+    expect(settingsUpdateSchema.parse({ capture })).toEqual({ capture });
+    expect(settingsUpdateSchema.safeParse({ capture: { ...capture, lineWidth: 0 } }).success).toBe(false);
+    expect(settingsUpdateSchema.safeParse({ capture: { ...capture, color: '#abcd' } }).success).toBe(false);
+  });
+});

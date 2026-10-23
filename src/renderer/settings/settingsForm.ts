@@ -121,6 +121,7 @@ export function buildSettingsUpdate(settings: PublicSettings):
     trayEnabled: settings.trayEnabled,
     defaultAi: settings.defaultAi,
     quickAskShortcut: settings.quickAskShortcut,
+    capture: settings.capture,
     locale: settings.locale,
     translate: settings.translate,
     result: settings.result,

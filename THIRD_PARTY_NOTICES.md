@@ -20,6 +20,13 @@ Popper fixes one duplicated punctuation mark in the refinement prompt and expres
 
 The full upstream copyright and MIT license notice is reproduced verbatim in `LICENSE.selection-hook`. That file and this attribution must be retained when source or binary distributions contain the adapted implementation.
 
+## Screen capture dependencies
+
+- xcap 0.9.8 — Apache-2.0 — <https://github.com/nashaofu/xcap>
+- image 0.25.10 — MIT OR Apache-2.0 — <https://github.com/image-rs/image>
+- Usage: Windows screen image acquisition, PNG encoding/decoding, bitmap conversion, and crop processing.
+- The xcap Apache-2.0 license is reproduced in `LICENSE.capture` and included in source and binary distributions.
+
 ## Direct application dependencies
 
 Popper also uses independently developed software, including:

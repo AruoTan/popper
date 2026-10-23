@@ -1,7 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Executable,
-    [switch]$Portable
+    [switch]$Portable,
+    [ValidateRange(1, 300)]
+    [int]$StartupTimeoutSeconds = 20
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,8 +21,20 @@ if ($Portable -and -not (Test-Path -LiteralPath (Join-Path (Split-Path $executab
 }
 $startedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $process = Start-Process -FilePath $executablePath -PassThru
-$deadline = [DateTime]::UtcNow.AddSeconds(20)
+$deadline = [DateTime]::UtcNow.AddSeconds($StartupTimeoutSeconds)
 $ready = $false
+$nativeReady = $false
+$checkpoint = 'logger not observed'
+# Only these fixed labels may be printed. Raw logs can contain local paths or
+# error details and remain on the runner rather than being uploaded to CI.
+$checkpoints = @(
+    'building application', 'initializing UI thread', 'loading settings',
+    'initializing HTTP clients', 'initializing selection monitor',
+    'initializing screen capture', 'creating settings window', 'creating toolbar',
+    'creating tray', 'initializing quick ask shortcut',
+    'initializing screen capture shortcuts', 'starting selection listener',
+    'showing startup notice', 'setup complete', 'ready'
+)
 try {
     while ([DateTime]::UtcNow -lt $deadline) {
         $process.Refresh()
@@ -29,7 +43,17 @@ try {
         }
         if (Test-Path -LiteralPath $logPath) {
             $log = Get-Content -LiteralPath $logPath -Raw -Encoding utf8
-            if ($log -match "(?m)^(\d+) process=$($process.Id) ready\r?$" -and [long]$Matches[1] -ge $startedAtMs) {
+            $entries = @([regex]::Matches([string]$log, "(?m)^(\d+) process=$($process.Id) (.*)\r?$") |
+                Where-Object { [long]$_.Groups[1].Value -ge $startedAtMs })
+            foreach ($entry in $entries) {
+                $message = $entry.Groups[2].Value.Trim()
+                if ($message -in $checkpoints) { $checkpoint = $message }
+            }
+            if (@($entries | Where-Object { $_.Groups[2].Value.StartsWith('failure:') }).Count -gt 0) {
+                throw 'Popper reported a native startup failure; inspect startup.log on the runner'
+            }
+            $nativeReady = @($entries | Where-Object { $_.Groups[2].Value.Trim() -eq 'ready' }).Count -gt 0
+            if ($nativeReady) {
                 # WebView creation is queued on Windows. A cold profile can
                 # finish after the native app's ready event; allow the same
                 # bounded startup window for its actual data to appear.
@@ -44,7 +68,8 @@ try {
         Start-Sleep -Milliseconds 200
     }
     if (-not $ready) {
-        throw 'Popper did not complete startup within 20 seconds'
+        $waitingFor = if ($nativeReady) { 'portable WebView profile creation' } else { 'native ready event' }
+        throw "Popper did not complete startup within $StartupTimeoutSeconds seconds (waiting for $waitingFor; last checkpoint: $checkpoint)"
     }
     Start-Sleep -Milliseconds 500
     $process.Refresh()
@@ -69,6 +94,12 @@ try {
         }
     }
     Write-Host "Popper release startup passed (PID $($process.Id))."
+}
+catch {
+    # Emit the fixed checkpoint even for early exits, without copying or
+    # printing the raw diagnostic log or any user configuration.
+    Write-Host "Startup state: last checkpoint=$checkpoint; native ready=$nativeReady; portable=$Portable"
+    throw
 }
 finally {
     # Only stop the process started by this check, never another user instance.

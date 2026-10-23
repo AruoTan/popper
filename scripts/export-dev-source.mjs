@@ -31,6 +31,8 @@ const includeEntries = [
   ".env.example",
   ".gitignore",
   "LICENSE.selection-hook",
+  "LICENSE.capture",
+  "SCREEN_CAPTURE.md",
   "README.md",
   "README.en.md",
   "THIRD_PARTY_NOTICES.md",

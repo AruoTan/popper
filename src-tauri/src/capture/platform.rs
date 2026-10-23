@@ -1,0 +1,194 @@
+use super::CaptureRect;
+use serde::{Deserialize, Serialize};
+use std::sync::mpsc;
+use tauri::AppHandle;
+use windows::{
+    core::{BOOL, PCWSTR},
+    Win32::{
+        Foundation::{HWND, LPARAM, POINT, RECT},
+        Graphics::Dwm::{
+            DwmFlush, DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+        },
+        UI::{
+            Controls::Dialogs::{
+                CommDlgExtendedError, GetSaveFileNameW, OFN_EXPLORER, OFN_NOCHANGEDIR,
+                OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+            },
+            WindowsAndMessaging::{
+                EnumWindows, GetForegroundWindow, GetPhysicalCursorPos, GetWindowRect,
+                GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
+                SetForegroundWindow,
+            },
+        },
+    },
+};
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TargetWindow {
+    pub handle: usize,
+    pub rect: CaptureRect,
+    pub title: String,
+}
+pub fn cursor() -> Result<(i32, i32), String> {
+    let mut point = POINT::default();
+    unsafe { GetPhysicalCursorPos(&mut point) }.map_err(|e| e.to_string())?;
+    Ok((point.x, point.y))
+}
+pub fn foreground() -> usize {
+    unsafe { GetForegroundWindow().0 as usize }
+}
+pub fn restore_foreground(handle: usize) {
+    let handle = HWND(handle as *mut _);
+    unsafe {
+        if IsWindow(Some(handle)).as_bool() {
+            let _ = SetForegroundWindow(handle);
+        }
+    }
+}
+pub fn screen() -> Result<(xcap::Monitor, CaptureRect, f64), String> {
+    let (x, y) = cursor()?;
+    let monitor = xcap::Monitor::from_point(x, y).map_err(|e| e.to_string())?;
+    let rect = CaptureRect {
+        x: monitor.x().map_err(|e| e.to_string())?,
+        y: monitor.y().map_err(|e| e.to_string())?,
+        width: monitor.width().map_err(|e| e.to_string())?,
+        height: monitor.height().map_err(|e| e.to_string())?,
+    };
+    let scale = monitor.scale_factor().map_err(|e| e.to_string())? as f64;
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err("显示器缩放比例无效".into());
+    }
+    Ok((monitor, rect, scale))
+}
+pub fn windows() -> Vec<TargetWindow> {
+    unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
+        unsafe {
+            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+                return BOOL(1);
+            }
+            let mut pid = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
+            if pid == std::process::id() {
+                return BOOL(1);
+            }
+            let mut cloaked: u32 = 0;
+            let _ = DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_CLOAKED,
+                &mut cloaked as *mut _ as *mut _,
+                size_of::<u32>() as u32,
+            );
+            if cloaked != 0 {
+                return BOOL(1);
+            }
+            let mut rect = RECT::default();
+            if DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut rect as *mut _ as *mut _,
+                size_of::<RECT>() as u32,
+            )
+            .is_err()
+                && GetWindowRect(hwnd, &mut rect).is_err()
+            {
+                return BOOL(1);
+            }
+            if rect.right <= rect.left || rect.bottom <= rect.top {
+                return BOOL(1);
+            }
+            let mut title = [0u16; 256];
+            let count = GetWindowTextW(hwnd, &mut title).max(0) as usize;
+            let targets = &mut *(data.0 as *mut Vec<TargetWindow>);
+            targets.push(TargetWindow {
+                handle: hwnd.0 as usize,
+                rect: CaptureRect {
+                    x: rect.left,
+                    y: rect.top,
+                    width: (rect.right - rect.left) as u32,
+                    height: (rect.bottom - rect.top) as u32,
+                },
+                title: String::from_utf16_lossy(&title[..count]),
+            });
+        }
+        BOOL(1)
+    }
+    let mut targets = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(visit), LPARAM(&mut targets as *mut _ as isize));
+    }
+    targets
+}
+/// Run hide/restore as a single event-loop operation before synchronizing the compositor.
+pub fn on_ui<T: Send + 'static>(
+    app: &AppHandle,
+    action: impl FnOnce(AppHandle) -> T + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    let handle = app.clone();
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cancelled_on_ui = cancelled.clone();
+    app.run_on_main_thread(move || {
+        if !cancelled_on_ui.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = tx.send(action(handle));
+        }
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv_timeout(std::time::Duration::from_secs(3))
+        .map_err(|_| {
+            cancelled.store(true, std::sync::atomic::Ordering::Release);
+            "窗口操作超时".into()
+        })
+}
+pub fn flush() {
+    unsafe {
+        let _ = DwmFlush();
+    }
+}
+pub fn same_screen(expected: CaptureRect, scale: f64) -> bool {
+    xcap::Monitor::all().is_ok_and(|monitors| {
+        monitors.iter().any(|m| {
+            m.x().ok() == Some(expected.x)
+                && m.y().ok() == Some(expected.y)
+                && m.width().ok() == Some(expected.width)
+                && m.height().ok() == Some(expected.height)
+                && m.scale_factor()
+                    .is_ok_and(|value| (value as f64 - scale).abs() < 0.001)
+        })
+    })
+}
+pub fn save_dialog(app: &AppHandle, owner: usize) -> Result<Option<std::path::PathBuf>, String> {
+    on_ui(app, move |_| {
+        let mut filename = [0u16; 32768];
+        let initial: Vec<u16> = "Popper-capture.png".encode_utf16().collect();
+        filename[..initial.len()].copy_from_slice(&initial);
+        let filter: Vec<u16> = "PNG 图片 (*.png)\0*.png\0\0".encode_utf16().collect();
+        let extension: Vec<u16> = "png\0".encode_utf16().collect();
+        let mut dialog = OPENFILENAMEW {
+            lStructSize: size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: HWND(owner as *mut _),
+            lpstrFile: windows::core::PWSTR(filename.as_mut_ptr()),
+            nMaxFile: filename.len() as u32,
+            lpstrFilter: PCWSTR(filter.as_ptr()),
+            lpstrDefExt: PCWSTR(extension.as_ptr()),
+            Flags: OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+            ..Default::default()
+        };
+        if unsafe { GetSaveFileNameW(&mut dialog) }.as_bool() {
+            use std::os::windows::ffi::OsStringExt;
+            let len = filename
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(filename.len());
+            Ok(Some(std::path::PathBuf::from(
+                std::ffi::OsString::from_wide(&filename[..len]),
+            )))
+        } else {
+            let code = unsafe { CommDlgExtendedError() }.0;
+            if code == 0 {
+                Ok(None)
+            } else {
+                Err(format!("无法打开保存对话框：{code}"))
+            }
+        }
+    })?
+}

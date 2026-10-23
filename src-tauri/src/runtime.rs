@@ -102,6 +102,8 @@ pub struct RuntimeDiagnostics {
     selection_monitor_error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     quick_ask_shortcut_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_shortcut_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -535,6 +537,7 @@ pub struct RuntimeState {
     toolbar_input_switch: Mutex<()>,
     shutting_down: AtomicBool,
     quick_ask_submitting: AtomicBool,
+    screen_capture_active: AtomicBool,
     /// Settings recording owns this shortcut until cancel, blur, or close.
     quick_ask_shortcut_recording: AtomicBool,
     quick_ask_shortcut: Mutex<Option<String>>,
@@ -571,6 +574,7 @@ impl RuntimeState {
             toolbar_input_switch: Mutex::new(()),
             shutting_down: AtomicBool::new(false),
             quick_ask_submitting: AtomicBool::new(false),
+            screen_capture_active: AtomicBool::new(false),
             quick_ask_shortcut_recording: AtomicBool::new(false),
             quick_ask_shortcut: Mutex::new(None),
             quick_ask_shortcut_switch: Mutex::new(()),
@@ -578,6 +582,19 @@ impl RuntimeState {
         }
     }
 
+    pub(crate) fn global_shortcuts_suspended(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire) || self.quick_ask_shortcut_recording.load(Ordering::Acquire)
+    }
+    pub(crate) fn set_capture_shortcut_error(&self, error: Option<String>) {
+        self.runtime_diagnostics.lock().capture_shortcut_error = error;
+    }
+    pub(crate) fn set_screen_capture_active(&self, app: &AppHandle, active: bool) {
+        self.screen_capture_active.store(active, Ordering::Release);
+        self.invalidate_manual_capture();
+        self.cancel_pending_host_selection_clear();
+        if active { let _ = self.selection_monitor.lock().stop(); }
+        else { self.reconcile_capture(app); }
+    }
     fn arm_same_text_selection_suppress(&self, text: &str) {
         if text.is_empty() {
             return;
@@ -656,7 +673,7 @@ impl RuntimeState {
     }
 
     pub fn process_selection_event(&self, app: &AppHandle, event: SelectionEvent) {
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.screen_capture_active.load(Ordering::Acquire) || self.shutting_down.load(Ordering::Acquire) {
             return;
         }
         match event {
@@ -849,6 +866,7 @@ impl RuntimeState {
     }
 
     fn handle_selection(&self, app: &AppHandle, selection: SelectionPayload, force_capture: bool) {
+        if self.screen_capture_active.load(Ordering::Acquire) { return; }
         let settings = self.settings.get_settings();
         if !SelectionMonitor::is_accessibility_trusted() {
             self.windows.hide_toolbar(app);
@@ -994,7 +1012,7 @@ impl RuntimeState {
     }
 
     pub fn capture_current(&self, app: &AppHandle) {
-        if self.shutting_down.load(Ordering::Acquire) {
+        if self.screen_capture_active.load(Ordering::Acquire) || self.shutting_down.load(Ordering::Acquire) {
             return;
         }
         let generation = self
@@ -1045,6 +1063,7 @@ impl RuntimeState {
     }
 
     pub fn reconcile_capture(&self, app: &AppHandle) {
+        if self.screen_capture_active.load(Ordering::Acquire) { return; }
         if self.shutting_down.load(Ordering::Acquire) {
             return;
         }
@@ -1183,6 +1202,9 @@ impl RuntimeState {
         if self.shutting_down.swap(true, Ordering::AcqRel) {
             return;
         }
+
+        #[cfg(target_os = "windows")]
+        crate::capture::shutdown(app);
 
         // Reject new capture/action work before cancelling anything already in
         // flight. Every exit entry point funnels through this idempotent path.
@@ -1842,6 +1864,14 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     let permission = MenuItemBuilder::with_id(TRAY_PERMISSION_ID, permission_label)
         .enabled(permission_enabled)
         .build(app)?;
+    #[cfg(target_os = "windows")]
+    let capture = MenuItemBuilder::with_id("popper-capture", "屏幕捕捉").build(app)?;
+    #[cfg(target_os = "windows")]
+    let paste = MenuItemBuilder::with_id("popper-capture-paste", "贴出图片").build(app)?;
+    #[cfg(target_os = "windows")]
+    let toggle = MenuItemBuilder::with_id("popper-capture-toggle", "显示／隐藏全部贴图").build(app)?;
+    #[cfg(target_os = "windows")]
+    let recover = MenuItemBuilder::with_id("popper-capture-recover", "取消全部贴图穿透").build(app)?;
     let open_settings = MenuItemBuilder::with_id(TRAY_SETTINGS_ID, "打开设置…").build(app)?;
     let version = MenuItemBuilder::new(format!("Popper {}", app.package_info().version))
         .enabled(false)
@@ -1850,6 +1880,8 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     let menu = MenuBuilder::new(app);
     #[cfg(not(target_os = "windows"))]
     let menu = menu.item(&permission).separator();
+    #[cfg(target_os = "windows")]
+    let menu = menu.item(&capture).item(&paste).item(&toggle).item(&recover).separator();
     menu.item(&open_settings)
         .item(&version)
         .separator()
@@ -1873,6 +1905,14 @@ fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 request_accessibility_internal(app);
             }
         }
+        #[cfg(target_os = "windows")]
+        "popper-capture" => crate::capture::launch(app, "capture"),
+        #[cfg(target_os = "windows")]
+        "popper-capture-paste" => crate::capture::launch(app, "paste"),
+        #[cfg(target_os = "windows")]
+        "popper-capture-toggle" => crate::capture::launch(app, "toggle"),
+        #[cfg(target_os = "windows")]
+        "popper-capture-recover" => crate::capture::launch(app, "recover"),
         TRAY_SETTINGS_ID => open_settings_window(app),
         TRAY_QUIT_ID => quit_application(app),
         _ => {}
@@ -2035,6 +2075,14 @@ pub fn update_settings(
         .quick_ask_shortcut
         .clone()
         .unwrap_or_else(|| previous_settings.quick_ask_shortcut.clone());
+    let next_capture = update.capture.clone().unwrap_or_else(|| previous_settings.capture.clone());
+    next_capture.validate(&next_shortcut)?;
+    #[cfg(target_os = "windows")]
+    let capture_shortcut_change = match crate::capture::ShortcutChange::prepare(&app, &next_capture) {
+        Ok(change) => Some(change),
+        Err(error) if next_capture != previous_settings.capture => return Err(error),
+        Err(error) => { state.set_capture_shortcut_error(Some(error)); None }
+    };
     let previous_registered = state.quick_ask_shortcut.lock().clone();
     let mut shortcut_changed = false;
     if previous_registered.as_deref() != Some(next_shortcut.as_str()) {
@@ -2068,6 +2116,7 @@ pub fn update_settings(
             .update(SettingsUpdate {
                 tray_enabled: Some(previous_tray_enabled),
                 quick_ask_shortcut: Some(previous_settings.quick_ask_shortcut),
+                capture: Some(previous_settings.capture),
                 ..Default::default()
             })
             .map_err(|rollback| format!("{message}；恢复托盘设置失败：{rollback}"))?;
@@ -2081,6 +2130,8 @@ pub fn update_settings(
         *state.quick_ask_shortcut.lock() = Some(next_shortcut);
         state.runtime_diagnostics.lock().quick_ask_shortcut_error = None;
     }
+    #[cfg(target_os = "windows")]
+    if let Some(change) = capture_shortcut_change { change.commit(); }
     state.after_settings_changed(&app, &public);
     Ok(public)
 }
@@ -3594,6 +3645,7 @@ fn register_quick_ask_shortcut(app: &AppHandle, value: &str) -> Result<(), Strin
                 let state = app.state::<RuntimeState>();
                 if event.state() != ShortcutState::Pressed
                     || state.shutting_down.load(Ordering::Acquire)
+                    || state.screen_capture_active.load(Ordering::Acquire)
                     || state.quick_ask_submitting.load(Ordering::Acquire)
                     || state.quick_ask_shortcut_recording.load(Ordering::Acquire)
                     || state.settings.get_settings().quick_ask_shortcut != expected

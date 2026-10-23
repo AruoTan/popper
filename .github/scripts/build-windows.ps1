@@ -53,10 +53,11 @@ if ($LASTEXITCODE -ne 0) { throw 'NASM unavailable' }
 # check afterwards. The standalone local verify:windows command stays intact.
 Invoke-BuildStage 'TypeScript checks' { pnpm typecheck }
 Invoke-BuildStage 'Frontend tests' { pnpm test }
-Invoke-BuildStage 'Portable packaging tests' {
+Invoke-BuildStage 'Windows packaging and startup script tests' {
     node --test apps/windows/scripts/prepare-release-assets.test.mjs
     if ($LASTEXITCODE -ne 0) { throw 'Release asset tests failed' }
     & (Join-Path $PSScriptRoot '../../apps/windows/scripts/test-portable.ps1')
+    & (Join-Path $PSScriptRoot 'test-smoke-windows.ps1')
 }
 Invoke-BuildStage 'Frontend production build' { pnpm build:web }
 Invoke-BuildStage 'Windows Rust tests (all targets)' { pnpm test:rust:windows }

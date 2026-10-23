@@ -77,7 +77,7 @@ $popperDirectory = scoop prefix popper
 & .\Import-InstalledSettings.ps1 -SourceDirectory 'D:\Old Popper Config' -DataDirectory 'D:\Popper Data'
 ```
 
-配置读取使用当前 v17 格式，不自动转换开发阶段的旧格式、旧产品名目录或旧 `data` 布局。安装版与便携版之间仍可使用上述脚本复制当前格式的配置和密钥。
+配置读取使用当前 v18 格式，支持 v17→v18 的定向升级；其他历史格式、旧产品名目录和旧 `data` 布局不自动转换。安装版与便携版之间可使用上述脚本复制 v17 或 v18 配置和密钥，v17 在首次运行时升级。
 
 ## 自定义目录与运行模式
 

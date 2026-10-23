@@ -41,3 +41,6 @@ body { margin: 0; padding: 12px; overflow: hidden; }
 
 .quick-ask { max-height: min(456px, calc(100vh - 24px)); overflow: auto; }
 .quick-ask > * { flex-shrink: 0; }
+
+.quick-ask__capture { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 28px; width: 28px; height: 28px; margin-left: 5px; padding: 0; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); background: transparent; }
+.quick-ask__capture:hover { color: var(--accent); background: var(--surface-hover); }

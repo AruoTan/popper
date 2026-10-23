@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-pub const SETTINGS_VERSION: u8 = 17;
+pub const SETTINGS_VERSION: u8 = 18;
 pub const TEXT_PLACEHOLDER: &str = "{{text}}";
 pub const OUTPUT_LANGUAGE_PLACEHOLDER: &str = "{{language}}";
 pub const TARGET_LANGUAGE_PLACEHOLDER: &str = "{{target_language}}";
@@ -409,6 +409,40 @@ pub struct DefaultAiModel {
     pub model_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureSettings {
+    pub shortcut: String,
+    pub paste_shortcut: String,
+    pub toggle_pins_shortcut: String,
+    pub color: String,
+    pub line_width: u8,
+}
+impl Default for CaptureSettings {
+    fn default() -> Self {
+        Self { shortcut: "Control+Shift+KeyA".into(), paste_shortcut: "Control+Shift+KeyP".into(),
+            toggle_pins_shortcut: "Control+Shift+KeyH".into(), color: "#ff4545".into(), line_width: 3 }
+    }
+}
+impl CaptureSettings {
+    pub fn shortcuts(&self) -> [&str; 3] {
+        [&self.shortcut, &self.paste_shortcut, &self.toggle_pins_shortcut]
+    }
+    pub fn validate(&self, quick_ask: &str) -> Result<(), String> {
+        let canonical = |value: &str| { let mut parts: Vec<_> = value.split('+').collect(); parts.sort_unstable(); parts.join("+") };
+        let mut seen = HashSet::from([canonical(quick_ask)]);
+        for shortcut in self.shortcuts() {
+            if !crate::quick_ask::valid_shortcut(shortcut) { return Err("屏幕捕捉快捷键无效".into()); }
+            if !seen.insert(canonical(shortcut)) { return Err("全局快捷键不能重复".into()); }
+        }
+        if !(1..=32).contains(&self.line_width) || self.color.len() != 7 || !self.color.starts_with('#')
+            || !self.color.as_bytes()[1..].iter().all(|v| v.is_ascii_hexdigit()) {
+            return Err("屏幕捕捉工具偏好无效".into());
+        }
+        Ok(())
+    }
+}
+
 pub fn default_quick_ask_shortcut() -> String {
     "Control+Shift+Space".to_owned()
 }
@@ -419,6 +453,7 @@ pub struct AppSettings {
     pub version: u8,
     pub tray_enabled: bool,
     pub quick_ask_shortcut: String,
+    pub capture: CaptureSettings,
     pub default_ai: DefaultAiModel,
     pub locale: Locale,
     pub translate: TranslationSettings,
@@ -434,6 +469,7 @@ pub struct PublicSettings {
     pub version: u8,
     pub tray_enabled: bool,
     pub quick_ask_shortcut: String,
+    pub capture: CaptureSettings,
     pub default_ai: DefaultAiModel,
     pub locale: Locale,
     pub translate: TranslationSettings,
@@ -452,6 +488,7 @@ impl PublicSettings {
             version: SETTINGS_VERSION,
             tray_enabled: settings.tray_enabled,
             quick_ask_shortcut: settings.quick_ask_shortcut.clone(),
+            capture: settings.capture.clone(),
             default_ai: settings.default_ai.clone(),
             locale: settings.locale,
             translate: settings.translate.clone(),
@@ -484,6 +521,7 @@ impl PublicSettings {
 pub struct SettingsUpdate {
     pub tray_enabled: Option<bool>,
     pub quick_ask_shortcut: Option<String>,
+    pub capture: Option<CaptureSettings>,
     pub default_ai: Option<DefaultAiModel>,
     pub locale: Option<Locale>,
     pub translate: Option<TranslationSettings>,
@@ -758,6 +796,7 @@ impl Default for AppSettings {
             locale: Locale::ZhCn,
             tray_enabled: true,
             quick_ask_shortcut: default_quick_ask_shortcut(),
+            capture: CaptureSettings::default(),
             default_ai: DefaultAiModel::default(),
             translate: TranslationSettings::default(),
             result: ResultSettings::default(),
@@ -839,6 +878,7 @@ impl AppSettings {
         if !crate::quick_ask::valid_shortcut(&self.quick_ask_shortcut) {
             return Err("快捷提问快捷键无效，请使用修饰键与字母、数字、空格或功能键的组合".into());
         }
+        self.capture.validate(&self.quick_ask_shortcut)?;
         if self.translate.primary_language == self.translate.alternate_language {
             return Err("翻译语言必须不同".to_owned());
         }

@@ -3113,12 +3113,12 @@ fn set_native_alpha_raw(window: &WebviewWindow, alpha: f64) -> tauri::Result<()>
 }
 
 #[cfg(target_os = "macos")]
-fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
+pub(crate) fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
     set_native_alpha_raw(window, opacity.clamp(0.2, 1.0))
 }
 
 #[cfg(target_os = "windows")]
-fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
+pub(crate) fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
     run_windows_window_operation(window, move |window| {
         set_native_opacity_raw(window, opacity)
     })
@@ -3236,7 +3236,7 @@ fn apply_result_pinned(window: &WebviewWindow, pinned: bool, _opacity: f64) -> t
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn set_native_opacity(_window: &WebviewWindow, _opacity: f64) -> tauri::Result<()> {
+pub(crate) fn set_native_opacity(_window: &WebviewWindow, _opacity: f64) -> tauri::Result<()> {
     Ok(())
 }
 

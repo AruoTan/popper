@@ -2,6 +2,7 @@ mod dictionary;
 mod eudic;
 pub mod actions;
 mod clipboard;
+pub mod capture;
 mod quick_ask;
 mod local_secrets;
 #[cfg(any(target_os = "windows", test))]
@@ -109,6 +110,11 @@ pub fn run() {
                 .ok_or("无法取得划词事件通道")?;
 
             app.manage(RuntimeState::new(settings, actions, monitor));
+            #[cfg(target_os = "windows")]
+            {
+                startup::stage("initializing screen capture");
+                capture::initialize(app.handle());
+            }
             let handle = app.handle().clone();
             // Create configured UI only after state exists: its first events
             // and renderer IPC are allowed to arrive during WebView creation.
@@ -134,6 +140,11 @@ pub fn run() {
             runtime::setup_tray(&handle)?;
             startup::stage("initializing quick ask shortcut");
             runtime::setup_quick_ask_shortcut(&handle);
+            #[cfg(target_os = "windows")]
+            {
+                startup::stage("initializing screen capture shortcuts");
+                capture::setup(&handle);
+            }
 
             startup::stage("starting selection listener");
             let state = handle.state::<RuntimeState>();
@@ -171,6 +182,24 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            capture::capture_start,
+            capture::capture_session,
+            capture::capture_image,
+            capture::capture_show,
+            capture::capture_candidates,
+            capture::capture_select,
+            capture::capture_preferences,
+            capture::capture_crop,
+            capture::capture_export,
+            capture::capture_cancel,
+            capture::capture_fail,
+            capture::capture_paste,
+            capture::capture_pin_state,
+            capture::capture_pin_update,
+            capture::capture_pin_close,
+            capture::capture_pin_menu,
+            capture::capture_pending_attachment,
+            capture::capture_ack_attachment,
             runtime::get_settings,
             runtime::update_settings,
             runtime::reset_result_size,
