@@ -127,3 +127,43 @@ describe('Quick Ask', () => {
     await act(async () => resolve({ accepted: true }));
   });
 });
+
+it('receives a captured image once while preserving the existing question draft', async () => {
+  let available: { id: string; attachment: { name: string; mime: string; kind: 'image'; data: string } } | null = null;
+  let receive: (() => void) | undefined;
+  const acknowledge = vi.fn(async () => { available = null; });
+  window._popper_.pendingCaptureAttachment = vi.fn(async () => available);
+  window._popper_.ackCaptureAttachment = acknowledge;
+  window._popper_.onCaptureAttachment = (listener) => { receive = listener; return () => { receive = undefined; }; };
+  render(<QuickAskApp />);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '保留这段草稿' } });
+  await act(async () => {});
+  available = { id: 'capture-1', attachment: { name: 'Popper-capture.png', mime: 'image/png', kind: 'image' as const, data: 'iVBORw0KGgo=' } };
+  act(() => { receive?.(); receive?.(); });
+  await screen.findByRole('img', { name: 'Popper-capture.png' });
+  expect(acknowledge).toHaveBeenCalledExactlyOnceWith('capture-1');
+  expect(screen.getByRole('textbox')).toHaveValue('保留这段草稿');
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await waitFor(() => expect(submit).toHaveBeenCalledWith('保留这段草稿', [expect.objectContaining({ name: 'Popper-capture.png' })]));
+});
+
+it('rolls back a captured attachment if its native acknowledgement expires', async () => {
+  window._popper_.pendingCaptureAttachment = vi.fn(async () => ({ id: 'expired', attachment: { name: 'expired.png', mime: 'image/png', kind: 'image' as const, data: 'iVBORw0KGgo=' } }));
+  window._popper_.ackCaptureAttachment = vi.fn().mockRejectedValue(new Error('图片交接已结束'));
+  render(<QuickAskApp />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('图片交接已结束');
+  expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it('keeps capture integration inactive on a platform without screen capture', async () => {
+  window._popper_.getAccessibilityStatus = vi.fn(async () => ({ platform: 'darwin' as const, trusted: true, canRequest: false, available: true, diagnostics: {} }));
+  window._popper_.pendingCaptureAttachment = vi.fn().mockRejectedValue(new Error('unsupported'));
+  window._popper_.startCapture = vi.fn();
+  render(<QuickAskApp />);
+  await act(async () => {});
+  expect(window._popper_.pendingCaptureAttachment).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: '截图并添加附件' })).toBeNull();
+  expect(screen.queryByRole('alert')).toBeNull();
+});

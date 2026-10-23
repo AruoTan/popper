@@ -190,6 +190,7 @@ function parseAccessibility(value: unknown): AccessibilityStatus {
       ? (record.diagnostics as Record<string, unknown>)
       : {};
   const diagnostics = {
+    ...(typeof diagnosticsRecord.captureShortcutError === "string" ? { captureShortcutError: diagnosticsRecord.captureShortcutError } : {}),
     ...(typeof diagnosticsRecord.quickAskShortcutError === "string" ? { quickAskShortcutError: diagnosticsRecord.quickAskShortcutError } : {}),
     ...(typeof diagnosticsRecord.selectionMonitorError === "string"
       ? { selectionMonitorError: diagnosticsRecord.selectionMonitorError }
@@ -405,6 +406,14 @@ export function installTauriBridge(): void {
     async quickAskReady() { await quickAskOpened.ready(); await invoke(TAURI_COMMANDS.quickAskReady); },
     async reportQuickAskSize(height) { await invoke(TAURI_COMMANDS.reportQuickAskSize, { height }); },
     onQuickAskOpened: (listener) => quickAskOpened.subscribe(listener),
+    async startCapture() { await invoke("capture_start"); },
+    async pasteCapture() { await invoke("capture_paste"); },
+    async pendingCaptureAttachment() { return await invoke("capture_pending_attachment"); },
+    async ackCaptureAttachment(id, error) { await invoke("capture_ack_attachment", { id, error: error ?? null }); },
+    onCaptureAttachment(listener) { let dispose: (() => void) | undefined; let stopped = false;
+      void listen("popper:capture-attachment", () => listener()).then((unlisten) => { if (stopped) unlisten(); else dispose = unlisten; }).catch(() => {});
+      return () => { stopped = true; dispose?.(); };
+    },
     async runAction(
       actionId: string,
       cursor?: Point,

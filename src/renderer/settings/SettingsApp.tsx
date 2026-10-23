@@ -1536,6 +1536,36 @@ export function SettingsApp(): JSX.Element {
                 )}
               </div>
 
+              {accessibility?.platform === "windows" && <div className="settings-group" id="capture-title">
+                <div className="section-heading section-heading--compact"><div>
+                  <h3 className="settings-subheading">屏幕捕捉</h3>
+                  <p>捕捉鼠标所在屏幕，支持框选、标注、浮动贴图和图片提问。贴图在退出后释放。</p>
+                </div></div>
+                {([
+                  ["shortcut", "截图快捷键", "Control+Shift+KeyA"],
+                  ["pasteShortcut", "贴图快捷键", "Control+Shift+KeyP"],
+                  ["togglePinsShortcut", "显示／隐藏贴图快捷键", "Control+Shift+KeyH"],
+                ] as const).map(([field, label, fallback]) => <div className="settings-card quick-ask-setting" key={field}>
+                  <div className="quick-ask-setting__label"><strong>{label}</strong><span>修改后保存生效。</span></div>
+                  <div className="quick-ask-setting__controls">
+                    <ShortcutRecorder id={"capture-" + field} label={label} value={draft.capture[field]} disabled={busy} onChange={(shortcut) => changeDraft((current) => ({ ...current, capture: { ...current.capture, [field]: shortcut } }))} />
+                    <button className="button button--quiet quick-ask-setting__reset" type="button" aria-label={"恢复" + label + "默认"} disabled={busy || draft.capture[field] === fallback} onClick={() => changeDraft((current) => ({ ...current, capture: { ...current.capture, [field]: fallback } }))}><RefreshCw size={13} />恢复默认</button>
+                  </div>
+                </div>)}
+                <div className="settings-card quick-ask-setting">
+                  <div className="quick-ask-setting__label"><strong>标注工具</strong><span>新截图使用的颜色和线宽。</span></div>
+                  <div className="quick-ask-setting__controls">
+                    <label>颜色 <input type="color" aria-label="默认标注颜色" value={draft.capture.color} disabled={busy} onChange={(event) => changeDraft((current) => ({ ...current, capture: { ...current.capture, color: event.target.value } }))} /></label>
+                    <label>线宽 <input type="number" aria-label="默认标注线宽" min={1} max={32} value={draft.capture.lineWidth} disabled={busy} style={{ width: 56 }} onChange={(event) => { const lineWidth = Math.min(32, Math.max(1, Number(event.target.value) || 1)); changeDraft((current) => ({ ...current, capture: { ...current.capture, lineWidth } })); }} /></label>
+                  </div>
+                </div>
+                {accessibility.diagnostics?.captureShortcutError && <p className="field-error" role="alert">{accessibility.diagnostics?.captureShortcutError}，请更换组合键并保存。</p>}
+                <div className="quick-ask-setting__controls">
+                  <button type="button" className="button button--quiet" disabled={busy} onClick={() => void window._popper_.startCapture?.().catch((error: unknown) => setBanner({ kind: "error", text: getErrorMessage(error, "无法开始屏幕捕捉") }))}>开始截图</button>
+                  <button type="button" className="button button--quiet" disabled={busy} onClick={() => void window._popper_.pasteCapture?.().catch((error: unknown) => setBanner({ kind: "error", text: getErrorMessage(error, "无法创建贴图") }))}>贴出图片</button>
+                </div>
+              </div>}
+
               <div className="section-heading section-heading--compact selection-ask-heading" id="selection-ask-title">
                 <div>
                   <h3 className="settings-subheading">划词提问</h3>

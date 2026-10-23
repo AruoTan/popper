@@ -8,7 +8,7 @@ $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ('Popper portable æµ‹è¯
 $first = Join-Path $temporary 'apps/popper/first'
 $second = Join-Path $temporary 'apps/popper/second'
 $persist = Join-Path $temporary 'persist/popper'
-$expected = @('Import-InstalledSettings.ps1', 'LICENSE.selection-hook', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'popper.exe', 'portable.flag')
+$expected = @('Import-InstalledSettings.ps1', 'LICENSE.capture', 'LICENSE.selection-hook', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'popper.exe', 'portable.flag')
 try {
     foreach ($name in @('config', 'logs')) {
         $null = New-Item -ItemType Directory -Path (Join-Path $persist $name) -Force
@@ -17,7 +17,7 @@ try {
         Expand-Archive -LiteralPath $archivePath -DestinationPath $directory
         $actual = @(Get-ChildItem -LiteralPath $directory -Force | Sort-Object Name)
         if ($actual.Count -ne $expected.Count -or @($actual | Where-Object { $_.PSIsContainer -or $_.Name -notin $expected }).Count -gt 0) {
-            throw 'Portable ZIP must contain only the six expected distribution files, without user data'
+            throw "Portable ZIP must contain only the $($expected.Count) expected distribution files, without user data"
         }
         foreach ($name in @('config', 'logs')) {
             $null = New-Item -ItemType Junction -Path (Join-Path $directory $name) -Target (Join-Path $persist $name)

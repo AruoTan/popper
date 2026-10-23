@@ -10,6 +10,12 @@ After selecting text in another app, you can copy, search, translate, summarize,
 
 Both platforms share the same renderer, settings, actions, model requests, streaming, and data contracts. Only selection capture, clipboard handling, native window attributes, and system integration are platform-specific. Local development, portable source export, and version history are documented in [DEVELOPMENT_HANDBOOK.md](./DEVELOPMENT_HANDBOOK.md) (Chinese).
 
+## Screen capture (Windows)
+
+Press `Ctrl+Shift+A` to capture the display under the pointer, select a region or a detected window/control, annotate it, and copy, save a PNG, pin it, or attach it to Quick Ask. `Ctrl+Shift+P` pins a clipboard image or restores the last closed image; `Ctrl+Shift+H` toggles all pinned images. Shortcuts are configurable. Images are retained only for the current app session; AI requests require explicit submission.
+
+See [Screen capture](./SCREEN_CAPTURE.md) for behavior, implementation boundaries, and desktop acceptance checks.
+
 ## Screenshots
 
 ### Settings · AI providers and models

@@ -14,6 +14,12 @@ Popper 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon�
 
 Windows 支持便携 ZIP 和 Scoop 安装，程序旁分别存放 `config`、`logs` 和 `webview`；Scoop 仅持久化 `config` 和 `logs`，WebView 数据不跨版本保留。安装、升级与配置迁移见 [Windows 便携版说明](./WINDOWS_PORTABLE.md)。
 
+## 屏幕捕捉（Windows）
+
+使用 `Ctrl+Shift+A` 捕捉鼠标所在屏幕，框选或吸附窗口与控件后，可标注、复制、保存 PNG、创建浮动贴图或附加到快捷提问。`Ctrl+Shift+P` 贴出剪贴板图片或恢复最近关闭的贴图，`Ctrl+Shift+H` 显示／隐藏全部贴图；快捷键可在设置中修改。贴图只保留在本次运行期间，图片提问需用户确认发送。
+
+操作说明、实现边界及 Windows 桌面验收清单见 [屏幕捕捉](./SCREEN_CAPTURE.md)。
+
 ## 界面预览
 
 ### 设置 · AI 服务商与模型

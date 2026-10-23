@@ -123,6 +123,14 @@ impl SettingsRepository {
         self.get_public_settings()
     }
 
+    pub fn update_capture_preferences(&self, color: String, line_width: u8) -> Result<(), SettingsError> {
+        self.transact(|settings| {
+            settings.capture.color = color;
+            settings.capture.line_width = line_width;
+            Ok(())
+        })
+    }
+
     pub fn clear_result_last_size(&self) -> Result<PublicSettings, SettingsError> {
         self.transact(|settings| {
             settings.result.last_size = None;
@@ -139,6 +147,7 @@ impl SettingsRepository {
             if let Some(value) = update.quick_ask_shortcut {
                 settings.quick_ask_shortcut = value;
             }
+            if let Some(value) = update.capture { settings.capture = value; }
             if let Some(value) = update.default_ai {
                 settings.default_ai = value;
             }
@@ -213,6 +222,7 @@ impl SettingsRepository {
                 version: SETTINGS_VERSION,
                 tray_enabled: public.tray_enabled,
                 quick_ask_shortcut: public.quick_ask_shortcut,
+                capture: public.capture,
                 default_ai: public.default_ai,
                 locale: public.locale,
                 translate: public.translate,
@@ -571,7 +581,22 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
     if bytes.len() > 5 * 1024 * 1024 {
         return Err(SettingsError::Validation("设置文件体积异常".to_owned()));
     }
-    let mut settings: AppSettings = serde_json::from_slice(&bytes)?;
+    let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let upgraded = value.get("version").and_then(|v| v.as_u64()) == Some(17);
+    if upgraded {
+        let object = value.as_object_mut().ok_or_else(|| SettingsError::Validation("设置文件无效".into()))?;
+        if object.contains_key("capture") { return Err(SettingsError::Validation("设置文件包含未知字段".into())); }
+        let mut capture = crate::models::CaptureSettings::default();
+        if let Some(quick_ask) = object.get("quickAskShortcut").and_then(|value| value.as_str()) {
+            let canonical = |value: &str| { let mut keys: Vec<_> = value.split('+').collect(); keys.sort_unstable(); keys.join("+") };
+            for shortcut in [&mut capture.shortcut, &mut capture.paste_shortcut, &mut capture.toggle_pins_shortcut] {
+                if canonical(shortcut) == canonical(quick_ask) { *shortcut = shortcut.replacen("Control+", "Control+Alt+", 1); }
+            }
+        }
+        object.insert("capture".into(), serde_json::to_value(capture)?);
+        object.insert("version".into(), SETTINGS_VERSION.into());
+    }
+    let mut settings: AppSettings = serde_json::from_value(value)?;
     if settings.version != SETTINGS_VERSION {
         return Err(SettingsError::Validation(
             "设置文件版本不受当前应用支持".to_owned(),
@@ -584,7 +609,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         .normalize_and_validate()
         .map_err(SettingsError::Validation)?;
     Ok(LoadedSettings {
-        must_persist: settings != persisted,
+        must_persist: upgraded || settings != persisted,
         settings,
     })
 }
@@ -769,17 +794,56 @@ mod tests {
     }
 
     #[test]
+    fn version_17_upgrade_preserves_secrets_and_custom_routes() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository = SettingsRepository::new(&path).unwrap();
+        repository.set_provider_api_key(DEFAULT_PROVIDER_ID, "upgrade-secret").unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        legacy["version"] = 17.into();
+        legacy["quickAskShortcut"] = "Control+Shift+KeyA".into();
+        legacy["actions"][0]["prompt"] = "自定义说明：{{text}}".into();
+        legacy.as_object_mut().unwrap().remove("capture");
+        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        drop(repository);
+        let reopened = SettingsRepository::new(&path).unwrap();
+        let settings = reopened.get_settings();
+        assert_eq!(settings.version, 18);
+        assert_eq!(settings.quick_ask_shortcut, "Control+Shift+KeyA");
+        assert_eq!(settings.capture.shortcut, "Control+Alt+Shift+KeyA");
+        assert_eq!(settings.actions[0].prompt.as_deref(), Some("自定义说明：{{text}}"));
+        assert_eq!(reopened.get_api_key(DEFAULT_PROVIDER_ID).unwrap().as_deref(), Some("upgrade-secret"));
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 18);
+        assert!(saved.get("capture").is_some());
+    }
+
+    #[test]
+    fn invalid_legacy_upgrade_never_rewrites_the_source_file() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut legacy = serde_json::to_value(AppSettings::default()).unwrap();
+        legacy["version"] = 17.into();
+        legacy.as_object_mut().unwrap().remove("capture");
+        legacy["unexpected"] = true.into();
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(SettingsRepository::new(&path).is_err());
+        assert_eq!(fs::read(path).unwrap(), bytes);
+    }
+
+    #[test]
     fn unsupported_settings_are_rejected_without_modifying_the_file() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let current = serde_json::to_value(AppSettings::default()).unwrap();
         let mut invalid = Vec::new();
-        for version in (1..SETTINGS_VERSION).chain([SETTINGS_VERSION + 1]) {
+        for version in (1..17).chain([SETTINGS_VERSION + 1]) {
             let mut value = current.clone();
             value["version"] = version.into();
             invalid.push(value);
         }
-        for field in ["version", "trayEnabled", "quickAskShortcut", "defaultAi"] {
+        for field in ["version", "trayEnabled", "quickAskShortcut", "defaultAi", "capture"] {
             let mut value = current.clone();
             value.as_object_mut().unwrap().remove(field);
             invalid.push(value);

@@ -1,7 +1,7 @@
 export const APP_NAME = "Popper";
 export const APP_ID = "com.local.popper";
 
-export const SETTINGS_VERSION = 17 as const;
+export const SETTINGS_VERSION = 18 as const;
 export const AI_TEXT_LIMIT = 20_000;
 export const AI_PROMPT_LIMIT = 50_000;
 export const AI_OUTPUT_LIMIT = 1_000_000;
