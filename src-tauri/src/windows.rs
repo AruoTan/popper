@@ -2975,6 +2975,34 @@ fn configure_toolbar_native(window: &WebviewWindow) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+fn configure_windows_toolbar_surface(hwnd: windows::Win32::Foundation::HWND) {
+    use std::ffi::c_void;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMSBT_NONE, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+        DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    };
+
+    unsafe fn set_attribute<T: Copy>(
+        hwnd: windows::Win32::Foundation::HWND,
+        attribute: windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE,
+        value: &T,
+    ) {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            value as *const T as *const c_void,
+            std::mem::size_of::<T>() as u32,
+        );
+    }
+
+    unsafe {
+        set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_DONOTROUND);
+        set_attribute(hwnd, DWMWA_BORDER_COLOR, &DWMWA_COLOR_NONE);
+        set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &DWMSBT_NONE);
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn configure_toolbar_native_raw(window: &WebviewWindow) -> tauri::Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
@@ -2987,6 +3015,7 @@ fn configure_toolbar_native_raw(window: &WebviewWindow) -> tauri::Result<()> {
         WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0,
         WS_EX_APPWINDOW.0,
     )?;
+    configure_windows_toolbar_surface(hwnd);
     unsafe {
         SetWindowPos(
             hwnd,
@@ -3020,6 +3049,7 @@ fn configure_toolbar_input_native(window: &WebviewWindow, active: bool) -> tauri
             WS_EX_TOOLWINDOW.0,
             WS_EX_APPWINDOW.0 | WS_EX_NOACTIVATE.0,
         )?;
+        configure_windows_toolbar_surface(hwnd);
         unsafe {
             SetWindowPos(
                 hwnd,
@@ -3473,6 +3503,10 @@ pub fn show_quick_ask_window(app: &AppHandle) -> tauri::Result<()> {
     .visible(false)
     .focused(false);
     let window = configure_webview_storage(builder)?.build()?;
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        configure_windows_toolbar_surface(hwnd);
+    }
     position_quick_ask_window(app, &window, 230.0)?;
     // Its renderer reveals it after installing listeners and committing the input.
     Ok(())

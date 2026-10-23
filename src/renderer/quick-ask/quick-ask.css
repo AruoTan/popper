@@ -1,4 +1,4 @@
-html, body, #root { min-height: 0; background: transparent; }
+html, body, #root { min-height: 0; background: transparent !important; }
 body { margin: 0; padding: 12px; overflow: hidden; }
 .quick-ask { position: relative; display: flex; flex-direction: column; padding: 14px 16px 12px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-solid); box-shadow: 0 4px 12px rgba(20, 25, 35, .12); }
 .quick-ask__header, .quick-ask__identity, .quick-ask__window-actions, .quick-ask__footer { display: flex; align-items: center; }

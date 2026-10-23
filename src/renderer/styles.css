@@ -79,11 +79,11 @@ body,
 #root {
   min-height: 100%;
   margin: 0;
+  background: transparent;
 }
 
 body {
   color: var(--text);
-  background: var(--bg);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
