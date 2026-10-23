@@ -3,7 +3,7 @@ param(
     [string]$Executable,
     [switch]$Portable,
     [ValidateRange(1, 300)]
-    [int]$StartupTimeoutSeconds = 20
+    [int]$StartupTimeoutSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
