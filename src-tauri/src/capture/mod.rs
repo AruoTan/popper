@@ -4,6 +4,8 @@ use tauri::Manager;
 use tauri::{AppHandle, WebviewWindow};
 
 #[cfg(target_os = "windows")]
+mod accessibility;
+#[cfg(target_os = "windows")]
 mod clipboard;
 #[cfg(target_os = "windows")]
 mod desktop;
@@ -18,6 +20,8 @@ pub use recognition::run_helper_if_requested;
 
 #[cfg(any(target_os = "windows", test))]
 mod bitmap;
+#[cfg(any(target_os = "windows", test))]
+mod hit_test;
 #[cfg(any(target_os = "windows", test))]
 mod pins;
 mod types;
@@ -67,7 +71,7 @@ pub async fn capture_candidates(
     x: i32,
     y: i32,
     generation: u64,
-) -> Result<Vec<CaptureCandidate>, String> {
+) -> Result<CaptureHitTest, String> {
     desktop_call!(
         tauri::async_runtime::spawn_blocking(move || desktop::candidates(
             &app, &window, x, y, generation

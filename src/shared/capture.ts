@@ -8,8 +8,12 @@ export interface CaptureSession {
   scale: number;
   color: string;
   lineWidth: number;
+  targets: CaptureTarget[];
+  pointer: CapturePoint | null;
 }
+export interface CaptureTarget { rect: CaptureRect; label: string; controls: CaptureCandidate[] }
 export interface CaptureCandidate { rect: CaptureRect; label: string }
+export interface CaptureHitTest { candidates: CaptureCandidate[]; pending: boolean }
 export interface PinnedImageState {
   id: string;
   width: number;

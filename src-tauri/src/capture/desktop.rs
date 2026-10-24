@@ -1,7 +1,8 @@
 use super::pins::{Pin, Pins};
 use super::{
-    clipboard, platform, recognition::Recognition, CaptureCandidate, CaptureRect, CaptureSession,
-    PendingAttachment, PinUpdate, PinnedImageState,
+    clipboard, hit_test::candidate_chain, platform, recognition::Recognition, CaptureCandidate,
+    CaptureHitTest, CapturePoint, CaptureRect, CaptureSession, CaptureTarget, PendingAttachment,
+    PinUpdate, PinnedImageState,
 };
 use crate::{models::CaptureSettings, runtime::RuntimeState};
 use base64::Engine;
@@ -252,6 +253,17 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     }
     let id = Uuid::new_v4().to_string();
     manager(app).generation.store(0, Ordering::Release);
+    let foreground = platform::foreground();
+    let mut targets = platform::windows();
+    platform::snapshot_controls(&mut targets, screen);
+    let pointer = platform::cursor()
+        .ok()
+        .filter(|&(x, y)| screen.contains(x, y));
+    if let Some((x, y)) = pointer {
+        if let Some(target) = targets.iter().find(|target| target.rect.contains(x, y)) {
+            manager(app).recognition.warm_up(&id, target.handle, x, y);
+        }
+    }
     let preferences = app.state::<RuntimeState>().settings.get_settings().capture;
     let meta = CaptureSession {
         id: id.clone(),
@@ -259,9 +271,39 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         scale,
         color: preferences.color,
         line_width: preferences.line_width,
+        pointer: pointer.map(|(x, y)| CapturePoint {
+            x: x - screen.x,
+            y: y - screen.y,
+        }),
+        targets: targets
+            .iter()
+            .filter_map(|target| {
+                let local = |rect: CaptureRect| {
+                    rect.intersect(target.rect)?
+                        .intersect(screen)
+                        .map(|rect| CaptureRect {
+                            x: rect.x - screen.x,
+                            y: rect.y - screen.y,
+                            ..rect
+                        })
+                };
+                Some(CaptureTarget {
+                    rect: local(target.rect)?,
+                    label: target.title.clone(),
+                    controls: target
+                        .controls
+                        .iter()
+                        .filter_map(|control| {
+                            Some(CaptureCandidate {
+                                rect: local(control.rect)?,
+                                label: control.label.clone(),
+                            })
+                        })
+                        .collect(),
+                })
+            })
+            .collect(),
     };
-    let foreground = platform::foreground();
-    let targets = platform::windows();
     let previous = platform::on_ui(app, |handle| {
         handle
             .webview_windows()
@@ -555,7 +597,7 @@ pub fn candidates(
     x: i32,
     y: i32,
     generation: u64,
-) -> Result<Vec<CaptureCandidate>, String> {
+) -> Result<CaptureHitTest, String> {
     let id = session_id(window)?;
     let (target, screen) = {
         let state = manager(app);
@@ -566,7 +608,10 @@ pub fn candidates(
             || x as u32 >= session.meta.screen.width
             || y as u32 >= session.meta.screen.height
         {
-            return Ok(Vec::new());
+            return Ok(CaptureHitTest {
+                candidates: Vec::new(),
+                pending: false,
+            });
         }
         let screen = session.meta.screen;
         (
@@ -579,13 +624,19 @@ pub fn candidates(
         )
     };
     let Some(target) = target else {
-        return Ok(Vec::new());
+        return Ok(CaptureHitTest {
+            candidates: Vec::new(),
+            pending: false,
+        });
     };
     let state = manager(app);
     state.generation.fetch_max(generation, Ordering::AcqRel);
-    let mut candidates = state
+    let detected = state
         .recognition
-        .query(target.handle, screen.x + x, screen.y + y);
+        .query(id, target.handle, screen.x + x, screen.y + y);
+    let pending = detected.pending;
+    let mut candidates = detected.candidates;
+    candidates.extend(target.controls);
     candidates.push(CaptureCandidate {
         rect: target.rect,
         label: target.title,
@@ -597,7 +648,10 @@ pub fn candidates(
             .as_ref()
             .is_some_and(|s| s.meta.id == id)
     {
-        return Ok(Vec::new());
+        return Ok(CaptureHitTest {
+            candidates: Vec::new(),
+            pending: false,
+        });
     }
     let mut result = Vec::new();
     for candidate in candidates {
@@ -619,7 +673,10 @@ pub fn candidates(
             }
         }
     }
-    Ok(result)
+    Ok(CaptureHitTest {
+        candidates: candidate_chain(result, x, y),
+        pending,
+    })
 }
 
 pub fn export(
