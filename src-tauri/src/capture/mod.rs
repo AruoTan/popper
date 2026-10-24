@@ -14,7 +14,7 @@ mod platform;
 #[cfg(target_os = "windows")]
 mod recognition;
 #[cfg(target_os = "windows")]
-pub use desktop::{active, initialize, launch, setup, shutdown, ShortcutChange};
+pub use desktop::{initialize, launch, setup, shutdown, ShortcutChange};
 #[cfg(target_os = "windows")]
 pub use recognition::run_helper_if_requested;
 
@@ -88,7 +88,7 @@ pub fn capture_preferences(
     line_width: u8,
 ) -> Result<(), String> {
     desktop_call!({
-        desktop::session(&app, &window)?;
+        desktop::validate_session(&app, &window)?;
         app.state::<crate::runtime::RuntimeState>()
             .settings
             .update_capture_preferences(color, line_width)

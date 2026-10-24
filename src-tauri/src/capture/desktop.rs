@@ -1,10 +1,17 @@
-use super::pins::{Pin, Pins};
+mod pinned;
+mod shortcuts;
+use pinned::create_pin;
+pub use pinned::{
+    paste, pin_close, pin_menu, pin_state, pin_update, recover_click_through, toggle_pins,
+};
+pub use shortcuts::ShortcutChange;
+
+use super::pins::Pins;
 use super::{
     clipboard, hit_test::candidate_chain, platform, recognition::Recognition, CaptureCandidate,
     CaptureHitTest, CapturePoint, CaptureRect, CaptureSession, CaptureTarget, PendingAttachment,
-    PinUpdate, PinnedImageState,
 };
-use crate::{models::CaptureSettings, runtime::RuntimeState};
+use crate::runtime::RuntimeState;
 use base64::Engine;
 use image::{ImageFormat, RgbaImage};
 use parking_lot::Mutex;
@@ -30,7 +37,7 @@ struct Session {
     png: Option<Arc<Vec<u8>>>,
     selection: Option<CaptureRect>,
     version: u64,
-    targets: Vec<platform::TargetWindow>,
+    targets: Vec<Arc<platform::TargetWindow>>,
     previous: Vec<String>,
     foreground: usize,
 }
@@ -86,61 +93,11 @@ fn ensure_session<'a>(slot: &'a mut Option<Session>, id: &str) -> Result<&'a mut
         .filter(|s| s.meta.id == id)
         .ok_or_else(|| "截图会话已结束".into())
 }
-pub fn active(app: &AppHandle) -> bool {
-    app.try_state::<CaptureManager>()
-        .is_some_and(|m| m.active.load(Ordering::Acquire))
-}
-
 pub fn initialize(app: &AppHandle) {
     app.manage(CaptureManager::new());
 }
 pub fn setup(app: &AppHandle) {
-    app.on_menu_event(|app, event| {
-        let Some(value) = event.id().as_ref().strip_prefix("capture-pin:") else {
-            return;
-        };
-        let Some((action, id)) = value.split_once(':') else {
-            return;
-        };
-        if Uuid::parse_str(id).is_err() {
-            return;
-        }
-        let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) else {
-            return;
-        };
-        let app = app.clone();
-        let action = action.to_owned();
-        tauri::async_runtime::spawn_blocking(move || {
-            let result = match action.as_str() {
-                "close" => pin_close(&app, &window, false),
-                "destroy" => pin_close(&app, &window, true),
-                "reset" | "through" => pin_state(&app, &window).and_then(|state| {
-                    pin_update(
-                        &app,
-                        &window,
-                        PinUpdate {
-                            zoom: if action == "reset" { 1.0 } else { state.zoom },
-                            opacity: if action == "reset" {
-                                1.0
-                            } else {
-                                state.opacity
-                            },
-                            click_through: action == "through",
-                            anchor_x: 0.5,
-                            anchor_y: 0.5,
-                        },
-                    )
-                    .map(|updated| {
-                        let _ = window.emit("popper:pin-updated", updated);
-                    })
-                }),
-                _ => Ok(()),
-            };
-            if let Err(error) = result {
-                notify(&app, &error);
-            }
-        });
-    });
+    pinned::setup_menu(app);
     let settings = app.state::<RuntimeState>().settings.get_settings().capture;
     match ShortcutChange::prepare(app, &settings) {
         Ok(change) => change.commit(),
@@ -323,7 +280,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         png: None,
         selection: None,
         version: 0,
-        targets,
+        targets: targets.into_iter().map(Arc::new).collect(),
         previous: previous.clone(),
         foreground,
     });
@@ -497,6 +454,12 @@ pub fn session(app: &AppHandle, window: &WebviewWindow) -> Result<CaptureSession
     let mut slot = state.session.lock();
     Ok(ensure_session(&mut slot, id)?.meta.clone())
 }
+pub fn validate_session(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    let id = session_id(window)?;
+    let state = manager(app);
+    let mut slot = state.session.lock();
+    ensure_session(&mut slot, id).map(|_| ())
+}
 pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String> {
     if let Ok(id) = session_id(window) {
         let state = manager(app);
@@ -517,7 +480,7 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 }
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
-        session(app, window)?;
+        validate_session(app, window)?;
         if let Ok(hwnd) = window.hwnd() {
             platform::configure_capture_surface(hwnd);
         }
@@ -608,10 +571,7 @@ pub fn candidates(
             || x as u32 >= session.meta.screen.width
             || y as u32 >= session.meta.screen.height
         {
-            return Ok(CaptureHitTest {
-                candidates: Vec::new(),
-                pending: false,
-            });
+            return Ok(CaptureHitTest::default());
         }
         let screen = session.meta.screen;
         (
@@ -624,10 +584,7 @@ pub fn candidates(
         )
     };
     let Some(target) = target else {
-        return Ok(CaptureHitTest {
-            candidates: Vec::new(),
-            pending: false,
-        });
+        return Ok(CaptureHitTest::default());
     };
     let state = manager(app);
     state.generation.fetch_max(generation, Ordering::AcqRel);
@@ -636,10 +593,16 @@ pub fn candidates(
         .query(id, target.handle, screen.x + x, screen.y + y);
     let pending = detected.pending;
     let mut candidates = detected.candidates;
-    candidates.extend(target.controls);
+    candidates.extend(
+        target
+            .controls
+            .iter()
+            .filter(|candidate| candidate.rect.contains(screen.x + x, screen.y + y))
+            .cloned(),
+    );
     candidates.push(CaptureCandidate {
         rect: target.rect,
-        label: target.title,
+        label: target.title.clone(),
     });
     if state.generation.load(Ordering::Acquire) > generation
         || !state
@@ -648,10 +611,7 @@ pub fn candidates(
             .as_ref()
             .is_some_and(|s| s.meta.id == id)
     {
-        return Ok(CaptureHitTest {
-            candidates: Vec::new(),
-            pending: false,
-        });
+        return Ok(CaptureHitTest::default());
     }
     let mut result = Vec::new();
     for candidate in candidates {
@@ -662,15 +622,10 @@ pub fn candidates(
         {
             rect.x -= screen.x;
             rect.y -= screen.y;
-            if !result
-                .iter()
-                .any(|value: &CaptureCandidate| value.rect == rect)
-            {
-                result.push(CaptureCandidate {
-                    rect,
-                    label: candidate.label,
-                });
-            }
+            result.push(CaptureCandidate {
+                rect,
+                label: candidate.label,
+            });
         }
     }
     Ok(CaptureHitTest {
@@ -786,369 +741,4 @@ pub fn ack_attachment(app: &AppHandle, id: &str, error: Option<String>) -> Resul
     let _ = delivery.reply.try_send(result);
     slot.take();
     Ok(())
-}
-
-fn create_pin(app: &AppHandle, bytes: Vec<u8>, width: u32, height: u32) -> Result<(), String> {
-    let state = manager(app);
-    let id = Uuid::new_v4().to_string();
-    let meta = PinnedImageState {
-        id: id.clone(),
-        width,
-        height,
-        zoom: 1.0,
-        opacity: 1.0,
-        click_through: false,
-    };
-    {
-        let mut pins = state.pins.lock();
-        pins.insert(Pin {
-            meta,
-            png: Arc::new(bytes),
-            visible: true,
-            closed: false,
-            ready: false,
-        })?;
-    }
-    let result = (|| {
-        let (_, screen, scale) = platform::screen()?;
-        let (x, y) = platform::cursor()?;
-        let label = format!("{PIN_PREFIX}{id}");
-        let builder = WebviewWindowBuilder::new(
-            app,
-            &label,
-            WebviewUrl::App("capture/index.html?mode=pin".into()),
-        )
-        .title("Popper 贴图")
-        .inner_size(width as f64 / scale, height as f64 / scale)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .resizable(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .focused(false);
-        let window = crate::app_paths::configure_webview(builder)
-            .map_err(|e| e.to_string())?
-            .build()
-            .map_err(|e| e.to_string())?;
-        if let Ok(hwnd) = window.hwnd() {
-            platform::configure_capture_surface(hwnd);
-        }
-        window
-            .set_size(PhysicalSize::new(width, height))
-            .map_err(|e| e.to_string())?;
-        window
-            .set_position(PhysicalPosition::new(
-                (x - width as i32 / 2).max(screen.x),
-                (y - height as i32 / 2).max(screen.y),
-            ))
-            .map_err(|e| e.to_string())?;
-        let app = app.clone();
-        let closed_id = id.clone();
-        window.on_window_event(move |event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                let state = manager(&app);
-                let mut pins = state.pins.lock();
-                pins.items.remove(&closed_id);
-                if pins.closed.as_deref() == Some(&closed_id) {
-                    pins.closed = None;
-                }
-            }
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            if state.stopped.load(Ordering::Acquire) {
-                return Err("应用正在退出".into());
-            }
-            let ready = state
-                .pins
-                .lock()
-                .items
-                .get(&id)
-                .map(|pin| pin.ready)
-                .ok_or("贴图窗口已关闭")?;
-            if ready {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err("贴图窗口未能就绪，请重试".into());
-            }
-            std::thread::sleep(Duration::from_millis(15));
-        }
-        Ok::<_, String>(())
-    })();
-    if result.is_err() {
-        state.pins.lock().items.remove(&id);
-        if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
-            let _ = window.destroy();
-        }
-    }
-    result
-}
-pub fn paste(app: &AppHandle) -> Result<(), String> {
-    let state = manager(app);
-    let _operation = state.operation.lock();
-    if state.stopped.load(Ordering::Acquire) || state.active.load(Ordering::Acquire) {
-        return Err("请先完成当前截图".into());
-    }
-    let restore = {
-        let mut pins = state.pins.lock();
-        pins.closed.take().and_then(|id| {
-            pins.items.get_mut(&id).map(|pin| {
-                pin.closed = false;
-                pin.visible = true;
-                id
-            })
-        })
-    };
-    if let Some(id) = restore {
-        if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
-            window
-                .show()
-                .and_then(|_| window.set_focus())
-                .map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-        state.pins.lock().items.remove(&id);
-    }
-    let image = clipboard::read()?;
-    create_pin(app, clipboard::png(&image)?, image.width(), image.height())
-}
-pub fn pin_state(app: &AppHandle, window: &WebviewWindow) -> Result<PinnedImageState, String> {
-    let id = pin_id(window)?;
-    let state = manager(app);
-    let pins = state.pins.lock();
-    pins.items
-        .get(id)
-        .map(|p| p.meta.clone())
-        .ok_or_else(|| "贴图已结束".into())
-}
-pub fn pin_update(
-    app: &AppHandle,
-    window: &WebviewWindow,
-    update: PinUpdate,
-) -> Result<PinnedImageState, String> {
-    let id = pin_id(window)?;
-    if !update.zoom.is_finite()
-        || !(0.1..=4.0).contains(&update.zoom)
-        || !update.opacity.is_finite()
-        || !(0.1..=1.0).contains(&update.opacity)
-        || !update.anchor_x.is_finite()
-        || !update.anchor_y.is_finite()
-        || !(0.0..=1.0).contains(&update.anchor_x)
-        || !(0.0..=1.0).contains(&update.anchor_y)
-    {
-        return Err("贴图参数无效".into());
-    }
-    let meta = {
-        let state = manager(app);
-        let pins = state.pins.lock();
-        let pin = pins.items.get(id).ok_or("贴图已结束")?;
-        if pin.closed {
-            return Err("贴图已经关闭".into());
-        }
-        pin.meta.clone()
-    };
-    let size = window.inner_size().map_err(|e| e.to_string())?;
-    let position = window.outer_position().map_err(|e| e.to_string())?;
-    let width = (meta.width as f64 * update.zoom).round().max(1.0) as u32;
-    let height = (meta.height as f64 * update.zoom).round().max(1.0) as u32;
-    window
-        .set_size(PhysicalSize::new(width, height))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_position(PhysicalPosition::new(
-            position.x + ((size.width as f64 - width as f64) * update.anchor_x).round() as i32,
-            position.y + ((size.height as f64 - height as f64) * update.anchor_y).round() as i32,
-        ))
-        .map_err(|e| e.to_string())?;
-    crate::windows::set_native_opacity(window, update.opacity).map_err(|e| e.to_string())?;
-    window
-        .set_ignore_cursor_events(update.click_through)
-        .map_err(|e| e.to_string())?;
-    let state = manager(app);
-    let mut pins = state.pins.lock();
-    let pin = pins.items.get_mut(id).ok_or("贴图已结束")?;
-    pin.meta.zoom = update.zoom;
-    pin.meta.opacity = update.opacity;
-    pin.meta.click_through = update.click_through;
-    Ok(pin.meta.clone())
-}
-pub fn pin_close(app: &AppHandle, window: &WebviewWindow, destroy: bool) -> Result<(), String> {
-    let id = pin_id(window)?.to_owned();
-    let state = manager(app);
-    let discard = state.pins.lock().close(&id, destroy)?;
-    if let Some(discard) = discard {
-        if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{discard}")) {
-            let _ = window.destroy();
-        }
-    }
-    if destroy {
-        window.destroy()
-    } else {
-        window.hide()
-    }
-    .map_err(|e| e.to_string())
-}
-pub fn toggle_pins(app: &AppHandle) -> Result<(), String> {
-    let state = manager(app);
-    let _operation = state.operation.lock();
-    if state.active.load(Ordering::Acquire) {
-        return Err("请先完成当前截图".into());
-    }
-    let updates = {
-        let mut pins = state.pins.lock();
-        pins.hidden = !pins.hidden;
-        let hidden = pins.hidden;
-        pins.items
-            .values_mut()
-            .filter(|p| !p.closed)
-            .map(|p| {
-                p.visible = !hidden;
-                (p.meta.id.clone(), p.visible)
-            })
-            .collect::<Vec<_>>()
-    };
-    for (id, visible) in updates {
-        if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
-            if visible {
-                window.show()
-            } else {
-                window.hide()
-            }
-            .map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-pub fn recover_click_through(app: &AppHandle) -> Result<(), String> {
-    let ids = manager(app)
-        .pins
-        .lock()
-        .items
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    for id in ids {
-        if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
-            window
-                .set_ignore_cursor_events(false)
-                .map_err(|e| e.to_string())?;
-            let updated = {
-                let state = manager(app);
-                let mut pins = state.pins.lock();
-                pins.items.get_mut(&id).map(|pin| {
-                    pin.meta.click_through = false;
-                    pin.meta.clone()
-                })
-            };
-            if let Some(updated) = updated {
-                let _ = window.emit("popper:pin-updated", updated);
-            }
-        }
-    }
-    Ok(())
-}
-
-pub struct ShortcutChange {
-    app: AppHandle,
-    old: Vec<String>,
-    next: Vec<String>,
-    added: Vec<String>,
-    committed: bool,
-}
-impl ShortcutChange {
-    pub fn prepare(app: &AppHandle, next: &CaptureSettings) -> Result<Self, String> {
-        use tauri_plugin_global_shortcut::{GlobalShortcut, ShortcutState};
-        let shortcuts = app
-            .try_state::<GlobalShortcut<tauri::Wry>>()
-            .ok_or("全局快捷键服务未启动，请重启 Popper")?;
-        let old = manager(app).shortcuts.lock().clone();
-        let next = next
-            .shortcuts()
-            .iter()
-            .map(|v| (*v).to_owned())
-            .collect::<Vec<_>>();
-        let mut change = Self {
-            app: app.clone(),
-            old,
-            next,
-            added: Vec::new(),
-            committed: false,
-        };
-        for value in &change.next {
-            if change.old.contains(value) {
-                continue;
-            }
-            let expected = value.clone();
-            shortcuts
-                .on_shortcut(value.as_str(), move |app, _, event| {
-                    if event.state() != ShortcutState::Pressed
-                        || app.state::<RuntimeState>().global_shortcuts_suspended()
-                    {
-                        return;
-                    }
-                    let preferences = app.state::<RuntimeState>().settings.get_settings().capture;
-                    let operation = if preferences.shortcut == expected {
-                        "capture"
-                    } else if preferences.paste_shortcut == expected {
-                        "paste"
-                    } else if preferences.toggle_pins_shortcut == expected {
-                        "toggle"
-                    } else {
-                        return;
-                    };
-                    launch(app, operation);
-                })
-                .map_err(|e| format!("无法注册屏幕捕捉快捷键 {value}，可能已被占用：{e}"))?;
-            change.added.push(value.clone());
-        }
-        Ok(change)
-    }
-    pub fn commit(mut self) {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        for value in &self.old {
-            if !self.next.contains(value) {
-                let _ = self.app.global_shortcut().unregister(value.as_str());
-            }
-        }
-        *manager(&self.app).shortcuts.lock() = self.next.clone();
-        self.app
-            .state::<RuntimeState>()
-            .set_capture_shortcut_error(None);
-        self.committed = true;
-    }
-}
-impl Drop for ShortcutChange {
-    fn drop(&mut self) {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if !self.committed {
-            for value in &self.added {
-                let _ = self.app.global_shortcut().unregister(value.as_str());
-            }
-        }
-    }
-}
-
-pub fn pin_menu(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
-    use tauri::menu::{ContextMenu, Menu, MenuItem};
-    let state = pin_state(app, window)?;
-    let item = |action: &str, label: &str| {
-        MenuItem::with_id(
-            app,
-            format!("capture-pin:{action}:{}", state.id),
-            label,
-            true,
-            None::<&str>,
-        )
-        .map_err(|e| e.to_string())
-    };
-    let reset = item("reset", "恢复原始大小和透明度")?;
-    let through = item("through", "鼠标穿透（从托盘恢复）")?;
-    let close = item("close", "关闭 · 可恢复")?;
-    let destroy = item("destroy", "销毁图片")?;
-    Menu::with_items(app, &[&reset, &through, &close, &destroy])
-        .and_then(|menu| menu.popup(window.as_ref().window().clone()))
-        .map_err(|e| e.to_string())
 }

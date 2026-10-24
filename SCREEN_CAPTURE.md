@@ -50,6 +50,10 @@
 
 后端模块位于 `src-tauri/src/capture/`，界面位于 `src/renderer/capture/`，共享类型位于 `src/shared/capture.ts`。
 
+`recognition.rs` 负责识别入口和通路汇合，`recognition/worker.rs` 管理辅助进程与最新请求队列，`recognition/automation.rs` 管理 UIA 遍历和缓存，`accessibility.rs` 负责 MSAA 点命中。`desktop.rs` 编排截图会话和输出，贴图窗口及菜单由 `desktop/pinned.rs` 管理，快捷键注册及回滚由 `desktop/shortcuts.rs` 管理。内部拆分保留原有 IPC 命令和生命周期检查。
+
+前端 `candidates.ts` 统一候选矩形规则，`hover.ts` 负责请求合并和候选缓存，`navigation.ts` 保留用户切换的层级。控件命中的右边和下边为排他边界；`geometry.ts` 的选区及手柄计算保留可拖动边缘，两者使用独立的包含规则。后端仅在请求会话元数据时复制控件快照，权限检查只验证会话；指针识别共享不可变窗口快照，只复制命中位置的原生候选。
+
 - 会话：准备 → 悬停／框选 → 调整／标注 → 输出或取消。独立会话 ID、选区版本和识别代次阻止过期结果重新激活界面。
 - 坐标：Windows 全局矩形及本地选区使用物理像素，界面按实际视口转换为逻辑像素。负坐标、屏幕旋转和不同缩放比例不改变图像裁剪单位。
 - 识别：覆盖窗口出现前记录窗口层级及可见原生子控件，前端无需等待 IPC 即可按捕捉时的窗口顺序命中边界。请求按 16 毫秒合并最新指针位置；原生控件快照总量上限为 4096，每窗口 1024。

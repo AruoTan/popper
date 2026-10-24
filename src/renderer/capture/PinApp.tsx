@@ -19,7 +19,6 @@ export function PinApp(): JSX.Element {
         const image = await decodePng(bytes); if (!active) return;
         // Keep an owned URL until this window unmounts.
         const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
-        if (!active) { URL.revokeObjectURL(url); return; }
         setSource(url); setMeta(state); current.current = state;
         if (image.naturalWidth !== state.width || image.naturalHeight !== state.height) throw new Error('贴图尺寸无效');
         await invoke('capture_show');

@@ -221,7 +221,6 @@ export function CaptureApp(): JSX.Element {
       void output('clipboard');
     }}
     onWheel={(event) => { if (tool !== 'select' && !(event.target as HTMLElement).closest('[data-capture-ui]')) setLineWidth((width) => clamp(width + (event.deltaY < 0 ? 1 : -1), 1, 32)); }}
-    onKeyUp={(event) => { if (event.key === 'Alt') setAlt(false); }}
 >
     <canvas className="capture-scene" ref={canvas} />
     {displayed ? <>
