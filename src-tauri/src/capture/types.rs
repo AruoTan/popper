@@ -41,18 +41,39 @@ impl CaptureRect {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CapturePoint {
+    pub x: i32,
+    pub y: i32,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptureSession {
     pub id: String,
     pub screen: CaptureRect,
     pub scale: f64,
     pub color: String,
     pub line_width: u8,
+    pub targets: Vec<CaptureTarget>,
+    pub pointer: Option<CapturePoint>,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureTarget {
+    pub rect: CaptureRect,
+    pub label: String,
+    pub controls: Vec<CaptureCandidate>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureCandidate {
     pub rect: CaptureRect,
     pub label: String,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureHitTest {
+    pub candidates: Vec<CaptureCandidate>,
+    pub pending: bool,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowUpRight, Check, Circle, Copy, Download, MessageSquare, MousePointer2, Pencil, Pin, Redo2, Square, Type, Undo2, X, Grid3X3, Trash2 } from 'lucide-react';
-import type { CaptureAnnotation, CaptureCandidate, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool } from '../../shared/capture';
+import type { CaptureAnnotation, CaptureCandidate, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, contains, emptyHistory, HANDLES, handlePoint, hitAnnotation, keyRect, moveRect, rectangle, redo, resizeRect, undo, type Handle } from './geometry';
 import { decodePng, pngBytes, renderScene } from './drawing';
+import { createCaptureHover } from './hover';
+import { createCaptureNavigation } from './navigation';
 
 type Gesture = { mode: 'new' | 'move' | 'resize' | 'draw' | 'object'; start: CapturePoint; rect: CaptureRect | null; handle?: Handle; item?: CaptureAnnotation; moved: boolean };
 type TextEdit = { id: string; point: CapturePoint; text: string; color: string; width: number };
@@ -39,7 +41,8 @@ export function CaptureApp(): JSX.Element {
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [alt, setAlt] = useState(false), [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const canvas = useRef<HTMLCanvasElement>(null), root = useRef<HTMLElement>(null), gesture = useRef<Gesture | null>(null), busyRef = useRef(false), version = useRef(0), generation = useRef(0);
-  const queryPending = useRef(false), queryTimer = useRef<number | undefined>(undefined), lastPoint = useRef(point), mounted = useRef(true), selectedRef = useRef(selection);
+  const hover = useRef<ReturnType<typeof createCaptureHover> | null>(null), mounted = useRef(true), selectedRef = useRef(selection);
+  const navigation = useRef<ReturnType<typeof createCaptureNavigation> | null>(null);
   selectedRef.current = selection;
   const bounds: CaptureRect = { x: 0, y: 0, width: session?.screen.width ?? 1, height: session?.screen.height ?? 1 };
   const sx = viewport.width / bounds.width, sy = viewport.height / bounds.height;
@@ -59,7 +62,7 @@ export function CaptureApp(): JSX.Element {
       try {
         const [meta, bytes] = await Promise.all([invoke<CaptureSession>('capture_session'), invoke<ArrayBuffer>('capture_image')]);
         const decoded = await decodePng(bytes); if (!alive) return;
-        setSession(meta); setImage(decoded); setColor(meta.color); setLineWidth(meta.lineWidth);
+        setSession(meta); setImage(decoded); setColor(meta.color); setLineWidth(meta.lineWidth); if (meta.pointer) setPoint(meta.pointer);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
         if (alive) { await invoke('capture_show'); root.current?.focus(); }
       } catch (e) { if (alive) {
@@ -77,8 +80,24 @@ export function CaptureApp(): JSX.Element {
     window.addEventListener('focus', focus);
     const blur = (): void => { if (!busyRef.current && alive) void invoke('capture_cancel').catch(() => {}); };
     window.addEventListener('blur', blur);
-    return () => { alive = false; mounted.current = false; window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); window.removeEventListener('focus', focus); clearTimeout(queryTimer.current); generation.current++; };
+    return () => { alive = false; mounted.current = false; window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); window.removeEventListener('focus', focus); generation.current++; };
   }, []);
+  useEffect(() => {
+    if (!session) return;
+    const navigator = createCaptureNavigation(); navigation.current = navigator;
+    const controller = createCaptureHover({
+      targets: session.targets ?? [],
+      active: () => mounted.current && !selectedRef.current && !gesture.current && !busyRef.current,
+      request: (at) => invoke<CaptureHitTest>('capture_candidates', { x: at.x, y: at.y, generation: ++generation.current }),
+      show: (items, { point, target }) => {
+        const next = navigator.update(items, point, target, { x: window.innerWidth / session.screen.width, y: window.innerHeight / session.screen.height });
+        setCandidates(next.items); setCandidateIndex(next.index);
+      },
+    });
+    hover.current = controller;
+    if (session.pointer) controller.update(session.pointer);
+    return () => { controller.destroy(); if (hover.current === controller) hover.current = null; if (navigation.current === navigator) navigation.current = null; };
+  }, [session]);
   useEffect(() => {
     if (!canvas.current || !image) return;
     try { renderScene(canvas.current, image, bounds.width, bounds.height, draft ? [...displayedItems, draft] : displayedItems); }
@@ -91,17 +110,6 @@ export function CaptureApp(): JSX.Element {
     return () => clearTimeout(timer);
   }, [session, color, lineWidth, busy]);
 
-  const query = (p: CapturePoint): void => {
-    lastPoint.current = p; generation.current++;
-    if (queryPending.current || queryTimer.current !== undefined) return;
-    queryTimer.current = window.setTimeout(() => {
-      queryTimer.current = undefined; if (selectedRef.current || gesture.current || !mounted.current) return;
-      queryPending.current = true; const sequence = generation.current; const at = lastPoint.current;
-      void invoke<CaptureCandidate[]>('capture_candidates', { x: at.x, y: at.y, generation: sequence }).then((items) => {
-        if (mounted.current && generation.current === sequence && !selectedRef.current && !gesture.current) { setCandidates(items); setCandidateIndex(0); }
-      }).catch(() => {}).finally(() => { queryPending.current = false; if (mounted.current && generation.current !== sequence && !selectedRef.current) query(lastPoint.current); });
-    }, 60);
-  };
   const eventPoint = (event: { clientX: number; clientY: number }): CapturePoint => constrainPoint({ x: event.clientX / sx, y: event.clientY / sy }, bounds);
   const finishText = (): void => {
     if (!textEdit) return;
@@ -155,7 +163,7 @@ export function CaptureApp(): JSX.Element {
     if (!session || busyRef.current) return;
     const p = eventPoint(event); setPoint(p);
     const current = gesture.current;
-    if (!current) { if (!selection) query(p); return; }
+    if (!current) { if (!selection) hover.current?.update(p); return; }
     const dx = p.x - current.start.x, dy = p.y - current.start.y;
     if (Math.hypot(dx * sx, dy * sy) > 4) current.moved = true;
     if (current.mode === 'new' && current.moved) { setSelection(rectangle(current.start, p)); setCandidates([]); }
@@ -176,7 +184,7 @@ export function CaptureApp(): JSX.Element {
     if (current.mode === 'new' && !current.moved) {
       const p = eventPoint(event); const sequence = ++generation.current;
       if (candidate && contains(candidate.rect, p)) { setSelection(candidate.rect); setDraft(null); return; }
-      void invoke<CaptureCandidate[]>('capture_candidates', { x: p.x, y: p.y, generation: sequence }).then((items) => {
+      void invoke<CaptureHitTest>('capture_candidates', { x: p.x, y: p.y, generation: sequence }).then(({ candidates: items }) => {
         if (mounted.current && generation.current === sequence && !gesture.current) setSelection(items[0]?.rect ?? { x: Math.min(p.x, bounds.width - 1), y: Math.min(p.y, bounds.height - 1), width: 1, height: 1 });
       }).catch(() => { if (mounted.current && generation.current === sequence) setSelection({ x: Math.min(p.x, bounds.width - 1), y: Math.min(p.y, bounds.height - 1), width: 1, height: 1 }); });
     }
@@ -188,9 +196,13 @@ export function CaptureApp(): JSX.Element {
   keyboard.current = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') { event.preventDefault(); cancel(); return; }
       if (busyRef.current) return;
-      if ((event.target as HTMLElement).closest('input, textarea')) return;
+      if (event.target instanceof Element && event.target.closest('input, textarea')) return;
       if (event.key === 'Alt') { event.preventDefault(); setAlt(true); }
-      if (event.key === 'Tab' && !selection) { event.preventDefault(); setCandidateIndex((index) => clamp(index + (event.shiftKey ? -1 : 1), 0, Math.max(0, candidates.length - 1))); }
+      if (event.key === 'Tab' && !selection) {
+        event.preventDefault(); const next = navigation.current?.cycle(event.shiftKey ? -1 : 1);
+        if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
+        return;
+      }
       if (event.key.startsWith('Arrow') && selection && !textEdit) { event.preventDefault(); setSelection(keyRect(selection, event.key, event.ctrlKey, event.shiftKey, bounds)); }
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedId) { event.preventDefault(); setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }
       if (event.ctrlKey && event.key.toLowerCase() === 'z') { event.preventDefault(); setHistory(event.shiftKey ? redo(history) : undo(history)); setSelectedId(null); }

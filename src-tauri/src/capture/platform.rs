@@ -1,4 +1,4 @@
-use super::CaptureRect;
+use super::{CaptureCandidate, CaptureRect};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
 use tauri::AppHandle;
@@ -18,9 +18,9 @@ use windows::{
                 OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
             },
             WindowsAndMessaging::{
-                EnumWindows, GetForegroundWindow, GetPhysicalCursorPos, GetWindowRect,
-                GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
-                SetForegroundWindow,
+                EnumChildWindows, EnumWindows, GetForegroundWindow, GetPhysicalCursorPos,
+                GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
+                IsWindowVisible, SetForegroundWindow,
             },
         },
     },
@@ -31,6 +31,7 @@ pub struct TargetWindow {
     pub handle: usize,
     pub rect: CaptureRect,
     pub title: String,
+    pub controls: Vec<CaptureCandidate>,
 }
 pub fn cursor() -> Result<(i32, i32), String> {
     let mut point = POINT::default();
@@ -134,6 +135,7 @@ pub fn windows() -> Vec<TargetWindow> {
                     height: (rect.bottom - rect.top) as u32,
                 },
                 title: String::from_utf16_lossy(&title[..count]),
+                controls: Vec::new(),
             });
         }
         BOOL(1)
@@ -143,6 +145,54 @@ pub fn windows() -> Vec<TargetWindow> {
         let _ = EnumWindows(Some(visit), LPARAM(&mut targets as *mut _ as isize));
     }
     targets
+}
+
+/// Snapshot native children before the overlay exists. This path needs no UIA provider.
+pub fn snapshot_controls(targets: &mut [TargetWindow], screen: CaptureRect) {
+    unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
+        let controls = unsafe { &mut *(data.0 as *mut Vec<CaptureCandidate>) };
+        if controls.len() >= 1024 {
+            return BOOL(0);
+        }
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
+            return BOOL(1);
+        }
+        let mut rect = RECT::default();
+        if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err()
+            || rect.right <= rect.left
+            || rect.bottom <= rect.top
+        {
+            return BOOL(1);
+        }
+        controls.push(CaptureCandidate {
+            rect: CaptureRect {
+                x: rect.left,
+                y: rect.top,
+                width: (i64::from(rect.right) - i64::from(rect.left)) as u32,
+                height: (i64::from(rect.bottom) - i64::from(rect.top)) as u32,
+            },
+            label: String::new(),
+        });
+        BOOL(1)
+    }
+    let mut remaining = 4096;
+    for target in targets {
+        if remaining == 0 {
+            break;
+        }
+        if target.rect.intersect(screen).is_none() {
+            continue;
+        }
+        unsafe {
+            let _ = EnumChildWindows(
+                Some(HWND(target.handle as *mut _)),
+                Some(visit),
+                LPARAM(&mut target.controls as *mut _ as isize),
+            );
+        }
+        target.controls.truncate(remaining);
+        remaining -= target.controls.len();
+    }
 }
 /// Run hide/restore as a single event-loop operation before synchronizing the compositor.
 pub fn on_ui<T: Send + 'static>(
