@@ -41,10 +41,17 @@ button:focus-visible { outline: 2px solid #7fa9ff; outline-offset: 1px; }
 .capture-pin-menu button:hover { background: #ffffff22; }
 .capture-pin-error { position: absolute; top: 0; left: 0; padding: 8px; background: #7f2833eb; font-size: 12px; }
 .capture-notice { margin: 4px; padding: 16px 20px; min-height: 68px; display: flex; align-items: center; border-radius: 10px; border: 1px solid #ffffff25; background: #202634f5; box-shadow: 0 3px 10px #0004; font-size: 13px; }
-.capture-scroll-surface { width: 100%; height: 100%; background: #171b25; padding: 12px; overflow: auto; }
-.capture-scroll-controller { display: grid; gap: 10px; font-size: 13px; }
-.capture-scroll-controller header, .capture-scroll-controller > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.capture-scroll-controller header span, .capture-scroll-controller small { color: #bbc5d4; font-size: 11px; }
-.capture-scroll-controller p { margin: 0; min-height: 36px; line-height: 18px; }
-.capture-scroll-controller button { display: inline-flex; align-items: center; gap: 4px; padding: 7px 9px; border: 1px solid #ffffff30; border-radius: 5px; background: #29354b; white-space: nowrap; }
-.capture-scroll-error { margin-top: 8px; color: #ffb4b4; font-size: 12px; }
+.capture-scroll-surface, .capture-scroll-overlay { position: relative; width: 100%; height: 100%; background: transparent; user-select: none; }
+.capture-scroll-border { position: absolute; outline: 2px solid #48cb85; box-shadow: 0 0 0 50000px #0005; pointer-events: none; }
+.capture-scroll-border[data-interrupted="true"] { outline-color: #edb451; }
+.capture-scroll-panel { position: absolute; display: flex; flex-direction: column; gap: 12px; padding: 12px; overflow: hidden; border: 1px solid #ffffff25; border-radius: 8px; background: #25282ef5; box-shadow: 0 6px 24px #0005; cursor: pointer; }
+.capture-scroll-panel:not([style]) { right: 16px; top: 16px; width: 216px; height: 148px; }
+.capture-scroll-panel header { height: 96px; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; }
+.capture-scroll-panel header > svg { flex-shrink: 0; color: #64d89c; }
+.capture-scroll-panel p { margin: 0; font-size: 12px; line-height: 17px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.capture-scroll-panel small { color: #c3c8d0; font-size: 10px; line-height: 14px; }
+.capture-scroll-preview-area { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: hidden; }
+.capture-scroll-thumbnail { position: relative; flex-shrink: 0; background: white; box-shadow: 0 2px 8px #0006; }
+.capture-scroll-thumbnail img { display: block; width: 100%; height: 100%; pointer-events: none; }
+.capture-scroll-viewport { position: absolute; left: 0; right: 0; border: 2px solid #48cb85; background: #48cb851a; pointer-events: none; }
+.capture-scroll-error { position: absolute; bottom: 0; left: 0; right: 0; padding: 8px; background: #742732f5; color: #fff0f0; font-size: 12px; overflow-wrap: anywhere; }

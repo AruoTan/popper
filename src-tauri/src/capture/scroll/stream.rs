@@ -3,7 +3,7 @@ use super::{settled, ScrollProgress, ScrollStatus, ScrollStitcher};
 use image::RgbaImage;
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicI64, Ordering},
+        atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
@@ -14,7 +14,6 @@ struct Shared {
     document: Mutex<ScrollStitcher>,
     progress: Mutex<ScrollProgress>,
     error: Mutex<Option<String>>,
-    position: AtomicI64,
 }
 pub struct ScrollStream {
     stop: Arc<AtomicBool>,
@@ -37,7 +36,6 @@ impl ScrollStream {
             document: Mutex::new(document),
             progress: Mutex::new(progress),
             error: Mutex::new(None),
-            position: AtomicI64::new(0),
         });
         let stop = Arc::new(AtomicBool::new(false));
         let (sender, receiver) = mpsc::sync_channel::<Arc<RgbaImage>>(capacity);
@@ -46,12 +44,10 @@ impl ScrollStream {
             .name("capture-register".into())
             .spawn(move || {
                 while let Ok(frame) = receiver.recv() {
-                    let (progress, position) = {
+                    let progress = {
                         let mut document = state.document.lock().unwrap();
-                        let progress = document.push_frame(frame);
-                        (progress, document.cursor)
+                        document.push_frame(frame)
                     };
-                    state.position.store(position, Ordering::Release);
                     let limited = progress.status == ScrollStatus::Limit;
                     *state.progress.lock().unwrap() = progress;
                     if limited {
@@ -111,20 +107,12 @@ impl ScrollStream {
     pub fn snapshot(&self) -> ScrollProgress {
         self.shared.progress.lock().unwrap().clone()
     }
-    pub fn position(&self) -> i64 {
-        self.shared.position.load(Ordering::Acquire)
-    }
-    pub fn progress_since(&self, position: i64) -> Result<ScrollProgress, String> {
-        let mut progress = self.progress()?;
-        if self.position() == position
-            && matches!(
-                progress.status,
-                ScrollStatus::Appended | ScrollStatus::Tracked
-            )
-        {
-            progress.status = ScrollStatus::Unchanged;
-        }
-        Ok(progress)
+    pub fn preview(&self) -> (ScrollProgress, RgbaImage) {
+        let document = self.shared.document.lock().unwrap();
+        (
+            document.progress(ScrollStatus::Unchanged),
+            document.preview(),
+        )
     }
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);
@@ -200,14 +188,6 @@ mod tests {
             image::imageops::crop_imm(&page, 0, 0, 160, 1080).to_image()
         );
         assert_eq!(stream.snapshot().status, ScrollStatus::Tracked);
-        assert_eq!(
-            stream.progress_since(stream.position()).unwrap().status,
-            ScrollStatus::Unchanged
-        );
-        assert_eq!(
-            stream.progress_since(0).unwrap().status,
-            ScrollStatus::Tracked
-        );
     }
     #[test]
     fn finish_drains_queued_frames_before_registering_the_final_viewport() {

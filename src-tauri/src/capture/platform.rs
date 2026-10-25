@@ -86,39 +86,74 @@ pub fn exclude_from_capture(window: &tauri::WebviewWindow, exclude: bool) -> Res
         WDA_NONE
     };
     unsafe { SetWindowDisplayAffinity(hwnd, affinity) }
-        .map_err(|_| "当前系统无法排除滚动控制栏，请使用 Windows 10 2004 或更新版本".to_owned())?;
+        .map_err(|_| "当前系统无法排除滚动预览，请使用 Windows 10 2004 或更新版本".to_owned())?;
     let mut actual = 0;
     unsafe { GetWindowDisplayAffinity(hwnd, &mut actual) }.map_err(|e| e.to_string())?;
     if actual != affinity.0 {
-        return Err("无法将控制栏排除在截图之外".into());
+        return Err("无法将滚动预览排除在截图之外".into());
     }
     Ok(())
 }
-pub fn scroll_down(target: usize, point: CapturePoint) -> Result<(), String> {
-    use windows::Win32::{
-        Foundation::WPARAM,
-        UI::WindowsAndMessaging::{PostMessageW, WindowFromPoint, WM_MOUSEWHEEL},
+pub fn scroll_surface(
+    window: &tauri::WebviewWindow,
+    screen: CaptureRect,
+    layout: Option<&super::ScrollLayout>,
+) -> Result<(), String> {
+    use windows::Win32::Graphics::Gdi::{
+        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF, RGN_OR,
     };
-    let window = unsafe {
-        WindowFromPoint(POINT {
-            x: point.x,
-            y: point.y,
-        })
-    };
-    if window.0.is_null() || unsafe { GetAncestor(window, GA_ROOT) }.0 as usize != target {
-        return Err("滚动区域被其他窗口遮挡，请移开遮挡后继续".into());
+    struct Region(HRGN);
+    impl Drop for Region {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = DeleteObject(HGDIOBJ(self.0 .0));
+            }
+        }
     }
-    let position = ((point.y as u32 & 0xffff) << 16) | (point.x as u32 & 0xffff);
-    let wheel = ((-120i16) as u16 as usize) << 16;
+    fn region(rect: CaptureRect) -> Result<Region, String> {
+        let handle = unsafe {
+            CreateRectRgn(
+                rect.x,
+                rect.y,
+                rect.x + rect.width as i32,
+                rect.y + rect.height as i32,
+            )
+        };
+        if handle.0.is_null() {
+            Err("无法创建滚动选区边界".into())
+        } else {
+            Ok(Region(handle))
+        }
+    }
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let Some(layout) = layout else {
+        return if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
+            Err("无法恢复截图编辑窗口".into())
+        } else {
+            Ok(())
+        };
+    };
+    let outer = region(CaptureRect {
+        x: 0,
+        y: 0,
+        width: screen.width,
+        height: screen.height,
+    })?;
+    let hole = region(layout.selection)?;
+    let panel = region(layout.panel)?;
+    // The native hole forwards input to the real page, including drag and wheel input.
+    // Keep the preview interactive even when a full-screen selection leaves no free margin.
     unsafe {
-        PostMessageW(
-            Some(window),
-            WM_MOUSEWHEEL,
-            WPARAM(wheel),
-            LPARAM(position as isize),
-        )
+        if CombineRgn(Some(outer.0), Some(outer.0), Some(hole.0), RGN_DIFF).0 == 0
+            || CombineRgn(Some(outer.0), Some(outer.0), Some(panel.0), RGN_OR).0 == 0
+            || SetWindowRgn(hwnd, Some(outer.0), true) == 0
+        {
+            return Err("无法启用滚动选区，请重新截图".into());
+        }
     }
-    .map_err(|e| e.to_string())
+    // Successful SetWindowRgn transfers this handle to the operating system.
+    std::mem::forget(outer);
+    Ok(())
 }
 pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|e| e.to_string())?;

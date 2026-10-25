@@ -1,4 +1,6 @@
 //! A bounded vertical document that can grow above or below its initial viewport.
+#[path = "scroll/layout.rs"]
+pub mod layout;
 #[path = "scroll/registration.rs"]
 mod registration;
 #[path = "scroll/stream.rs"]
@@ -28,7 +30,7 @@ pub struct ScrollStitcher {
     edges: Option<(usize, usize)>,
     header: Option<Arc<RgbaImage>>,
     footer: Option<Arc<RgbaImage>>,
-    frames: usize,
+    revision: u64,
 }
 fn crop(image: &RgbaImage, y: usize, height: usize) -> Arc<RgbaImage> {
     Arc::new(image::imageops::crop_imm(image, 0, y as u32, image.width(), height as u32).to_image())
@@ -57,7 +59,7 @@ impl ScrollStitcher {
             edges: None,
             header: None,
             footer: None,
-            frames: 1,
+            revision: 1,
         })
     }
     pub fn progress(&self, status: ScrollStatus) -> ScrollProgress {
@@ -65,7 +67,13 @@ impl ScrollStitcher {
         ScrollProgress {
             width: self.last.width(),
             height: (self.bottom - self.top) as u32 + (header + footer) as u32,
-            frames: self.frames,
+            revision: self.revision,
+            viewport: super::CaptureRect {
+                x: 0,
+                y: (self.cursor - self.top) as i32,
+                width: self.last.width(),
+                height: self.last.height(),
+            },
             status,
         }
     }
@@ -157,7 +165,7 @@ impl ScrollStitcher {
         }
         self.cursor = position;
         self.last = image;
-        self.frames += 1;
+        self.revision += 1;
         self.progress(if extended {
             ScrollStatus::Appended
         } else {
@@ -179,6 +187,39 @@ impl ScrollStitcher {
             let bytes = strip.as_raw();
             image.as_mut()[offset..offset + bytes.len()].copy_from_slice(bytes);
             offset += bytes.len();
+        }
+        image
+    }
+    /// Sample the strips directly so a preview never allocates the full long image.
+    pub fn preview(&self) -> RgbaImage {
+        let width = self.last.width();
+        let height = self.progress(ScrollStatus::Unchanged).height;
+        let scale = (192.0 / width as f64).min(400.0 / height as f64).min(1.0);
+        let mut image = RgbaImage::new(
+            (width as f64 * scale).round().max(1.0) as u32,
+            (height as f64 * scale).round().max(1.0) as u32,
+        );
+        let mut strips = self
+            .header
+            .iter()
+            .chain(self.strips.iter())
+            .chain(self.footer.iter());
+        let mut strip = strips.next().unwrap();
+        let mut offset = 0;
+        for y in 0..image.height() {
+            let source_y = u64::from(y) * u64::from(height) / u64::from(image.height());
+            while source_y >= u64::from(offset + strip.height()) {
+                offset += strip.height();
+                strip = strips.next().unwrap();
+            }
+            for x in 0..image.width() {
+                let source_x = u64::from(x) * u64::from(width) / u64::from(image.width());
+                image.put_pixel(
+                    x,
+                    y,
+                    *strip.get_pixel(source_x as u32, source_y as u32 - offset),
+                );
+            }
         }
         image
     }
@@ -205,6 +246,50 @@ mod tests {
     }
     fn frame(page: &RgbaImage, y: u32) -> RgbaImage {
         image::imageops::crop_imm(page, 0, y, 160, 240).to_image()
+    }
+    fn assert_preview_matches_document(stitcher: &ScrollStitcher) {
+        let document = stitcher.compose();
+        let preview = stitcher.preview();
+        assert!(preview.width() <= 192 && preview.height() <= 400);
+        for (x, y, pixel) in preview.enumerate_pixels() {
+            let source_x = u64::from(x) * u64::from(document.width()) / u64::from(preview.width());
+            let source_y =
+                u64::from(y) * u64::from(document.height()) / u64::from(preview.height());
+            assert_eq!(pixel, document.get_pixel(source_x as u32, source_y as u32));
+        }
+        let progress = stitcher.progress(ScrollStatus::Unchanged);
+        assert!(progress
+            .viewport
+            .valid_within(progress.width, progress.height));
+    }
+    #[test]
+    fn preview_tracks_growth_above_and_below_the_start_and_revisits() {
+        let page = page();
+        let mut stitcher = ScrollStitcher::new(frame(&page, 400)).unwrap();
+        assert_preview_matches_document(&stitcher);
+        for y in [540, 700, 400, 240, 80, 0, 600] {
+            assert_ne!(
+                stitcher.push(frame(&page, y)).status,
+                ScrollStatus::Unmatched
+            );
+            assert_preview_matches_document(&stitcher);
+        }
+        let before = stitcher.progress(ScrollStatus::Unchanged);
+        assert_eq!(before.viewport.y, 600);
+        assert_eq!(before.height, 940);
+        stitcher.push(frame(&page, 600));
+        assert_eq!(
+            stitcher.progress(ScrollStatus::Unchanged).revision,
+            before.revision
+        );
+    }
+    #[test]
+    fn wide_previews_are_bounded_without_changing_the_source_document() {
+        let source = RgbaImage::from_fn(4000, 240, |x, y| image::Rgba([x as u8, y as u8, 10, 255]));
+        let stitcher = ScrollStitcher::new(source.clone()).unwrap();
+        assert_preview_matches_document(&stitcher);
+        assert_eq!(stitcher.preview().width(), 192);
+        assert_eq!(stitcher.compose(), source);
     }
     #[test]
     fn stitches_variable_displacements_at_original_resolution() {
@@ -360,6 +445,7 @@ mod tests {
         assert_eq!(stitcher.push(third.clone()).status, ScrollStatus::Appended);
         let result = stitcher.compose();
         assert_eq!(result.height(), 350);
+        assert_preview_matches_document(&stitcher);
         assert_eq!(
             stitcher
                 .header

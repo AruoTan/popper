@@ -5,7 +5,7 @@ use pinned::{create_pin, PinPlacement};
 pub use pinned::{
     paste, pin_close, pin_menu, pin_state, pin_update, recover_click_through, toggle_pins,
 };
-pub use scrolling::{scroll_begin, scroll_finish, scroll_step};
+pub use scrolling::{scroll_begin, scroll_finish, scroll_preview, scroll_step};
 pub use shortcuts::ShortcutChange;
 
 use super::pins::Pins;
@@ -45,7 +45,7 @@ struct Session {
     image_origin: CapturePoint,
     scroll: Option<scrolling::ScrollSession>,
     scroll_completed: bool,
-    scroll_escape: Option<scrolling::EscapeShortcut>,
+    scroll_shortcuts: Option<scrolling::ScrollShortcuts>,
     hidden_until: std::time::Instant,
 }
 struct AttachmentDelivery {
@@ -293,7 +293,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         image_origin: CapturePoint { x: 0, y: 0 },
         scroll: None,
         scroll_completed: false,
-        scroll_escape: None,
+        scroll_shortcuts: None,
         hidden_until: std::time::Instant::now() + Duration::from_secs(10),
     });
     app.state::<RuntimeState>()
@@ -327,6 +327,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         WebviewUrl::App("capture/index.html?mode=capture".into()),
     )
     .title("Popper 屏幕捕捉")
+    .transparent(true)
     .inner_size(screen.width as f64 / scale, screen.height as f64 / scale)
     .decorations(false)
     .shadow(false)
@@ -531,7 +532,7 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, session_id(window)?)?;
         if session.scroll.is_none() {
-            session.scroll_escape.take();
+            session.scroll_shortcuts.take();
         }
         Ok(())
     } else {

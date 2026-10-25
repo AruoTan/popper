@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowUpRight, Check, Circle, Copy, Download, MessageSquare, MousePointer2, Pencil, Pin, Redo2, Square, Type, Undo2, X, Grid3X3, Trash2, ScanLine } from 'lucide-react';
-import type { CaptureAnnotation, CaptureCandidate, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureProgress } from '../../shared/capture';
+import type { CaptureAnnotation, CaptureCandidate, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, contains, emptyHistory, HANDLES, handlePoint, hitAnnotation, keyRect, moveRect, rectangle, redo, resizeRect, undo, type Handle } from './geometry';
 import { decodePng, pngBytes, renderScene } from './drawing';
@@ -50,7 +50,7 @@ export function CaptureApp(): JSX.Element {
   const [history, setHistory] = useState(emptyHistory), [draft, setDraft] = useState<CaptureAnnotation | null>(null), [selectedId, setSelectedId] = useState<string | null>(null);
   const [textEdit, setTextEdit] = useState<TextEdit | null>(null), [color, setColor] = useState('#ff4545'), [lineWidth, setLineWidth] = useState(3);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [alt, setAlt] = useState(false), [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
-  const [scrolling, setScrolling] = useState(false), [scrollProgress, setScrollProgress] = useState<ScrollCaptureProgress | null>(null), [documentSize, setDocumentSize] = useState<CaptureDocument | null>(null);
+  const [scrolling, setScrolling] = useState(false), [scrollProgress, setScrollProgress] = useState<ScrollCaptureSession | null>(null), [documentSize, setDocumentSize] = useState<CaptureDocument | null>(null);
   const scrollingRef = useRef(false), scrollDocument = useRef<CaptureDocument | null>(null);
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const canvas = useRef<HTMLCanvasElement>(null), root = useRef<HTMLElement>(null), gesture = useRef<Gesture | null>(null), busyRef = useRef(false), version = useRef(0), generation = useRef(0);
@@ -186,7 +186,7 @@ export function CaptureApp(): JSX.Element {
     try {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
-      const progress = await invoke<ScrollCaptureProgress>('capture_scroll_begin', { rect: selection, version: ++version.current });
+      const progress = await invoke<ScrollCaptureSession>('capture_scroll_begin', { rect: selection, version: ++version.current });
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
       setScrollProgress(progress); busyRef.current = false; setBusy(false);
     } catch (e) {
@@ -317,7 +317,7 @@ export function CaptureApp(): JSX.Element {
       if (event.ctrlKey) { const destination = ({ c: 'clipboard', s: 'file', t: 'pin' } as const)[event.key.toLowerCase() as 'c' | 's' | 't']; if (destination) { event.preventDefault(); void output(destination); } }
   };
   const sceneStyle = (rect: CaptureRect): React.CSSProperties => ({ left: rect.x * sx, top: rect.y * sy, width: rect.width * sx, height: rect.height * sy });
-  if (scrolling) return <main className="capture-scroll-surface"><ScrollCapture initial={scrollProgress} onFinish={finishScroll} onCancel={cancel} />{error && <div className="capture-scroll-error" role="alert">{error}</div>}</main>;
+  if (scrolling && session) return <main className="capture-scroll-surface"><ScrollCapture initial={scrollProgress} screen={session.screen} onFinish={finishScroll} onCancel={cancel} error={error} /></main>;
   return <main className="capture-overlay" ref={root} tabIndex={-1} onPointerDown={start} onPointerMove={move} onPointerUp={end}
     onPointerCancel={() => { gesture.current = null; setDraft(null); }}
     onContextMenu={(event) => { event.preventDefault(); if (busyRef.current) return; if (tool !== 'select' || selectedId || textEdit) { finishText(); setTool('select'); setSelectedId(null); gesture.current = null; setDraft(null); } else cancel(); }}

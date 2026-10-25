@@ -2,32 +2,37 @@
 use super::{ensure_session, manager, platform, session_id};
 use crate::capture::{
     clipboard, scroll::stream::ScrollStream, CaptureDocument, CapturePoint, CaptureRect,
-    ScrollProgress,
+    ScrollCaptureSession, ScrollLayout, ScrollProgress,
 };
 use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, Emitter, PhysicalPosition, PhysicalSize, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub(super) struct ScrollSession {
     pub target: usize,
     rect: CaptureRect,
     stream: ScrollStream,
+    layout: ScrollLayout,
 }
 // Retained until the full editor has regained native and WebView focus.
-pub(super) struct EscapeShortcut {
+pub(super) struct ScrollShortcuts {
     app: AppHandle,
+    keys: Vec<&'static str>,
 }
-impl Drop for EscapeShortcut {
+impl Drop for ScrollShortcuts {
     fn drop(&mut self) {
-        let _ = self.app.global_shortcut().unregister("Escape");
+        for key in &self.keys {
+            let _ = self.app.global_shortcut().unregister(*key);
+        }
     }
 }
 
 fn restore_editor(window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())?;
+    platform::scroll_surface(window, screen, None)?;
     window
         .set_position(PhysicalPosition::new(screen.x, screen.y))
         .map_err(|e| e.to_string())?;
@@ -43,10 +48,11 @@ pub fn scroll_begin(
     window: &WebviewWindow,
     rect: CaptureRect,
     version: u64,
-) -> Result<ScrollProgress, String> {
+) -> Result<ScrollCaptureSession, String> {
     let state = manager(app);
     let _operation = state.operation.lock();
     let id = session_id(window)?;
+    let control = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
     let (screen, scale, target) = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, id)?;
@@ -74,9 +80,16 @@ pub fn scroll_begin(
             .ok_or("选区中没有可滚动的应用窗口")?;
         (screen, session.meta.scale, target)
     };
-    if app.global_shortcut().is_registered("Escape") {
-        return Err("Esc 已被其他功能使用，暂时无法开始滚动截图".into());
+    if ["Escape", "Enter"]
+        .into_iter()
+        .any(|key| app.global_shortcut().is_registered(key))
+    {
+        return Err("滚动截图完成或取消按键已被占用，暂时无法开始".into());
     }
+    let mut shortcuts = ScrollShortcuts {
+        app: app.clone(),
+        keys: Vec::new(),
+    };
     let cancel_id = id.to_owned();
     app.global_shortcut()
         .on_shortcut("Escape", move |app, _, event| {
@@ -89,39 +102,21 @@ pub fn scroll_begin(
             }
         })
         .map_err(|e| format!("无法注册滚动截图取消按键：{e}"))?;
-    let escape = EscapeShortcut { app: app.clone() };
+    shortcuts.keys.push("Escape");
+    let label = window.label().to_owned();
+    app.global_shortcut()
+        .on_shortcut("Enter", move |app, _, event| {
+            if event.state() == ShortcutState::Pressed {
+                let _ = app.emit_to(&label, "popper:capture-scroll-finish", ());
+            }
+        })
+        .map_err(|e| format!("无法注册滚动截图完成按键：{e}"))?;
+    shortcuts.keys.push("Enter");
+    let layout = crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
     let setup = (|| {
         window.hide().map_err(|e| e.to_string())?;
         platform::exclude_from_capture(window, true)?;
-        let width = ((380.0 * scale).round() as u32).min(screen.width);
-        let height = ((190.0 * scale).round() as u32).min(screen.height);
-        let right = screen.width.saturating_sub(width + 16) as i32;
-        let bottom = screen.height.saturating_sub(height + 16) as i32;
-        let center = (
-            rect.x + (rect.width / 2) as i32,
-            rect.y + (rect.height / 2) as i32,
-        );
-        let (x, y) = [(right, 16), (right, bottom), (16, 16), (16, bottom)]
-            .into_iter()
-            .min_by_key(|&(x, y)| {
-                let panel = CaptureRect {
-                    x,
-                    y,
-                    width,
-                    height,
-                };
-                let overlap = panel
-                    .intersect(rect)
-                    .map_or(0, |r| u64::from(r.width) * u64::from(r.height));
-                (panel.contains(center.0, center.1), overlap)
-            })
-            .unwrap();
-        window
-            .set_size(PhysicalSize::new(width, height))
-            .map_err(|e| e.to_string())?;
-        window
-            .set_position(PhysicalPosition::new(screen.x + x, screen.y + y))
-            .map_err(|e| e.to_string())?;
+        platform::scroll_surface(window, screen, Some(&layout))?;
         window.show().map_err(|e| e.to_string())?;
         platform::restore_foreground(target);
         platform::flush();
@@ -136,7 +131,6 @@ pub fn scroll_begin(
             return Err(error);
         }
     };
-    let control = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
     let stream = match ScrollStream::start(
         image,
         move || {
@@ -165,16 +159,13 @@ pub fn scroll_begin(
         target,
         rect,
         stream,
+        layout: layout.clone(),
     });
-    session.scroll_escape = Some(escape);
-    Ok(progress)
+    session.scroll_shortcuts = Some(shortcuts);
+    Ok(ScrollCaptureSession { progress, layout })
 }
 
-pub fn scroll_step(
-    app: &AppHandle,
-    window: &WebviewWindow,
-    automatic: bool,
-) -> Result<ScrollProgress, String> {
+pub fn scroll_step(app: &AppHandle, window: &WebviewWindow) -> Result<ScrollProgress, String> {
     let state = manager(app);
     let _operation = state.operation.lock();
     let mut slot = state.session.lock();
@@ -187,20 +178,28 @@ pub fn scroll_step(
     if platform::foreground() != scroll.target && !platform::is_foreground(window)? {
         return Err("请回到原来的应用窗口后继续，或完成当前长图".into());
     }
-    if automatic {
-        let before = scroll.stream.position();
-        platform::restore_foreground(scroll.target);
-        platform::scroll_down(
-            scroll.target,
-            CapturePoint {
-                x: screen.x + scroll.rect.x + (scroll.rect.width / 2) as i32,
-                y: screen.y + scroll.rect.y + (scroll.rect.height / 2) as i32,
-            },
-        )?;
-        std::thread::sleep(Duration::from_millis(350));
-        return scroll.stream.progress_since(before);
-    }
     scroll.stream.progress()
+}
+
+pub fn scroll_preview(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String> {
+    let state = manager(app);
+    let _operation = state.operation.lock();
+    let (progress, image) = {
+        let mut slot = state.session.lock();
+        let session = ensure_session(&mut slot, session_id(window)?)?;
+        session
+            .scroll
+            .as_ref()
+            .ok_or("滚动截图已结束")?
+            .stream
+            .preview()
+    };
+    // Metadata and thumbnail describe one atomic document snapshot.
+    let metadata = serde_json::to_vec(&progress).map_err(|e| e.to_string())?;
+    let mut bytes = (metadata.len() as u32).to_le_bytes().to_vec();
+    bytes.extend_from_slice(&metadata);
+    bytes.extend_from_slice(&clipboard::png(&image)?);
+    Ok(bytes)
 }
 
 pub fn scroll_finish(app: &AppHandle, window: &WebviewWindow) -> Result<CaptureDocument, String> {
@@ -225,6 +224,7 @@ pub fn scroll_finish(app: &AppHandle, window: &WebviewWindow) -> Result<CaptureD
     session.hidden_until = Instant::now() + Duration::from_secs(10);
     if let Err(error) = restore_editor(window, session.meta.screen) {
         let _ = platform::exclude_from_capture(window, true);
+        let _ = platform::scroll_surface(window, session.meta.screen, Some(&scroll.layout));
         let _ = window.show();
         return Err(error);
     }

@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { decodePng } from './drawing';
 import { CaptureApp } from './CaptureApp';
-import type { CaptureHitTest, ScrollCaptureProgress } from '../../shared/capture';
+import type { CaptureHitTest, ScrollCaptureProgress, ScrollCaptureSession } from '../../shared/capture';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn(async () => vi.fn()) }));
 vi.mock('./drawing', () => ({ decodePng: vi.fn(), renderScene: vi.fn(), pngBytes: vi.fn() }));
 const meta = { id: 'session', screen: { x: -1920, y: 0, width: 1920, height: 1080 }, scale: 1.5, color: '#ff4545', lineWidth: 3 };
 beforeEach(() => {
@@ -15,15 +16,23 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 describe('scroll capture integration', () => {
   const rect = { x: 20, y: 20, width: 800, height: 600 };
-  const progress: ScrollCaptureProgress = { width: 800, height: 600, frames: 1, status: 'unchanged' };
+  const progress: ScrollCaptureProgress = { width: 800, height: 600, revision: 1, viewport: { x: 0, y: 0, width: 800, height: 600 }, status: 'unchanged' };
+  const scrolling: ScrollCaptureSession = { progress, layout: { selection: rect, panel: { x: 900, y: 20, width: 324, height: 765 } } };
   beforeEach(() => {
+    vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:preview'), revokeObjectURL: vi.fn() });
     vi.stubGlobal('PointerEvent', MouseEvent);
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     vi.mocked(decodePng).mockResolvedValue(new Image());
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_session') return { ...meta, pointer: { x: 100, y: 100 }, targets: [{ rect, label: 'page', controls: [] }] };
       if (command === 'capture_image' || command === 'capture_crop') return new ArrayBuffer(0);
-      if (command === 'capture_scroll_begin' || command === 'capture_scroll_step') return progress;
+      if (command === 'capture_scroll_begin') return scrolling;
+      if (command === 'capture_scroll_step') return progress;
+      if (command === 'capture_scroll_preview') {
+        const metadata = new TextEncoder().encode(JSON.stringify(progress));
+        const bytes = new Uint8Array(4 + metadata.length + 8);
+        new DataView(bytes.buffer).setUint32(0, metadata.length, true); bytes.set(metadata, 4); return bytes.buffer;
+      }
       if (command === 'capture_scroll_finish') return { width: 800, height: 2400, version: 7 };
       if (command === 'capture_export') return false;
     });
@@ -41,11 +50,11 @@ describe('scroll capture integration', () => {
   it('allows source-window focus while scrolling and exports the full pixel-sized document afterwards', async () => {
     const view = await selected();
     fireEvent.click(view.getByLabelText('滚动截图'));
-    await waitFor(() => expect(view.getByText('完成')).toBeEnabled());
+    await waitFor(() => expect(view.getByLabelText('滚动截图预览')).toHaveAttribute('aria-busy', 'false'));
     expect(invoke).toHaveBeenCalledWith('capture_scroll_begin', { rect, version: 1 });
     fireEvent.blur(window); await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
     expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
-    fireEvent.click(view.getByText('完成'));
+    fireEvent.keyDown(window, { key: 'Enter' });
     await waitFor(() => expect(view.container.querySelector('.capture-size')).toHaveTextContent('800 × 2400'));
     await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled());
     expect(view.getByLabelText('滚动截图')).toBeDisabled();
@@ -64,11 +73,11 @@ describe('scroll capture integration', () => {
     });
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('capture exclusion unavailable'));
-    expect(view.getByLabelText('复制截图')).toBeEnabled(); expect(view.queryByLabelText('滚动截图控制栏')).toBeNull(); view.unmount();
+    expect(view.getByLabelText('复制截图')).toBeEnabled(); expect(view.queryByLabelText('滚动截图预览')).toBeNull(); view.unmount();
   });
   it('keeps pixel-based selection resizing available after fitting a long image to the viewport', async () => {
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
-    await waitFor(() => expect(view.getByText('完成')).toBeEnabled()); fireEvent.click(view.getByText('完成'));
+    await waitFor(() => expect(view.getByLabelText('滚动截图预览')).toHaveAttribute('aria-busy', 'false')); fireEvent.keyDown(window, { key: 'Enter' });
     await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled());
     fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('800 × 2399');
@@ -78,14 +87,14 @@ describe('scroll capture integration', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_crop', { rect: { x: 0, y: 0, width: 799, height: 2399 }, version: 8 })); view.unmount();
   });
   it('discards a late scrolling setup result after Escape', async () => {
-    let resolve!: (value: ScrollCaptureProgress) => void;
+    let resolve!: (value: ScrollCaptureSession) => void;
     const implementation = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, ...args) => command === 'capture_scroll_begin' ? new Promise((done) => { resolve = done; }) : implementation(command,...args));
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(resolve).toBeTypeOf('function'));
-    fireEvent.keyDown(window, { key: 'Escape' }); await act(async () => { resolve(progress); });
-    expect(invoke).toHaveBeenCalledWith('capture_cancel'); expect(view.getByText('完成')).toBeDisabled();
-    expect(invoke).not.toHaveBeenCalledWith('capture_scroll_step', expect.anything()); view.unmount();
+    fireEvent.keyDown(window, { key: 'Escape' }); await act(async () => { resolve(scrolling); });
+    expect(invoke).toHaveBeenCalledWith('capture_cancel'); expect(view.getByLabelText('滚动截图预览')).toHaveAttribute('aria-busy', 'true');
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'capture_scroll_step')).toBe(false); view.unmount();
   });
   it('retries image delivery without composing or committing the long document twice', async () => {
     let imageRequests = 0;
@@ -95,8 +104,8 @@ describe('scroll capture integration', () => {
       return implementation(command, ...args);
     });
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
-    await waitFor(() => expect(view.getByText('完成')).toBeEnabled()); fireEvent.click(view.getByText('完成'));
-    await waitFor(() => expect(view.getByText('重试完成')).toBeEnabled()); fireEvent.click(view.getByText('重试完成'));
+    await waitFor(() => expect(view.getByLabelText('滚动截图预览')).toHaveAttribute('aria-busy', 'false')); fireEvent.keyDown(window, { key: 'Enter' });
+    await waitFor(() => expect(view.getByRole('status')).toHaveTextContent('重试完成')); fireEvent.keyDown(window, { key: 'Enter' });
     await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled());
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_scroll_finish')).toHaveLength(1); view.unmount();
   });

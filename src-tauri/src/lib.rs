@@ -194,6 +194,7 @@ pub fn run() {
             capture::capture_crop,
             capture::capture_scroll_begin,
             capture::capture_scroll_step,
+            capture::capture_scroll_preview,
             capture::capture_scroll_finish,
             capture::capture_export,
             capture::capture_cancel,

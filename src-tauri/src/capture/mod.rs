@@ -139,7 +139,7 @@ pub async fn capture_scroll_begin(
     window: WebviewWindow,
     rect: CaptureRect,
     version: u64,
-) -> Result<ScrollProgress, String> {
+) -> Result<ScrollCaptureSession, String> {
     desktop_call!(
         tauri::async_runtime::spawn_blocking(move || desktop::scroll_begin(
             &app, &window, rect, version
@@ -152,12 +152,22 @@ pub async fn capture_scroll_begin(
 pub async fn capture_scroll_step(
     app: AppHandle,
     window: WebviewWindow,
-    automatic: bool,
 ) -> Result<ScrollProgress, String> {
     desktop_call!(
-        tauri::async_runtime::spawn_blocking(move || desktop::scroll_step(
-            &app, &window, automatic
-        ))
+        tauri::async_runtime::spawn_blocking(move || desktop::scroll_step(&app, &window))
+            .await
+            .map_err(|e| e.to_string())?
+    )
+}
+#[tauri::command]
+pub async fn capture_scroll_preview(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<tauri::ipc::Response, String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(
+            move || desktop::scroll_preview(&app, &window).map(tauri::ipc::Response::new)
+        )
         .await
         .map_err(|e| e.to_string())?
     )

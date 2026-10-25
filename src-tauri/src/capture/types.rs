@@ -97,8 +97,21 @@ pub enum ScrollStatus {
 pub struct ScrollProgress {
     pub width: u32,
     pub height: u32,
-    pub frames: usize,
+    pub revision: u64,
+    pub viewport: CaptureRect,
     pub status: ScrollStatus,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrollLayout {
+    pub selection: CaptureRect,
+    pub panel: CaptureRect,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrollCaptureSession {
+    pub progress: ScrollProgress,
+    pub layout: ScrollLayout,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

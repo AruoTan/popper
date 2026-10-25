@@ -17,8 +17,13 @@ export interface CaptureHitTest { candidates: CaptureCandidate[]; pending: boole
 export interface ScrollCaptureProgress {
   width: number;
   height: number;
-  frames: number;
+  revision: number;
+  viewport: CaptureRect;
   status: 'appended' | 'tracked' | 'unchanged' | 'unmatched' | 'limit';
+}
+export interface ScrollCaptureSession {
+  progress: ScrollCaptureProgress;
+  layout: { selection: CaptureRect; panel: CaptureRect };
 }
 export interface CaptureDocument { width: number; height: number; version: number }
 export interface PinnedImageState {
