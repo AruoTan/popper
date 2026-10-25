@@ -51,6 +51,11 @@ pub fn move_pointer(screen: CaptureRect, dx: i32, dy: i32) -> Result<CapturePoin
 pub fn foreground() -> usize {
     unsafe { GetForegroundWindow().0 as usize }
 }
+pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
+    window.set_focus().map_err(|e| e.to_string())?;
+    // Activating the frame alone does not direct keyboard input to WebView2.
+    window.as_ref().set_focus().map_err(|e| e.to_string())
+}
 pub fn restore_foreground(handle: usize) {
     let handle = HWND(handle as *mut _);
     unsafe {

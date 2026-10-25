@@ -81,7 +81,7 @@ pub(super) fn create_pin(
     width: u32,
     height: u32,
     placement: Option<PinPlacement>,
-) -> Result<(), String> {
+) -> Result<WebviewWindow, String> {
     let state = manager(app);
     let id = Uuid::new_v4().to_string();
     let meta = PinnedImageState {
@@ -189,7 +189,7 @@ pub(super) fn create_pin(
             }
             std::thread::sleep(Duration::from_millis(15));
         }
-        Ok::<_, String>(())
+        Ok::<_, String>(window)
     })();
     if result.is_err() {
         state.pins.lock().items.remove(&id);
@@ -218,7 +218,7 @@ pub fn paste(app: &AppHandle) -> Result<(), String> {
     if let Some(id) = restore {
         if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
             show_pin(&window)?;
-            window.set_focus().map_err(|e| e.to_string())?;
+            platform::focus(&window)?;
             return Ok(());
         }
         state.pins.lock().items.remove(&id);
@@ -231,6 +231,7 @@ pub fn paste(app: &AppHandle) -> Result<(), String> {
         image.height(),
         None,
     )
+    .map(|_| ())
 }
 pub fn pin_state(app: &AppHandle, window: &WebviewWindow) -> Result<PinnedImageState, String> {
     let id = pin_id(window)?;

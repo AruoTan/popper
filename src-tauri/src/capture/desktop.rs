@@ -191,7 +191,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     if state.active.load(Ordering::Acquire) {
         if let Some(id) = state.session.lock().as_ref().map(|s| s.meta.id.clone()) {
             if let Some(window) = app.get_webview_window(&format!("{CAPTURE_PREFIX}{id}")) {
-                let _ = window.set_focus();
+                platform::focus(&window)?;
             }
         }
         return Ok(());
@@ -504,10 +504,8 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
         if let Ok(hwnd) = window.hwnd() {
             platform::configure_capture_surface(hwnd);
         }
-        window
-            .show()
-            .and_then(|_| window.set_focus())
-            .map_err(|e| e.to_string())
+        window.show().map_err(|e| e.to_string())?;
+        platform::focus(window)
     } else {
         let id = pin_id(window)?;
         let visible = {
@@ -521,6 +519,9 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
                 platform::configure_capture_surface(hwnd);
             }
             window.show().map_err(|e| e.to_string())?;
+            if !manager(app).active.load(Ordering::Acquire) {
+                platform::focus(window)?;
+            }
         }
         if let Some(pin) = manager(app).pins.lock().items.get_mut(id) {
             pin.ready = true;
@@ -680,6 +681,7 @@ pub fn export(
     if image.width() != rect.width || image.height() != rect.height {
         return Err("输出图片尺寸与选区不一致".into());
     }
+    let mut new_pin = None;
     match output {
         "clipboard" => clipboard::write(window.hwnd().map_err(|e| e.to_string())?, &image, &bytes)?,
         "file" => {
@@ -709,7 +711,7 @@ pub fn export(
             result?;
         }
         "pin" => {
-            create_pin(
+            new_pin = Some(create_pin(
                 app,
                 bytes,
                 image.width(),
@@ -721,14 +723,17 @@ pub fn export(
                     },
                     scale,
                 }),
-            )?;
+            )?);
         }
         "ask" => {
             deliver_attachment(app, bytes)?;
         }
         _ => return Err("截图输出方式无效".into()),
     }
-    finish(app, output != "ask")?;
+    finish(app, output != "ask" && output != "pin")?;
+    if let Some(window) = new_pin {
+        platform::focus(&window)?;
+    }
     if output == "ask" {
         crate::windows::show_quick_ask_window(app).map_err(|e| e.to_string())?;
     }

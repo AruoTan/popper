@@ -238,3 +238,124 @@ describe('capture keyboard pointer movement', () => {
     view.unmount();
   });
 });
+
+describe('capture keyboard lifecycle', () => {
+  const rect = { x: 20, y: 20, width: 200, height: 100 };
+  beforeEach(() => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    vi.mocked(decodePng).mockResolvedValueOnce(new Image());
+  });
+  async function select(view: ReturnType<typeof render>): Promise<void> {
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
+    const main = view.container.querySelector('main')!;
+    Object.assign(main, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
+    const at = { clientX: 50 * window.innerWidth / meta.screen.width, clientY: 50 * window.innerHeight / meta.screen.height, button: 0 };
+    fireEvent.pointerDown(main, at); fireEvent.pointerUp(main, at);
+    await waitFor(() => expect(view.getByLabelText('保存 PNG')).toBeInTheDocument());
+  }
+
+  it('cancels before decode completes without showing the old session afterwards', async () => {
+    let resolve!: (image: HTMLImageElement) => void;
+    vi.mocked(decodePng).mockReset().mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    await act(async () => { resolve(new Image()); });
+    expect(invoke).toHaveBeenCalledWith('capture_cancel');
+    expect(invoke).not.toHaveBeenCalledWith('capture_show');
+    view.unmount();
+  });
+
+  it('cancels busy cropping once and prevents a late crop from exporting or unlocking the session', async () => {
+    let resolve!: (bytes: ArrayBuffer) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return { ...meta, pointer: { x: 50, y: 50 }, targets: [{ rect, label: 'window', controls: [] }] };
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_crop') return new Promise((done) => { resolve = done; });
+    });
+    const view = render(<CaptureApp />); await select(view);
+    fireEvent.keyDown(window, { key: 'Enter' });
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    fireEvent.keyDown(window, { key: 'Escape' }); fireEvent.keyDown(window, { key: 'Escape', repeat: true });
+    await act(async () => { resolve(new ArrayBuffer(0)); });
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_cancel')).toHaveLength(1);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'capture_export')).toBe(false);
+    expect(view.getByRole('status')).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it('keeps cancellation active when an in-flight export returns after Escape', async () => {
+    let resolve!: (finished: boolean) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return { ...meta, pointer: { x: 50, y: 50 }, targets: [{ rect, label: 'window', controls: [] }] };
+      if (command === 'capture_image' || command === 'capture_crop') return new ArrayBuffer(0);
+      if (command === 'capture_export') return new Promise((done) => { resolve = done; });
+    });
+    const view = render(<CaptureApp />); await select(view);
+    fireEvent.keyDown(window, { key: 'Enter' });
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await act(async () => { resolve(false); });
+    expect(invoke).toHaveBeenCalledWith('capture_cancel');
+    expect(view.getByRole('status')).toBeInTheDocument();
+    expect(view.container.querySelector('.capture-magnifier')).toBeNull();
+    view.unmount();
+  });
+
+  it('allows Escape retries after a failed cancel even when an input stops bubbling', async () => {
+    let attempts = 0;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return { ...meta, pointer: { x: 50, y: 50 }, targets: [{ rect, label: 'window', controls: [] }] };
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_cancel' && ++attempts === 1) throw new Error('cancel failed');
+    });
+    const view = render(<CaptureApp />); await select(view);
+    const input = view.getByLabelText('线宽');
+    input.addEventListener('keydown', (event) => event.stopPropagation());
+    input.focus(); fireEvent.keyDown(input, { key: 'Escape' });
+    await view.findByRole('alert');
+    fireEvent.keyDown(input, { key: 'Escape' });
+    await waitFor(() => expect(attempts).toBe(2));
+    view.unmount();
+  });
+
+  it('applies Tab pressed before provider results and traps focus even when a descendant stops bubbling', async () => {
+    let resolve!: (response: CaptureHitTest) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return { ...meta, pointer: { x: 50, y: 50 }, targets: [] };
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_candidates') return new Promise((done) => { resolve = done; });
+    });
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    const main = view.container.querySelector('main')!;
+    main.addEventListener('keydown', (event) => event.stopPropagation());
+    expect(fireEvent.keyDown(main, { key: 'Tab' })).toBe(false);
+    const parent = { rect: { x: 0, y: 0, width: 1000, height: 800 }, label: 'parent' };
+    await act(async () => { resolve({ candidates: [{ rect, label: 'control' }, parent], pending: false }); });
+    expect(view.container.querySelector('.capture-size')).toHaveTextContent('1000 × 800');
+    fireEvent.keyDown(main, { key: 'Tab', shiftKey: true });
+    expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 100');
+    view.unmount();
+  });
+
+  it('discards pending click selection after Escape', async () => {
+    let resolve!: (response: CaptureHitTest) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return { ...meta, targets: [] };
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_candidates') return new Promise((done) => { resolve = done; });
+    });
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
+    const main = view.container.querySelector('main')!;
+    Object.assign(main, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
+    fireEvent.pointerDown(main, { clientX: 50, clientY: 50, button: 0 });
+    fireEvent.pointerUp(main, { clientX: 50, clientY: 50, button: 0 });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await act(async () => { resolve({ candidates: [{ rect, label: 'control' }], pending: false }); });
+    expect(view.queryByLabelText('保存 PNG')).toBeNull();
+    view.unmount();
+  });
+});

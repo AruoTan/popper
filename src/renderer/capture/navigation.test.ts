@@ -8,6 +8,48 @@ const text: CaptureCandidate = { rect: { x: 15, y: 15, width: 40, height: 40 }, 
 const point = { x: 20, y: 20 }, scale = { x: 1, y: 1 };
 
 describe('capture hierarchy navigation', () => {
+  it('applies an early Tab after asynchronous recognition provides the hierarchy', () => {
+    const navigation = createCaptureNavigation();
+    navigation.update([], point, 0, scale, true);
+    navigation.cycle(1);
+    const refined = navigation.update([text, leaf, root], point, 0, scale);
+    expect(refined.items[refined.index]).toEqual(leaf);
+    expect(navigation.update([text, leaf, root], point, 0, scale).index).toBe(1);
+  });
+  it('retains parent traversal while a partial hierarchy has only one candidate', () => {
+    const navigation = createCaptureNavigation();
+    navigation.update([text], point, 0, scale, true);
+    navigation.cycle(1); navigation.cycle(1);
+    const partial = navigation.update([text, leaf], point, 0, scale, true);
+    expect(partial.items[partial.index]).toEqual(leaf);
+    const refined = navigation.update([text, leaf, root], point, 0, scale);
+    expect(refined.items[refined.index]).toEqual(root);
+  });
+  it('lets reverse traversal cancel pending Tab steps and clears pending steps on deliberate movement', () => {
+    const navigation = createCaptureNavigation();
+    navigation.update([text], point, 0, scale, true);
+    navigation.cycle(1); navigation.cycle(-1);
+    expect(navigation.update([text, leaf, root], point, 0, scale).index).toBe(0);
+    navigation.cycle(3);
+    expect(navigation.update([text, leaf, root], { x: 30, y: 20 }, 0, scale).index).toBe(0);
+    navigation.cycle(3);
+    expect(navigation.update([text, leaf, root], { x: 30, y: 20 }, 1, scale).index).toBe(0);
+  });
+  it('does not swallow reverse traversal at a completed hierarchy endpoint', () => {
+    const navigation = createCaptureNavigation();
+    navigation.update([text, leaf, root], point, 0, scale, false);
+    navigation.cycle(1); navigation.cycle(1); navigation.cycle(1);
+    const child = navigation.cycle(-1);
+    expect(child.items[child.index]).toEqual(leaf);
+  });
+  it('retires unfulfilled steps when recognition finishes with no additional parents', () => {
+    const navigation = createCaptureNavigation();
+    navigation.update([text, leaf], point, 0, scale, true);
+    navigation.cycle(1); navigation.cycle(1);
+    navigation.update([text, leaf], point, 0, scale, false);
+    const child = navigation.cycle(-1);
+    expect(child.items[child.index]).toEqual(text);
+  });
   it('retains the chosen parent by bounds when asynchronous refinement inserts new children', () => {
     const navigation = createCaptureNavigation();
     navigation.update([leaf, root], point, 0, scale);

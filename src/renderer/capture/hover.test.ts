@@ -18,11 +18,13 @@ describe('capture hover feedback', () => {
     const request = vi.fn(async () => response()), show = vi.fn();
     const hover = createCaptureHover({ targets: [{ ...windowTarget, controls: [control] }], active: () => true, request, show });
     hover.update({ x: 20, y: 20 });
+    expect(show.mock.lastCall?.[1].pending).toBe(true);
     expect(show.mock.lastCall?.[0][0]).toEqual(control);
     expect(request).not.toHaveBeenCalled();
     hover.update({ x: 21, y: 22 }); hover.update({ x: 24, y: 25 });
     await vi.advanceTimersByTimeAsync(16);
     expect(request).toHaveBeenCalledExactlyOnceWith({ x: 24, y: 25 });
+    expect(show.mock.lastCall?.[1].pending).toBe(false);
     hover.destroy();
   });
   it('uses a valid in-flight result while the pointer is moving and promptly refines the latest point', async () => {
@@ -62,6 +64,7 @@ describe('capture hover feedback', () => {
     const hover = createCaptureHover({ targets: [windowTarget], active: () => true, request, show });
     hover.update({ x: 20, y: 20 }); await vi.runAllTimersAsync();
     expect(request).toHaveBeenCalledTimes(3);
+    expect(show.mock.lastCall?.[1].pending).toBe(false);
     expect(show.mock.lastCall?.[0][0]?.label).toBe('window');
     hover.destroy();
   });
@@ -90,6 +93,7 @@ describe('capture hover feedback', () => {
     hover.update({ x: 20, y: 20 }); await vi.runAllTimersAsync(); hover.update({ x: 20, y: 20 });
     await vi.runAllTimersAsync();
     expect(request).toHaveBeenCalledTimes(1); expect(show.mock.lastCall?.[0][0]?.label).toBe('window');
+    expect(show.mock.lastCall?.[1].pending).toBe(false);
     hover.destroy();
   });
 });

@@ -54,6 +54,7 @@ export function CaptureApp(): JSX.Element {
   const hover = useRef<ReturnType<typeof createCaptureHover> | null>(null), mounted = useRef(true), selectedRef = useRef(selection);
   const pointerMoves = useRef(Promise.resolve());
   const pointerMoved = useRef<(point: CapturePoint) => void>(() => {});
+  const cancelling = useRef(false), lifecycle = useRef(0);
   const navigation = useRef<ReturnType<typeof createCaptureNavigation> | null>(null);
   selectedRef.current = selection;
   const bounds: CaptureRect = { x: 0, y: 0, width: session?.screen.width ?? 1, height: session?.screen.height ?? 1 };
@@ -64,20 +65,22 @@ export function CaptureApp(): JSX.Element {
   const displayedItems = history.present.filter((item) => item.id !== textEdit?.id && item.id !== (gesture.current?.mode === 'object' ? draft?.id : undefined));
 
   const cancel = (): void => {
-    if (busyRef.current) return;
+    if (cancelling.current) return;
+    cancelling.current = true; lifecycle.current++; generation.current++;
+    gesture.current = null; setDraft(null);
     busyRef.current = true; setBusy(true);
-    void invoke('capture_cancel').catch((e: unknown) => { busyRef.current = false; setBusy(false); setError(getErrorMessage(e, '无法结束截图')); });
+    void invoke('capture_cancel').catch((e: unknown) => { if (mounted.current) { cancelling.current = false; busyRef.current = false; setBusy(false); setError(getErrorMessage(e, '无法结束截图')); } });
   };
   useEffect(() => {
     mounted.current = true; let alive = true;
     void (async () => {
       try {
         const [meta, bytes] = await Promise.all([invoke<CaptureSession>('capture_session'), invoke<ArrayBuffer>('capture_image')]);
-        const decoded = await decodePng(bytes); if (!alive) return;
+        const decoded = await decodePng(bytes); if (!alive || cancelling.current) return;
         setSession(meta); setImage(decoded); setColor(meta.color); setLineWidth(meta.lineWidth); if (meta.pointer) setPoint(meta.pointer);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        if (alive) { await invoke('capture_show'); root.current?.focus(); }
-      } catch (e) { if (alive) {
+        if (alive && !cancelling.current) { await invoke('capture_show'); if (alive && !cancelling.current) root.current?.focus(); }
+      } catch (e) { if (alive && !cancelling.current) {
         const message = getErrorMessage(e, '无法初始化屏幕图像'); setError(message);
         void invoke('capture_fail', { message }).catch(() => {});
       } }
@@ -87,12 +90,12 @@ export function CaptureApp(): JSX.Element {
     const keyDown = (event: KeyboardEvent): void => keyboard.current(event);
     const keyUp = (event: KeyboardEvent): void => { if (event.key === 'Alt') setAlt(false); };
     const focus = (): void => root.current?.focus();
-    window.addEventListener('keydown', keyDown);
+    window.addEventListener('keydown', keyDown, true);
     window.addEventListener('keyup', keyUp);
     window.addEventListener('focus', focus);
-    const blur = (): void => { if (!busyRef.current && alive) void invoke('capture_cancel').catch(() => {}); };
+    const blur = (): void => { if (!busyRef.current && alive) cancel(); };
     window.addEventListener('blur', blur);
-    return () => { alive = false; mounted.current = false; window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); window.removeEventListener('focus', focus); generation.current++; };
+    return () => { alive = false; mounted.current = false; window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyDown, true); window.removeEventListener('keyup', keyUp); window.removeEventListener('focus', focus); generation.current++; lifecycle.current++; };
   }, []);
   useEffect(() => {
     if (!session) return;
@@ -101,8 +104,8 @@ export function CaptureApp(): JSX.Element {
       targets: session.targets ?? [],
       active: () => mounted.current && !selectedRef.current && !gesture.current && !busyRef.current,
       request: (at) => invoke<CaptureHitTest>('capture_candidates', { x: at.x, y: at.y, generation: ++generation.current }),
-      show: (items, { point, target }) => {
-        const next = navigator.update(items, point, target, { x: window.innerWidth / session.screen.width, y: window.innerHeight / session.screen.height });
+      show: (items, { point, target, pending }) => {
+        const next = navigator.update(items, point, target, { x: window.innerWidth / session.screen.width, y: window.innerHeight / session.screen.height }, pending);
         setCandidates(next.items); setCandidateIndex(next.index);
       },
     });
@@ -132,10 +135,14 @@ export function CaptureApp(): JSX.Element {
   const output = async (destination: CaptureOutput): Promise<void> => {
     if (busyRef.current || !selection || !image || textEdit) return;
     busyRef.current = true; setBusy(true); setError(''); gesture.current = null; setDraft(null);
+    const started = lifecycle.current;
+    const current = (): boolean => mounted.current && !cancelling.current && lifecycle.current === started;
     try {
       await invoke('capture_preferences', { color, lineWidth }).catch(() => {});
+      if (!current()) return;
       const revision = ++version.current;
       const original = await invoke<ArrayBuffer>('capture_crop', { rect: selection, version: revision });
+      if (!current()) return;
       let bytes: Uint8Array;
       if (!history.present.length) bytes = new Uint8Array(original);
       else {
@@ -146,9 +153,10 @@ export function CaptureApp(): JSX.Element {
         context.drawImage(scene, selection.x, selection.y, selection.width, selection.height, 0, 0, selection.width, selection.height);
         bytes = await pngBytes(result); scene.width = 0; scene.height = 0;
       }
+      if (!current()) return;
       const finished = await invoke<boolean>('capture_export', bytes, { headers: { 'x-capture-version': String(revision), 'x-capture-output': destination } });
-      if (!finished && mounted.current) { busyRef.current = false; setBusy(false); root.current?.focus(); }
-    } catch (e) { if (mounted.current) { setError(getErrorMessage(e, '无法输出截图')); busyRef.current = false; setBusy(false); root.current?.focus(); } }
+      if (!finished && current()) { busyRef.current = false; setBusy(false); root.current?.focus(); }
+    } catch (e) { if (current()) { setError(getErrorMessage(e, '无法输出截图')); busyRef.current = false; setBusy(false); root.current?.focus(); } }
   };
   const start = (event: ReactPointerEvent<HTMLElement>): void => {
     if (event.button !== 0 || busyRef.current || !session || !image || (event.target as HTMLElement).closest('[data-capture-ui]')) return;
@@ -199,8 +207,8 @@ export function CaptureApp(): JSX.Element {
       const p = eventPoint(event); const sequence = ++generation.current;
       if (candidate && contains(candidate.rect, p)) { setSelection(candidate.rect); setDraft(null); return; }
       void invoke<CaptureHitTest>('capture_candidates', { x: p.x, y: p.y, generation: sequence }).then(({ candidates: items }) => {
-        if (mounted.current && generation.current === sequence && !gesture.current) setSelection(items[0]?.rect ?? { x: Math.min(p.x, bounds.width - 1), y: Math.min(p.y, bounds.height - 1), width: 1, height: 1 });
-      }).catch(() => { if (mounted.current && generation.current === sequence) setSelection({ x: Math.min(p.x, bounds.width - 1), y: Math.min(p.y, bounds.height - 1), width: 1, height: 1 }); });
+        if (mounted.current && !cancelling.current && generation.current === sequence && !gesture.current) setSelection(items[0]?.rect ?? { x: Math.min(p.x, bounds.width - 1), y: Math.min(p.y, bounds.height - 1), width: 1, height: 1 });
+      }).catch(() => { if (mounted.current && !cancelling.current && generation.current === sequence) setSelection({ x: Math.min(p.x, bounds.width - 1), y: Math.min(p.y, bounds.height - 1), width: 1, height: 1 }); });
     }
     if (current.mode === 'draw' && draft && (current.moved || draft.tool === 'pen')) { setHistory(commit(history, [...history.present, draft])); setSelectedId(draft.id); }
     if (current.mode === 'object' && current.moved && draft) setHistory(commit(history, history.present.map((item) => item.id === draft.id ? draft : item)));
@@ -209,14 +217,17 @@ export function CaptureApp(): JSX.Element {
   };
   keyboard.current = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') { event.preventDefault(); cancel(); return; }
-      if (busyRef.current) return;
-      if (event.target instanceof Element && event.target.closest('input, textarea')) return;
-      if (event.key === 'Alt') { event.preventDefault(); setAlt(true); }
-      if (event.key === 'Tab' && !selection) {
-        event.preventDefault(); const next = navigation.current?.cycle(event.shiftKey ? -1 : 1);
-        if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
+      if (event.key === 'Tab' && !selection && !textEdit && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        event.preventDefault();
+        if (!busyRef.current) {
+          const next = navigation.current?.cycle(event.shiftKey ? -1 : 1);
+          if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
+        }
         return;
       }
+      if (busyRef.current) { if (event.key === 'Tab') event.preventDefault(); return; }
+      if (event.target instanceof Element && event.target.closest('input, textarea')) return;
+      if (event.key === 'Alt') { event.preventDefault(); setAlt(true); }
       if (event.key.startsWith('Arrow') && session && image && !textEdit) {
         if (event.altKey || event.metaKey) return;
         event.preventDefault();

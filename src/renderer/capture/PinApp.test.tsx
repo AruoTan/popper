@@ -72,3 +72,30 @@ describe('pinned image presentation', () => {
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:pin-image');
   });
 });
+
+describe('pinned image keyboard focus', () => {
+  it('handles Escape outside the image and accepts another close after restoration', async () => {
+    const view = render(<PinApp />);
+    await view.findByAltText('浮动图片');
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape', repeat: true });
+    expect(invoke).toHaveBeenCalledWith('capture_pin_close', { destroy: false });
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_pin_close')).toHaveLength(1);
+    const callback = vi.mocked(listen).mock.calls.find(([event]) => event === 'popper:pin-shown')![1];
+    act(() => callback({ event: 'popper:pin-shown', id: 1, payload: undefined }));
+    fireEvent.keyDown(window, { key: 'Escape', shiftKey: true });
+    expect(invoke).toHaveBeenLastCalledWith('capture_pin_close', { destroy: true });
+    view.unmount();
+  });
+  it('restores DOM focus on native window activation and intercepts stopped key events', async () => {
+    const view = render(<PinApp />);
+    const image = await view.findByAltText('浮动图片');
+    const main = image.closest('main')!;
+    fireEvent(window, new Event('focus'));
+    expect(document.activeElement).toBe(main);
+    main.addEventListener('keydown', (event) => event.stopPropagation());
+    fireEvent.keyDown(main, { key: 'Escape' });
+    expect(invoke).toHaveBeenCalledWith('capture_pin_close', { destroy: false });
+    view.unmount();
+  });
+});

@@ -6,10 +6,10 @@ export function createCaptureHover(options: {
   targets: CaptureTarget[];
   active: () => boolean;
   request: (point: CapturePoint) => Promise<CaptureHitTest>;
-  show: (candidates: CaptureCandidate[], context: { point: CapturePoint; target: number }) => void;
+  show: (candidates: CaptureCandidate[], context: { point: CapturePoint; target: number; pending: boolean }) => void;
 }): { update: (point: CapturePoint) => void; destroy: () => void } {
   let point: CapturePoint | null = null, timer: ReturnType<typeof setTimeout> | undefined;
-  let inFlight = false, disposed = false, revision = 0, retries = 0;
+  let inFlight = false, disposed = false, revision = 0, retries = 0, recognizing = false;
   const cache: { target: number; candidates: CaptureCandidate[] }[] = [];
   const targetAt = (at: CapturePoint): number => options.targets.findIndex((target) => containsPixel(target.rect, at));
   const show = (): void => {
@@ -18,7 +18,7 @@ export function createCaptureHover(options: {
     // Check the captured z order first; cached controls from covered windows cannot win.
     const items = cache.filter((entry) => entry.target === index).flatMap((entry) => entry.candidates);
     if (target) items.push(...target.controls, { rect: target.rect, label: target.label });
-    options.show(candidateChain(items, point), { point, target: index });
+    options.show(candidateChain(items, point), { point, target: index, pending: recognizing });
   };
   const schedule = (delay = 16): void => {
     if (disposed || inFlight || timer !== undefined || !options.active()) return;
@@ -34,11 +34,15 @@ export function createCaptureHover(options: {
       if (disposed || !options.active()) return;
       cache.push({ target, candidates });
       if (cache.length > 32) cache.shift();
+      recognizing = requested !== revision || (pending && retries < 2);
       // A moved pointer can still use valid bounds from this response immediately.
       // New positions are refined next without another debounce period.
       show();
       retry = pending;
-    } catch { /* Native geometry remains available when a provider fails. */ }
+    } catch {
+      recognizing = requested !== revision;
+      show(); // Keep native geometry while retiring any unfulfilled hierarchy requests.
+    }
     finally {
       inFlight = false;
       if (!disposed && requested !== revision) schedule();
@@ -48,7 +52,7 @@ export function createCaptureHover(options: {
   return {
     update(at) {
       if (disposed || !options.active() || (point?.x === at.x && point.y === at.y)) return;
-      point = at; revision++; retries = 0; show(); schedule();
+      point = at; revision++; retries = 0; recognizing = true; show(); schedule();
     },
     destroy() { disposed = true; clearTimeout(timer); cache.length = 0; },
   };
