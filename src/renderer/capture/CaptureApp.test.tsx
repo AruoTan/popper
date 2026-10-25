@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { decodePng } from './drawing';
 import { CaptureApp } from './CaptureApp';
-import type { CaptureHitTest } from '../../shared/capture';
+import type { CaptureHitTest, ScrollCaptureProgress } from '../../shared/capture';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('./drawing', () => ({ decodePng: vi.fn(), renderScene: vi.fn(), pngBytes: vi.fn() }));
@@ -13,6 +13,94 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_session' ? meta : command === 'capture_image' ? new ArrayBuffer(0) : undefined);
 });
 afterEach(() => vi.unstubAllGlobals());
+describe('scroll capture integration', () => {
+  const rect = { x: 20, y: 20, width: 800, height: 600 };
+  const progress: ScrollCaptureProgress = { width: 800, height: 600, frames: 1, status: 'unchanged' };
+  beforeEach(() => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    vi.mocked(decodePng).mockResolvedValue(new Image());
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return { ...meta, pointer: { x: 100, y: 100 }, targets: [{ rect, label: 'page', controls: [] }] };
+      if (command === 'capture_image' || command === 'capture_crop') return new ArrayBuffer(0);
+      if (command === 'capture_scroll_begin' || command === 'capture_scroll_step') return progress;
+      if (command === 'capture_scroll_finish') return { width: 800, height: 2400, version: 7 };
+      if (command === 'capture_export') return false;
+    });
+  });
+  async function selected(): Promise<ReturnType<typeof render>> {
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
+    const main = view.container.querySelector('main')!;
+    Object.assign(main, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
+    const at = { clientX: 100 * window.innerWidth / meta.screen.width, clientY: 100 * window.innerHeight / meta.screen.height, button: 0 };
+    fireEvent.pointerDown(main, at); fireEvent.pointerUp(main, at);
+    await waitFor(() => expect(view.getByLabelText('滚动截图')).toBeEnabled());
+    return view;
+  }
+  it('allows source-window focus while scrolling and exports the full pixel-sized document afterwards', async () => {
+    const view = await selected();
+    fireEvent.click(view.getByLabelText('滚动截图'));
+    await waitFor(() => expect(view.getByText('完成')).toBeEnabled());
+    expect(invoke).toHaveBeenCalledWith('capture_scroll_begin', { rect, version: 1 });
+    fireEvent.blur(window); await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    fireEvent.click(view.getByText('完成'));
+    await waitFor(() => expect(view.container.querySelector('.capture-size')).toHaveTextContent('800 × 2400'));
+    await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled());
+    expect(view.getByLabelText('滚动截图')).toBeDisabled();
+    const scene = view.container.querySelector<HTMLCanvasElement>('.capture-scene')!;
+    expect(parseFloat(scene.style.width) / parseFloat(scene.style.height)).toBeCloseTo(1 / 3);
+    fireEvent.click(view.getByLabelText('复制截图'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_crop', { rect: { x: 0, y: 0, width: 800, height: 2400 }, version: 8 }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_export', expect.any(Uint8Array), expect.objectContaining({ headers: { 'x-capture-version': '8', 'x-capture-output': 'clipboard' } })));
+    view.unmount();
+  });
+  it('returns to ordinary screenshot editing when scrolling setup fails', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_scroll_begin') throw new Error('capture exclusion unavailable');
+      return implementation(command, ...args);
+    });
+    const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('capture exclusion unavailable'));
+    expect(view.getByLabelText('复制截图')).toBeEnabled(); expect(view.queryByLabelText('滚动截图控制栏')).toBeNull(); view.unmount();
+  });
+  it('keeps pixel-based selection resizing available after fitting a long image to the viewport', async () => {
+    const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
+    await waitFor(() => expect(view.getByText('完成')).toBeEnabled()); fireEvent.click(view.getByText('完成'));
+    await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled());
+    fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true });
+    expect(view.container.querySelector('.capture-size')).toHaveTextContent('800 × 2399');
+    fireEvent.keyDown(window, { key: 'ArrowRight', shiftKey: true });
+    expect(view.container.querySelector('.capture-size')).toHaveTextContent('799 × 2399');
+    fireEvent.click(view.getByLabelText('复制截图'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_crop', { rect: { x: 0, y: 0, width: 799, height: 2399 }, version: 8 })); view.unmount();
+  });
+  it('discards a late scrolling setup result after Escape', async () => {
+    let resolve!: (value: ScrollCaptureProgress) => void;
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => command === 'capture_scroll_begin' ? new Promise((done) => { resolve = done; }) : implementation(command,...args));
+    const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    fireEvent.keyDown(window, { key: 'Escape' }); await act(async () => { resolve(progress); });
+    expect(invoke).toHaveBeenCalledWith('capture_cancel'); expect(view.getByText('完成')).toBeDisabled();
+    expect(invoke).not.toHaveBeenCalledWith('capture_scroll_step', expect.anything()); view.unmount();
+  });
+  it('retries image delivery without composing or committing the long document twice', async () => {
+    let imageRequests = 0;
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_image' && ++imageRequests === 2) throw new Error('transient image transport');
+      return implementation(command, ...args);
+    });
+    const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
+    await waitFor(() => expect(view.getByText('完成')).toBeEnabled()); fireEvent.click(view.getByText('完成'));
+    await waitFor(() => expect(view.getByText('重试完成')).toBeEnabled()); fireEvent.click(view.getByText('重试完成'));
+    await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled());
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_scroll_finish')).toHaveLength(1); view.unmount();
+  });
+});
 describe('capture initialization cleanup', () => {
   it('restores the desktop through the backend when image initialization fails', async () => {
     vi.mocked(decodePng).mockRejectedValueOnce(new Error('无法解码屏幕图像'));

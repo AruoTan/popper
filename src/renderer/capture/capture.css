@@ -41,3 +41,10 @@ button:focus-visible { outline: 2px solid #7fa9ff; outline-offset: 1px; }
 .capture-pin-menu button:hover { background: #ffffff22; }
 .capture-pin-error { position: absolute; top: 0; left: 0; padding: 8px; background: #7f2833eb; font-size: 12px; }
 .capture-notice { margin: 4px; padding: 16px 20px; min-height: 68px; display: flex; align-items: center; border-radius: 10px; border: 1px solid #ffffff25; background: #202634f5; box-shadow: 0 3px 10px #0004; font-size: 13px; }
+.capture-scroll-surface { width: 100%; height: 100%; background: #171b25; padding: 12px; overflow: auto; }
+.capture-scroll-controller { display: grid; gap: 10px; font-size: 13px; }
+.capture-scroll-controller header, .capture-scroll-controller > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.capture-scroll-controller header span, .capture-scroll-controller small { color: #bbc5d4; font-size: 11px; }
+.capture-scroll-controller p { margin: 0; min-height: 36px; line-height: 18px; }
+.capture-scroll-controller button { display: inline-flex; align-items: center; gap: 4px; padding: 7px 9px; border: 1px solid #ffffff30; border-radius: 5px; background: #29354b; white-space: nowrap; }
+.capture-scroll-error { margin-top: 8px; color: #ffb4b4; font-size: 12px; }

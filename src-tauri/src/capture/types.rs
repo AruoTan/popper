@@ -76,6 +76,30 @@ pub struct CaptureSession {
     pub targets: Vec<CaptureTarget>,
     pub pointer: Option<CapturePoint>,
 }
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureDocument {
+    pub width: u32,
+    pub height: u32,
+    pub version: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScrollStatus {
+    Appended,
+    Unchanged,
+    Unmatched,
+    Tracked,
+    Limit,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrollProgress {
+    pub width: u32,
+    pub height: u32,
+    pub frames: usize,
+    pub status: ScrollStatus,
+}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureTarget {

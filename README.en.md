@@ -16,6 +16,8 @@ Press `PrtSc` to capture the display under the pointer, select a region or a det
 
 See [Screen capture](./SCREEN_CAPTURE.md) for behavior, implementation boundaries, and desktop acceptance checks.
 
+Choose **Scrolling capture** after selecting a region to capture continuous manual scrolling in either vertical direction or automatic downward scrolling. Revisit captured areas or extend the image above and below the starting viewport, then annotate and export it. Uncertain matches preserve the last valid image; unseen content is never fabricated. The scrolling control surface requires Windows 10 version 2004 or later.
+
 ## Screenshots
 
 ### Settings · AI providers and models

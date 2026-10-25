@@ -24,6 +24,8 @@ mod bitmap;
 mod hit_test;
 #[cfg(any(target_os = "windows", test))]
 mod pins;
+#[cfg(any(target_os = "windows", test))]
+mod scroll;
 mod types;
 pub use types::*;
 
@@ -130,6 +132,46 @@ pub async fn capture_crop(
     .map(tauri::ipc::Response::new))
     .await
     .map_err(|e| e.to_string())?)
+}
+#[tauri::command]
+pub async fn capture_scroll_begin(
+    app: AppHandle,
+    window: WebviewWindow,
+    rect: CaptureRect,
+    version: u64,
+) -> Result<ScrollProgress, String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::scroll_begin(
+            &app, &window, rect, version
+        ))
+        .await
+        .map_err(|e| e.to_string())?
+    )
+}
+#[tauri::command]
+pub async fn capture_scroll_step(
+    app: AppHandle,
+    window: WebviewWindow,
+    automatic: bool,
+) -> Result<ScrollProgress, String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::scroll_step(
+            &app, &window, automatic
+        ))
+        .await
+        .map_err(|e| e.to_string())?
+    )
+}
+#[tauri::command]
+pub async fn capture_scroll_finish(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<CaptureDocument, String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::scroll_finish(&app, &window))
+            .await
+            .map_err(|e| e.to_string())?
+    )
 }
 #[tauri::command]
 pub async fn capture_export(

@@ -1,9 +1,11 @@
 mod pinned;
+mod scrolling;
 mod shortcuts;
 use pinned::{create_pin, PinPlacement};
 pub use pinned::{
     paste, pin_close, pin_menu, pin_state, pin_update, recover_click_through, toggle_pins,
 };
+pub use scrolling::{scroll_begin, scroll_finish, scroll_step};
 pub use shortcuts::ShortcutChange;
 
 use super::pins::Pins;
@@ -40,6 +42,11 @@ struct Session {
     targets: Vec<Arc<platform::TargetWindow>>,
     previous: Vec<String>,
     foreground: usize,
+    image_origin: CapturePoint,
+    scroll: Option<scrolling::ScrollSession>,
+    scroll_completed: bool,
+    scroll_escape: Option<scrolling::EscapeShortcut>,
+    hidden_until: std::time::Instant,
 }
 struct AttachmentDelivery {
     payload: PendingAttachment,
@@ -283,6 +290,11 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         targets: targets.into_iter().map(Arc::new).collect(),
         previous: previous.clone(),
         foreground,
+        image_origin: CapturePoint { x: 0, y: 0 },
+        scroll: None,
+        scroll_completed: false,
+        scroll_escape: None,
+        hidden_until: std::time::Instant::now() + Duration::from_secs(10),
     });
     app.state::<RuntimeState>()
         .set_screen_capture_active(app, true);
@@ -349,24 +361,24 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     });
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let current = manager(&handle)
+            let hidden_until = manager(&handle)
                 .session
                 .lock()
                 .as_ref()
-                .is_some_and(|s| s.meta.id == id);
-            if !current {
+                .filter(|s| s.meta.id == id)
+                .map(|s| s.hidden_until);
+            let Some(hidden_until) = hidden_until else {
                 break;
-            }
+            };
             let ready = handle
                 .get_webview_window(&label)
                 .is_some_and(|window| window.is_visible().unwrap_or(false));
             let geometry_ok = platform::same_screen(screen, scale);
             if !geometry_ok
                 || platform::foreground() == 0
-                || (!ready && std::time::Instant::now() >= deadline)
+                || (!ready && std::time::Instant::now() >= hidden_until)
             {
                 let app = handle.clone();
                 let id = id.clone();
@@ -465,7 +477,12 @@ pub fn validate_session(app: &AppHandle, window: &WebviewWindow) -> Result<(), S
     ensure_session(&mut slot, id).map(|_| ())
 }
 pub fn is_foreground(app: &AppHandle, window: &WebviewWindow) -> Result<bool, String> {
-    validate_session(app, window)?;
+    let state = manager(app);
+    let mut slot = state.session.lock();
+    let session = ensure_session(&mut slot, session_id(window)?)?;
+    if let Some(scroll) = &session.scroll {
+        return Ok(platform::foreground() == scroll.target || platform::is_foreground(window)?);
+    }
     platform::is_foreground(window)
 }
 pub fn move_pointer(
@@ -509,7 +526,14 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
             platform::configure_capture_surface(hwnd);
         }
         window.show().map_err(|e| e.to_string())?;
-        platform::focus(window)
+        platform::focus(window)?;
+        let state = manager(app);
+        let mut slot = state.session.lock();
+        let session = ensure_session(&mut slot, session_id(window)?)?;
+        if session.scroll.is_none() {
+            session.scroll_escape.take();
+        }
+        Ok(())
     } else {
         let id = pin_id(window)?;
         let visible = {
@@ -543,8 +567,12 @@ pub fn select(
     let state = manager(app);
     let mut slot = state.session.lock();
     let session = ensure_session(&mut slot, id)?;
-    if !rect.valid_within(session.meta.screen.width, session.meta.screen.height) {
-        return Err("选区超出屏幕范围".into());
+    if session.scroll.is_some() {
+        return Err("请先完成滚动截图".into());
+    }
+    let image = session.image.as_ref().ok_or("屏幕图像不可用")?;
+    if !rect.valid_within(image.width(), image.height()) {
+        return Err("选区超出图片范围".into());
     }
     if version < session.version {
         return Err("选区版本已过期".into());
@@ -669,9 +697,12 @@ pub fn export(
     let id = session_id(window)?;
     let state = manager(app);
     let _operation = state.operation.lock();
-    let (rect, screen, scale) = {
+    let (rect, screen, scale, origin) = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, id)?;
+        if session.scroll.is_some() {
+            return Err("请先完成滚动截图".into());
+        }
         if session.version != version {
             return Err("选区已经变化，请重新输出".into());
         }
@@ -679,6 +710,7 @@ pub fn export(
             session.selection.ok_or("请先选择截图区域")?,
             session.meta.screen,
             session.meta.scale,
+            session.image_origin.clone(),
         )
     };
     let image = clipboard::decode(&bytes, ImageFormat::Png)?;
@@ -722,8 +754,8 @@ pub fn export(
                 image.height(),
                 Some(PinPlacement {
                     position: CapturePoint {
-                        x: screen.x + rect.x,
-                        y: screen.y + rect.y,
+                        x: screen.x + origin.x + rect.x,
+                        y: screen.y + origin.y + rect.y,
                     },
                     scale,
                 }),

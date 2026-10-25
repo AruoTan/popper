@@ -14,6 +14,13 @@ export interface CaptureSession {
 export interface CaptureTarget { rect: CaptureRect; label: string; controls: CaptureCandidate[] }
 export interface CaptureCandidate { rect: CaptureRect; label: string }
 export interface CaptureHitTest { candidates: CaptureCandidate[]; pending: boolean }
+export interface ScrollCaptureProgress {
+  width: number;
+  height: number;
+  frames: number;
+  status: 'appended' | 'tracked' | 'unchanged' | 'unmatched' | 'limit';
+}
+export interface CaptureDocument { width: number; height: number; version: number }
 export interface PinnedImageState {
   id: string;
   width: number;

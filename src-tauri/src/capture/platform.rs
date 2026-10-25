@@ -52,6 +52,74 @@ pub fn move_pointer(screen: CaptureRect, dx: i32, dy: i32) -> Result<CapturePoin
 pub fn foreground() -> usize {
     unsafe { GetForegroundWindow().0 as usize }
 }
+pub fn capture_region(screen: CaptureRect, rect: CaptureRect) -> Result<image::RgbaImage, String> {
+    if !rect.valid_within(screen.width, screen.height) {
+        return Err("滚动选区超出屏幕范围".into());
+    }
+    let monitor = xcap::Monitor::from_point(
+        screen.x + (screen.width / 2) as i32,
+        screen.y + (screen.height / 2) as i32,
+    )
+    .map_err(|e| e.to_string())?;
+    if monitor.x().map_err(|e| e.to_string())? != screen.x
+        || monitor.y().map_err(|e| e.to_string())? != screen.y
+    {
+        return Err("显示器布局已变化，请重新截图".into());
+    }
+    if monitor.width().map_err(|e| e.to_string())? != screen.width
+        || monitor.height().map_err(|e| e.to_string())? != screen.height
+    {
+        return Err("显示器布局已变化，请重新截图".into());
+    }
+    monitor
+        .capture_region(rect.x as u32, rect.y as u32, rect.width, rect.height)
+        .map_err(|e| e.to_string())
+}
+pub fn exclude_from_capture(window: &tauri::WebviewWindow, exclude: bool) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+    };
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let affinity = if exclude {
+        WDA_EXCLUDEFROMCAPTURE
+    } else {
+        WDA_NONE
+    };
+    unsafe { SetWindowDisplayAffinity(hwnd, affinity) }
+        .map_err(|_| "当前系统无法排除滚动控制栏，请使用 Windows 10 2004 或更新版本".to_owned())?;
+    let mut actual = 0;
+    unsafe { GetWindowDisplayAffinity(hwnd, &mut actual) }.map_err(|e| e.to_string())?;
+    if actual != affinity.0 {
+        return Err("无法将控制栏排除在截图之外".into());
+    }
+    Ok(())
+}
+pub fn scroll_down(target: usize, point: CapturePoint) -> Result<(), String> {
+    use windows::Win32::{
+        Foundation::WPARAM,
+        UI::WindowsAndMessaging::{PostMessageW, WindowFromPoint, WM_MOUSEWHEEL},
+    };
+    let window = unsafe {
+        WindowFromPoint(POINT {
+            x: point.x,
+            y: point.y,
+        })
+    };
+    if window.0.is_null() || unsafe { GetAncestor(window, GA_ROOT) }.0 as usize != target {
+        return Err("滚动区域被其他窗口遮挡，请移开遮挡后继续".into());
+    }
+    let position = ((point.y as u32 & 0xffff) << 16) | (point.x as u32 & 0xffff);
+    let wheel = ((-120i16) as u16 as usize) << 16;
+    unsafe {
+        PostMessageW(
+            Some(window),
+            WM_MOUSEWHEEL,
+            WPARAM(wheel),
+            LPARAM(position as isize),
+        )
+    }
+    .map_err(|e| e.to_string())
+}
 pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|e| e.to_string())?;
     // Activating the frame alone does not direct keyboard input to WebView2.
