@@ -819,6 +819,8 @@ mod tests {
         assert_eq!(settings.version, 18);
         assert_eq!(settings.quick_ask_shortcut, "PrintScreen");
         assert_eq!(settings.capture.shortcut, "Alt+PrintScreen");
+        assert!(settings.capture.paste_shortcut.is_empty());
+        assert!(settings.capture.toggle_pins_shortcut.is_empty());
         assert_eq!(settings.actions[0].prompt.as_deref(), Some("自定义说明：{{text}}"));
         assert_eq!(reopened.get_api_key(DEFAULT_PROVIDER_ID).unwrap().as_deref(), Some("upgrade-secret"));
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

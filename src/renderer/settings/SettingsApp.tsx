@@ -59,6 +59,7 @@ import appIcon from "../../../assets/popper.png";
 
 import {
   APP_NAME,
+  DEFAULT_APP_SETTINGS,
   DEFAULT_OPENAI_BASE_URL,
   MAX_ENABLED_ACTIONS,
   RESULT_FONT_SIZE_MAX,
@@ -2055,10 +2056,10 @@ export function SettingsApp(): JSX.Element {
                     </div>
                   </div>
                   {([
-                    ["shortcut", "截图快捷键", "PrintScreen"],
-                    ["pasteShortcut", "贴图快捷键", "Control+Shift+KeyP"],
-                    ["togglePinsShortcut", "显示／隐藏贴图快捷键", "Control+Shift+KeyH"],
-                  ] as const).map(([field, label, fallback]) => (
+                    ["shortcut", "截图快捷键"],
+                    ["pasteShortcut", "贴图快捷键"],
+                    ["togglePinsShortcut", "显示／隐藏贴图快捷键"],
+                  ] as const).map(([field, label]) => (
                     <div className="settings-card quick-ask-setting" key={field}>
                       <div className="quick-ask-setting__label">
                         <strong>{label}</strong>
@@ -2081,11 +2082,11 @@ export function SettingsApp(): JSX.Element {
                           className="button button--quiet quick-ask-setting__reset"
                           type="button"
                           aria-label={"恢复" + label + "默认"}
-                          disabled={busy || draft.capture[field] === fallback}
+                          disabled={busy || draft.capture[field] === DEFAULT_APP_SETTINGS.capture[field]}
                           onClick={() =>
                             changeDraft((current) => ({
                               ...current,
-                              capture: { ...current.capture, [field]: fallback },
+                              capture: { ...current.capture, [field]: DEFAULT_APP_SETTINGS.capture[field] },
                             }))
                           }
                         >

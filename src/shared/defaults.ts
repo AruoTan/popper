@@ -109,7 +109,7 @@ export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = Object.freeze(
     trayEnabled: true,
     defaultAi: { providerId: '', modelId: '' },
     quickAskShortcut: 'Control+Shift+Space',
-    capture: { shortcut: 'PrintScreen', pasteShortcut: 'Control+Shift+KeyP', togglePinsShortcut: 'Control+Shift+KeyH', color: '#ff4545', lineWidth: 3 },
+    capture: { shortcut: 'PrintScreen', pasteShortcut: '', togglePinsShortcut: '', color: '#ff4545', lineWidth: 3 },
     translate: DEFAULT_TRANSLATION_PAIR,
     result: DEFAULT_RESULT_SETTINGS,
     filter: DEFAULT_FILTER_SETTINGS,

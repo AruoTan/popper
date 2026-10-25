@@ -1463,11 +1463,22 @@ describe("SettingsApp provider deletion", () => {
   it("configures and saves capture screen settings independently under 屏幕 section", async () => {
     const startCapture = vi.fn(async () => {});
     const pasteCapture = vi.fn(async () => {});
-    installDefaultBridge({ startCapture, pasteCapture });
+    const settings = structuredClone(DEFAULT_PUBLIC_SETTINGS);
+    settings.capture.pasteShortcut = "Control+Shift+KeyP";
+    settings.capture.togglePinsShortcut = "Control+Shift+KeyH";
+    installDefaultBridge({ startCapture, pasteCapture, getSettings: vi.fn(async () => settings) });
     render(<SettingsApp />);
 
     await goToSettingsSection("屏幕");
     expect(await screen.findByRole("heading", { name: "截图与贴图" })).toBeInTheDocument();
+
+    // Existing bindings remain available until explicitly reset.
+    expect(screen.getByRole("button", { name: "贴图快捷键" })).toHaveTextContent(/Ctrl.*Shift.*P/);
+    expect(screen.getByRole("button", { name: "显示／隐藏贴图快捷键" })).toHaveTextContent(/Ctrl.*Shift.*H/);
+    fireEvent.click(screen.getByRole("button", { name: "恢复贴图快捷键默认" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复显示／隐藏贴图快捷键默认" }));
+    expect(screen.getByRole("button", { name: "贴图快捷键" })).toHaveTextContent("未设置");
+    expect(screen.getByRole("button", { name: "显示／隐藏贴图快捷键" })).toHaveTextContent("未设置");
 
     // Trigger action buttons
     fireEvent.click(screen.getByRole("button", { name: "开始截图" }));
@@ -1487,6 +1498,9 @@ describe("SettingsApp provider deletion", () => {
       expect(window._popper_.updateSettings).toHaveBeenCalledWith(
         expect.objectContaining({
           capture: expect.objectContaining({
+            shortcut: "PrintScreen",
+            pasteShortcut: "",
+            togglePinsShortcut: "",
             color: "#00ff00",
             lineWidth: 5,
           }),

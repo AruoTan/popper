@@ -107,7 +107,7 @@ export function ShortcutRecorder({ value, disabled = false, label = "快捷提�
     };
   }, [recording, preparing]);
 
-  const keys = recording ? pressedKeys : displayQuickAskShortcut(value).split(" + ");
+  const keys = recording ? pressedKeys : value ? displayQuickAskShortcut(value).split(" + ") : [];
   const hint = preparing
     ? "准备录制…"
     : recording
@@ -191,7 +191,7 @@ export function ShortcutRecorder({ value, disabled = false, label = "快捷提�
               {index > 0 && <span className="shortcut-recorder__plus" aria-hidden="true">+</span>}
               <kbd>{key}</kbd>
             </span>
-          )) : <span className="shortcut-recorder__placeholder">{preparing ? "准备录制…" : "请按下快捷键"}</span>}
+          )) : <span className="shortcut-recorder__placeholder">{preparing ? "准备录制…" : recording ? "请按下快捷键" : "未设置"}</span>}
         </span>
         {recording ? <span className="shortcut-recorder__record-dot" aria-hidden="true" /> : <Pencil size={12} className="shortcut-recorder__edit" aria-hidden="true" />}
       </button>

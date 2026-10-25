@@ -20,6 +20,7 @@ impl ShortcutChange {
         let next = next
             .shortcuts()
             .iter()
+            .filter(|value| !value.is_empty())
             .map(|v| (*v).to_owned())
             .collect::<Vec<_>>();
         let mut change = Self {

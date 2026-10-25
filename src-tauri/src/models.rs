@@ -420,8 +420,8 @@ pub struct CaptureSettings {
 }
 impl Default for CaptureSettings {
     fn default() -> Self {
-        Self { shortcut: "PrintScreen".into(), paste_shortcut: "Control+Shift+KeyP".into(),
-            toggle_pins_shortcut: "Control+Shift+KeyH".into(), color: "#ff4545".into(), line_width: 3 }
+        Self { shortcut: "PrintScreen".into(), paste_shortcut: String::new(),
+            toggle_pins_shortcut: String::new(), color: "#ff4545".into(), line_width: 3 }
     }
 }
 impl CaptureSettings {
@@ -431,7 +431,8 @@ impl CaptureSettings {
     pub fn validate(&self, quick_ask: &str) -> Result<(), String> {
         let canonical = |value: &str| { let mut parts: Vec<_> = value.split('+').collect(); parts.sort_unstable(); parts.join("+") };
         let mut seen = HashSet::from([canonical(quick_ask)]);
-        for shortcut in self.shortcuts() {
+        for (index, shortcut) in self.shortcuts().into_iter().enumerate() {
+            if index > 0 && shortcut.is_empty() { continue; }
             if !crate::quick_ask::valid_shortcut(shortcut) { return Err("屏幕捕捉快捷键无效".into()); }
             if !seen.insert(canonical(shortcut)) { return Err("全局快捷键不能重复".into()); }
         }
@@ -1124,6 +1125,23 @@ fn valid_icon_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pin_shortcuts_may_be_unset_but_configured_shortcuts_must_be_valid_and_unique() {
+        let mut capture = CaptureSettings::default();
+        assert!(capture.paste_shortcut.is_empty());
+        assert!(capture.toggle_pins_shortcut.is_empty());
+        assert!(capture.validate(&default_quick_ask_shortcut()).is_ok());
+        capture.paste_shortcut = "Control+Shift+KeyP".into();
+        assert!(capture.validate(&default_quick_ask_shortcut()).is_ok());
+        capture.toggle_pins_shortcut = "Shift+Control+KeyP".into();
+        assert!(capture.validate(&default_quick_ask_shortcut()).is_err());
+        capture.toggle_pins_shortcut = " ".into();
+        assert!(capture.validate(&default_quick_ask_shortcut()).is_err());
+        capture.toggle_pins_shortcut.clear();
+        capture.shortcut.clear();
+        assert!(capture.validate(&default_quick_ask_shortcut()).is_err());
+    }
 
     #[test]
     fn defaults_are_valid_and_public_shape_has_no_key() {

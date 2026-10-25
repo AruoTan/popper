@@ -327,8 +327,8 @@ const quickAskShortcutSchema = z
 
 export const captureSettingsSchema = z.object({
   shortcut: quickAskShortcutSchema,
-  pasteShortcut: quickAskShortcutSchema,
-  togglePinsShortcut: quickAskShortcutSchema,
+  pasteShortcut: z.union([z.literal(''), quickAskShortcutSchema]),
+  togglePinsShortcut: z.union([z.literal(''), quickAskShortcutSchema]),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
   lineWidth: z.number().int().min(1).max(32),
 }).strict()
@@ -365,6 +365,7 @@ function validateSettingsReferences(
 ): void {
   if (value.capture && value.quickAskShortcut) {
     const shortcuts = [value.quickAskShortcut, value.capture.shortcut, value.capture.pasteShortcut, value.capture.togglePinsShortcut]
+      .filter(Boolean)
       .map((shortcut) => shortcut.split('+').sort().join('+'))
     if (new Set(shortcuts).size !== shortcuts.length) context.addIssue({ code: z.ZodIssueCode.custom, message: '全局快捷键不能重复' })
   }
