@@ -141,11 +141,13 @@ pub fn scroll_surface(
     })?;
     let hole = region(layout.selection)?;
     let panel = region(layout.panel)?;
+    let toolbar = region(layout.toolbar)?;
     // The native hole forwards input to the real page, including drag and wheel input.
     // Keep the preview interactive even when a full-screen selection leaves no free margin.
     unsafe {
         if CombineRgn(Some(outer.0), Some(outer.0), Some(hole.0), RGN_DIFF).0 == 0
             || CombineRgn(Some(outer.0), Some(outer.0), Some(panel.0), RGN_OR).0 == 0
+            || CombineRgn(Some(outer.0), Some(outer.0), Some(toolbar.0), RGN_OR).0 == 0
             || SetWindowRgn(hwnd, Some(outer.0), true) == 0
         {
             return Err("无法启用滚动选区，请重新截图".into());
@@ -175,6 +177,25 @@ pub fn restore_foreground(handle: usize) {
     unsafe {
         if IsWindow(Some(handle)).as_bool() {
             let _ = SetForegroundWindow(handle);
+        }
+    }
+}
+pub fn dismiss_owned_dialog(owner: usize) {
+    use windows::Win32::{
+        Foundation::WPARAM,
+        UI::{
+            Input::KeyboardAndMouse::IsWindowEnabled,
+            WindowsAndMessaging::{GetLastActivePopup, PostMessageW, WM_CLOSE},
+        },
+    };
+    let owner = HWND(owner as *mut _);
+    unsafe {
+        if IsWindowEnabled(owner).as_bool() {
+            return;
+        }
+        let dialog = GetLastActivePopup(owner);
+        if !dialog.0.is_null() && dialog != owner {
+            let _ = PostMessageW(Some(dialog), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
     }
 }
@@ -362,38 +383,52 @@ pub fn same_screen(expected: CaptureRect, scale: f64) -> bool {
     })
 }
 pub fn save_dialog(app: &AppHandle, owner: usize) -> Result<Option<std::path::PathBuf>, String> {
-    on_ui(app, move |_| {
-        let mut filename = [0u16; 32768];
-        let initial: Vec<u16> = "Popper-capture.png".encode_utf16().collect();
-        filename[..initial.len()].copy_from_slice(&initial);
-        let filter: Vec<u16> = "PNG 图片 (*.png)\0*.png\0\0".encode_utf16().collect();
-        let extension: Vec<u16> = "png\0".encode_utf16().collect();
-        let mut dialog = OPENFILENAMEW {
-            lStructSize: size_of::<OPENFILENAMEW>() as u32,
-            hwndOwner: HWND(owner as *mut _),
-            lpstrFile: windows::core::PWSTR(filename.as_mut_ptr()),
-            nMaxFile: filename.len() as u32,
-            lpstrFilter: PCWSTR(filter.as_ptr()),
-            lpstrDefExt: PCWSTR(extension.as_ptr()),
-            Flags: OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
-            ..Default::default()
-        };
-        if unsafe { GetSaveFileNameW(&mut dialog) }.as_bool() {
-            use std::os::windows::ffi::OsStringExt;
-            let len = filename
-                .iter()
-                .position(|c| *c == 0)
-                .unwrap_or(filename.len());
-            Ok(Some(std::path::PathBuf::from(
-                std::ffi::OsString::from_wide(&filename[..len]),
-            )))
-        } else {
-            let code = unsafe { CommDlgExtendedError() }.0;
-            if code == 0 {
-                Ok(None)
-            } else {
-                Err(format!("无法打开保存对话框：{code}"))
-            }
+    let (started, ready) = mpsc::sync_channel(0);
+    let (reply, result) = mpsc::sync_channel(1);
+    app.run_on_main_thread(move || {
+        // A timed-out caller drops the receiver, preventing a late modal from opening.
+        if started.send(()).is_ok() {
+            let _ = reply.send(native_save_dialog(owner));
         }
-    })?
+    })
+    .map_err(|e| e.to_string())?;
+    ready
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .map_err(|_| "保存对话框启动超时".to_owned())?;
+    // Choosing a path is a user interaction, not a three-second window operation.
+    result.recv().map_err(|_| "保存对话框已结束".to_owned())?
+}
+fn native_save_dialog(owner: usize) -> Result<Option<std::path::PathBuf>, String> {
+    let mut filename = [0u16; 32768];
+    let initial: Vec<u16> = "Popper-capture.png".encode_utf16().collect();
+    filename[..initial.len()].copy_from_slice(&initial);
+    let filter: Vec<u16> = "PNG 图片 (*.png)\0*.png\0\0".encode_utf16().collect();
+    let extension: Vec<u16> = "png\0".encode_utf16().collect();
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: HWND(owner as *mut _),
+        lpstrFile: windows::core::PWSTR(filename.as_mut_ptr()),
+        nMaxFile: filename.len() as u32,
+        lpstrFilter: PCWSTR(filter.as_ptr()),
+        lpstrDefExt: PCWSTR(extension.as_ptr()),
+        Flags: OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+        ..Default::default()
+    };
+    if unsafe { GetSaveFileNameW(&mut dialog) }.as_bool() {
+        use std::os::windows::ffi::OsStringExt;
+        let len = filename
+            .iter()
+            .position(|c| *c == 0)
+            .unwrap_or(filename.len());
+        Ok(Some(std::path::PathBuf::from(
+            std::ffi::OsString::from_wide(&filename[..len]),
+        )))
+    } else {
+        let code = unsafe { CommDlgExtendedError() }.0;
+        if code == 0 {
+            Ok(None)
+        } else {
+            Err(format!("无法打开保存对话框：{code}"))
+        }
+    }
 }

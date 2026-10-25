@@ -45,7 +45,7 @@ struct Session {
     image_origin: CapturePoint,
     scroll: Option<scrolling::ScrollSession>,
     scroll_completed: bool,
-    scroll_shortcuts: Option<scrolling::ScrollShortcuts>,
+    scroll_escape: Option<scrolling::ScrollEscape>,
     hidden_until: std::time::Instant,
 }
 struct AttachmentDelivery {
@@ -293,7 +293,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         image_origin: CapturePoint { x: 0, y: 0 },
         scroll: None,
         scroll_completed: false,
-        scroll_shortcuts: None,
+        scroll_escape: None,
         hidden_until: std::time::Instant::now() + Duration::from_secs(10),
     });
     app.state::<RuntimeState>()
@@ -522,7 +522,20 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 }
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
-        validate_session(app, window)?;
+        let crop_screen = {
+            let state = manager(app);
+            let mut slot = state.session.lock();
+            let session = ensure_session(&mut slot, session_id(window)?)?;
+            if session.scroll_completed {
+                session.hidden_until = std::time::Instant::now() + Duration::from_secs(10);
+                Some(session.meta.screen)
+            } else {
+                None
+            }
+        };
+        if let Some(screen) = crop_screen {
+            scrolling::restore_editor(window, screen)?;
+        }
         if let Ok(hwnd) = window.hwnd() {
             platform::configure_capture_surface(hwnd);
         }
@@ -532,7 +545,7 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, session_id(window)?)?;
         if session.scroll.is_none() {
-            session.scroll_shortcuts.take();
+            session.scroll_escape.take();
         }
         Ok(())
     } else {

@@ -106,6 +106,7 @@ pub struct ScrollProgress {
 pub struct ScrollLayout {
     pub selection: CaptureRect,
     pub panel: CaptureRect,
+    pub toolbar: CaptureRect,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

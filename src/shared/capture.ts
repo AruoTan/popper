@@ -2,6 +2,7 @@ export interface CaptureRect { x: number; y: number; width: number; height: numb
 export interface CapturePoint { x: number; y: number }
 export type CaptureTool = 'select' | 'rectangle' | 'ellipse' | 'arrow' | 'pen' | 'text' | 'mosaic';
 export type CaptureOutput = 'clipboard' | 'file' | 'pin' | 'ask';
+export type ScrollCaptureAction = 'crop' | CaptureOutput;
 export interface CaptureSession {
   id: string;
   screen: CaptureRect;
@@ -23,7 +24,7 @@ export interface ScrollCaptureProgress {
 }
 export interface ScrollCaptureSession {
   progress: ScrollCaptureProgress;
-  layout: { selection: CaptureRect; panel: CaptureRect };
+  layout: { selection: CaptureRect; panel: CaptureRect; toolbar: CaptureRect };
 }
 export interface CaptureDocument { width: number; height: number; version: number }
 export interface PinnedImageState {

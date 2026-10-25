@@ -2,35 +2,28 @@
 use super::{ensure_session, manager, platform, session_id};
 use crate::capture::{
     clipboard, scroll::stream::ScrollStream, CaptureDocument, CapturePoint, CaptureRect,
-    ScrollCaptureSession, ScrollLayout, ScrollProgress,
+    ScrollCaptureSession, ScrollProgress,
 };
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tauri::{AppHandle, Emitter, PhysicalPosition, PhysicalSize, WebviewWindow};
+use std::{sync::Arc, time::Duration};
+use tauri::{AppHandle, PhysicalPosition, PhysicalSize, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub(super) struct ScrollSession {
     pub target: usize,
     rect: CaptureRect,
     stream: ScrollStream,
-    layout: ScrollLayout,
 }
-// Retained until the full editor has regained native and WebView focus.
-pub(super) struct ScrollShortcuts {
+// Retained through direct outputs until the crop editor regains focus or capture ends.
+pub(super) struct ScrollEscape {
     app: AppHandle,
-    keys: Vec<&'static str>,
 }
-impl Drop for ScrollShortcuts {
+impl Drop for ScrollEscape {
     fn drop(&mut self) {
-        for key in &self.keys {
-            let _ = self.app.global_shortcut().unregister(*key);
-        }
+        let _ = self.app.global_shortcut().unregister("Escape");
     }
 }
 
-fn restore_editor(window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
+pub(super) fn restore_editor(window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())?;
     platform::scroll_surface(window, screen, None)?;
     window
@@ -80,20 +73,15 @@ pub fn scroll_begin(
             .ok_or("选区中没有可滚动的应用窗口")?;
         (screen, session.meta.scale, target)
     };
-    if ["Escape", "Enter"]
-        .into_iter()
-        .any(|key| app.global_shortcut().is_registered(key))
-    {
-        return Err("滚动截图完成或取消按键已被占用，暂时无法开始".into());
+    if app.global_shortcut().is_registered("Escape") {
+        return Err("滚动截图取消按键已被占用，暂时无法开始".into());
     }
-    let mut shortcuts = ScrollShortcuts {
-        app: app.clone(),
-        keys: Vec::new(),
-    };
     let cancel_id = id.to_owned();
     app.global_shortcut()
         .on_shortcut("Escape", move |app, _, event| {
             if event.state() == ShortcutState::Pressed {
+                // Close an owned modal dialog so cancellation can acquire the output lock.
+                platform::dismiss_owned_dialog(control);
                 let app = app.clone();
                 let id = cancel_id.clone();
                 tauri::async_runtime::spawn_blocking(move || {
@@ -102,16 +90,7 @@ pub fn scroll_begin(
             }
         })
         .map_err(|e| format!("无法注册滚动截图取消按键：{e}"))?;
-    shortcuts.keys.push("Escape");
-    let label = window.label().to_owned();
-    app.global_shortcut()
-        .on_shortcut("Enter", move |app, _, event| {
-            if event.state() == ShortcutState::Pressed {
-                let _ = app.emit_to(&label, "popper:capture-scroll-finish", ());
-            }
-        })
-        .map_err(|e| format!("无法注册滚动截图完成按键：{e}"))?;
-    shortcuts.keys.push("Enter");
+    let escape = ScrollEscape { app: app.clone() };
     let layout = crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
     let setup = (|| {
         window.hide().map_err(|e| e.to_string())?;
@@ -159,9 +138,8 @@ pub fn scroll_begin(
         target,
         rect,
         stream,
-        layout: layout.clone(),
     });
-    session.scroll_shortcuts = Some(shortcuts);
+    session.scroll_escape = Some(escape);
     Ok(ScrollCaptureSession { progress, layout })
 }
 
@@ -207,6 +185,14 @@ pub fn scroll_finish(app: &AppHandle, window: &WebviewWindow) -> Result<CaptureD
     let _operation = state.operation.lock();
     let mut slot = state.session.lock();
     let session = ensure_session(&mut slot, session_id(window)?)?;
+    if session.scroll_completed {
+        let image = session.image.as_ref().ok_or("长图不可用")?;
+        return Ok(CaptureDocument {
+            width: image.width(),
+            height: image.height(),
+            version: session.version,
+        });
+    }
     let scroll = session.scroll.as_mut().ok_or("滚动截图已结束")?;
     // Include a final manual scroll even if the user finishes before the next poll.
     // Failures leave the last registered document available for output.
@@ -220,14 +206,8 @@ pub fn scroll_finish(app: &AppHandle, window: &WebviewWindow) -> Result<CaptureD
     };
     let image = scroll.stream.compose(final_frame);
     let png = clipboard::png(&image)?;
-    // Keep the scrolling document intact if changing the native surface fails.
-    session.hidden_until = Instant::now() + Duration::from_secs(10);
-    if let Err(error) = restore_editor(window, session.meta.screen) {
-        let _ = platform::exclude_from_capture(window, true);
-        let _ = platform::scroll_surface(window, session.meta.screen, Some(&scroll.layout));
-        let _ = window.show();
-        return Err(error);
-    }
+    // Keep the live surface visible for direct output and save cancellation.
+    // Only capture_show transitions the completed document into crop editing.
     let rect = scroll.rect;
     session.image_origin = CapturePoint {
         x: rect.x,
