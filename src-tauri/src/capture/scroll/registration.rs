@@ -1,12 +1,16 @@
 //! Locate a viewport in the entire captured vertical document.
 use image::RgbaImage;
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    hash::{DefaultHasher, Hash, Hasher},
+};
 
 const SAMPLES: usize = 32;
 #[derive(Clone)]
 pub(super) struct Row {
     pixels: [u8; SAMPLES * 3],
     pub key: Option<u32>,
+    exact: u64,
 }
 fn difference(a: &[u8], b: &[u8]) -> f64 {
     a.iter()
@@ -34,7 +38,13 @@ pub(super) fn sample(image: &RgbaImage, y: u32) -> Row {
             .enumerate()
             .fold(0, |bits, (i, &v)| bits | (u32::from(v > mean) << i))
     });
-    Row { pixels, key }
+    let mut hash = DefaultHasher::new();
+    pixels.hash(&mut hash);
+    Row {
+        pixels,
+        key,
+        exact: hash.finish(),
+    }
 }
 pub(super) fn rows(image: &RgbaImage) -> Vec<Row> {
     (0..image.height()).map(|y| sample(image, y)).collect()
@@ -43,32 +53,27 @@ pub(super) fn distance(a: &Row, b: &Row) -> f64 {
     difference(&a.pixels, &b.pixels)
 }
 pub fn settled(a: &RgbaImage, b: &RgbaImage) -> bool {
-    if a.dimensions() != b.dimensions() {
-        return false;
-    }
-    let mut changed = 0;
-    let mut total = 0;
-    for y in (0..a.height()).step_by((a.height() / 80).max(1) as usize) {
-        let a = sample(a, y);
-        let b = sample(b, y);
-        changed += a
-            .pixels
-            .chunks_exact(3)
-            .zip(b.pixels.chunks_exact(3))
-            .filter(|(a, b)| difference(a, b) > 12.0)
-            .count();
-        total += SAMPLES;
-    }
-    changed * 200 <= total
+    // Sparse samples can miss small text and whole bands during fast motion.
+    a.dimensions() == b.dimensions() && a.as_raw() == b.as_raw()
 }
 
 #[derive(Default)]
-pub(super) struct Index(HashMap<u32, Vec<i64>>);
+pub(super) struct Index {
+    perceptual: HashMap<u32, Vec<i64>>,
+    exact: HashMap<u64, Vec<i64>>,
+}
 impl Index {
     pub fn add(&mut self, rows: &[Row], start: i64) {
         for (i, row) in rows.iter().enumerate() {
             if let Some(key) = row.key {
-                self.0.entry(key).or_default().push(start + i as i64);
+                self.perceptual
+                    .entry(key)
+                    .or_default()
+                    .push(start + i as i64);
+                self.exact
+                    .entry(row.exact)
+                    .or_default()
+                    .push(start + i as i64);
             }
         }
     }
@@ -79,19 +84,67 @@ impl Index {
         viewport: &[Row],
         cursor: i64,
     ) -> Option<i64> {
+        let stride = (viewport.len() / 32).max(1);
+        let edge = 48.min(viewport.len());
+        let mut anchors: Vec<_> =
+            viewport
+                .chunks(stride)
+                .enumerate()
+                .filter_map(|(block, rows)| {
+                    rows.iter()
+                        .enumerate()
+                        .find(|(_, row)| row.key.is_some())
+                        .map(|(local, row)| (block * stride + local, row))
+                })
+                .chain(viewport.iter().enumerate().filter(|(y, row)| {
+                    row.key.is_some() && (*y < edge || *y + edge >= viewport.len())
+                }))
+                .collect();
+        anchors.sort_by_key(|&(y, _)| y);
+        anchors.dedup_by_key(|(y, _)| *y);
+        let mut exact_votes: HashMap<i64, u32> = HashMap::new();
+        for &(y, row) in &anchors {
+            if let Some(positions) = self.exact.get(&row.exact).filter(|p| p.len() <= 1024) {
+                for &position in positions {
+                    *exact_votes.entry(position - y as i64).or_default() += 1;
+                }
+            }
+        }
+        let bottom = top + document.len() as i64;
+        let mut exact_match = None;
+        // Verify every sampled row, including blank rows; hashes only propose offsets.
+        // Dense edge anchors retain tiny overlaps after a near-viewport-sized jump.
+        for (position, count) in exact_votes {
+            if count < 6 {
+                continue;
+            }
+            let begin = top.max(position);
+            let end = bottom.min(position + viewport.len() as i64);
+            if end - begin < 8 {
+                continue;
+            }
+            let mut evidence = 0;
+            let identical = (begin..end).all(|y| {
+                let a = &document[(y - top) as usize];
+                let b = &viewport[(y - position) as usize];
+                evidence += usize::from(a.key.is_some());
+                a.pixels == b.pixels
+            });
+            if identical && evidence >= 6 && exact_match.replace(position).is_some() {
+                return None;
+            }
+        }
+        if exact_match.is_some() {
+            return exact_match;
+        }
         let mut votes: HashMap<i64, u32> = HashMap::new();
         votes.insert(cursor, 0);
         // Row fingerprints generate candidate locations without scanning every pixel
         // at every possible offset. A one-bit neighborhood tolerates rasterization noise.
-        for (block, rows) in viewport.chunks((viewport.len() / 32).max(1)).enumerate() {
-            let stride = (viewport.len() / 32).max(1);
-            let Some((local, row)) = rows.iter().enumerate().find(|(_, r)| r.key.is_some()) else {
-                continue;
-            };
-            let y = block * stride + local;
+        for &(y, row) in &anchors {
             let key = row.key.unwrap();
             for variant in std::iter::once(key).chain((0..32).map(|bit| key ^ (1 << bit))) {
-                if let Some(positions) = self.0.get(&variant) {
+                if let Some(positions) = self.perceptual.get(&variant) {
                     // Extremely repetitive fingerprints have little locating value.
                     if positions.len() > 1024 {
                         continue;
@@ -102,14 +155,13 @@ impl Index {
                 }
             }
         }
-        let bottom = top + document.len() as i64;
         let overlap = |position: i64| {
             (
                 top.max(position),
                 bottom.min(position + viewport.len() as i64),
             )
         };
-        let minimum = (viewport.len() / 32).clamp(16, 48) as i64;
+        let minimum = 8;
         let score = |position: i64, coarse: bool| -> Option<f64> {
             let (begin, end) = overlap(position);
             if end - begin < minimum {

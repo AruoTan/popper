@@ -119,7 +119,7 @@ pub fn scroll_begin(
             }
             platform::capture_region(screen, rect).map(Some)
         },
-        Duration::from_millis(16),
+        Duration::from_millis(8),
     ) {
         Ok(stream) => stream,
         Err(error) => {

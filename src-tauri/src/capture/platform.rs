@@ -56,21 +56,31 @@ pub fn capture_region(screen: CaptureRect, rect: CaptureRect) -> Result<image::R
     if !rect.valid_within(screen.width, screen.height) {
         return Err("滚动选区超出屏幕范围".into());
     }
-    let monitor = xcap::Monitor::from_point(
-        screen.x + (screen.width / 2) as i32,
-        screen.y + (screen.height / 2) as i32,
-    )
-    .map_err(|e| e.to_string())?;
-    if monitor.x().map_err(|e| e.to_string())? != screen.x
-        || monitor.y().map_err(|e| e.to_string())? != screen.y
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONULL,
+    };
+    let point = POINT {
+        x: screen.x + (screen.width / 2) as i32,
+        y: screen.y + (screen.height / 2) as i32,
+    };
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // Validate physical bounds in one query. Repeated display-mode queries here
+    // duplicate the checks performed by the image capture path on every frame.
+    let handle = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) };
+    if !unsafe { GetMonitorInfoW(handle, &mut info) }.as_bool()
+        || info.rcMonitor.left != screen.x
+        || info.rcMonitor.top != screen.y
+        || i64::from(info.rcMonitor.right) - i64::from(info.rcMonitor.left)
+            != i64::from(screen.width)
+        || i64::from(info.rcMonitor.bottom) - i64::from(info.rcMonitor.top)
+            != i64::from(screen.height)
     {
         return Err("显示器布局已变化，请重新截图".into());
     }
-    if monitor.width().map_err(|e| e.to_string())? != screen.width
-        || monitor.height().map_err(|e| e.to_string())? != screen.height
-    {
-        return Err("显示器布局已变化，请重新截图".into());
-    }
+    let monitor = xcap::Monitor::from_point(point.x, point.y).map_err(|e| e.to_string())?;
     monitor
         .capture_region(rect.x as u32, rect.y as u32, rect.width, rect.height)
         .map_err(|e| e.to_string())

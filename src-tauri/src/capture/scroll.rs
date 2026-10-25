@@ -516,6 +516,53 @@ mod tests {
         );
     }
     #[test]
+    fn fast_scrolls_with_twelve_rows_of_overlap_extend_in_both_directions() {
+        let page = page();
+        let mut stitcher = ScrollStitcher::new(frame(&page, 460)).unwrap();
+        for y in [688, 916, 460, 232, 4] {
+            assert!(
+                matches!(
+                    stitcher.push(frame(&page, y)).status,
+                    ScrollStatus::Appended | ScrollStatus::Tracked
+                ),
+                "position {y}"
+            );
+        }
+        assert_eq!(
+            stitcher.compose(),
+            image::imageops::crop_imm(&page, 0, 4, 160, 1152).to_image()
+        );
+    }
+    #[test]
+    fn small_overlaps_tolerate_minor_color_changes_without_accepting_missing_content() {
+        let page = page();
+        let mut stitcher = ScrollStitcher::new(frame(&page, 0)).unwrap();
+        let mut next = frame(&page, 228);
+        for pixel in next.pixels_mut() {
+            pixel[0] = pixel[0].saturating_add(1);
+        }
+        assert_eq!(stitcher.push(next).status, ScrollStatus::Appended);
+        assert_eq!(stitcher.compose().height(), 468);
+        let before = stitcher.compose();
+        assert_eq!(
+            stitcher.push(frame(&page, 800)).status,
+            ScrollStatus::Unmatched
+        );
+        assert_eq!(stitcher.compose(), before);
+    }
+    #[test]
+    fn small_text_changes_between_sparse_sample_rows_are_not_discarded() {
+        let first = RgbaImage::from_pixel(640, 960, image::Rgba([255; 4]));
+        let mut next = first.clone();
+        for y in 5..9 {
+            for x in 40..200 {
+                next.put_pixel(x, y, image::Rgba([0, 0, 0, 255]));
+            }
+        }
+        assert!(!settled(&first, &next));
+        assert!(settled(&next, &next));
+    }
+    #[test]
     fn large_steps_with_a_small_overlap_and_returning_to_an_old_region_are_located() {
         let page = page();
         let mut stitcher = ScrollStitcher::new(frame(&page, 0)).unwrap();
