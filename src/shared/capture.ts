@@ -21,6 +21,7 @@ export interface PinnedImageState {
   zoom: number;
   opacity: number;
   clickThrough: boolean;
+  shadowInset: number;
 }
 export interface CaptureAnnotation {
   id: string;

@@ -1,6 +1,9 @@
 //! Native floating-image windows, menu actions and visibility lifecycle.
 use super::{clipboard, manager, notify, pin_id, platform, PIN_PREFIX};
-use crate::capture::{pins::Pin, PinUpdate, PinnedImageState};
+use crate::capture::{
+    pins::{image_frame, resized_frame, Pin, SHADOW_INSET},
+    CapturePoint, CaptureRect, PinUpdate, PinnedImageState,
+};
 use std::{
     sync::{atomic::Ordering, Arc},
     time::Duration,
@@ -10,6 +13,18 @@ use tauri::{
     WebviewWindowBuilder,
 };
 use uuid::Uuid;
+
+pub(super) struct PinPlacement {
+    pub position: CapturePoint,
+    pub scale: f64,
+}
+
+pub(super) fn show_pin(window: &WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|e| e.to_string())?;
+    window
+        .emit("popper:pin-shown", ())
+        .map_err(|e| e.to_string())
+}
 
 pub(super) fn setup_menu(app: &AppHandle) {
     app.on_menu_event(|app, event| {
@@ -65,6 +80,7 @@ pub(super) fn create_pin(
     bytes: Vec<u8>,
     width: u32,
     height: u32,
+    placement: Option<PinPlacement>,
 ) -> Result<(), String> {
     let state = manager(app);
     let id = Uuid::new_v4().to_string();
@@ -75,6 +91,7 @@ pub(super) fn create_pin(
         zoom: 1.0,
         opacity: 1.0,
         click_through: false,
+        shadow_inset: SHADOW_INSET,
     };
     {
         let mut pins = state.pins.lock();
@@ -87,8 +104,29 @@ pub(super) fn create_pin(
         })?;
     }
     let result = (|| {
-        let (_, screen, scale) = platform::screen()?;
-        let (x, y) = platform::cursor()?;
+        let PinPlacement { position, scale } = match placement {
+            Some(placement) => placement,
+            None => {
+                let (_, screen, scale) = platform::screen()?;
+                let (x, y) = platform::cursor()?;
+                PinPlacement {
+                    position: CapturePoint {
+                        x: (x - width as i32 / 2).max(screen.x),
+                        y: (y - height as i32 / 2).max(screen.y),
+                    },
+                    scale,
+                }
+            }
+        };
+        let frame = image_frame(
+            CaptureRect {
+                x: position.x,
+                y: position.y,
+                width,
+                height,
+            },
+            SHADOW_INSET,
+        );
         let label = format!("{PIN_PREFIX}{id}");
         let builder = WebviewWindowBuilder::new(
             app,
@@ -96,7 +134,7 @@ pub(super) fn create_pin(
             WebviewUrl::App("capture/index.html?mode=pin".into()),
         )
         .title("Popper 贴图")
-        .inner_size(width as f64 / scale, height as f64 / scale)
+        .inner_size(frame.width as f64 / scale, frame.height as f64 / scale)
         .decorations(false)
         .transparent(true)
         .shadow(false)
@@ -113,13 +151,11 @@ pub(super) fn create_pin(
             platform::configure_capture_surface(hwnd);
         }
         window
-            .set_size(PhysicalSize::new(width, height))
+            .set_position(PhysicalPosition::new(frame.x, frame.y))
             .map_err(|e| e.to_string())?;
+        // Moving between monitors can change DPI; apply the physical size afterwards.
         window
-            .set_position(PhysicalPosition::new(
-                (x - width as i32 / 2).max(screen.x),
-                (y - height as i32 / 2).max(screen.y),
-            ))
+            .set_size(PhysicalSize::new(frame.width, frame.height))
             .map_err(|e| e.to_string())?;
         let app = app.clone();
         let closed_id = id.clone();
@@ -181,16 +217,20 @@ pub fn paste(app: &AppHandle) -> Result<(), String> {
     };
     if let Some(id) = restore {
         if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
-            window
-                .show()
-                .and_then(|_| window.set_focus())
-                .map_err(|e| e.to_string())?;
+            show_pin(&window)?;
+            window.set_focus().map_err(|e| e.to_string())?;
             return Ok(());
         }
         state.pins.lock().items.remove(&id);
     }
     let image = clipboard::read()?;
-    create_pin(app, clipboard::png(&image)?, image.width(), image.height())
+    create_pin(
+        app,
+        clipboard::png(&image)?,
+        image.width(),
+        image.height(),
+        None,
+    )
 }
 pub fn pin_state(app: &AppHandle, window: &WebviewWindow) -> Result<PinnedImageState, String> {
     let id = pin_id(window)?;
@@ -229,17 +269,24 @@ pub fn pin_update(
     };
     let size = window.inner_size().map_err(|e| e.to_string())?;
     let position = window.outer_position().map_err(|e| e.to_string())?;
-    let width = (meta.width as f64 * update.zoom).round().max(1.0) as u32;
-    let height = (meta.height as f64 * update.zoom).round().max(1.0) as u32;
-    window
-        .set_size(PhysicalSize::new(width, height))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_position(PhysicalPosition::new(
-            position.x + ((size.width as f64 - width as f64) * update.anchor_x).round() as i32,
-            position.y + ((size.height as f64 - height as f64) * update.anchor_y).round() as i32,
-        ))
-        .map_err(|e| e.to_string())?;
+    if update.zoom != meta.zoom {
+        let frame = resized_frame(
+            &meta,
+            CaptureRect {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            },
+            &update,
+        );
+        window
+            .set_position(PhysicalPosition::new(frame.x, frame.y))
+            .map_err(|e| e.to_string())?;
+        window
+            .set_size(PhysicalSize::new(frame.width, frame.height))
+            .map_err(|e| e.to_string())?;
+    }
     crate::windows::set_native_opacity(window, update.opacity).map_err(|e| e.to_string())?;
     window
         .set_ignore_cursor_events(update.click_through)
@@ -290,11 +337,10 @@ pub fn toggle_pins(app: &AppHandle) -> Result<(), String> {
     for (id, visible) in updates {
         if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
             if visible {
-                window.show()
+                show_pin(&window)?;
             } else {
-                window.hide()
+                window.hide().map_err(|e| e.to_string())?;
             }
-            .map_err(|e| e.to_string())?;
         }
     }
     Ok(())

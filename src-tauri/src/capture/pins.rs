@@ -1,7 +1,48 @@
-use super::PinnedImageState;
+use super::{CaptureRect, PinUpdate, PinnedImageState};
 use std::{collections::HashMap, sync::Arc};
 const MAX_PINS: usize = 12;
 const PIN_BUDGET: u64 = 256 * 1024 * 1024;
+pub const SHADOW_INSET: u32 = 24;
+
+/// The transparent frame surrounds the image without changing its screen coordinates.
+pub fn image_frame(image: CaptureRect, inset: u32) -> CaptureRect {
+    CaptureRect {
+        x: image.x - inset as i32,
+        y: image.y - inset as i32,
+        width: image.width + inset * 2,
+        height: image.height + inset * 2,
+    }
+}
+
+pub fn resized_frame(
+    meta: &PinnedImageState,
+    frame: CaptureRect,
+    update: &PinUpdate,
+) -> CaptureRect {
+    if update.zoom == meta.zoom {
+        return frame;
+    }
+    let dimension = |original: u32, zoom: f64| (original as f64 * zoom).round().max(1.0) as u32;
+    let width = dimension(meta.width, update.zoom);
+    let height = dimension(meta.height, update.zoom);
+    // A monitor DPI transition can resize the whole window, including its margins.
+    let inset_x = frame.width as f64 * meta.shadow_inset as f64
+        / (dimension(meta.width, meta.zoom) + meta.shadow_inset * 2) as f64;
+    let inset_y = frame.height as f64 * meta.shadow_inset as f64
+        / (dimension(meta.height, meta.zoom) + meta.shadow_inset * 2) as f64;
+    CaptureRect {
+        x: frame.x
+            + (inset_x + (frame.width as f64 - inset_x * 2.0 - width as f64) * update.anchor_x
+                - meta.shadow_inset as f64)
+                .round() as i32,
+        y: frame.y
+            + (inset_y + (frame.height as f64 - inset_y * 2.0 - height as f64) * update.anchor_y
+                - meta.shadow_inset as f64)
+                .round() as i32,
+        width: width + meta.shadow_inset * 2,
+        height: height + meta.shadow_inset * 2,
+    }
+}
 pub struct Pin {
     pub meta: PinnedImageState,
     pub png: Arc<Vec<u8>>,
@@ -62,12 +103,103 @@ mod tests {
                 zoom: 1.0,
                 opacity: 1.0,
                 click_through: false,
+                shadow_inset: SHADOW_INSET,
             },
             png: Arc::new(vec![1, 2, 3]),
             visible: true,
             closed: false,
             ready: true,
         }
+    }
+    #[test]
+    fn image_position_is_preserved_with_shadow_margins_on_negative_screens() {
+        let image = CaptureRect {
+            x: -1720,
+            y: -920,
+            width: 400,
+            height: 240,
+        };
+        let frame = image_frame(image, SHADOW_INSET);
+        assert_eq!(
+            (frame.x + SHADOW_INSET as i32, frame.y + SHADOW_INSET as i32),
+            (image.x, image.y)
+        );
+        assert_eq!(
+            (
+                frame.width - SHADOW_INSET * 2,
+                frame.height - SHADOW_INSET * 2
+            ),
+            (image.width, image.height)
+        );
+    }
+    #[test]
+    fn zoom_preserves_the_image_anchor_without_scaling_shadow_margins() {
+        let meta = pin("zoom", 400, 240).meta;
+        let frame = image_frame(
+            CaptureRect {
+                x: -1720,
+                y: -920,
+                width: 400,
+                height: 240,
+            },
+            SHADOW_INSET,
+        );
+        for (anchor_x, anchor_y) in [(0.0, 0.0), (0.25, 0.75), (0.5, 0.5), (1.0, 1.0)] {
+            for zoom in [0.1, 1.1, 4.0] {
+                let update = PinUpdate {
+                    zoom,
+                    opacity: 1.0,
+                    click_through: false,
+                    anchor_x,
+                    anchor_y,
+                };
+                let resized = resized_frame(&meta, frame, &update);
+                let width = resized.width - SHADOW_INSET * 2;
+                let height = resized.height - SHADOW_INSET * 2;
+                assert!(
+                    ((frame.x + SHADOW_INSET as i32) as f64 + 400.0 * anchor_x
+                        - ((resized.x + SHADOW_INSET as i32) as f64 + width as f64 * anchor_x))
+                        .abs()
+                        <= 0.5
+                );
+                assert!(
+                    ((frame.y + SHADOW_INSET as i32) as f64 + 240.0 * anchor_y
+                        - ((resized.y + SHADOW_INSET as i32) as f64 + height as f64 * anchor_y))
+                        .abs()
+                        <= 0.5
+                );
+            }
+        }
+        let opacity_only = PinUpdate {
+            zoom: 1.0,
+            opacity: 0.5,
+            click_through: true,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+        };
+        assert_eq!(resized_frame(&meta, frame, &opacity_only), frame);
+    }
+    #[test]
+    fn zoom_accounts_for_window_margins_after_a_monitor_dpi_transition() {
+        let meta = pin("dpi", 400, 240).meta;
+        let frame = CaptureRect {
+            x: -1000,
+            y: 100,
+            width: 896,
+            height: 576,
+        };
+        let update = PinUpdate {
+            zoom: 1.1,
+            opacity: 1.0,
+            click_through: false,
+            anchor_x: 0.25,
+            anchor_y: 0.75,
+        };
+        let resized = resized_frame(&meta, frame, &update);
+        assert_eq!(resized.width, 488);
+        assert_eq!(resized.height, 312);
+        assert_eq!(resized.x + 24 + 110, frame.x + 48 + 200);
+        assert_eq!(resized.y + 24 + 198, frame.y + 48 + 360);
     }
     #[test]
     fn close_restore_cache_is_bounded_across_one_hundred_cycles() {

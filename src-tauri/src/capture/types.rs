@@ -104,6 +104,7 @@ pub struct PinnedImageState {
     pub zoom: f64,
     pub opacity: f64,
     pub click_through: bool,
+    pub shadow_inset: u32,
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

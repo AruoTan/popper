@@ -1,6 +1,6 @@
 mod pinned;
 mod shortcuts;
-use pinned::create_pin;
+use pinned::{create_pin, PinPlacement};
 pub use pinned::{
     paste, pin_close, pin_menu, pin_state, pin_update, recover_click_through, toggle_pins,
 };
@@ -408,7 +408,11 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
                         continue;
                     }
                 }
-                let _ = window.show();
+                if label.starts_with(PIN_PREFIX) {
+                    let _ = pinned::show_pin(&window);
+                } else {
+                    let _ = window.show();
+                }
             }
         }
         if restore_focus {
@@ -660,13 +664,17 @@ pub fn export(
     let id = session_id(window)?;
     let state = manager(app);
     let _operation = state.operation.lock();
-    let rect = {
+    let (rect, screen, scale) = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, id)?;
         if session.version != version {
             return Err("选区已经变化，请重新输出".into());
         }
-        session.selection.ok_or("请先选择截图区域")?
+        (
+            session.selection.ok_or("请先选择截图区域")?,
+            session.meta.screen,
+            session.meta.scale,
+        )
     };
     let image = clipboard::decode(&bytes, ImageFormat::Png)?;
     if image.width() != rect.width || image.height() != rect.height {
@@ -701,7 +709,19 @@ pub fn export(
             result?;
         }
         "pin" => {
-            create_pin(app, bytes, image.width(), image.height())?;
+            create_pin(
+                app,
+                bytes,
+                image.width(),
+                image.height(),
+                Some(PinPlacement {
+                    position: CapturePoint {
+                        x: screen.x + rect.x,
+                        y: screen.y + rect.y,
+                    },
+                    scale,
+                }),
+            )?;
         }
         "ask" => {
             deliver_attachment(app, bytes)?;
