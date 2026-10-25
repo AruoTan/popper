@@ -13,7 +13,7 @@ pub(super) struct ScrollSession {
     rect: CaptureRect,
     stream: ScrollStream,
 }
-// Retained through direct outputs until the crop editor regains focus or capture ends.
+// Retained through output retries until capture ends.
 pub(super) struct ScrollEscape {
     app: AppHandle,
 }
@@ -23,7 +23,7 @@ impl Drop for ScrollEscape {
     }
 }
 
-pub(super) fn restore_editor(window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
+fn restore_editor(window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())?;
     platform::scroll_surface(window, screen, None)?;
     window
@@ -207,7 +207,6 @@ pub fn scroll_finish(app: &AppHandle, window: &WebviewWindow) -> Result<CaptureD
     let image = scroll.stream.compose(final_frame);
     let png = clipboard::png(&image)?;
     // Keep the live surface visible for direct output and save cancellation.
-    // Only capture_show transitions the completed document into crop editing.
     let rect = scroll.rect;
     session.image_origin = CapturePoint {
         x: rect.x,

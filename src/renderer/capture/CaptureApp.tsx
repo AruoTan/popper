@@ -1,14 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowUpRight, Check, Circle, Copy, Download, MessageSquare, MousePointer2, Pencil, Pin, Redo2, Square, Type, Undo2, X, Grid3X3, Trash2, ScanLine } from 'lucide-react';
-import type { CaptureAnnotation, CaptureCandidate, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureAction, ScrollCaptureSession } from '../../shared/capture';
+import type { CaptureAnnotation, CaptureCandidate, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, contains, emptyHistory, HANDLES, handlePoint, hitAnnotation, keyRect, moveRect, rectangle, redo, resizeRect, undo, type Handle } from './geometry';
 import { decodePng, pngBytes, renderScene } from './drawing';
 import { createCaptureHover } from './hover';
 import { createCaptureNavigation } from './navigation';
 import { ScrollCapture } from './ScrollCapture';
-import { CaptureOutputToolbar } from './CaptureOutputToolbar';
 
 type Gesture = { mode: 'new' | 'move' | 'resize' | 'draw' | 'object'; start: CapturePoint; rect: CaptureRect | null; handle?: Handle; item?: CaptureAnnotation; moved: boolean };
 type TextEdit = { id: string; point: CapturePoint; text: string; color: string; width: number };
@@ -51,8 +50,8 @@ export function CaptureApp(): JSX.Element {
   const [history, setHistory] = useState(emptyHistory), [draft, setDraft] = useState<CaptureAnnotation | null>(null), [selectedId, setSelectedId] = useState<string | null>(null);
   const [textEdit, setTextEdit] = useState<TextEdit | null>(null), [color, setColor] = useState('#ff4545'), [lineWidth, setLineWidth] = useState(3);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [alt, setAlt] = useState(false), [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
-  const [scrolling, setScrolling] = useState(false), [scrollProgress, setScrollProgress] = useState<ScrollCaptureSession | null>(null), [documentSize, setDocumentSize] = useState<CaptureDocument | null>(null);
-  const scrollingRef = useRef(false), scrollDocument = useRef<CaptureDocument | null>(null);
+  const [scrolling, setScrolling] = useState(false), [scrollProgress, setScrollProgress] = useState<ScrollCaptureSession | null>(null);
+  const scrollingRef = useRef(false), scrollVersion = useRef<number | null>(null);
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const canvas = useRef<HTMLCanvasElement>(null), root = useRef<HTMLElement>(null), gesture = useRef<Gesture | null>(null), busyRef = useRef(false), version = useRef(0), generation = useRef(0);
   const hover = useRef<ReturnType<typeof createCaptureHover> | null>(null), mounted = useRef(true), selectedRef = useRef(selection);
@@ -61,10 +60,9 @@ export function CaptureApp(): JSX.Element {
   const cancelling = useRef(false), lifecycle = useRef(0), focusGeneration = useRef(0);
   const navigation = useRef<ReturnType<typeof createCaptureNavigation> | null>(null);
   selectedRef.current = selection;
-  const bounds: CaptureRect = { x: 0, y: 0, width: documentSize?.width ?? session?.screen.width ?? 1, height: documentSize?.height ?? session?.screen.height ?? 1 };
-  const sx = documentSize ? Math.min(Math.max(1, viewport.width - 48) / bounds.width, Math.max(1, viewport.height - 144) / bounds.height) : viewport.width / bounds.width;
-  const sy = documentSize ? sx : viewport.height / bounds.height;
-  const offset = { x: documentSize ? (viewport.width - bounds.width * sx) / 2 : 0, y: documentSize ? (viewport.height - bounds.height * sy) / 2 : 0 };
+  const bounds: CaptureRect = { x: 0, y: 0, width: session?.screen.width ?? 1, height: session?.screen.height ?? 1 };
+  const sx = viewport.width / bounds.width;
+  const sy = viewport.height / bounds.height;
   const candidate = candidates[candidateIndex];
   const displayed = selection ?? candidate?.rect ?? null;
   const selectedItem = history.present.find((item) => item.id === selectedId);
@@ -118,7 +116,7 @@ export function CaptureApp(): JSX.Element {
     return () => { alive = false; mounted.current = false; clearBlur(); window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyDown, true); window.removeEventListener('keyup', keyUp); window.removeEventListener('focus', focus); generation.current++; lifecycle.current++; };
   }, []);
   useEffect(() => {
-    if (!session || documentSize || scrolling) return;
+    if (!session || scrolling) return;
     const navigator = createCaptureNavigation(); navigation.current = navigator;
     const controller = createCaptureHover({
       targets: session.targets ?? [],
@@ -132,7 +130,7 @@ export function CaptureApp(): JSX.Element {
     hover.current = controller;
     if (session.pointer) controller.update(session.pointer);
     return () => { controller.destroy(); if (hover.current === controller) hover.current = null; if (navigation.current === navigator) navigation.current = null; };
-  }, [session, documentSize, scrolling]);
+  }, [session, scrolling]);
   useEffect(() => {
     if (!canvas.current || !image || scrolling) return;
     try { renderScene(canvas.current, image, bounds.width, bounds.height, draft ? [...displayedItems, draft] : displayedItems); }
@@ -145,7 +143,7 @@ export function CaptureApp(): JSX.Element {
     return () => clearTimeout(timer);
   }, [session, color, lineWidth, busy]);
 
-  const eventPoint = (event: { clientX: number; clientY: number }): CapturePoint => constrainPoint({ x: (event.clientX - offset.x) / sx, y: (event.clientY - offset.y) / sy }, bounds);
+  const eventPoint = (event: { clientX: number; clientY: number }): CapturePoint => constrainPoint({ x: event.clientX / sx, y: event.clientY / sy }, bounds);
   const finishText = (): void => {
     if (!textEdit) return;
     const next = history.present.filter((item) => item.id !== textEdit.id);
@@ -180,7 +178,7 @@ export function CaptureApp(): JSX.Element {
     } catch (e) { if (current()) { setError(getErrorMessage(e, '无法输出截图')); busyRef.current = false; setBusy(false); root.current?.focus(); } }
   };
   const beginScroll = async (): Promise<void> => {
-    if (!selection || busyRef.current || scrollingRef.current || history.present.length || documentSize) return;
+    if (!selection || busyRef.current || scrollingRef.current || history.present.length) return;
     focusGeneration.current++; generation.current++;
     scrollingRef.current = true; setScrolling(true); busyRef.current = true; setBusy(true); setError('');
     gesture.current = null; setDraft(null); setSelectedId(null); setTool('select');
@@ -197,36 +195,22 @@ export function CaptureApp(): JSX.Element {
       setError(getErrorMessage(e, '无法开始滚动截图')); root.current?.focus();
     }
   };
-  const finishScroll = async (action: ScrollCaptureAction): Promise<boolean> => {
+  const finishScroll = async (destination: CaptureOutput): Promise<boolean> => {
     if (!mounted.current || cancelling.current) return true;
     const started = lifecycle.current;
     const current = (): boolean => mounted.current && !cancelling.current && lifecycle.current === started;
     busyRef.current = true; setBusy(true); focusGeneration.current++;
     try {
-      if (!scrollDocument.current) {
+      if (scrollVersion.current === null) {
         const doc = await invoke<CaptureDocument>('capture_scroll_finish');
         if (!current()) return true;
-        scrollDocument.current = doc; version.current = doc.version;
+        scrollVersion.current = doc.version;
       }
-      const doc = scrollDocument.current;
       const bytes = await invoke<ArrayBuffer>('capture_image');
       if (!current()) return true;
-      if (action !== 'crop') {
-        const finished = await invoke<boolean>('capture_export', new Uint8Array(bytes), { headers: { 'x-capture-version': String(version.current), 'x-capture-output': action } });
-        if (!finished && current()) { busyRef.current = false; setBusy(false); }
-        return finished || !current();
-      }
-      const decoded = await decodePng(bytes);
-      if (!current()) return true;
-      await invoke('capture_show');
-      if (!current()) return true;
-      setDocumentSize(doc); setImage(decoded);
-      setSelection({ x: 0, y: 0, width: doc.width, height: doc.height }); setHistory(emptyHistory()); setCandidates([]);
-      setScrolling(false); setScrollProgress(null);
-      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-      if (!current()) return true;
-      if (current()) { scrollingRef.current = false; busyRef.current = false; setBusy(false); root.current?.focus(); }
-      return true;
+      const finished = await invoke<boolean>('capture_export', new Uint8Array(bytes), { headers: { 'x-capture-version': String(scrollVersion.current), 'x-capture-output': destination } });
+      if (!finished && current()) { busyRef.current = false; setBusy(false); }
+      return finished || !current();
     } catch (e) {
       if (current()) {
         setError(getErrorMessage(e, '无法生成长图')); busyRef.current = false; setBusy(false);
@@ -236,7 +220,6 @@ export function CaptureApp(): JSX.Element {
   };
   const start = (event: ReactPointerEvent<HTMLElement>): void => {
     if (event.button !== 0 || busyRef.current || !session || !image || (event.target as HTMLElement).closest('[data-capture-ui]')) return;
-    if (documentSize && !contains({ x: offset.x - 8, y: offset.y - 8, width: bounds.width * sx + 16, height: bounds.height * sy + 16 }, { x: event.clientX, y: event.clientY })) return;
     if (textEdit) { finishText(); return; }
     event.preventDefault(); root.current?.focus();
     const p = eventPoint(event); setPoint(p); setError('');
@@ -254,8 +237,7 @@ export function CaptureApp(): JSX.Element {
       const item = hitAnnotation(history.present, p, 4 / sx);
       if (item) { gesture.current = { mode: 'object', start: p, rect: selection, item, moved: false }; setSelectedId(item.id); }
       else {
-        const fullImage = documentSize && selection.x === 0 && selection.y === 0 && selection.width === bounds.width && selection.height === bounds.height;
-        gesture.current = { mode: fullImage ? 'new' : 'move', start: p, rect: selection, moved: false }; setSelectedId(null);
+        gesture.current = { mode: 'move', start: p, rect: selection, moved: false }; setSelectedId(null);
       }
     } else { gesture.current = { mode: 'new', start: p, rect: null, moved: false }; setSelectedId(null); }
   };
@@ -284,7 +266,6 @@ export function CaptureApp(): JSX.Element {
     if (root.current?.hasPointerCapture(event.pointerId)) root.current.releasePointerCapture(event.pointerId);
     gesture.current = null;
     if (current.mode === 'new' && !current.moved) {
-      if (documentSize) return;
       const p = eventPoint(event); const sequence = ++generation.current;
       if (candidate && contains(candidate.rect, p)) { setSelection(candidate.rect); setDraft(null); return; }
       void invoke<CaptureHitTest>('capture_candidates', { x: p.x, y: p.y, generation: sequence }).then(({ candidates: items }) => {
@@ -315,8 +296,6 @@ export function CaptureApp(): JSX.Element {
         event.preventDefault();
         if (event.ctrlKey || event.shiftKey) {
           if (selection) setSelection(keyRect(selection, event.key, event.ctrlKey, event.shiftKey, bounds));
-        } else if (documentSize) {
-          if (selection) setSelection(keyRect(selection, event.key, false, false, bounds));
         } else {
           const dx = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
           const dy = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
@@ -331,32 +310,31 @@ export function CaptureApp(): JSX.Element {
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedId) { event.preventDefault(); setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }
       if (event.ctrlKey && event.key.toLowerCase() === 'z') { event.preventDefault(); setHistory(event.shiftKey ? redo(history) : undo(history)); setSelectedId(null); }
       if (event.ctrlKey && event.key.toLowerCase() === 'y') { event.preventDefault(); setHistory(redo(history)); setSelectedId(null); }
-      if (event.key === 'Enter' && !documentSize) { event.preventDefault(); void output('clipboard'); }
+      if (event.key === 'Enter') { event.preventDefault(); void output('clipboard'); }
       if (event.ctrlKey) { const destination = ({ c: 'clipboard', s: 'file', t: 'pin' } as const)[event.key.toLowerCase() as 'c' | 's' | 't']; if (destination) { event.preventDefault(); void output(destination); } }
   };
-  const sceneStyle = (rect: CaptureRect): React.CSSProperties => ({ left: offset.x + rect.x * sx, top: offset.y + rect.y * sy, width: rect.width * sx, height: rect.height * sy });
+  const sceneStyle = (rect: CaptureRect): React.CSSProperties => ({ left: rect.x * sx, top: rect.y * sy, width: rect.width * sx, height: rect.height * sy });
   if (scrolling && session) return <main className="capture-scroll-surface"><ScrollCapture initial={scrollProgress} screen={session.screen} onAction={finishScroll} onCancel={cancel} error={error} /></main>;
-  return <main className={`capture-overlay${documentSize ? ' capture-crop-overlay' : ''}`} ref={root} tabIndex={-1} onPointerDown={start} onPointerMove={move} onPointerUp={end}
+  return <main className="capture-overlay" ref={root} tabIndex={-1} onPointerDown={start} onPointerMove={move} onPointerUp={end}
     onPointerCancel={() => { gesture.current = null; setDraft(null); }}
     onContextMenu={(event) => { event.preventDefault(); if (busyRef.current) return; if (tool !== 'select' || selectedId || textEdit) { finishText(); setTool('select'); setSelectedId(null); gesture.current = null; setDraft(null); } else cancel(); }}
     onDoubleClick={(event) => {
-      if (documentSize || (event.target as HTMLElement).closest('[data-capture-ui]') || !selection) return;
+      if ((event.target as HTMLElement).closest('[data-capture-ui]') || !selection) return;
       const item = hitAnnotation(history.present, eventPoint(event), 4 / sx);
       if (item?.tool === 'text') { setTextEdit({ id: item.id, point: item.points[0]!, text: item.text ?? '', color: item.color, width: item.width }); return; }
       void output('clipboard');
     }}
     onWheel={(event) => { if (tool !== 'select' && !(event.target as HTMLElement).closest('[data-capture-ui]')) setLineWidth((width) => clamp(width + (event.deltaY < 0 ? 1 : -1), 1, 32)); }}
 >
-    <canvas className="capture-scene" ref={canvas} style={documentSize ? sceneStyle(bounds) : undefined} />
+    <canvas className="capture-scene" ref={canvas} />
     {displayed ? <>
       <div className="capture-selection" style={sceneStyle(displayed)} aria-label="截图选区" />
-      <div className="capture-size" style={{ left: clamp(offset.x + displayed.x * sx, 4, viewport.width - 190), top: Math.max(4, offset.y + displayed.y * sy - 28) }}>{displayed.width} × {displayed.height}{!selection && candidate?.label ? ` · ${candidate.label}` : ''}</div>
+      <div className="capture-size" style={{ left: clamp(displayed.x * sx, 4, viewport.width - 190), top: Math.max(4, displayed.y * sy - 28) }}>{displayed.width} × {displayed.height}{!selection && candidate?.label ? ` · ${candidate.label}` : ''}</div>
     </> : <div className="capture-shade" />}
-    {selection && HANDLES.map((handle) => { const p = handlePoint(selection, handle); return <span key={handle} className={`capture-handle capture-handle--${handle}`} style={{ left: offset.x + p.x * sx, top: offset.y + p.y * sy }} />; })}
+    {selection && HANDLES.map((handle) => { const p = handlePoint(selection, handle); return <span key={handle} className={`capture-handle capture-handle--${handle}`} style={{ left: p.x * sx, top: p.y * sy }} />; })}
     {selectedItem && !textEdit && <div className="capture-object-outline" style={sceneStyle(annotationBounds(draft?.id === selectedItem.id ? draft : selectedItem))} />}
-    {image && session && !documentSize && !textEdit && !busy && (tool === 'select' || alt) && <Magnifier image={image} point={point} screen={session.screen} viewport={viewport} />}
-    {selection && documentSize && <CaptureOutputToolbar label="裁剪结果操作" busy={busy} onOutput={(destination) => void output(destination)} style={{ width: 272, left: clamp(offset.x + (selection.x + selection.width) * sx - 272, 12, Math.max(12, viewport.width - 284)), top: clamp(offset.y + (selection.y + selection.height) * sy + 12, 12, Math.max(12, viewport.height - 60)) }} />}
-    {selection && !documentSize && !textEdit && <div className="capture-toolbar" data-capture-ui style={{ left: clamp(selection.x * sx, 12, Math.max(12, viewport.width - 790)), top: selection.y * sy + selection.height * sy + 66 < viewport.height ? selection.y * sy + selection.height * sy + 12 : Math.max(12, selection.y * sy - 62) }}>
+    {image && session && !textEdit && !busy && (tool === 'select' || alt) && <Magnifier image={image} point={point} screen={session.screen} viewport={viewport} />}
+    {selection && !textEdit && <div className="capture-toolbar" data-capture-ui style={{ left: clamp(selection.x * sx, 12, Math.max(12, viewport.width - 790)), top: selection.y * sy + selection.height * sy + 66 < viewport.height ? selection.y * sy + selection.height * sy + 12 : Math.max(12, selection.y * sy - 62) }}>
       <div className="capture-tools">{TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy} onClick={() => { setTool(value); setSelectedId(null); }}><Icon size={18} /></button>)}</div>
       <input type="color" value={color} aria-label="标注颜色" disabled={busy} onChange={(event) => setColor(event.target.value)} />
       <input type="number" className="capture-line-width" min={1} max={32} value={lineWidth} aria-label="线宽" disabled={busy} onChange={(event) => setLineWidth(clamp(Number(event.target.value) || 1, 1, 32))} />
@@ -364,7 +342,7 @@ export function CaptureApp(): JSX.Element {
       <button title="重做 Ctrl+Y" aria-label="重做" disabled={busy || !history.future.length} onClick={() => { setHistory(redo(history)); setSelectedId(null); }}><Redo2 size={18} /></button>
       {selectedId && <button title="删除标注" aria-label="删除标注" disabled={busy} onClick={() => { setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }}><Trash2 size={18} /></button>}
       <span className="capture-divider" />
-      <button title={history.present.length ? '请先完成滚动截图，再添加标注' : '滚动截图'} aria-label="滚动截图" disabled={busy || !!documentSize || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginScroll()}><ScanLine size={18} /></button>
+      <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginScroll()}><ScanLine size={18} /></button>
       <button title="保存 Ctrl+S" aria-label="保存 PNG" disabled={busy} onClick={() => void output('file')}><Download size={18} /></button>
       <button title="贴到屏幕 Ctrl+T" aria-label="创建贴图" disabled={busy} onClick={() => void output('pin')}><Pin size={18} /></button>
       <button title="问 AI" aria-label="问 AI" disabled={busy} onClick={() => void output('ask')}><MessageSquare size={18} /></button>

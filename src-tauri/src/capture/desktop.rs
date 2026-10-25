@@ -522,31 +522,19 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 }
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
-        let crop_screen = {
+        {
             let state = manager(app);
             let mut slot = state.session.lock();
             let session = ensure_session(&mut slot, session_id(window)?)?;
-            if session.scroll_completed {
-                session.hidden_until = std::time::Instant::now() + Duration::from_secs(10);
-                Some(session.meta.screen)
-            } else {
-                None
+            if session.scroll.is_some() || session.scroll_completed {
+                return Err("滚动截图仅支持直接输出".into());
             }
-        };
-        if let Some(screen) = crop_screen {
-            scrolling::restore_editor(window, screen)?;
         }
         if let Ok(hwnd) = window.hwnd() {
             platform::configure_capture_surface(hwnd);
         }
         window.show().map_err(|e| e.to_string())?;
         platform::focus(window)?;
-        let state = manager(app);
-        let mut slot = state.session.lock();
-        let session = ensure_session(&mut slot, session_id(window)?)?;
-        if session.scroll.is_none() {
-            session.scroll_escape.take();
-        }
         Ok(())
     } else {
         let id = pin_id(window)?;

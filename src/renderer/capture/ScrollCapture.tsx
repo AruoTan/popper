@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Mouse } from 'lucide-react';
-import type { CaptureRect, ScrollCaptureAction, ScrollCaptureProgress, ScrollCaptureSession } from '../../shared/capture';
+import type { CaptureRect, CaptureOutput, ScrollCaptureProgress, ScrollCaptureSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { decodeScrollPreview } from './scrollPreview';
 import { CaptureOutputToolbar } from './CaptureOutputToolbar';
@@ -11,7 +11,7 @@ const MESSAGES: Record<ScrollCaptureProgress['status'], string> = {
   tracked: '滚动鼠标截取更多内容',
   unchanged: '滚动鼠标截取更多内容',
   unmatched: '滚回已截取的位置后继续',
-  limit: '已达到长图容量上限，请裁剪或输出',
+  limit: '已达到长图容量上限，请输出图片',
 };
 function position(rect: CaptureRect, screen: CaptureRect): CSSProperties {
   return { left: `${rect.x / screen.width * 100}%`, top: `${rect.y / screen.height * 100}%`, width: `${rect.width / screen.width * 100}%`, height: `${rect.height / screen.height * 100}%` };
@@ -20,7 +20,7 @@ function position(rect: CaptureRect, screen: CaptureRect): CSSProperties {
 export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' }: {
   initial: ScrollCaptureSession | null;
   screen: CaptureRect;
-  onAction: (action: ScrollCaptureAction) => Promise<boolean>;
+  onAction: (action: CaptureOutput) => Promise<boolean>;
   onCancel: () => void;
   error?: string;
 }): JSX.Element {
@@ -78,7 +78,7 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
     return () => { alive = false; clearTimeout(timer); };
   }, [initial]);
 
-  const finish = async (action: ScrollCaptureAction): Promise<void> => {
+  const finish = async (action: CaptureOutput): Promise<void> => {
     if (!initial || cancelled.current || (ending.current && !retry.current)) return;
     ending.current = true; retry.current = false; setFinishing(true);
     await inFlight.current;
@@ -86,7 +86,7 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
     let finished = false;
     try { finished = await onAction(action); } catch { /* Keep the document available for another attempt. */ }
     if (!finished && mounted.current && !cancelled.current) {
-      setFinishing(false); retry.current = true; setMessage('采集已停止，内容已保留，可裁剪或重新输出');
+      setFinishing(false); retry.current = true; setMessage('采集已停止，内容已保留，可重新输出');
     }
   };
   const cancel = (): void => {
@@ -115,6 +115,6 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
       {error && <div className="capture-scroll-error" role="alert">{error}</div>}
     </aside>
     {layout && <CaptureOutputToolbar label="滚动截图操作" style={position(layout.toolbar, screen)} busy={finishing}
-      onCrop={() => void finish('crop')} onOutput={(destination) => void finish(destination)} />}
+      onOutput={(destination) => void finish(destination)} />}
   </section>;
 }

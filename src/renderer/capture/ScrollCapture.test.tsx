@@ -8,7 +8,7 @@ import { decodeScrollPreview } from './scrollPreview';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const screen = { x: -1920, y: -1080, width: 1920, height: 1080 };
 const progress: ScrollCaptureProgress = { width: 800, height: 600, revision: 1, viewport: { x: 0, y: 0, width: 800, height: 600 }, status: 'unchanged' };
-const initial: ScrollCaptureSession = { progress, layout: { selection: { x: 100, y: 100, width: 800, height: 600 }, panel: { x: 924, y: 100, width: 324, height: 765 }, toolbar: { x: 396, y: 712, width: 504, height: 72 } } };
+const initial: ScrollCaptureSession = { progress, layout: { selection: { x: 100, y: 100, width: 800, height: 600 }, panel: { x: 924, y: 100, width: 324, height: 765 }, toolbar: { x: 492, y: 712, width: 408, height: 72 } } };
 function packet(state = progress): ArrayBuffer {
   const metadata = new TextEncoder().encode(JSON.stringify(state));
   const bytes = new Uint8Array(4 + metadata.length + 8);
@@ -37,7 +37,7 @@ describe('manual scrolling overlay', () => {
     await advance(2000); expect(invoke).toHaveBeenCalledTimes(1);
     await act(async () => { resolve(progress); });
     expect(invoke).toHaveBeenCalledWith('capture_scroll_step'); expect(invoke).toHaveBeenCalledWith('capture_scroll_preview');
-    expect(view.queryByText(/帧/)).toBeNull(); expect(view.getAllByRole('button')).toHaveLength(5); view.unmount();
+    expect(view.queryByText(/帧/)).toBeNull(); expect(view.getAllByRole('button')).toHaveLength(4); view.unmount();
   });
   it('shows the selection, bottom-right toolbar and viewport from one preview snapshot', async () => {
     const snapshot = { ...progress, height: 2400, revision: 4, viewport: { ...progress.viewport, y: 1200 } };
@@ -58,7 +58,7 @@ describe('manual scrolling overlay', () => {
     fireEvent.click(overlay(view)); fireEvent.click(view.getByRole('img')); fireEvent.keyDown(window, { key: 'Enter' }); await advance();
     expect(onAction).not.toHaveBeenCalled(); expect(overlay(view)).toHaveAttribute('aria-busy', 'false'); view.unmount();
   });
-  it.each([['裁剪长图', 'crop'], ['保存 PNG', 'file'], ['创建贴图', 'pin'], ['问 AI', 'ask'], ['复制截图', 'clipboard']])('ends capture through the %s action', async (label, action) => {
+  it.each([['保存 PNG', 'file'], ['创建贴图', 'pin'], ['问 AI', 'ask'], ['复制截图', 'clipboard']])('ends capture through the %s action', async (label, action) => {
     const onAction = vi.fn().mockResolvedValue(true);
     const view = render(<ScrollCapture initial={initial} screen={screen} onAction={onAction} onCancel={vi.fn()} />); await flush();
     fireEvent.click(view.getByLabelText(label!)); fireEvent.click(view.getByLabelText(label!)); await flush();
@@ -114,8 +114,8 @@ describe('manual scrolling overlay', () => {
     expect(view.getByRole('status')).toHaveTextContent('window covered'); expect(view.getByRole('img')).toBeInTheDocument();
     await act(async () => { fireEvent.click(view.getByLabelText('保存 PNG')); }); expect(view.getByRole('status')).toHaveTextContent('内容已保留');
     const count = vi.mocked(invoke).mock.calls.length; await advance(2000); expect(invoke).toHaveBeenCalledTimes(count);
-    await act(async () => { fireEvent.click(view.getByLabelText('裁剪长图')); });
-    expect(onAction.mock.calls).toEqual([['file'], ['crop']]); view.unmount();
+    await act(async () => { fireEvent.click(view.getByLabelText('复制截图')); });
+    expect(onAction.mock.calls).toEqual([['file'], ['clipboard']]); view.unmount();
   });
 });
 

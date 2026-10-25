@@ -16,7 +16,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe('scroll capture integration', () => {
   const rect = { x: 20, y: 20, width: 800, height: 600 };
   const progress: ScrollCaptureProgress = { width: 800, height: 600, revision: 1, viewport: { x: 0, y: 0, width: 800, height: 600 }, status: 'unchanged' };
-  const scrolling: ScrollCaptureSession = { progress, layout: { selection: rect, panel: { x: 900, y: 20, width: 324, height: 765 }, toolbar: { x: 316, y: 632, width: 504, height: 72 } } };
+  const scrolling: ScrollCaptureSession = { progress, layout: { selection: rect, panel: { x: 900, y: 20, width: 324, height: 765 }, toolbar: { x: 412, y: 632, width: 408, height: 72 } } };
   const calls = (command: string): number => vi.mocked(invoke).mock.calls.filter(([name]) => name === command).length;
   beforeEach(() => {
     vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:preview'), revokeObjectURL: vi.fn() });
@@ -50,18 +50,15 @@ describe('scroll capture integration', () => {
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(view.getByRole('toolbar', { name: '滚动截图操作' })).toBeInTheDocument()); return view;
   }
-  async function cropping(): Promise<ReturnType<typeof render>> {
-    const view = await started(); fireEvent.click(view.getByLabelText('裁剪长图'));
-    await waitFor(() => expect(view.getByRole('toolbar', { name: '裁剪结果操作' })).toBeInTheDocument());
-    await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled()); return view;
-  }
   it('allows source-window focus and ignores outside clicks and Enter while capture continues', async () => {
     const view = await started(); expect(invoke).toHaveBeenCalledWith('capture_scroll_begin', { rect, version: 1 });
+    expect(Array.from(view.getByRole('toolbar').querySelectorAll('button'), (button) => button.textContent)).toEqual(['保存', '贴图', '问 AI', '复制']);
+    expect(view.queryByLabelText('截图选区')).toBeNull();
     fireEvent.blur(window); await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
     fireEvent.click(view.getByLabelText('滚动截图预览')); fireEvent.keyDown(window, { key: 'Enter' });
     expect(invoke).not.toHaveBeenCalledWith('capture_cancel'); expect(invoke).not.toHaveBeenCalledWith('capture_scroll_finish'); view.unmount();
   });
-  it.each([['保存 PNG', 'file'], ['创建贴图', 'pin'], ['问 AI', 'ask'], ['复制截图', 'clipboard']])('finishes and executes %s without entering the crop editor or decoding the long image', async (label, output) => {
+  it.each([['保存 PNG', 'file'], ['创建贴图', 'pin'], ['问 AI', 'ask'], ['复制截图', 'clipboard']])('finishes and executes %s without entering another stage or decoding the long image', async (label, output) => {
     const implementation = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, ...args) => command === 'capture_export' ? true : implementation(command, ...args));
     const view = await started(); fireEvent.click(view.getByLabelText(label!));
@@ -69,40 +66,6 @@ describe('scroll capture integration', () => {
     expect(calls('capture_scroll_finish')).toBe(1); expect(calls('capture_show')).toBe(1); expect(calls('capture_crop')).toBe(0);
     expect(decodePng).toHaveBeenCalledTimes(1); expect(view.container.querySelector('.capture-scene')).toBeNull();
     expect(view.getByLabelText('复制截图')).toBeDisabled(); view.unmount();
-  });
-  it('opens only the crop editor with four output actions and centers the fitted long image', async () => {
-    const view = await cropping(); const scene = view.container.querySelector<HTMLCanvasElement>('.capture-scene')!;
-    const width = parseFloat(scene.style.width), height = parseFloat(scene.style.height);
-    expect(width / height).toBeCloseTo(1 / 3);
-    expect(parseFloat(scene.style.left) + width / 2).toBeCloseTo(window.innerWidth / 2);
-    expect(parseFloat(scene.style.top) + height / 2).toBeCloseTo(window.innerHeight / 2);
-    const toolbar = view.getByRole('toolbar', { name: '裁剪结果操作' }); expect(toolbar.querySelectorAll('button')).toHaveLength(4);
-    for (const label of ['滚动截图', '矩形', '标注颜色', '撤销', '裁剪长图']) expect(view.queryByLabelText(label)).toBeNull();
-    expect(calls('capture_export')).toBe(0); expect(calls('capture_show')).toBe(2);
-    fireEvent.click(view.getByLabelText('复制截图'));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_crop', { rect: { x: 0, y: 0, width: 800, height: 2400 }, version: 8 }));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_export', expect.any(Uint8Array), expect.objectContaining({ headers: { 'x-capture-version': '8', 'x-capture-output': 'clipboard' } }))); view.unmount();
-  });
-  it('maps centered pointer drags and handles back to original image pixels after viewport resizing', async () => {
-    const view = await cropping(); vi.stubGlobal('innerWidth', 1280); vi.stubGlobal('innerHeight', 720); fireEvent.resize(window);
-    const main = view.container.querySelector('main')!;
-    Object.assign(main, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
-    const scene = view.container.querySelector<HTMLCanvasElement>('.capture-scene')!;
-    const left = parseFloat(scene.style.left), top = parseFloat(scene.style.top), scale = parseFloat(scene.style.width) / 800;
-    const point = (x: number, y: number) => ({ clientX: left + x * scale, clientY: top + y * scale, button: 0 });
-    fireEvent.pointerDown(main, point(100, 100)); fireEvent.pointerMove(main, point(700, 2200)); fireEvent.pointerUp(main, point(700, 2200));
-    expect(view.container.querySelector('.capture-size')).toHaveTextContent('600 × 2100');
-    fireEvent.pointerDown(main, point(400, 2200)); fireEvent.pointerMove(main, point(400, 2000)); fireEvent.pointerUp(main, point(400, 2000));
-    expect(view.container.querySelector('.capture-size')).toHaveTextContent('600 × 1900');
-    fireEvent.click(view.getByLabelText('复制截图'));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_crop', { rect: { x: 100, y: 100, width: 600, height: 1900 }, version: 10 })); view.unmount();
-  });
-  it('keeps pixel-based crop resizing and ignores Enter and double-click as output triggers', async () => {
-    const view = await cropping(); fireEvent.keyDown(window, { key: 'ArrowDown', shiftKey: true }); fireEvent.keyDown(window, { key: 'ArrowRight', shiftKey: true });
-    expect(view.container.querySelector('.capture-size')).toHaveTextContent('799 × 2399');
-    fireEvent.keyDown(window, { key: 'Enter' }); fireEvent.doubleClick(view.container.querySelector('main')!);
-    expect(calls('capture_export')).toBe(0); fireEvent.click(view.getByLabelText('复制截图'));
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_crop', { rect: { x: 0, y: 0, width: 799, height: 2399 }, version: 8 })); view.unmount();
   });
   it('retains the stopped toolbar after save cancellation and changes output without recomposing', async () => {
     const view = await started(); fireEvent.click(view.getByLabelText('保存 PNG'));
@@ -113,14 +76,19 @@ describe('scroll capture integration', () => {
       { headers: { 'x-capture-version': '7', 'x-capture-output': 'file' } }, { headers: { 'x-capture-version': '7', 'x-capture-output': 'clipboard' } },
     ]); view.unmount();
   });
-  it('retains a failed direct output and can crop the same committed long image afterwards', async () => {
+  it('retries a failed direct output with the same committed long image', async () => {
+    let exports = 0;
     const implementation = vi.mocked(invoke).getMockImplementation()!;
-    vi.mocked(invoke).mockImplementation(async (command, ...args) => { if (command === 'capture_export') throw new Error('clipboard busy'); return implementation(command, ...args); });
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_export') { if (++exports === 1) throw new Error('clipboard busy'); return true; }
+      return implementation(command, ...args);
+    });
     const view = await started(); fireEvent.click(view.getByLabelText('复制截图'));
     await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('clipboard busy'));
-    await waitFor(() => expect(view.getByLabelText('裁剪长图')).toBeEnabled()); fireEvent.click(view.getByLabelText('裁剪长图'));
-    await waitFor(() => expect(view.getByRole('toolbar', { name: '裁剪结果操作' })).toBeInTheDocument());
-    expect(calls('capture_scroll_finish')).toBe(1); await waitFor(() => expect(calls('capture_show')).toBe(2)); view.unmount();
+    await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled()); fireEvent.click(view.getByLabelText('复制截图'));
+    await waitFor(() => expect(calls('capture_export')).toBe(2));
+    expect(calls('capture_scroll_finish')).toBe(1); expect(calls('capture_show')).toBe(1);
+    expect(calls('capture_crop')).toBe(0); expect(decodePng).toHaveBeenCalledTimes(1); view.unmount();
   });
   it('returns to ordinary screenshot editing when scrolling setup fails', async () => {
     const implementation = vi.mocked(invoke).getMockImplementation()!;
@@ -145,30 +113,13 @@ describe('scroll capture integration', () => {
     fireEvent.keyDown(window, { key: 'Escape' }); await act(async () => { resolve({ width: 800, height: 2400, version: 7 }); });
     expect(calls('capture_cancel')).toBe(1); expect(calls('capture_export')).toBe(0); expect(calls('capture_image')).toBe(1); view.unmount();
   });
-  it('keeps Escape cancellation in the crop editor', async () => {
-    const view = await cropping(); fireEvent.keyDown(window, { key: 'Escape' }); expect(invoke).toHaveBeenCalledWith('capture_cancel'); view.unmount();
-  });
   it('retries image delivery without composing or committing the long document twice', async () => {
     let imageRequests = 0;
     const implementation = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, ...args) => { if (command === 'capture_image' && ++imageRequests === 2) throw new Error('transient image transport'); return implementation(command, ...args); });
-    const view = await started(); fireEvent.click(view.getByLabelText('裁剪长图'));
-    await waitFor(() => expect(view.getByRole('status')).toHaveTextContent('内容已保留')); fireEvent.click(view.getByLabelText('裁剪长图'));
-    await waitFor(() => expect(view.getByRole('toolbar', { name: '裁剪结果操作' })).toBeInTheDocument()); expect(calls('capture_scroll_finish')).toBe(1); view.unmount();
-  });
-  it('keeps the stopped toolbar retryable if restoring the crop window fails', async () => {
-    let shows = 0;
-    const implementation = vi.mocked(invoke).getMockImplementation()!;
-    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
-      if (command === 'capture_show' && ++shows === 2) throw new Error('focus unavailable');
-      return implementation(command, ...args);
-    });
-    const view = await started(); fireEvent.click(view.getByLabelText('裁剪长图'));
-    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('focus unavailable'));
-    await waitFor(() => expect(view.getByLabelText('裁剪长图')).toBeEnabled());
-    expect(view.queryByRole('toolbar', { name: '裁剪结果操作' })).toBeNull(); fireEvent.click(view.getByLabelText('裁剪长图'));
-    await waitFor(() => expect(view.getByRole('toolbar', { name: '裁剪结果操作' })).toBeInTheDocument());
-    expect(calls('capture_scroll_finish')).toBe(1); view.unmount();
+    const view = await started(); fireEvent.click(view.getByLabelText('复制截图'));
+    await waitFor(() => expect(view.getByRole('status')).toHaveTextContent('内容已保留')); fireEvent.click(view.getByLabelText('复制截图'));
+    await waitFor(() => expect(calls('capture_export')).toBe(1)); expect(calls('capture_scroll_finish')).toBe(1); expect(calls('capture_show')).toBe(1); view.unmount();
   });
 });
 describe('capture initialization cleanup', () => {

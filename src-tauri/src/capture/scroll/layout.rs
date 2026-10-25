@@ -5,7 +5,7 @@ pub fn layout(width: u32, height: u32, scale: f64, selection: CaptureRect) -> Sc
     let margin = (12.0 * scale).round() as u32;
     let gap = (16.0 * scale).round() as i32;
     let toolbar_width =
-        ((336.0 * scale).round() as u32).min(width.saturating_sub(margin * 2).max(1));
+        ((272.0 * scale).round() as u32).min(width.saturating_sub(margin * 2).max(1));
     let toolbar_height =
         ((48.0 * scale).round() as u32).min(height.saturating_sub(margin * 2).max(1));
     let toolbar_bottom = height.saturating_sub(toolbar_height + margin) as i32;

@@ -16,7 +16,7 @@ Press `PrtSc` to capture the display under the pointer, select a region or a det
 
 See [Screen capture](./SCREEN_CAPTURE.md) for behavior, implementation boundaries, and desktop acceptance checks.
 
-Choose **Scrolling capture** after selecting a region and scroll manually up or down. Revisit captured areas or extend the image above and below the starting viewport. A live selection border, long-image preview, and brief hints guide capture. Use the toolbar at the selection’s bottom-right to save, pin, ask AI, or copy directly. Choose Crop to open a centered crop view with four output actions. Outside clicks and Enter do not finish capture; Esc cancels throughout. Uncertain matches preserve the last valid image; unseen content is never fabricated. The scrolling overlay requires Windows 10 version 2004 or later.
+Choose **Scrolling capture** after selecting a region and scroll manually up or down. Revisit captured areas or extend the image above and below the starting viewport. A live selection border, long-image preview, and brief hints guide capture. The toolbar at the selection’s bottom-right contains only Save, Pin, Ask AI, and Copy. Each action outputs the long image directly without a further editing stage. Outside clicks and Enter do not finish capture; Esc cancels throughout. Uncertain matches preserve the last valid image; unseen content is never fabricated. The scrolling overlay requires Windows 10 version 2004 or later.
 
 ## Screenshots
 

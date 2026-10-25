@@ -19,7 +19,6 @@ button:focus-visible { outline: 2px solid #7fa9ff; outline-offset: 1px; }
 .capture-toolbar button.capture-primary { background: #3e6ed3; }
 .capture-output-toolbar { flex-wrap: nowrap; justify-content: space-between; height: 48px; }
 .capture-output-toolbar button { width: auto; min-width: 0; flex: 1; gap: 4px; padding: 0 6px; white-space: nowrap; font-size: 12px; }
-.capture-crop-overlay { background: #161a22; }
 .capture-toolbar input[type="color"] { width: 28px; height: 28px; padding: 1px; border: 0; background: transparent; }
 .capture-line-width { width: 42px; padding: 4px; border: 1px solid #ffffff30; border-radius: 4px; background: #111827; }
 .capture-divider { height: 22px; width: 1px; background: #ffffff24; margin: 0 2px; }
