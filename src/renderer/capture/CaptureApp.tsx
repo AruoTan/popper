@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ArrowUpRight, Check, Circle, Copy, Download, MessageSquare, MousePointer2, Pencil, Pin, Redo2, Square, Type, Undo2, X, Grid3X3, Trash2 } from 'lucide-react';
 import type { CaptureAnnotation, CaptureCandidate, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool } from '../../shared/capture';
@@ -12,8 +12,14 @@ type Gesture = { mode: 'new' | 'move' | 'resize' | 'draw' | 'object'; start: Cap
 type TextEdit = { id: string; point: CapturePoint; text: string; color: string; width: number };
 const TOOLS = [ ['select', MousePointer2, '选择与调整'], ['rectangle', Square, '矩形'], ['ellipse', Circle, '椭圆'], ['arrow', ArrowUpRight, '箭头'], ['pen', Pencil, '画笔'], ['text', Type, '文字'], ['mosaic', Grid3X3, '马赛克'] ] as const;
 
-function Magnifier({ image, point, screen }: { image: HTMLImageElement; point: CapturePoint; screen: CaptureRect }): JSX.Element {
+function Magnifier({ image, point, screen, viewport }: { image: HTMLImageElement; point: CapturePoint; screen: CaptureRect; viewport: { width: number; height: number } }): JSX.Element {
+  const panel = useRef<HTMLElement>(null);
+  const [size, setSize] = useState({ width: 159, height: 205 });
   const canvas = useRef<HTMLCanvasElement>(null); const [color, setColor] = useState('');
+  useLayoutEffect(() => {
+    const rect = panel.current?.getBoundingClientRect();
+    if (rect?.width && rect.height) setSize({ width: rect.width, height: rect.height });
+  }, [viewport.width, viewport.height]);
   useEffect(() => {
     const ctx = canvas.current?.getContext('2d', { willReadFrequently: true }); if (!ctx) return;
     const x = clamp(point.x, 0, screen.width - 1), y = clamp(point.y, 0, screen.height - 1);
@@ -22,12 +28,16 @@ function Magnifier({ image, point, screen }: { image: HTMLImageElement; point: C
     ctx.drawImage(image, left, top, right - left, bottom - top, (left - x + 5) * 13, (top - y + 5) * 13, (right - left) * 13, (bottom - top) * 13);
     const pixel = ctx.getImageData(71, 71, 1, 1).data;
     setColor('#' + Array.from(pixel.slice(0, 3)).map((n) => n.toString(16).padStart(2, '0')).join('').toUpperCase());
-    ctx.strokeStyle = 'rgba(0,0,0,.2)'; ctx.lineWidth = 1;
-    for (let i = 0; i <= 11; i++) { ctx.beginPath(); ctx.moveTo(i * 13, 0); ctx.lineTo(i * 13, 143); ctx.moveTo(0, i * 13); ctx.lineTo(143, i * 13); ctx.stroke(); }
-    ctx.strokeStyle = '#fff'; ctx.strokeRect(65.5, 65.5, 12, 12);
+    ctx.beginPath();
+    ctx.moveTo(0, 71.5); ctx.lineTo(65, 71.5); ctx.moveTo(78, 71.5); ctx.lineTo(143, 71.5);
+    ctx.moveTo(71.5, 0); ctx.lineTo(71.5, 65); ctx.moveTo(71.5, 78); ctx.lineTo(71.5, 143);
+    ctx.lineWidth = 3; ctx.strokeStyle = '#0009'; ctx.stroke();
+    ctx.lineWidth = 1; ctx.strokeStyle = '#fff'; ctx.stroke(); ctx.strokeRect(65.5, 65.5, 12, 12);
   }, [image, point, screen]);
-  const px = point.x / screen.width * window.innerWidth, py = point.y / screen.height * window.innerHeight;
-  return <aside className="capture-magnifier" style={{ left: clamp(px + 24, 8, window.innerWidth - 168), top: clamp(py + 28, 8, window.innerHeight - 205) }}>
+  const px = point.x / screen.width * viewport.width, py = point.y / screen.height * viewport.height;
+  const left = px < viewport.width / 2 ? px + 24 : px - 24 - size.width;
+  const top = py < viewport.height / 2 ? py + 28 : py - 28 - size.height;
+  return <aside ref={panel} className="capture-magnifier" style={{ left: clamp(left, 8, Math.max(8, viewport.width - size.width - 8)), top: clamp(top, 8, Math.max(8, viewport.height - size.height - 8)) }}>
     <canvas ref={canvas} width={143} height={143} /><span>{screen.x + point.x}, {screen.y + point.y}</span><span>{color}</span>
   </aside>;
 }
@@ -229,7 +239,7 @@ export function CaptureApp(): JSX.Element {
     </> : <div className="capture-shade" />}
     {selection && HANDLES.map((handle) => { const p = handlePoint(selection, handle); return <span key={handle} className={`capture-handle capture-handle--${handle}`} style={{ left: p.x * sx, top: p.y * sy }} />; })}
     {selectedItem && !textEdit && <div className="capture-object-outline" style={sceneStyle(annotationBounds(draft?.id === selectedItem.id ? draft : selectedItem))} />}
-    {image && session && !textEdit && !busy && (tool === 'select' || alt) && <Magnifier image={image} point={point} screen={session.screen} />}
+    {image && session && !textEdit && !busy && (tool === 'select' || alt) && <Magnifier image={image} point={point} screen={session.screen} viewport={viewport} />}
     {selection && !textEdit && <div className="capture-toolbar" data-capture-ui style={{ left: clamp(selection.x * sx, 12, Math.max(12, viewport.width - 790)), top: selection.y * sy + selection.height * sy + 66 < viewport.height ? selection.y * sy + selection.height * sy + 12 : Math.max(12, selection.y * sy - 62) }}>
       <div className="capture-tools">{TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy} onClick={() => { setTool(value); setSelectedId(null); }}><Icon size={18} /></button>)}</div>
       <input type="color" value={color} aria-label="标注颜色" disabled={busy} onChange={(event) => setColor(event.target.value)} />

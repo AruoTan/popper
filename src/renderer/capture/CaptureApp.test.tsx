@@ -32,6 +32,39 @@ describe('capture initialization cleanup', () => {
 });
 
 describe('capture hover integration', () => {
+  it.each([[0.25, 0.25], [0.25, 0.75], [0.75, 0.25], [0.75, 0.75]])('positions the magnifier by quadrant from startup at (%s, %s) through movement and resizing', async (initialX, initialY) => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    vi.stubGlobal('innerWidth', 1000); vi.stubGlobal('innerHeight', 700);
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 159, height: 197 } as DOMRect);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    vi.mocked(decodePng).mockResolvedValueOnce(new Image());
+    vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_session' ? { ...meta, pointer: { x: initialX * meta.screen.width, y: initialY * meta.screen.height } } : command === 'capture_image' ? new ArrayBuffer(0) : undefined);
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
+    const main = view.container.querySelector('main')!;
+    const panel = view.container.querySelector<HTMLElement>('.capture-magnifier')!;
+    const checkPosition = (x: number, y: number): void => {
+      const left = Number.parseFloat(panel.style.left), top = Number.parseFloat(panel.style.top);
+      expect(left).toBeGreaterThanOrEqual(8);
+      expect(top).toBeGreaterThanOrEqual(8);
+      expect(left + 159).toBeLessThanOrEqual(window.innerWidth - 8);
+      expect(top + 197).toBeLessThanOrEqual(window.innerHeight - 8);
+      if (x >= window.innerWidth / 2) expect(left + 159).toBeLessThan(x);
+      else expect(left).toBeGreaterThan(x);
+      if (y >= window.innerHeight / 2) expect(top + 197).toBeLessThan(y);
+      else expect(top).toBeGreaterThan(y);
+    };
+    checkPosition(initialX * window.innerWidth, initialY * window.innerHeight);
+    for (const [x, y] of [[10, 10], [990, 10], [10, 690], [990, 690], [490, 340], [490, 360], [510, 340], [510, 360], [500, 350]] as const) {
+      fireEvent.pointerMove(main, { clientX: x, clientY: y });
+      checkPosition(x, y);
+    }
+    vi.stubGlobal('innerWidth', 800); vi.stubGlobal('innerHeight', 600);
+    fireEvent(window, new Event('resize'));
+    fireEvent.pointerMove(main, { clientX: 790, clientY: 590 });
+    checkPosition(790, 590);
+    view.unmount();
+  });
   it('keeps a Tab-selected parent when late point recognition adds smaller controls', async () => {
     vi.stubGlobal('PointerEvent', MouseEvent);
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
