@@ -65,6 +65,15 @@ pub fn capture_show(app: AppHandle, window: WebviewWindow) -> Result<(), String>
     desktop_call!(desktop::show(&app, &window))
 }
 #[tauri::command]
+pub fn capture_move_pointer(
+    app: AppHandle,
+    window: WebviewWindow,
+    dx: i32,
+    dy: i32,
+) -> Result<CapturePoint, String> {
+    desktop_call!(desktop::move_pointer(&app, &window, dx, dy))
+}
+#[tauri::command]
 pub async fn capture_candidates(
     app: AppHandle,
     window: WebviewWindow,

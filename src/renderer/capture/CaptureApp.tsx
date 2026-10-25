@@ -20,7 +20,7 @@ function Magnifier({ image, point, screen, viewport }: { image: HTMLImageElement
     const rect = panel.current?.getBoundingClientRect();
     if (rect?.width && rect.height) setSize({ width: rect.width, height: rect.height });
   }, [viewport.width, viewport.height]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const ctx = canvas.current?.getContext('2d', { willReadFrequently: true }); if (!ctx) return;
     const x = clamp(point.x, 0, screen.width - 1), y = clamp(point.y, 0, screen.height - 1);
     ctx.fillStyle = '#15171b'; ctx.fillRect(0, 0, 143, 143); ctx.imageSmoothingEnabled = false;
@@ -52,6 +52,8 @@ export function CaptureApp(): JSX.Element {
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const canvas = useRef<HTMLCanvasElement>(null), root = useRef<HTMLElement>(null), gesture = useRef<Gesture | null>(null), busyRef = useRef(false), version = useRef(0), generation = useRef(0);
   const hover = useRef<ReturnType<typeof createCaptureHover> | null>(null), mounted = useRef(true), selectedRef = useRef(selection);
+  const pointerMoves = useRef(Promise.resolve());
+  const pointerMoved = useRef<(point: CapturePoint) => void>(() => {});
   const navigation = useRef<ReturnType<typeof createCaptureNavigation> | null>(null);
   selectedRef.current = selection;
   const bounds: CaptureRect = { x: 0, y: 0, width: session?.screen.width ?? 1, height: session?.screen.height ?? 1 };
@@ -169,9 +171,9 @@ export function CaptureApp(): JSX.Element {
       else { gesture.current = { mode: 'move', start: p, rect: selection, moved: false }; setSelectedId(null); }
     } else { gesture.current = { mode: 'new', start: p, rect: null, moved: false }; setSelectedId(null); }
   };
-  const move = (event: ReactPointerEvent<HTMLElement>): void => {
+  const updatePoint = (p: CapturePoint, shiftKey: boolean): void => {
     if (!session || busyRef.current) return;
-    const p = eventPoint(event); setPoint(p);
+    setPoint(p);
     const current = gesture.current;
     if (!current) { if (!selection) hover.current?.update(p); return; }
     const dx = p.x - current.start.x, dy = p.y - current.start.y;
@@ -180,13 +182,15 @@ export function CaptureApp(): JSX.Element {
     if (current.mode === 'move' && current.rect) setSelection(moveRect(current.rect, dx, dy, bounds));
     if (current.mode === 'resize' && current.rect && current.handle) setSelection(resizeRect(current.rect, current.handle, p, bounds));
     if (current.mode === 'draw' && current.item) {
-      const end = constrainPoint(constrainedEnd(current.start, p, current.item.tool, event.shiftKey), bounds);
+      const end = constrainPoint(constrainedEnd(current.start, p, current.item.tool, shiftKey), bounds);
       if (current.item.tool === 'pen') current.item = { ...current.item, points: [...current.item.points, p] };
       else current.item = { ...current.item, points: [current.start, end] };
       setDraft(current.item);
     }
     if (current.mode === 'object' && current.item && current.moved) setDraft({ ...current.item, points: current.item.points.map((point) => ({ x: point.x + dx, y: point.y + dy })) });
   };
+  const move = (event: ReactPointerEvent<HTMLElement>): void => updatePoint(eventPoint(event), event.shiftKey);
+  pointerMoved.current = (p): void => { if (!textEdit) updatePoint(p, false); };
   const end = (event: ReactPointerEvent<HTMLElement>): void => {
     const current = gesture.current; if (!current) return;
     if (root.current?.hasPointerCapture(event.pointerId)) root.current.releasePointerCapture(event.pointerId);
@@ -213,7 +217,22 @@ export function CaptureApp(): JSX.Element {
         if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
         return;
       }
-      if (event.key.startsWith('Arrow') && selection && !textEdit) { event.preventDefault(); setSelection(keyRect(selection, event.key, event.ctrlKey, event.shiftKey, bounds)); }
+      if (event.key.startsWith('Arrow') && session && image && !textEdit) {
+        if (event.altKey || event.metaKey) return;
+        event.preventDefault();
+        if (event.ctrlKey || event.shiftKey) {
+          if (selection) setSelection(keyRect(selection, event.key, event.ctrlKey, event.shiftKey, bounds));
+        } else {
+          const dx = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
+          const dy = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+          pointerMoves.current = pointerMoves.current.then(async () => {
+            if (!mounted.current || busyRef.current) return;
+            const next = await invoke<CapturePoint>('capture_move_pointer', { dx, dy });
+            if (mounted.current && !busyRef.current) pointerMoved.current(next);
+          }).catch((e: unknown) => { if (mounted.current && !busyRef.current) setError(getErrorMessage(e, '无法移动鼠标')); });
+        }
+        return;
+      }
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedId) { event.preventDefault(); setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }
       if (event.ctrlKey && event.key.toLowerCase() === 'z') { event.preventDefault(); setHistory(event.shiftKey ? redo(history) : undo(history)); setSelectedId(null); }
       if (event.ctrlKey && event.key.toLowerCase() === 'y') { event.preventDefault(); setHistory(redo(history)); setSelectedId(null); }

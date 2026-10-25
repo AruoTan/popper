@@ -45,6 +45,26 @@ pub struct CapturePoint {
     pub x: i32,
     pub y: i32,
 }
+impl CapturePoint {
+    pub fn step_within(self, bounds: CaptureRect, dx: i32, dy: i32) -> Result<Self, String> {
+        if u64::from(dx.unsigned_abs()) + u64::from(dy.unsigned_abs()) != 1 {
+            return Err("鼠标每次只能沿一个方向移动一个像素".into());
+        }
+        let right = i64::from(bounds.x) + i64::from(bounds.width) - 1;
+        let bottom = i64::from(bounds.y) + i64::from(bounds.height) - 1;
+        if bounds.width == 0
+            || bounds.height == 0
+            || right > i64::from(i32::MAX)
+            || bottom > i64::from(i32::MAX)
+        {
+            return Err("屏幕边界无效".into());
+        }
+        Ok(Self {
+            x: (i64::from(self.x) + i64::from(dx)).clamp(i64::from(bounds.x), right) as i32,
+            y: (i64::from(self.y) + i64::from(dy)).clamp(i64::from(bounds.y), bottom) as i32,
+        })
+    }
+}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureSession {
@@ -104,6 +124,55 @@ pub struct PendingAttachment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pointer_steps_use_physical_pixels_on_negative_origin_screens() {
+        let bounds = CaptureRect {
+            x: -1920,
+            y: -1080,
+            width: 1920,
+            height: 1080,
+        };
+        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let point = CapturePoint { x: -960, y: -540 }
+                .step_within(bounds, dx, dy)
+                .unwrap();
+            assert_eq!((point.x, point.y), (-960 + dx, -540 + dy));
+        }
+        for (x, y, dx, dy) in [
+            (-1920, -1080, -1, 0),
+            (-1920, -1080, 0, -1),
+            (-1, -1, 1, 0),
+            (-1, -1, 0, 1),
+        ] {
+            let point = CapturePoint { x, y }.step_within(bounds, dx, dy).unwrap();
+            assert_eq!((point.x, point.y), (x, y));
+        }
+        let point = CapturePoint {
+            x: i32::MAX,
+            y: i32::MIN,
+        }
+        .step_within(bounds, 1, 0)
+        .unwrap();
+        assert_eq!((point.x, point.y), (-1, -1080));
+        for (dx, dy) in [(0, 0), (1, 1), (2, 0), (i32::MIN, 0)] {
+            assert!(CapturePoint { x: -960, y: -540 }
+                .step_within(bounds, dx, dy)
+                .is_err());
+        }
+        for bounds in [
+            CaptureRect::default(),
+            CaptureRect {
+                x: i32::MAX,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+        ] {
+            assert!(CapturePoint { x: 0, y: 0 }
+                .step_within(bounds, 1, 0)
+                .is_err());
+        }
+    }
     #[test]
     fn image_rectangles_reject_empty_negative_and_overflow() {
         assert!(CaptureRect {

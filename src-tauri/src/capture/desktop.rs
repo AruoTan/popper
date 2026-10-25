@@ -460,6 +460,22 @@ pub fn validate_session(app: &AppHandle, window: &WebviewWindow) -> Result<(), S
     let mut slot = state.session.lock();
     ensure_session(&mut slot, id).map(|_| ())
 }
+pub fn move_pointer(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    dx: i32,
+    dy: i32,
+) -> Result<CapturePoint, String> {
+    let id = session_id(window)?;
+    let state = manager(app);
+    let mut slot = state.session.lock();
+    let session = ensure_session(&mut slot, id)?;
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    if session.image.is_none() || platform::foreground() != hwnd.0 as usize {
+        return Err("截图窗口未激活".into());
+    }
+    platform::move_pointer(session.meta.screen, dx, dy)
+}
 pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String> {
     if let Ok(id) = session_id(window) {
         let state = manager(app);

@@ -1,4 +1,4 @@
-use super::{CaptureCandidate, CaptureRect};
+use super::{CaptureCandidate, CapturePoint, CaptureRect};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
 use tauri::AppHandle;
@@ -20,7 +20,7 @@ use windows::{
             WindowsAndMessaging::{
                 EnumChildWindows, EnumWindows, GetForegroundWindow, GetPhysicalCursorPos,
                 GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-                IsWindowVisible, SetForegroundWindow,
+                IsWindowVisible, SetForegroundWindow, SetPhysicalCursorPos,
             },
         },
     },
@@ -37,6 +37,16 @@ pub fn cursor() -> Result<(i32, i32), String> {
     let mut point = POINT::default();
     unsafe { GetPhysicalCursorPos(&mut point) }.map_err(|e| e.to_string())?;
     Ok((point.x, point.y))
+}
+pub fn move_pointer(screen: CaptureRect, dx: i32, dy: i32) -> Result<CapturePoint, String> {
+    let (x, y) = cursor()?;
+    let point = CapturePoint { x, y }.step_within(screen, dx, dy)?;
+    unsafe { SetPhysicalCursorPos(point.x, point.y) }.map_err(|e| e.to_string())?;
+    let (x, y) = cursor()?;
+    Ok(CapturePoint {
+        x: (i64::from(x) - i64::from(screen.x)).clamp(0, i64::from(screen.width) - 1) as i32,
+        y: (i64::from(y) - i64::from(screen.y)).clamp(0, i64::from(screen.height) - 1) as i32,
+    })
 }
 pub fn foreground() -> usize {
     unsafe { GetForegroundWindow().0 as usize }

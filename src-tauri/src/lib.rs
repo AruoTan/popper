@@ -186,6 +186,7 @@ pub fn run() {
             capture::capture_session,
             capture::capture_image,
             capture::capture_show,
+            capture::capture_move_pointer,
             capture::capture_candidates,
             capture::capture_select,
             capture::capture_preferences,
