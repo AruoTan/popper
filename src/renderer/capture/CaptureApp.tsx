@@ -54,7 +54,7 @@ export function CaptureApp(): JSX.Element {
   const hover = useRef<ReturnType<typeof createCaptureHover> | null>(null), mounted = useRef(true), selectedRef = useRef(selection);
   const pointerMoves = useRef(Promise.resolve());
   const pointerMoved = useRef<(point: CapturePoint) => void>(() => {});
-  const cancelling = useRef(false), lifecycle = useRef(0);
+  const cancelling = useRef(false), lifecycle = useRef(0), focusGeneration = useRef(0);
   const navigation = useRef<ReturnType<typeof createCaptureNavigation> | null>(null);
   selectedRef.current = selection;
   const bounds: CaptureRect = { x: 0, y: 0, width: session?.screen.width ?? 1, height: session?.screen.height ?? 1 };
@@ -72,14 +72,17 @@ export function CaptureApp(): JSX.Element {
     void invoke('capture_cancel').catch((e: unknown) => { if (mounted.current) { cancelling.current = false; busyRef.current = false; setBusy(false); setError(getErrorMessage(e, '无法结束截图')); } });
   };
   useEffect(() => {
-    mounted.current = true; let alive = true;
+    mounted.current = true; let alive = true, ready = false;
+    let blurTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearBlur = (): void => { focusGeneration.current++; clearTimeout(blurTimer); blurTimer = undefined; };
+    const focus = (): void => { clearBlur(); if (ready) root.current?.focus(); };
     void (async () => {
       try {
         const [meta, bytes] = await Promise.all([invoke<CaptureSession>('capture_session'), invoke<ArrayBuffer>('capture_image')]);
         const decoded = await decodePng(bytes); if (!alive || cancelling.current) return;
         setSession(meta); setImage(decoded); setColor(meta.color); setLineWidth(meta.lineWidth); if (meta.pointer) setPoint(meta.pointer);
         await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-        if (alive && !cancelling.current) { await invoke('capture_show'); if (alive && !cancelling.current) root.current?.focus(); }
+        if (alive && !cancelling.current) { await invoke('capture_show'); if (alive && !cancelling.current) { ready = true; focus(); } }
       } catch (e) { if (alive && !cancelling.current) {
         const message = getErrorMessage(e, '无法初始化屏幕图像'); setError(message);
         void invoke('capture_fail', { message }).catch(() => {});
@@ -89,13 +92,24 @@ export function CaptureApp(): JSX.Element {
     window.addEventListener('resize', resize);
     const keyDown = (event: KeyboardEvent): void => keyboard.current(event);
     const keyUp = (event: KeyboardEvent): void => { if (event.key === 'Alt') setAlt(false); };
-    const focus = (): void => root.current?.focus();
     window.addEventListener('keydown', keyDown, true);
     window.addEventListener('keyup', keyUp);
     window.addEventListener('focus', focus);
-    const blur = (): void => { if (!busyRef.current && alive) cancel(); };
+    const blur = (): void => {
+      clearBlur();
+      if (!ready || busyRef.current || !alive || cancelling.current) return;
+      const revision = focusGeneration.current;
+      // WebView focus transfers can emit blur while the capture frame stays foreground.
+      blurTimer = setTimeout(() => {
+        blurTimer = undefined;
+        if (!alive || busyRef.current || cancelling.current || focusGeneration.current !== revision) return;
+        void invoke<boolean>('capture_is_foreground').then((foreground) => {
+          if (foreground === false && alive && !busyRef.current && !cancelling.current && focusGeneration.current === revision) cancel();
+        }).catch(() => {});
+      }, 120);
+    };
     window.addEventListener('blur', blur);
-    return () => { alive = false; mounted.current = false; window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyDown, true); window.removeEventListener('keyup', keyUp); window.removeEventListener('focus', focus); generation.current++; lifecycle.current++; };
+    return () => { alive = false; mounted.current = false; clearBlur(); window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyDown, true); window.removeEventListener('keyup', keyUp); window.removeEventListener('focus', focus); generation.current++; lifecycle.current++; };
   }, []);
   useEffect(() => {
     if (!session) return;
@@ -134,6 +148,7 @@ export function CaptureApp(): JSX.Element {
   };
   const output = async (destination: CaptureOutput): Promise<void> => {
     if (busyRef.current || !selection || !image || textEdit) return;
+    focusGeneration.current++;
     busyRef.current = true; setBusy(true); setError(''); gesture.current = null; setDraft(null);
     const started = lifecycle.current;
     const current = (): boolean => mounted.current && !cancelling.current && lifecycle.current === started;

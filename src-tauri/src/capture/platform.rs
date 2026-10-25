@@ -18,9 +18,10 @@ use windows::{
                 OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
             },
             WindowsAndMessaging::{
-                EnumChildWindows, EnumWindows, GetForegroundWindow, GetPhysicalCursorPos,
-                GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-                IsWindowVisible, SetForegroundWindow, SetPhysicalCursorPos,
+                EnumChildWindows, EnumWindows, GetAncestor, GetForegroundWindow,
+                GetPhysicalCursorPos, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+                IsChild, IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow,
+                SetPhysicalCursorPos, GA_ROOT, GA_ROOTOWNER,
             },
         },
     },
@@ -55,6 +56,16 @@ pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|e| e.to_string())?;
     // Activating the frame alone does not direct keyboard input to WebView2.
     window.as_ref().set_focus().map_err(|e| e.to_string())
+}
+pub fn is_foreground(window: &tauri::WebviewWindow) -> Result<bool, String> {
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let foreground = unsafe { GetForegroundWindow() };
+    // A null foreground occurs during activation; it does not confirm an external switch.
+    Ok(foreground.0.is_null()
+        || foreground == hwnd
+        || unsafe { IsChild(hwnd, foreground).as_bool() }
+        || unsafe { GetAncestor(foreground, GA_ROOT) } == hwnd
+        || unsafe { GetAncestor(foreground, GA_ROOTOWNER) } == hwnd)
 }
 pub fn restore_foreground(handle: usize) {
     let handle = HWND(handle as *mut _);

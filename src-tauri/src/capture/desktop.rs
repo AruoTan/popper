@@ -464,6 +464,10 @@ pub fn validate_session(app: &AppHandle, window: &WebviewWindow) -> Result<(), S
     let mut slot = state.session.lock();
     ensure_session(&mut slot, id).map(|_| ())
 }
+pub fn is_foreground(app: &AppHandle, window: &WebviewWindow) -> Result<bool, String> {
+    validate_session(app, window)?;
+    platform::is_foreground(window)
+}
 pub fn move_pointer(
     app: &AppHandle,
     window: &WebviewWindow,

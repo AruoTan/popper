@@ -239,6 +239,127 @@ describe('capture keyboard pointer movement', () => {
   });
 });
 
+describe('capture focus lifecycle', () => {
+  beforeEach(() => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    vi.mocked(decodePng).mockResolvedValue(new Image());
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return meta;
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_is_foreground') return true;
+    });
+  });
+  afterEach(() => vi.useRealTimers());
+  async function shown(): Promise<ReturnType<typeof render>> {
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(document.activeElement).toBe(view.container.querySelector('main')));
+    vi.useFakeTimers();
+    return view;
+  }
+
+  it('ignores startup blur while the frozen image is still decoding', async () => {
+    let resolve!: (image: HTMLImageElement) => void;
+    vi.mocked(decodePng).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    fireEvent.blur(window);
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    await act(async () => { resolve(new Image()); });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
+    view.unmount();
+  });
+
+  it('survives blur emitted while the native frame and WebView acquire focus', async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return meta;
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_show') { fireEvent.focus(window); fireEvent.blur(window); }
+    });
+    const view = await shown();
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    expect(invoke).not.toHaveBeenCalledWith('capture_fail', expect.anything());
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(invoke).toHaveBeenCalledWith('capture_cancel');
+    view.unmount();
+  });
+
+  it('keeps editing when DOM blur leaves the native capture window foreground', async () => {
+    const view = await shown();
+    fireEvent.blur(window);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(invoke).toHaveBeenCalledWith('capture_is_foreground');
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    view.unmount();
+  });
+
+  it('cancels once after confirming focus moved to another application', async () => {
+    const view = await shown();
+    vi.mocked(invoke).mockResolvedValue(false);
+    fireEvent.blur(window); fireEvent.blur(window);
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_cancel')).toHaveLength(1);
+    view.unmount();
+  });
+
+  it('discards a foreground check after focus returns', async () => {
+    const view = await shown();
+    let resolve!: (foreground: boolean) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_is_foreground' ? new Promise((done) => { resolve = done; }) : undefined);
+    fireEvent.blur(window);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(resolve).toBeTypeOf('function');
+    fireEvent.focus(window);
+    await act(async () => { resolve(false); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    view.unmount();
+  });
+
+  it('keeps the session when foreground verification fails', async () => {
+    const view = await shown();
+    vi.mocked(invoke).mockRejectedValue(new Error('window unavailable'));
+    fireEvent.blur(window);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    view.unmount();
+  });
+
+  it('discards an old foreground check even after a cancelled save returns to editing', async () => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    const view = await shown();
+    let resolve!: (foreground: boolean) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_is_foreground') return new Promise((done) => { resolve = done; });
+      if (command === 'capture_crop') return new ArrayBuffer(0);
+      if (command === 'capture_export') return false;
+    });
+    const main = view.container.querySelector('main')!;
+    Object.assign(main, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
+    fireEvent.pointerDown(main, { clientX: 10, clientY: 10, button: 0 });
+    fireEvent.pointerMove(main, { clientX: 200, clientY: 100 });
+    fireEvent.pointerUp(main, { clientX: 200, clientY: 100, button: 0 });
+    fireEvent.blur(window);
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(resolve).toBeTypeOf('function');
+    await act(async () => { fireEvent.click(view.getByLabelText('保存 PNG')); });
+    expect(invoke).toHaveBeenCalledWith('capture_export', expect.any(Uint8Array), expect.anything());
+    expect(view.queryByRole('status')).toBeNull();
+    await act(async () => { resolve(false); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    expect(view.queryByRole('status')).toBeNull();
+    view.unmount();
+  });
+
+  it('cleans up delayed blur verification on unmount', async () => {
+    const view = await shown();
+    fireEvent.blur(window); view.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(200); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_is_foreground');
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+  });
+});
+
 describe('capture keyboard lifecycle', () => {
   const rect = { x: 20, y: 20, width: 200, height: 100 };
   beforeEach(() => {

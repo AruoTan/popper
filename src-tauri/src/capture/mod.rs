@@ -65,6 +65,10 @@ pub fn capture_show(app: AppHandle, window: WebviewWindow) -> Result<(), String>
     desktop_call!(desktop::show(&app, &window))
 }
 #[tauri::command]
+pub fn capture_is_foreground(app: AppHandle, window: WebviewWindow) -> Result<bool, String> {
+    desktop_call!(desktop::is_foreground(&app, &window))
+}
+#[tauri::command]
 pub fn capture_move_pointer(
     app: AppHandle,
     window: WebviewWindow,
