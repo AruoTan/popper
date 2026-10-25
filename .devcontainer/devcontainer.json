@@ -24,6 +24,11 @@
             "source": "codex-home",
             "target": "/home/node/.codex",
             "type": "volume"
+        },
+        {
+            "source": "codex-accounts",
+            "target": "/home/node/.vscode-server/data/User/globalStorage/wannanbigpig.codex-accounts-manager",
+            "type": "volume"
         }
     ],
     "containerEnv": {
