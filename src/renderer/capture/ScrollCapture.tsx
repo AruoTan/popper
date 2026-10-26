@@ -34,6 +34,12 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
   const mounted = useRef(true), cancelled = useRef(false);
   const previewUrls = useRef(new Set<string>()), decoding = useRef<AbortController | null>(null);
   const cancelRef = useRef<() => void>(() => {});
+  const previewWidth = Math.max(0, initial.layout.panel.width * viewport.width / screen.width - 26);
+  const previewHeight = Math.max(0, initial.layout.panel.height * viewport.height / screen.height - 134);
+  const previewSize = useRef({ maxWidth: 1, maxHeight: 1 });
+  // Supersample at the display density to keep text sharp during animated scaling.
+  const density = window.devicePixelRatio || 1;
+  previewSize.current = { maxWidth: Math.max(1, Math.min(1024, Math.ceil(previewWidth * density * 2))), maxHeight: Math.max(1, Math.min(2048, Math.ceil(previewHeight * density * 2))) };
 
   useEffect(() => {
     mounted.current = true;
@@ -58,7 +64,7 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
     }
   }, [preview]);
   useEffect(() => {
-    let alive = true, revision = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    let alive = true, revision = 0, resolution = '', timer: ReturnType<typeof setTimeout> | undefined;
     const poll = (): void => {
       if (!alive || ending.current) return;
       const started = performance.now();
@@ -68,15 +74,16 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
           const next = await invoke<ScrollCaptureProgress>('capture_scroll_step');
           if (!alive || ending.current) return;
           setMessage(MESSAGES[next.status]); limited = next.status === 'limit';
-          if (next.revision > revision) {
-            const bytes = await invoke<ArrayBuffer>('capture_scroll_preview');
+          const size = previewSize.current, sizeKey = `${size.maxWidth}:${size.maxHeight}`;
+          if (next.revision > revision || resolution !== sizeKey) {
+            const bytes = await invoke<ArrayBuffer>('capture_scroll_preview', size);
             if (!alive || ending.current) return;
             const controller = new AbortController(); decoding.current = controller;
             const snapshot = await prepareScrollPreview(bytes, controller.signal).finally(() => {
               if (decoding.current === controller) decoding.current = null;
             });
             if (!alive || ending.current) { URL.revokeObjectURL(snapshot.url); return; }
-            revision = snapshot.progress.revision; previewUrls.current.add(snapshot.url);
+            revision = snapshot.progress.revision; resolution = sizeKey; previewUrls.current.add(snapshot.url);
             setPreview(snapshot);
           }
         } catch (captureError) {
@@ -114,9 +121,7 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
     <aside className="capture-scroll-panel" style={position(layout.panel, screen)} data-capture-ui>
       <header><Mouse size={22} aria-hidden="true" /><p role="status">{finishing ? '正在处理长图…' : message}</p><small>使用选区下方工具栏输出 · Esc 取消</small></header>
       <div className="capture-scroll-preview-area">
-        {preview && <ScrollCapturePreview preview={preview}
-          width={Math.max(0, layout.panel.width * viewport.width / screen.width - 26)}
-          height={Math.max(0, layout.panel.height * viewport.height / screen.height - 134)} />}
+        {preview && <ScrollCapturePreview preview={preview} width={previewWidth} height={previewHeight} />}
       </div>
       {error && <div className="capture-scroll-error" role="alert">{error}</div>}
     </aside>

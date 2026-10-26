@@ -9,8 +9,8 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const screen = { x: -1920, y: -1080, width: 1920, height: 1080 };
 const progress: ScrollCaptureProgress = { width: 800, height: 600, revision: 1, viewport: { x: 0, y: 0, width: 800, height: 600 }, status: 'unchanged' };
 const initial: ScrollCaptureSession = { progress, layout: { selection: { x: 100, y: 100, width: 800, height: 600 }, panel: { x: 924, y: 100, width: 324, height: 765 }, toolbar: { x: 492, y: 712, width: 408, height: 72 } } };
-function packet(state = progress): ArrayBuffer {
-  const metadata = new TextEncoder().encode(JSON.stringify(state));
+function packet(state = progress, originY?: number): ArrayBuffer {
+  const metadata = new TextEncoder().encode(JSON.stringify({ ...state, ...(originY === undefined ? {} : { originY }) }));
   const bytes = new Uint8Array(4 + metadata.length + 8);
   new DataView(bytes.buffer).setUint32(0, metadata.length, true);
   bytes.set(metadata, 4); bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 4 + metadata.length);
@@ -35,7 +35,7 @@ describe('manual scrolling overlay', () => {
     const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />);
     await advance(2000); expect(invoke).toHaveBeenCalledTimes(1);
     await act(async () => { resolve(progress); });
-    expect(invoke).toHaveBeenCalledWith('capture_scroll_step'); expect(invoke).toHaveBeenCalledWith('capture_scroll_preview');
+    expect(invoke).toHaveBeenCalledWith('capture_scroll_step'); expect(invoke).toHaveBeenCalledWith('capture_scroll_preview', expect.objectContaining({ maxWidth: expect.any(Number), maxHeight: expect.any(Number) }));
     expect(view.queryByText(/帧/)).toBeNull(); expect(view.getAllByRole('button')).toHaveLength(4); view.unmount();
   });
   it('shows the selection, bottom-right toolbar and viewport from one preview snapshot', async () => {
@@ -73,6 +73,16 @@ describe('manual scrolling overlay', () => {
     vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_scroll_preview' ? packet(next) : next);
     await advance(); expect(URL.createObjectURL).toHaveBeenCalledTimes(2); expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
     view.unmount(); expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+  });
+  it('requests display-density previews and refreshes an unchanged document after resizing', async () => {
+    vi.stubGlobal('devicePixelRatio', 2);
+    const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
+    const requests = (): unknown[][] => vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_scroll_preview');
+    expect(requests()[0]?.[1]).toEqual({ maxWidth: Math.ceil((324 * innerWidth / 1920 - 26) * 4), maxHeight: Math.ceil((765 * innerHeight / 1080 - 134) * 4) });
+    vi.stubGlobal('innerWidth', 3840); vi.stubGlobal('innerHeight', 2160);
+    fireEvent(window, new Event('resize')); await advance(50);
+    expect(requests()).toHaveLength(2); expect(requests()[1]?.[1]).toEqual({ maxWidth: 1024, maxHeight: 2048 });
+    view.unmount();
   });
   it('publishes a new image and its geometry only after decoding, keeping the previous image alive', async () => {
     const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
@@ -161,7 +171,13 @@ describe('manual scrolling overlay', () => {
 describe('binary long-image preview', () => {
   it('decodes atomic metadata and keeps the PNG binary', () => {
     const decoded = decodeScrollPreview(packet()); expect(decoded.progress).toEqual(progress);
+    expect(decoded.originY).toBe(0);
     expect(Array.from(new Uint8Array(decoded.png))).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  });
+  it('keeps the document origin for upward growth and rejects invalid offsets', () => {
+    expect(decodeScrollPreview(packet(progress, -600)).originY).toBe(-600);
+    expect(() => decodeScrollPreview(packet(progress, 0.5))).toThrow('尺寸无效');
+    expect(() => decodeScrollPreview(packet(progress, Number.MAX_SAFE_INTEGER + 1))).toThrow('尺寸无效');
   });
   it('rejects truncated metadata and viewports outside the document', () => {
     expect(() => decodeScrollPreview(new ArrayBuffer(3))).toThrow('不完整');

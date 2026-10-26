@@ -163,11 +163,14 @@ pub async fn capture_scroll_step(
 pub async fn capture_scroll_preview(
     app: AppHandle,
     window: WebviewWindow,
+    max_width: u32,
+    max_height: u32,
 ) -> Result<tauri::ipc::Response, String> {
     desktop_call!(
-        tauri::async_runtime::spawn_blocking(
-            move || desktop::scroll_preview(&app, &window).map(tauri::ipc::Response::new)
+        tauri::async_runtime::spawn_blocking(move || desktop::scroll_preview(
+            &app, &window, max_width, max_height
         )
+        .map(tauri::ipc::Response::new))
         .await
         .map_err(|e| e.to_string())?
     )

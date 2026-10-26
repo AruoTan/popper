@@ -107,12 +107,8 @@ impl ScrollStream {
     pub fn snapshot(&self) -> ScrollProgress {
         self.shared.progress.lock().unwrap().clone()
     }
-    pub fn preview(&self) -> (ScrollProgress, RgbaImage) {
-        let document = self.shared.document.lock().unwrap();
-        (
-            document.progress(ScrollStatus::Unchanged),
-            document.preview(),
-        )
+    pub fn preview(&self) -> super::preview::ScrollPreview {
+        self.shared.document.lock().unwrap().preview()
     }
     pub fn stop(&mut self) {
         self.stop.store(true, Ordering::Release);

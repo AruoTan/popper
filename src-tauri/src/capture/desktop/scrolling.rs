@@ -149,10 +149,15 @@ pub fn scroll_step(app: &AppHandle, window: &WebviewWindow) -> Result<ScrollProg
     scroll.stream.progress()
 }
 
-pub fn scroll_preview(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String> {
+pub fn scroll_preview(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    max_width: u32,
+    max_height: u32,
+) -> Result<Vec<u8>, String> {
     let state = manager(app);
     let _operation = state.operation.lock();
-    let (progress, image) = {
+    let snapshot = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, session_id(window)?)?;
         session
@@ -162,8 +167,10 @@ pub fn scroll_preview(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>
             .stream
             .preview()
     };
+    // Filtering immutable strips leaves registration free to process new frames.
+    let image = snapshot.render(max_width, max_height);
     // Metadata and thumbnail describe one atomic document snapshot.
-    let metadata = serde_json::to_vec(&progress).map_err(|e| e.to_string())?;
+    let metadata = serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?;
     let mut bytes = (metadata.len() as u32).to_le_bytes().to_vec();
     bytes.extend_from_slice(&metadata);
     bytes.extend_from_slice(&clipboard::png(&image)?);

@@ -1,6 +1,8 @@
 //! A bounded vertical document that can grow above or below its initial viewport.
 #[path = "scroll/layout.rs"]
 pub mod layout;
+#[path = "scroll/preview.rs"]
+mod preview;
 #[path = "scroll/registration.rs"]
 mod registration;
 #[path = "scroll/stream.rs"]
@@ -190,38 +192,18 @@ impl ScrollStitcher {
         }
         image
     }
-    /// Sample the strips directly so a preview never allocates the full long image.
-    pub fn preview(&self) -> RgbaImage {
-        let width = self.last.width();
-        let height = self.progress(ScrollStatus::Unchanged).height;
-        let scale = (192.0 / width as f64).min(400.0 / height as f64).min(1.0);
-        let mut image = RgbaImage::new(
-            (width as f64 * scale).round().max(1.0) as u32,
-            (height as f64 * scale).round().max(1.0) as u32,
-        );
-        let mut strips = self
-            .header
-            .iter()
-            .chain(self.strips.iter())
-            .chain(self.footer.iter());
-        let mut strip = strips.next().unwrap();
-        let mut offset = 0;
-        for y in 0..image.height() {
-            let source_y = u64::from(y) * u64::from(height) / u64::from(image.height());
-            while source_y >= u64::from(offset + strip.height()) {
-                offset += strip.height();
-                strip = strips.next().unwrap();
-            }
-            for x in 0..image.width() {
-                let source_x = u64::from(x) * u64::from(width) / u64::from(image.width());
-                image.put_pixel(
-                    x,
-                    y,
-                    *strip.get_pixel(source_x as u32, source_y as u32 - offset),
-                );
-            }
+    pub fn preview(&self) -> preview::ScrollPreview {
+        preview::ScrollPreview {
+            progress: self.progress(ScrollStatus::Unchanged),
+            origin_y: self.top,
+            strips: self
+                .header
+                .iter()
+                .chain(self.strips.iter())
+                .chain(self.footer.iter())
+                .cloned()
+                .collect(),
         }
-        image
     }
 }
 
@@ -249,14 +231,12 @@ mod tests {
     }
     fn assert_preview_matches_document(stitcher: &ScrollStitcher) {
         let document = stitcher.compose();
-        let preview = stitcher.preview();
-        assert!(preview.width() <= 192 && preview.height() <= 400);
-        for (x, y, pixel) in preview.enumerate_pixels() {
-            let source_x = u64::from(x) * u64::from(document.width()) / u64::from(preview.width());
-            let source_y =
-                u64::from(y) * u64::from(document.height()) / u64::from(preview.height());
-            assert_eq!(pixel, document.get_pixel(source_x as u32, source_y as u32));
-        }
+        let preview = stitcher.preview().render(380, 800);
+        assert!(preview.width() <= 380 && preview.height() <= 800);
+        assert_eq!(
+            preview,
+            image::imageops::thumbnail(&document, preview.width(), preview.height())
+        );
         let progress = stitcher.progress(ScrollStatus::Unchanged);
         assert!(progress
             .viewport
@@ -288,8 +268,49 @@ mod tests {
         let source = RgbaImage::from_fn(4000, 240, |x, y| image::Rgba([x as u8, y as u8, 10, 255]));
         let stitcher = ScrollStitcher::new(source.clone()).unwrap();
         assert_preview_matches_document(&stitcher);
-        assert_eq!(stitcher.preview().width(), 192);
+        assert_eq!(stitcher.preview().render(380, 800).width(), 380);
         assert_eq!(stitcher.compose(), source);
+    }
+    #[test]
+    fn preview_snapshots_remain_consistent_while_the_document_keeps_growing() {
+        let page = page();
+        let mut stitcher = ScrollStitcher::new(frame(&page, 400)).unwrap();
+        let initial = stitcher.preview();
+        stitcher.push(frame(&page, 240));
+        let above = stitcher.preview();
+        stitcher.push(frame(&page, 80));
+        stitcher.push(frame(&page, 0));
+        let expected = stitcher.compose();
+        let final_snapshot = stitcher.preview();
+        drop(stitcher);
+        assert_eq!(initial.origin_y, 0);
+        assert_eq!(above.origin_y, -160);
+        assert_eq!(initial.render(160, 240), frame(&page, 400));
+        assert_eq!(
+            above.render(160, 400),
+            image::imageops::crop_imm(&page, 0, 240, 160, 400).to_image()
+        );
+        assert_eq!(final_snapshot.render(160, 640), expected);
+    }
+    #[test]
+    fn filtered_previews_preserve_thin_detail_and_enforce_allocation_limits() {
+        let source = RgbaImage::from_fn(128, 128, |x, y| {
+            let value = if (x + y) % 2 == 0 { 0 } else { 255 };
+            image::Rgba([value, value, value, 255])
+        });
+        let preview = ScrollStitcher::new(source).unwrap().preview();
+        let filtered = preview.render(32, 32);
+        assert!(filtered.pixels().all(|p| p.0 == [128, 128, 128, 255]));
+        assert_eq!(preview.render(0, 0).dimensions(), (1, 1));
+        assert_eq!(preview.render(u32::MAX, u32::MAX).dimensions(), (128, 128));
+        let tall = ScrollStitcher::new(RgbaImage::new(128, 8192))
+            .unwrap()
+            .preview();
+        assert_eq!(tall.render(u32::MAX, u32::MAX).dimensions(), (32, 2048));
+        let wide = ScrollStitcher::new(RgbaImage::new(4096, 128))
+            .unwrap()
+            .preview();
+        assert_eq!(wide.render(u32::MAX, u32::MAX).dimensions(), (1024, 32));
     }
     #[test]
     fn stitches_variable_displacements_at_original_resolution() {

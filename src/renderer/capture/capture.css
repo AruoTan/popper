@@ -53,9 +53,7 @@ button:focus-visible { outline: 2px solid #7fa9ff; outline-offset: 1px; }
 .capture-scroll-panel small { color: #c3c8d0; font-size: 10px; line-height: 14px; }
 .capture-scroll-preview-area { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; overflow: hidden; }
 .capture-scroll-preview-content { position: relative; display: flex; justify-content: center; align-items: flex-start; flex-shrink: 0; }
-.capture-scroll-thumbnail { position: relative; transform-origin: center top; flex-shrink: 0; background: white; box-shadow: 0 2px 8px #0006; }
-.capture-scroll-thumbnail img { display: block; width: 100%; height: 100%; pointer-events: none; }
-.capture-scroll-viewport { position: absolute; transition: left 80ms linear, top 80ms linear, width 80ms linear, height 80ms linear; border: 2px solid #48cb85; background: #48cb851a; pointer-events: none; }
+.capture-scroll-thumbnail { position: relative; overflow: hidden; flex-shrink: 0; background: white; box-shadow: 0 2px 8px #0006; }
+.capture-scroll-thumbnail img { position: absolute; left: 0; top: 0; display: block; max-width: none; transform-origin: left top; pointer-events: none; }
+.capture-scroll-viewport { position: absolute; border: 2px solid #48cb85; background: #48cb851a; pointer-events: none; }
 .capture-scroll-error { position: absolute; bottom: 0; left: 0; right: 0; padding: 8px; background: #742732f5; color: #fff0f0; font-size: 12px; overflow-wrap: anywhere; }
-
-@media (prefers-reduced-motion: reduce) { .capture-scroll-viewport { transition: none; } }
