@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { PinnedImageState } from '../../shared/capture';
 import { decodePng } from './drawing';
 import { clamp } from './geometry';
 import { getErrorMessage } from '../lib/errors';
+import { usePinDrag } from './usePinDrag';
 
 export function PinApp(): JSX.Element {
   const [meta, setMeta] = useState<PinnedImageState | null>(null), [source, setSource] = useState(''), [menu, setMenu] = useState(false), [error, setError] = useState('');
@@ -13,7 +13,8 @@ export function PinApp(): JSX.Element {
   const alive = useRef(false), showing = useRef(false);
   const root = useRef<HTMLElement>(null), closing = useRef(false);
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
-  const current = useRef(meta), queue = useRef<Promise<unknown>>(Promise.resolve()), revision = useRef(0), dragging = useRef<{ x: number; y: number } | null>(null);
+  const current = useRef(meta), queue = useRef<Promise<unknown>>(Promise.resolve()), revision = useRef(0);
+  const drag = usePinDrag((e) => setError(getErrorMessage(e, '无法移动贴图')));
   current.current = meta;
   useEffect(() => {
     alive.current = true;
@@ -45,6 +46,7 @@ export function PinApp(): JSX.Element {
   };
   const close = (destroy = false): void => {
     if (closing.current) return;
+    drag.stop();
     closing.current = true; setMenu(false);
     void invoke('capture_pin_close', { destroy }).catch((e: unknown) => { if (alive.current) { closing.current = false; setError(getErrorMessage(e, '无法关闭贴图')); } });
   };
@@ -55,10 +57,9 @@ export function PinApp(): JSX.Element {
   const frameWidth = Math.max(1, Math.round((meta?.width ?? 1) * (meta?.zoom ?? 1))) + inset * 2;
   const frameHeight = Math.max(1, Math.round((meta?.height ?? 1) * (meta?.zoom ?? 1))) + inset * 2;
   return <div className="capture-pin-frame" style={{ '--pin-shadow-unit': `calc(100vw / ${frameWidth})` } as CSSProperties}>
-    <main ref={root} className="capture-pin" style={{ left: `${inset / frameWidth * 100}%`, right: `${inset / frameWidth * 100}%`, top: `${inset / frameHeight * 100}%`, bottom: `${inset / frameHeight * 100}%` }} tabIndex={0} onContextMenu={(event) => { event.preventDefault(); void invoke('capture_pin_menu').catch(() => setMenu((visible) => !visible)); }} onDoubleClick={() => close()}
-    onPointerDown={(event) => { if ((event.target as HTMLElement).closest('button')) return; if (event.button === 1) { event.preventDefault(); update({ zoom: 1, opacity: 1 }); } else if (event.button === 0) { dragging.current = { x: event.clientX, y: event.clientY }; setMenu(false); } }}
-    onPointerMove={(event) => { const start = dragging.current; if (start && event.buttons === 1 && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 4) { dragging.current = null; void getCurrentWindow().startDragging().catch((e: unknown) => setError(getErrorMessage(e, '无法移动贴图'))); } }}
-    onPointerUp={() => { dragging.current = null; }}
+    <main ref={root} className="capture-pin" style={{ left: `${inset / frameWidth * 100}%`, right: `${inset / frameWidth * 100}%`, top: `${inset / frameHeight * 100}%`, bottom: `${inset / frameHeight * 100}%` }} tabIndex={0} onContextMenu={(event) => { event.preventDefault(); drag.stop(); void invoke('capture_pin_menu').catch(() => setMenu((visible) => !visible)); }} onDoubleClick={() => close()}
+    onPointerDown={(event) => { if ((event.target as HTMLElement).closest('button')) return; if (event.button === 1) { event.preventDefault(); drag.stop(); update({ zoom: 1, opacity: 1 }); } else if (event.button === 0) { drag.onPointerDown(event); setMenu(false); } }}
+    onPointerMove={drag.onPointerMove} onPointerUp={drag.onPointerUp} onPointerCancel={drag.onPointerCancel} onLostPointerCapture={drag.onLostPointerCapture}
     onWheel={(event) => { event.preventDefault(); const state = current.current; if (!state) return; const amount = event.deltaY < 0 ? 1 : -1; const bounds = event.currentTarget.getBoundingClientRect(); if (event.ctrlKey) update({ opacity: Math.round(clamp(state.opacity + amount * .1, .1, 1) * 10) / 10 }); else update({ zoom: clamp(state.zoom * (amount > 0 ? 1.1 : 1 / 1.1), .1, 4) }, clamp((event.clientX - bounds.left) / bounds.width, 0, 1), clamp((event.clientY - bounds.top) / bounds.height, 0, 1)); }}
     >
     {shadowEpoch > 0 && <span key={shadowEpoch} className="capture-pin-shadow" aria-hidden="true" />}

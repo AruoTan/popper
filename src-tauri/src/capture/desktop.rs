@@ -3,7 +3,7 @@ mod scrolling;
 mod shortcuts;
 use pinned::{create_pin, PinPlacement};
 pub use pinned::{
-    paste, pin_close, pin_menu, pin_state, pin_update, recover_click_through, toggle_pins,
+    paste, pin_close, pin_drag, pin_menu, pin_state, pin_update, recover_click_through, toggle_pins,
 };
 pub use scrolling::{scroll_begin, scroll_finish, scroll_preview, scroll_step};
 pub use shortcuts::ShortcutChange;

@@ -242,6 +242,22 @@ pub fn pin_state(app: &AppHandle, window: &WebviewWindow) -> Result<PinnedImageS
         .map(|p| p.meta.clone())
         .ok_or_else(|| "贴图已结束".into())
 }
+pub fn pin_drag(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    anchor: Option<CapturePoint>,
+) -> Result<Option<CapturePoint>, String> {
+    let id = pin_id(window)?;
+    let state = manager(app);
+    {
+        let pins = state.pins.lock();
+        let pin = pins.items.get(id).ok_or("贴图已结束")?;
+        if pin.closed || !pin.visible || !pin.ready || pin.meta.click_through {
+            return Err("贴图当前无法拖动".into());
+        }
+    }
+    platform::drag_pin(window, anchor)
+}
 pub fn pin_update(
     app: &AppHandle,
     window: &WebviewWindow,

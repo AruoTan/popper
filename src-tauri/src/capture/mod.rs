@@ -255,6 +255,14 @@ pub fn capture_pin_state(
     desktop_call!(desktop::pin_state(&app, &window))
 }
 #[tauri::command]
+pub fn capture_pin_drag(
+    app: AppHandle,
+    window: WebviewWindow,
+    anchor: Option<CapturePoint>,
+) -> Result<Option<CapturePoint>, String> {
+    desktop_call!(desktop::pin_drag(&app, &window, anchor))
+}
+#[tauri::command]
 pub fn capture_pin_update(
     app: AppHandle,
     window: WebviewWindow,

@@ -39,7 +39,7 @@ impl CaptureRect {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapturePoint {
     pub x: i32,
@@ -163,6 +163,27 @@ pub struct PendingAttachment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn drag_anchor_decodes_nullable_signed_pixel_coordinates() {
+        let empty = serde_json::from_str::<Option<CapturePoint>>("null").unwrap();
+        assert!(empty.is_none());
+        for (x, y) in [(124, 84), (-1920, -1080), (i32::MIN, i32::MAX)] {
+            let value = serde_json::json!({ "x": x, "y": y });
+            let point = serde_json::from_value::<Option<CapturePoint>>(value.clone())
+                .unwrap()
+                .unwrap();
+            assert_eq!((point.x, point.y), (x, y));
+            assert_eq!(serde_json::to_value(point).unwrap(), value);
+        }
+        for value in [
+            serde_json::json!({ "x": 1 }),
+            serde_json::json!({ "x": "124", "y": 84 }),
+            serde_json::json!({ "x": 1.5, "y": 84 }),
+            serde_json::json!({ "x": 2147483648_i64, "y": 84 }),
+        ] {
+            assert!(serde_json::from_value::<Option<CapturePoint>>(value).is_err());
+        }
+    }
     #[test]
     fn pointer_steps_use_physical_pixels_on_negative_origin_screens() {
         let bounds = CaptureRect {

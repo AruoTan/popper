@@ -19,6 +19,96 @@ beforeEach(() => {
     if (command === 'capture_pin_state') return state;
     if (command === 'capture_image') return new ArrayBuffer(0);
     if (command === 'capture_pin_update') return { ...state, ...(args as { update: object }).update };
+    if (command === 'capture_pin_drag') return { x: 124, y: 84 };
+  });
+});
+
+describe('pinned image dragging', () => {
+  async function imageTarget() {
+    const view = render(<PinApp />);
+    const image = await view.findByAltText('浮动图片');
+    const main = image.closest('main')!;
+    Object.assign(main, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
+    return { view, image, main };
+  }
+  const moves = () => vi.mocked(invoke).mock.calls.filter(([command, args]) => command === 'capture_pin_drag' && (args as { anchor: unknown }).anchor !== null);
+
+  it('keeps the native physical anchor when dragging above the screen and across negative coordinates', async () => {
+    const { view, main } = await imageTarget();
+    fireEvent.pointerDown(main, { button: 0, buttons: 1, pointerId: 7, clientX: 100, clientY: 60 });
+    await act(async () => {});
+    fireEvent.pointerMove(main, { buttons: 1, pointerId: 7, clientX: 103, clientY: 60 });
+    expect(moves()).toHaveLength(0);
+    fireEvent.pointerMove(main, { buttons: 1, pointerId: 7, clientX: -120, clientY: -20, screenX: -1720, screenY: -30 });
+    await waitFor(() => expect(moves()).toHaveLength(1));
+    expect(moves()[0]).toEqual(['capture_pin_drag', { anchor: { x: 124, y: 84 } }]);
+    expect(main.setPointerCapture).toHaveBeenCalledWith(7);
+    fireEvent.pointerUp(main, { button: 0, buttons: 0, pointerId: 7 });
+    fireEvent.pointerMove(main, { buttons: 1, pointerId: 7, clientX: -200, clientY: -200 });
+    expect(moves()).toHaveLength(1);
+    expect(main.releasePointerCapture).toHaveBeenCalledWith(7);
+    view.unmount();
+  });
+
+  it('coalesces moves while the native command is busy and samples again after it completes', async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    let finish!: (point: { x: number; y: number }) => void;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === 'capture_pin_drag' && (args as { anchor: unknown }).anchor !== null) return new Promise((resolve) => { finish = resolve; });
+      return original(command, args);
+    });
+    const { view, main } = await imageTarget();
+    fireEvent.pointerDown(main, { button: 0, buttons: 1, pointerId: 1, clientX: 40, clientY: 40 });
+    await act(async () => {});
+    for (let index = 0; index < 20; index++) fireEvent.pointerMove(main, { buttons: 1, pointerId: 1, clientX: 60 + index, clientY: -50 });
+    expect(moves()).toHaveLength(1);
+    await act(async () => { finish({ x: 124, y: 84 }); });
+    expect(moves()).toHaveLength(2);
+    fireEvent.pointerUp(main, { button: 0, buttons: 0, pointerId: 1 });
+    await act(async () => { finish({ x: 124, y: 84 }); });
+    expect(moves()).toHaveLength(2);
+    view.unmount();
+  });
+
+  it.each(['pointerUp', 'pointerCancel', 'lostPointerCapture', 'blur', 'close', 'unmount'])('ignores a late anchor after %s', async (reason) => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    let finish!: (point: { x: number; y: number }) => void;
+    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_drag'
+      ? new Promise((resolve) => { finish = resolve; }) : original(command, args));
+    const { view, main } = await imageTarget();
+    fireEvent.pointerDown(main, { button: 0, buttons: 1, pointerId: 1, clientX: 40, clientY: 40 });
+    fireEvent.pointerMove(main, { buttons: 1, pointerId: 1, clientX: 100, clientY: -50 });
+    if (reason === 'blur') fireEvent(window, new Event('blur'));
+    else if (reason === 'close') fireEvent.keyDown(window, { key: 'Escape' });
+    else if (reason === 'unmount') view.unmount();
+    else fireEvent[reason as 'pointerUp' | 'pointerCancel' | 'lostPointerCapture'](main, { pointerId: 1 });
+    await act(async () => { finish({ x: 124, y: 84 }); });
+    expect(moves()).toHaveLength(0);
+    if (reason !== 'unmount') view.unmount();
+  });
+
+  it('stops quietly when the native button has already been released', async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_drag' ? Promise.resolve(null) : original(command, args));
+    const { view, main } = await imageTarget();
+    fireEvent.pointerDown(main, { button: 0, buttons: 1, pointerId: 1 });
+    await act(async () => {});
+    fireEvent.pointerMove(main, { buttons: 1, pointerId: 1, clientX: 100, clientY: -50 });
+    expect(moves()).toHaveLength(0);
+    expect(view.queryByRole('alert')).toBeNull();
+    view.unmount();
+  });
+
+  it('reports native errors and allows a subsequent drag', async () => {
+    const { view, main } = await imageTarget();
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('move failed'));
+    fireEvent.pointerDown(main, { button: 0, buttons: 1, pointerId: 1 });
+    expect(await view.findByRole('alert')).toHaveTextContent('move failed');
+    fireEvent.pointerDown(main, { button: 0, buttons: 1, pointerId: 2 });
+    await act(async () => {});
+    fireEvent.pointerMove(main, { buttons: 1, pointerId: 2, clientX: 100, clientY: -50 });
+    await waitFor(() => expect(moves()).toHaveLength(1));
+    view.unmount();
   });
 });
 afterEach(() => vi.unstubAllGlobals());

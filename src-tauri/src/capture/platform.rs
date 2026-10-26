@@ -41,6 +41,53 @@ pub fn cursor() -> Result<(i32, i32), String> {
     unsafe { GetPhysicalCursorPos(&mut point) }.map_err(|e| e.to_string())?;
     Ok((point.x, point.y))
 }
+pub fn drag_pin(
+    window: &tauri::WebviewWindow,
+    anchor: Option<CapturePoint>,
+) -> Result<Option<CapturePoint>, String> {
+    use windows::Win32::UI::{
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON},
+        WindowsAndMessaging::{
+            GetSystemMetrics, SetWindowPos, SM_SWAPBUTTON, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+        },
+    };
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let primary = if unsafe { GetSystemMetrics(SM_SWAPBUTTON) } == 0 {
+        VK_LBUTTON
+    } else {
+        VK_RBUTTON
+    };
+    // A queued renderer move must not reposition a released or hidden image.
+    if !unsafe { IsWindowVisible(hwnd) }.as_bool()
+        || unsafe { GetAsyncKeyState(primary.0 as i32) } >= 0
+    {
+        return Ok(None);
+    }
+    let (x, y) = cursor()?;
+    if let Some(anchor) = anchor {
+        // Bypass the caption move loop: it constrains windows at the work-area top.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                None,
+                x.saturating_sub(anchor.x),
+                y.saturating_sub(anchor.y),
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        }
+        .map_err(|e| e.to_string())?;
+        Ok(Some(anchor))
+    } else {
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut rect) }.map_err(|e| e.to_string())?;
+        Ok(Some(CapturePoint {
+            x: x.saturating_sub(rect.left),
+            y: y.saturating_sub(rect.top),
+        }))
+    }
+}
 pub fn move_pointer(screen: CaptureRect, dx: i32, dy: i32) -> Result<CapturePoint, String> {
     let (x, y) = cursor()?;
     let point = CapturePoint { x, y }.step_within(screen, dx, dy)?;

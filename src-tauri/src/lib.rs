@@ -201,6 +201,7 @@ pub fn run() {
             capture::capture_fail,
             capture::capture_paste,
             capture::capture_pin_state,
+            capture::capture_pin_drag,
             capture::capture_pin_update,
             capture::capture_pin_close,
             capture::capture_pin_menu,
