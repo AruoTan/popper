@@ -5,7 +5,7 @@ use crate::capture::{
     ScrollCaptureSession, ScrollProgress,
 };
 use std::{sync::Arc, time::Duration};
-use tauri::{AppHandle, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub(super) struct ScrollSession {
@@ -24,16 +24,9 @@ impl Drop for ScrollEscape {
 }
 
 fn restore_editor(window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
-    window.hide().map_err(|e| e.to_string())?;
     platform::scroll_surface(window, screen, None)?;
-    window
-        .set_position(PhysicalPosition::new(screen.x, screen.y))
-        .map_err(|e| e.to_string())?;
-    window
-        .set_size(PhysicalSize::new(screen.width, screen.height))
-        .map_err(|e| e.to_string())?;
     let _ = platform::exclude_from_capture(window, false);
-    Ok(())
+    platform::focus(window)
 }
 
 pub fn scroll_begin(
@@ -93,10 +86,10 @@ pub fn scroll_begin(
     let escape = ScrollEscape { app: app.clone() };
     let layout = crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
     let setup = (|| {
-        window.hide().map_err(|e| e.to_string())?;
+        // Keep the frozen surface visible until the renderer receives the final layout.
+        // Capture exclusion makes hiding and re-showing this window unnecessary.
         platform::exclude_from_capture(window, true)?;
         platform::scroll_surface(window, screen, Some(&layout))?;
-        window.show().map_err(|e| e.to_string())?;
         platform::restore_foreground(target);
         platform::flush();
         platform::capture_region(screen, rect)
@@ -105,8 +98,6 @@ pub fn scroll_begin(
         Ok(image) => image,
         Err(error) => {
             let _ = restore_editor(window, screen);
-            let _ = window.show();
-            let _ = platform::focus(window);
             return Err(error);
         }
     };
@@ -124,8 +115,6 @@ pub fn scroll_begin(
         Ok(stream) => stream,
         Err(error) => {
             let _ = restore_editor(window, screen);
-            let _ = window.show();
-            let _ = platform::focus(window);
             return Err(error);
         }
     };

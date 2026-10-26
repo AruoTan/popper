@@ -27,13 +27,10 @@ const overlay = (view: ReturnType<typeof render>): HTMLElement => view.getByLabe
 const flush = async (): Promise<void> => { await act(async () => {}); };
 
 describe('manual scrolling overlay', () => {
-  it('waits for initialization and serializes preview requests', async () => {
-    const view = render(<ScrollCapture initial={null} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />);
-    await advance(1000); expect(invoke).not.toHaveBeenCalled();
-    expect(overlay(view)).toHaveAttribute('aria-busy', 'true'); expect(view.queryByRole('toolbar')).toBeNull();
+  it('serializes preview requests after initialization', async () => {
     let resolve!: (value: ScrollCaptureProgress) => void;
     vi.mocked(invoke).mockImplementation(() => new Promise((done) => { resolve = done; }));
-    view.rerender(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />);
+    const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />);
     await advance(2000); expect(invoke).toHaveBeenCalledTimes(1);
     await act(async () => { resolve(progress); });
     expect(invoke).toHaveBeenCalledWith('capture_scroll_step'); expect(invoke).toHaveBeenCalledWith('capture_scroll_preview');

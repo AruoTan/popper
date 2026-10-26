@@ -50,7 +50,8 @@ export function CaptureApp(): JSX.Element {
   const [history, setHistory] = useState(emptyHistory), [draft, setDraft] = useState<CaptureAnnotation | null>(null), [selectedId, setSelectedId] = useState<string | null>(null);
   const [textEdit, setTextEdit] = useState<TextEdit | null>(null), [color, setColor] = useState('#ff4545'), [lineWidth, setLineWidth] = useState(3);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [alt, setAlt] = useState(false), [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
-  const [scrolling, setScrolling] = useState(false), [scrollProgress, setScrollProgress] = useState<ScrollCaptureSession | null>(null);
+  const [scrollProgress, setScrollProgress] = useState<ScrollCaptureSession | null>(null);
+  const scrolling = scrollProgress !== null;
   const scrollingRef = useRef(false), scrollVersion = useRef<number | null>(null);
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const canvas = useRef<HTMLCanvasElement>(null), root = useRef<HTMLElement>(null), gesture = useRef<Gesture | null>(null), busyRef = useRef(false), version = useRef(0), generation = useRef(0);
@@ -180,7 +181,7 @@ export function CaptureApp(): JSX.Element {
   const beginScroll = async (): Promise<void> => {
     if (!selection || busyRef.current || scrollingRef.current || history.present.length) return;
     focusGeneration.current++; generation.current++;
-    scrollingRef.current = true; setScrolling(true); busyRef.current = true; setBusy(true); setError('');
+    scrollingRef.current = true; busyRef.current = true; setBusy(true); setError('');
     gesture.current = null; setDraft(null); setSelectedId(null); setTool('select');
     const started = lifecycle.current;
     try {
@@ -191,7 +192,7 @@ export function CaptureApp(): JSX.Element {
       setScrollProgress(progress); busyRef.current = false; setBusy(false);
     } catch (e) {
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
-      scrollingRef.current = false; setScrolling(false); busyRef.current = false; setBusy(false);
+      scrollingRef.current = false; busyRef.current = false; setBusy(false);
       setError(getErrorMessage(e, '无法开始滚动截图')); root.current?.focus();
     }
   };
@@ -314,7 +315,7 @@ export function CaptureApp(): JSX.Element {
       if (event.ctrlKey) { const destination = ({ c: 'clipboard', s: 'file', t: 'pin' } as const)[event.key.toLowerCase() as 'c' | 's' | 't']; if (destination) { event.preventDefault(); void output(destination); } }
   };
   const sceneStyle = (rect: CaptureRect): React.CSSProperties => ({ left: rect.x * sx, top: rect.y * sy, width: rect.width * sx, height: rect.height * sy });
-  if (scrolling && session) return <main className="capture-scroll-surface"><ScrollCapture initial={scrollProgress} screen={session.screen} onAction={finishScroll} onCancel={cancel} error={error} /></main>;
+  if (scrollProgress && session) return <main className="capture-scroll-surface"><ScrollCapture initial={scrollProgress} screen={session.screen} onAction={finishScroll} onCancel={cancel} error={error} /></main>;
   return <main className="capture-overlay" ref={root} tabIndex={-1} onPointerDown={start} onPointerMove={move} onPointerUp={end}
     onPointerCancel={() => { gesture.current = null; setDraft(null); }}
     onContextMenu={(event) => { event.preventDefault(); if (busyRef.current) return; if (tool !== 'select' || selectedId || textEdit) { finishText(); setTool('select'); setSelectedId(null); gesture.current = null; setDraft(null); } else cancel(); }}

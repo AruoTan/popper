@@ -50,6 +50,31 @@ describe('scroll capture integration', () => {
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(view.getByRole('toolbar', { name: '滚动截图操作' })).toBeInTheDocument()); return view;
   }
+  it('keeps the frozen canvas and selection until the final scrolling layout is ready', async () => {
+    let resolve!: (value: ScrollCaptureSession) => void;
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => command === 'capture_scroll_begin' ? new Promise((done) => { resolve = done; }) : implementation(command, ...args));
+    const view = await selected();
+    const scene = view.container.querySelector('.capture-scene');
+    const selection = view.getByLabelText('截图选区');
+    const style = selection.getAttribute('style');
+    fireEvent.click(view.getByLabelText('滚动截图'));
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    expect(view.container.querySelector('.capture-scene')).toBe(scene);
+    expect(view.getByLabelText('截图选区')).toBe(selection);
+    expect(selection).toHaveAttribute('style', style);
+    expect(view.queryByLabelText('滚动截图预览')).toBeNull();
+    expect(view.getByLabelText('滚动截图')).toBeDisabled();
+    fireEvent.click(view.getByLabelText('滚动截图')); expect(calls('capture_scroll_begin')).toBe(1);
+    fireEvent.blur(window); await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
+    expect(calls('capture_cancel')).toBe(0);
+    await act(async () => { resolve(scrolling); });
+    const border = view.container.querySelector<HTMLElement>('.capture-scroll-border')!;
+    expect(parseFloat(border.style.left)).toBeCloseTo(rect.x / meta.screen.width * 100);
+    expect(parseFloat(border.style.top)).toBeCloseTo(rect.y / meta.screen.height * 100);
+    expect(view.getByRole('toolbar', { name: '滚动截图操作' }).querySelectorAll('button')).toHaveLength(4);
+    expect(view.queryByLabelText('滚动截图')).toBeNull(); view.unmount();
+  });
   it('allows source-window focus and ignores outside clicks and Enter while capture continues', async () => {
     const view = await started(); expect(invoke).toHaveBeenCalledWith('capture_scroll_begin', { rect, version: 1 });
     expect(Array.from(view.getByRole('toolbar').querySelectorAll('button'), (button) => button.textContent)).toEqual(['保存', '贴图', '问 AI', '复制']);
@@ -93,8 +118,9 @@ describe('scroll capture integration', () => {
   it('returns to ordinary screenshot editing when scrolling setup fails', async () => {
     const implementation = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, ...args) => { if (command === 'capture_scroll_begin') throw new Error('capture exclusion unavailable'); return implementation(command, ...args); });
-    const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
+    const view = await selected(); const scene = view.container.querySelector('.capture-scene'); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('capture exclusion unavailable'));
+    expect(view.container.querySelector('.capture-scene')).toBe(scene);
     expect(view.getByLabelText('复制截图')).toBeEnabled(); expect(view.queryByLabelText('滚动截图预览')).toBeNull(); view.unmount();
   });
   it('discards a late scrolling setup result after Escape', async () => {
@@ -103,7 +129,7 @@ describe('scroll capture integration', () => {
     vi.mocked(invoke).mockImplementation(async (command, ...args) => command === 'capture_scroll_begin' ? new Promise((done) => { resolve = done; }) : implementation(command,...args));
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(resolve).toBeTypeOf('function')); fireEvent.keyDown(window, { key: 'Escape' }); await act(async () => { resolve(scrolling); });
-    expect(invoke).toHaveBeenCalledWith('capture_cancel'); expect(calls('capture_scroll_step')).toBe(0); view.unmount();
+    expect(invoke).toHaveBeenCalledWith('capture_cancel'); expect(calls('capture_scroll_step')).toBe(0); expect(view.queryByLabelText('滚动截图预览')).toBeNull(); view.unmount();
   });
   it('discards a completed document after Escape instead of executing the pending output', async () => {
     let resolve!: (value: { width: number; height: number; version: number }) => void;

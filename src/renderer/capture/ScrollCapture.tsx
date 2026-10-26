@@ -18,7 +18,7 @@ function position(rect: CaptureRect, screen: CaptureRect): CSSProperties {
 }
 
 export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' }: {
-  initial: ScrollCaptureSession | null;
+  initial: ScrollCaptureSession;
   screen: CaptureRect;
   onAction: (action: CaptureOutput) => Promise<boolean>;
   onCancel: () => void;
@@ -47,7 +47,6 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
   }, []);
 
   useEffect(() => {
-    if (!initial) return;
     let alive = true, revision = 0, timer: ReturnType<typeof setTimeout> | undefined;
     const poll = (): void => {
       if (!alive || ending.current) return;
@@ -79,7 +78,7 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
   }, [initial]);
 
   const finish = async (action: CaptureOutput): Promise<void> => {
-    if (!initial || cancelled.current || (ending.current && !retry.current)) return;
+    if (cancelled.current || (ending.current && !retry.current)) return;
     ending.current = true; retry.current = false; setFinishing(true);
     await inFlight.current;
     if (!mounted.current || cancelled.current) return;
@@ -95,17 +94,17 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
   };
   cancelRef.current = cancel;
 
-  const layout = initial?.layout;
-  const progress = preview?.progress ?? initial?.progress;
-  const fit = layout && progress ? Math.max(0, Math.min(
+  const layout = initial.layout;
+  const progress = preview?.progress ?? initial.progress;
+  const fit = Math.max(0, Math.min(
     (layout.panel.width * viewport.width / screen.width - 26) / progress.width,
     (layout.panel.height * viewport.height / screen.height - 134) / progress.height,
-  )) : 0;
-  return <section className="capture-scroll-overlay" aria-label="滚动截图预览" aria-busy={!initial || finishing}
+  ));
+  return <section className="capture-scroll-overlay" aria-label="滚动截图预览" aria-busy={finishing}
     onContextMenu={(event) => { event.preventDefault(); cancel(); }}>
-    {layout && <div className="capture-scroll-border" style={position(layout.selection, screen)} data-interrupted={message === MESSAGES.unmatched} />}
-    <aside className="capture-scroll-panel" style={layout ? position(layout.panel, screen) : undefined} data-capture-ui>
-      <header><Mouse size={22} aria-hidden="true" /><p role="status">{!initial ? '正在准备滚动截图…' : finishing ? '正在处理长图…' : message}</p><small>使用选区下方工具栏输出 · Esc 取消</small></header>
+    <div className="capture-scroll-border" style={position(layout.selection, screen)} data-interrupted={message === MESSAGES.unmatched} />
+    <aside className="capture-scroll-panel" style={position(layout.panel, screen)} data-capture-ui>
+      <header><Mouse size={22} aria-hidden="true" /><p role="status">{finishing ? '正在处理长图…' : message}</p><small>使用选区下方工具栏输出 · Esc 取消</small></header>
       <div className="capture-scroll-preview-area">
         {preview && <div className="capture-scroll-thumbnail" style={{ width: preview.progress.width * fit, height: preview.progress.height * fit }}>
           <img src={preview.url} alt="已截取的长图" draggable={false} />
@@ -114,7 +113,7 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
       </div>
       {error && <div className="capture-scroll-error" role="alert">{error}</div>}
     </aside>
-    {layout && <CaptureOutputToolbar label="滚动截图操作" style={position(layout.toolbar, screen)} busy={finishing}
-      onOutput={(destination) => void finish(destination)} />}
+    <CaptureOutputToolbar label="滚动截图操作" style={position(layout.toolbar, screen)} busy={finishing}
+      onOutput={(destination) => void finish(destination)} />
   </section>;
 }
