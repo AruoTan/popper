@@ -21,6 +21,7 @@ pub(super) struct PinPlacement {
 
 pub(super) fn show_pin(window: &WebviewWindow) -> Result<(), String> {
     window.show().map_err(|e| e.to_string())?;
+    super::toolbar::sync(window.app_handle(), pin_id(window)?)?;
     window
         .emit("popper:pin-shown", ())
         .map_err(|e| e.to_string())
@@ -81,6 +82,7 @@ pub(super) fn create_pin(
             visible: true,
             closed: false,
             ready: false,
+            toolbar: Default::default(),
         })?;
     }
     let result = (|| {
@@ -141,6 +143,14 @@ pub(super) fn create_pin(
         let app = app.clone();
         let closed_id = id.clone();
         window.on_window_event(move |event| {
+            if matches!(
+                event,
+                tauri::WindowEvent::Moved(_)
+                    | tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::ScaleFactorChanged { .. }
+            ) {
+                let _ = super::toolbar::sync(&app, &closed_id);
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let state = manager(&app);
                 let mut pins = state.pins.lock();
@@ -232,7 +242,10 @@ pub fn pin_drag(
     active_pin_state(app, window)?;
     platform::drag_pin(window, anchor)
 }
-fn active_pin_state(app: &AppHandle, window: &WebviewWindow) -> Result<PinnedImageState, String> {
+pub(super) fn active_pin_state(
+    app: &AppHandle,
+    window: &WebviewWindow,
+) -> Result<PinnedImageState, String> {
     let id = pin_id(window)?;
     let state = manager(app);
     if state.stopped.load(Ordering::Acquire) || state.active.load(Ordering::Acquire) {
@@ -297,12 +310,16 @@ pub fn pin_update(
     let pin = pins.items.get_mut(id).ok_or("贴图已结束")?;
     pin.meta.zoom = update.zoom;
     pin.meta.opacity = update.opacity;
-    Ok(pin.meta.clone())
+    let updated = pin.meta.clone();
+    drop(pins);
+    super::toolbar::sync(app, id)?;
+    Ok(updated)
 }
 pub fn pin_close(app: &AppHandle, window: &WebviewWindow, destroy: bool) -> Result<(), String> {
     let id = pin_id(window)?.to_owned();
     let state = manager(app);
     let discard = state.pins.lock().close(&id, destroy)?;
+    super::toolbar::sync(app, &id)?;
     if let Some(discard) = discard {
         if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{discard}")) {
             let _ = window.destroy();
@@ -340,6 +357,7 @@ pub fn toggle_pins(app: &AppHandle) -> Result<(), String> {
                 show_pin(&window)?;
             } else {
                 window.hide().map_err(|e| e.to_string())?;
+                super::toolbar::sync(app, &id)?;
             }
         }
     }
@@ -392,7 +410,8 @@ pub fn pin_action(app: &AppHandle, window: &WebviewWindow, action: &str) -> Resu
     };
     window
         .emit("popper:pin-updated", updated)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    super::toolbar::sync(app, &meta.id)
 }
 
 pub fn pin_output(

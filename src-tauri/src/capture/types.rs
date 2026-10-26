@@ -146,6 +146,43 @@ pub struct PinnedImageState {
     pub annotations_visible: bool,
     pub always_on_top: bool,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinToolbarState {
+    pub tool: CaptureTool,
+    pub color: String,
+    pub line_width: u8,
+    pub enabled: bool,
+    pub busy: bool,
+    pub can_undo: bool,
+    pub can_redo: bool,
+    pub can_delete: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum CaptureTool {
+    Select,
+    Rectangle,
+    Ellipse,
+    Arrow,
+    Pen,
+    Text,
+    Mosaic,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PinToolbarAction {
+    Tool { tool: CaptureTool },
+    Color { color: String },
+    Width { width: u8 },
+    Undo,
+    Redo,
+    Delete,
+    Copy,
+    Save,
+    Hide,
+    Close { destroy: bool },
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureAnnotation {

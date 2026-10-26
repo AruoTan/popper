@@ -45,13 +45,14 @@ describe('pinned image menu actions', () => {
     const view = render(<PinApp />); await view.findByAltText('浮动图片');
     expect(view.queryByRole('toolbar')).toBeNull();
     emit('popper:pin-updated', { ...state, toolbarVisible: true });
-    expect(view.getByRole('toolbar', { name: '贴图工具条' })).toBeVisible();
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_toolbar_publish', { snapshot: expect.objectContaining({ enabled: true }) }));
+    expect(view.queryByRole('toolbar')).toBeNull();
     emit('popper:pin-updated', { ...state, toolbarVisible: true, annotationsVisible: false });
-    expect(view.getByRole('button', { name: '矩形' })).toBeDisabled();
+    await waitFor(() => expect(invoke).toHaveBeenLastCalledWith('capture_pin_toolbar_publish', { snapshot: expect.objectContaining({ enabled: false }) }));
     emit('popper:pin-updated', { ...state, toolbarVisible: true });
     expect(renderScene).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), expect.anything(), 400, 240, annotations);
-    fireEvent.click(view.getByRole('button', { name: '隐藏工具条' }));
-    expect(invoke).toHaveBeenCalledWith('capture_pin_action', { action: 'toolbar' });
+    emit('popper:pin-toolbar-action', { action: 'tool', tool: 'pen' });
+    await waitFor(() => expect(invoke).toHaveBeenLastCalledWith('capture_pin_toolbar_publish', { snapshot: expect.objectContaining({ tool: 'pen' }) }));
     view.unmount();
   });
   it('copies and saves from the native menu without closing the pin, and retries after an output failure', async () => {

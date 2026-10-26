@@ -44,6 +44,77 @@ pub fn cursor() -> Result<(i32, i32), String> {
     unsafe { GetPhysicalCursorPos(&mut point) }.map_err(|e| e.to_string())?;
     Ok((point.x, point.y))
 }
+pub fn pin_toolbar_geometry(
+    window: &tauri::WebviewWindow,
+    meta: &super::PinnedImageState,
+) -> Result<(CaptureRect, CaptureRect, f64), String> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let mut frame = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut frame) }.map_err(|e| e.to_string())?;
+    let mut info = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut info) }
+        .as_bool()
+    {
+        return Err("无法读取贴图所在屏幕".into());
+    }
+    let width = (frame.right - frame.left).max(1) as f64;
+    let height = (frame.bottom - frame.top).max(1) as f64;
+    let inset_x = (width * meta.shadow_inset as f64
+        / ((meta.width as f64 * meta.zoom).round().max(1.0) + 2.0 * meta.shadow_inset as f64))
+        .round();
+    let inset_y = (height * meta.shadow_inset as f64
+        / ((meta.height as f64 * meta.zoom).round().max(1.0) + 2.0 * meta.shadow_inset as f64))
+        .round();
+    Ok((
+        CaptureRect {
+            x: frame.left + inset_x as i32,
+            y: frame.top + inset_y as i32,
+            width: (width - 2.0 * inset_x).max(1.0) as u32,
+            height: (height - 2.0 * inset_y).max(1.0) as u32,
+        },
+        CaptureRect {
+            x: info.rcWork.left,
+            y: info.rcWork.top,
+            width: (info.rcWork.right - info.rcWork.left).max(1) as u32,
+            height: (info.rcWork.bottom - info.rcWork.top).max(1) as u32,
+        },
+        window.scale_factor().map_err(|e| e.to_string())?,
+    ))
+}
+pub fn position_pin_toolbar(
+    window: &tauri::WebviewWindow,
+    rect: CaptureRect,
+) -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    let mut current = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut current) }.map_err(|e| e.to_string())?;
+    if current.left == rect.x
+        && current.top == rect.y
+        && (current.right - current.left) as u32 == rect.width
+        && (current.bottom - current.top) as u32 == rect.height
+    {
+        return Ok(());
+    }
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            None,
+            rect.x,
+            rect.y,
+            rect.width as i32,
+            rect.height as i32,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    }
+    .map_err(|e| e.to_string())
+}
 pub fn drag_pin(
     window: &tauri::WebviewWindow,
     anchor: Option<CapturePoint>,

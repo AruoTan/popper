@@ -1,7 +1,6 @@
-import { useEffect, useLayoutEffect, useImperativeHandle, useRef, useState, type JSX, type Ref, type PointerEvent } from 'react';
-import { Check, Copy, Download, Redo2, Trash2, Undo2, X } from 'lucide-react';
-import type { CaptureAnnotation, CapturePoint, CaptureTool } from '../../shared/capture';
-import { ANNOTATION_TOOLS } from './annotationTools';
+import { useEffect, useLayoutEffect, useImperativeHandle, useMemo, useRef, useState, type JSX, type Ref, type PointerEvent } from 'react';
+import { Check } from 'lucide-react';
+import type { CaptureAnnotation, CapturePoint, CaptureTool, PinToolbarAction, PinToolbarState } from '../../shared/capture';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, emptyHistory, hitAnnotation, redo, undo } from './geometry';
 import { pngBytes, renderScene } from './drawing';
 
@@ -9,20 +8,26 @@ export interface PinEditorHandle {
   snapshot: () => Promise<Uint8Array>;
   keyDown: (event: KeyboardEvent) => boolean;
   cancelGesture: () => void;
+  toolbarAction: (action: PinToolbarAction) => void;
 }
 type Gesture = { pointer: number; start: CapturePoint; item: CaptureAnnotation; move: boolean; changed: boolean; target: HTMLCanvasElement };
 type TextEdit = { item: CaptureAnnotation; text: string };
 
-export function PinEditor({ ref, image, original, initial, toolbar, visible, busy, onOutput, onHideToolbar, onError }: {
+export function PinEditor({ ref, image, original, initial, toolbar, visible, busy, onToolbarState, onError }: {
   ref: Ref<PinEditorHandle>; image: HTMLImageElement; original: ArrayBuffer; initial: CaptureAnnotation[];
-  toolbar: boolean; visible: boolean; busy: boolean; onOutput: (output: 'copy' | 'save') => void;
-  onHideToolbar: () => void; onError: (error: unknown) => void;
+  toolbar: boolean; visible: boolean; busy: boolean; onToolbarState: (state: PinToolbarState) => void;
+  onError: (error: unknown) => void;
 }): JSX.Element {
   const [history, setHistory] = useState(() => ({ ...emptyHistory(), present: initial }));
   const [tool, setTool] = useState<CaptureTool>('select'), [color, setColor] = useState('#ff4545'), [width, setWidth] = useState(3);
   const [draft, setDraft] = useState<CaptureAnnotation | null>(null), [selected, setSelected] = useState<string | null>(null), [text, setText] = useState<TextEdit | null>(null);
   const canvas = useRef<HTMLCanvasElement>(null), gesture = useRef<Gesture | null>(null), errorHandler = useRef(onError);
   errorHandler.current = onError;
+  const stateHandler = useRef(onToolbarState); stateHandler.current = onToolbarState;
+  const toolbarState = useMemo<PinToolbarState>(() => ({ tool, color, lineWidth: width, enabled: visible && !busy, busy,
+    canUndo: !!history.past.length && !text, canRedo: !!history.future.length && !text, canDelete: !!selected && !text,
+  }), [tool, color, width, visible, busy, history.past.length, history.future.length, selected, text]);
+  useEffect(() => { if (toolbar) stateHandler.current(toolbarState); }, [toolbar, toolbarState]);
   const bounds = { x: 0, y: 0, width: image.naturalWidth, height: image.naturalHeight };
   const textItems = (): CaptureAnnotation[] => {
     if (!text) return history.present;
@@ -48,6 +53,18 @@ export function PinEditor({ ref, image, original, initial, toolbar, visible, bus
   const remove = (): void => { setHistory(commit(history, history.present.filter((item) => item.id !== selected))); setSelected(null); };
   useImperativeHandle(ref, () => ({
     cancelGesture,
+    toolbarAction: (action) => {
+      if (action.action === 'hide') { finishText(); return; }
+      if (!toolbar || !visible || busy) return;
+      switch (action.action) {
+        case 'tool': finishText(); setTool(action.tool); setSelected(null); break;
+        case 'color': setColor(action.color); break;
+        case 'width': setWidth(clamp(action.width, 1, 32)); break;
+        case 'undo': if (!text) { setHistory(undo); setSelected(null); } break;
+        case 'redo': if (!text) { setHistory(redo); setSelected(null); } break;
+        case 'delete': if (!text && selected) remove(); break;
+      }
+    },
     snapshot: async () => {
       cancelGesture();
       const items = visible ? textItems() : [];
@@ -107,17 +124,6 @@ export function PinEditor({ ref, image, original, initial, toolbar, visible, bus
         else if (tool !== 'select') event.stopPropagation();
       }} onWheel={(event) => { if (toolbar && visible && tool !== 'select' && !event.ctrlKey && !busy) { event.preventDefault(); event.stopPropagation(); setWidth(clamp(width + (event.deltaY < 0 ? 1 : -1), 1, 32)); } }} />
     {toolbar && visible && selectedBounds && !text && <span className="capture-pin-object" style={{ left: `${selectedBounds.x / bounds.width * 100}%`, top: `${selectedBounds.y / bounds.height * 100}%`, width: `${selectedBounds.width / bounds.width * 100}%`, height: `${selectedBounds.height / bounds.height * 100}%` }} />}
-    {toolbar && <div className="capture-pin-toolbar" role="toolbar" aria-label="贴图工具条" data-pin-ui onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onWheel={(event) => event.stopPropagation()}>
-      {ANNOTATION_TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy || !visible} onClick={() => { finishText(); setTool(value); setSelected(null); }}><Icon size={16} /></button>)}
-      <input type="color" aria-label="标注颜色" value={color} disabled={busy || !visible} onChange={(event) => setColor(event.target.value)} />
-      <input type="number" aria-label="线宽" min={1} max={32} value={width} disabled={busy || !visible} onChange={(event) => setWidth(clamp(Number(event.target.value) || 1, 1, 32))} />
-      <button aria-label="撤销" title="撤销" disabled={busy || !visible || !history.past.length || !!text} onClick={() => { setHistory(undo(history)); setSelected(null); }}><Undo2 size={16} /></button>
-      <button aria-label="重做" title="重做" disabled={busy || !visible || !history.future.length || !!text} onClick={() => { setHistory(redo(history)); setSelected(null); }}><Redo2 size={16} /></button>
-      <button aria-label="删除标注" title="删除标注" disabled={busy || !visible || !selected || !!text} onClick={remove}><Trash2 size={16} /></button>
-      <button aria-label="复制图像" title="复制图像" disabled={busy} onClick={() => onOutput('copy')}><Copy size={16} /></button>
-      <button aria-label="另存图像" title="另存图像" disabled={busy} onClick={() => onOutput('save')}><Download size={16} /></button>
-      <button aria-label="隐藏工具条" title="隐藏工具条" disabled={busy} onClick={() => { finishText(); onHideToolbar(); }}><X size={16} /></button>
-    </div>}
     {toolbar && visible && text && <div className="capture-pin-text" data-pin-ui onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
       <textarea autoFocus aria-label="标注文字" maxLength={4000} value={text.text} onChange={(event) => setText({ ...text, text: event.target.value })} onKeyDown={(event) => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); finishText(); } }} />
       <button onClick={finishText}><Check size={14} />完成文字</button>

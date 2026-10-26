@@ -1,5 +1,7 @@
 use super::{CaptureAnnotation, CaptureRect, PinUpdate, PinnedImageState};
 use std::{collections::HashMap, sync::Arc};
+#[path = "pins/toolbar.rs"]
+pub mod toolbar;
 const MAX_PINS: usize = 12;
 const PIN_BUDGET: u64 = 256 * 1024 * 1024;
 pub const SHADOW_INSET: u32 = 24;
@@ -50,6 +52,7 @@ pub struct Pin {
     pub visible: bool,
     pub closed: bool,
     pub ready: bool,
+    pub toolbar: toolbar::Toolbar,
 }
 #[derive(Default)]
 pub struct Pins {
@@ -113,6 +116,7 @@ mod tests {
             visible: true,
             closed: false,
             ready: true,
+            toolbar: Default::default(),
         }
     }
     #[test]

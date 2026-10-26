@@ -45,3 +45,19 @@ export interface CaptureAnnotation {
   width: number;
   text?: string;
 }
+export interface PinToolbarState {
+  tool: CaptureTool;
+  color: string;
+  lineWidth: number;
+  enabled: boolean;
+  busy: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
+  canDelete: boolean;
+}
+export type PinToolbarAction =
+  | { action: 'tool'; tool: CaptureTool }
+  | { action: 'color'; color: string }
+  | { action: 'width'; width: number }
+  | { action: 'undo' | 'redo' | 'delete' | 'copy' | 'save' | 'hide' }
+  | { action: 'close'; destroy: boolean };

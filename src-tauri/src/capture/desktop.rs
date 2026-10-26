@@ -1,6 +1,7 @@
 mod pinned;
 mod scrolling;
 mod shortcuts;
+mod toolbar;
 use pinned::{create_pin, PinPlacement};
 pub use pinned::{
     paste, pin_action, pin_annotations, pin_close, pin_drag, pin_menu, pin_output, pin_state,
@@ -8,6 +9,7 @@ pub use pinned::{
 };
 pub use scrolling::{scroll_begin, scroll_finish, scroll_preview, scroll_step};
 pub use shortcuts::ShortcutChange;
+pub use toolbar::{toolbar_action, toolbar_publish, toolbar_ready, toolbar_state};
 
 use super::pins::Pins;
 use super::{
@@ -437,6 +439,7 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
     state.active.store(false, Ordering::Release);
     app.state::<RuntimeState>()
         .set_screen_capture_active(app, false);
+    toolbar::refresh_visible(app);
     result
 }
 pub fn fail(app: &AppHandle, window: &WebviewWindow, message: &str) -> Result<(), String> {

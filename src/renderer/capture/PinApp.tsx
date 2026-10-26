@@ -7,6 +7,7 @@ import { clamp } from './geometry';
 import { getErrorMessage } from '../lib/errors';
 import { usePinDrag } from './usePinDrag';
 import { PinEditor, type PinEditorHandle } from './PinEditor';
+import { usePinToolbar } from './usePinToolbar';
 
 export function PinApp(): JSX.Element {
   const [meta, setMeta] = useState<PinnedImageState | null>(null), [source, setSource] = useState(''), [error, setError] = useState('');
@@ -20,6 +21,7 @@ export function PinApp(): JSX.Element {
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const current = useRef(meta), queue = useRef<Promise<unknown>>(Promise.resolve()), revision = useRef(0);
   const drag = usePinDrag((e) => setError(getErrorMessage(e, '无法移动贴图')));
+  const publishToolbar = usePinToolbar((action) => editor.current?.toolbarAction(action), (e) => { if (current.current?.toolbarVisible) setError(getErrorMessage(e, '无法显示贴图工具条')); });
   current.current = meta;
   useEffect(() => {
     alive.current = true;
@@ -69,7 +71,6 @@ export function PinApp(): JSX.Element {
     finally { outputting.current = false; if (alive.current) setBusy(false); }
   };
   outputHandler.current = (destination) => { void output(destination); };
-  const hideToolbar = (): void => { void invoke('capture_pin_action', { action: 'toolbar' }).catch((e: unknown) => setError(getErrorMessage(e, '无法隐藏工具条'))); };
   keyboard.current = (event): void => {
     if (event.key === 'Escape' || (event.ctrlKey && event.key.toLowerCase() === 'w')) { event.preventDefault(); close(event.shiftKey); }
     else if (editor.current?.keyDown(event)) event.preventDefault();
@@ -90,7 +91,7 @@ export function PinApp(): JSX.Element {
       const main = event.currentTarget.closest<HTMLElement>('main'); showing.current = true;
       void invoke('capture_show').then(() => { if (alive.current) { setShadowEpoch((epoch) => epoch + 1); main?.focus(); } }).catch((e: unknown) => { if (alive.current) { showing.current = false; setError(getErrorMessage(e, '无法显示贴图')); } });
     }} />}
-    {content && meta && <PinEditor ref={editor} image={content.image} original={content.bytes} initial={content.annotations} toolbar={meta.toolbarVisible} visible={meta.annotationsVisible} busy={busy} onOutput={(destination) => void output(destination)} onHideToolbar={hideToolbar} onError={(e) => setError(getErrorMessage(e, '无法绘制贴图'))} />}
+    {content && meta && <PinEditor ref={editor} image={content.image} original={content.bytes} initial={content.annotations} toolbar={meta.toolbarVisible} visible={meta.annotationsVisible} busy={busy} onToolbarState={publishToolbar} onError={(e) => setError(getErrorMessage(e, '无法绘制贴图'))} />}
     {error && <div className="capture-pin-error" role="alert">{error}</div>}
   </main></div>;
 }

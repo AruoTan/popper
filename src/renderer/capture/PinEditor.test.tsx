@@ -1,9 +1,10 @@
-import { createRef, type ReactNode } from 'react';
+import { createRef, useState, type ReactNode } from 'react';
 import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PinEditor, type PinEditorHandle } from './PinEditor';
+import { PinToolbar } from './PinToolbar';
 import { pngBytes, renderScene } from './drawing';
-import type { CaptureAnnotation } from '../../shared/capture';
+import type { CaptureAnnotation, PinToolbarState } from '../../shared/capture';
 
 vi.mock('./drawing', () => ({ renderScene: vi.fn(), pngBytes: vi.fn(async () => new Uint8Array([1, 2, 3])) }));
 const image = { naturalWidth: 800, naturalHeight: 480 } as HTMLImageElement;
@@ -12,9 +13,14 @@ beforeEach(() => vi.clearAllMocks());
 
 function setup(items: CaptureAnnotation[] = []) {
   const ref = createRef<PinEditorHandle>();
-  const props = { ref, image, original: new Uint8Array([8, 9]).buffer, initial: items, toolbar: true, visible: true, busy: false, onOutput: vi.fn(), onHideToolbar: vi.fn(), onError: vi.fn() };
+  const props = { ref, image, original: new Uint8Array([8, 9]).buffer, initial: items, toolbar: true, visible: true, busy: false, onToolbarState: vi.fn(), onError: vi.fn() };
   const pointerDown = vi.fn(), wheel = vi.fn();
-  const shell = (child: ReactNode) => <div onPointerDown={pointerDown} onWheel={wheel}>{child}</div>;
+  function Shell({ child }: { child: ReactNode }) {
+    const [state, setState] = useState<PinToolbarState | null>(null);
+    props.onToolbarState.mockImplementation(setState);
+    return <div onPointerDown={pointerDown} onWheel={wheel}><section>{child}</section>{state && <aside><PinToolbar state={state} onAction={(action) => ref.current?.toolbarAction(action)} /></aside>}</div>;
+  }
+  const shell = (child: ReactNode) => <Shell child={child} />;
   const view = render(shell(<PinEditor {...props} />));
   const canvas = view.getByLabelText('贴图标注画布') as HTMLCanvasElement;
   Object.assign(canvas, { setPointerCapture: vi.fn(), hasPointerCapture: () => true, releasePointerCapture: vi.fn() });
@@ -92,7 +98,7 @@ describe('pin annotation layers', () => {
     fireEvent.pointerMove(view.canvas, { pointerId: 1, clientX: 124, clientY: 84 });
     view.rerender(<PinEditor {...view.props} toolbar={false} />);
     fireEvent.pointerUp(view.canvas, { pointerId: 1 });
-    expect(view.queryByRole('toolbar')).toBeNull();
+    expect(view.canvas.parentElement?.querySelector('[role="toolbar"]')).toBeNull();
     fireEvent.pointerDown(view.canvas, { button: 0, pointerId: 2 });
     expect(view.pointerDown).toHaveBeenCalledTimes(1);
     view.rerender(<PinEditor {...view.props} />);

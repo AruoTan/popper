@@ -295,6 +295,43 @@ pub fn capture_pin_action(
     desktop_call!(desktop::pin_action(&app, &window, &action))
 }
 #[tauri::command]
+pub async fn capture_pin_toolbar_publish(
+    app: AppHandle,
+    window: WebviewWindow,
+    snapshot: PinToolbarState,
+) -> Result<(), String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::toolbar_publish(
+            &app, &window, snapshot
+        ))
+        .await
+        .map_err(|e| e.to_string())?
+    )
+}
+#[tauri::command]
+pub fn capture_pin_toolbar_state(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<PinToolbarState, String> {
+    desktop_call!(desktop::toolbar_state(&app, &window))
+}
+#[tauri::command]
+pub fn capture_pin_toolbar_ready(
+    app: AppHandle,
+    window: WebviewWindow,
+    height: f64,
+) -> Result<(), String> {
+    desktop_call!(desktop::toolbar_ready(&app, &window, height))
+}
+#[tauri::command]
+pub fn capture_pin_toolbar_action(
+    app: AppHandle,
+    window: WebviewWindow,
+    action: PinToolbarAction,
+) -> Result<(), String> {
+    desktop_call!(desktop::toolbar_action(&app, &window, action))
+}
+#[tauri::command]
 pub async fn capture_pin_output(
     app: AppHandle,
     window: WebviewWindow,
