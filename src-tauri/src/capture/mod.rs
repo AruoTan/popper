@@ -125,9 +125,14 @@ pub async fn capture_crop(
     window: WebviewWindow,
     rect: CaptureRect,
     version: u64,
+    annotations: Option<Vec<CaptureAnnotation>>,
 ) -> Result<tauri::ipc::Response, String> {
     desktop_call!(tauri::async_runtime::spawn_blocking(move || desktop::crop(
-        &app, &window, rect, version
+        &app,
+        &window,
+        rect,
+        version,
+        annotations
     )
     .map(tauri::ipc::Response::new))
     .await
@@ -273,6 +278,45 @@ pub fn capture_pin_update(
 #[tauri::command]
 pub fn capture_pin_menu(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     desktop_call!(desktop::pin_menu(&app, &window))
+}
+#[tauri::command]
+pub fn capture_pin_annotations(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<Vec<CaptureAnnotation>, String> {
+    desktop_call!(desktop::pin_annotations(&app, &window))
+}
+#[tauri::command]
+pub fn capture_pin_action(
+    app: AppHandle,
+    window: WebviewWindow,
+    action: String,
+) -> Result<(), String> {
+    desktop_call!(desktop::pin_action(&app, &window, &action))
+}
+#[tauri::command]
+pub async fn capture_pin_output(
+    app: AppHandle,
+    window: WebviewWindow,
+    request: tauri::ipc::Request<'_>,
+) -> Result<bool, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("图片必须使用二进制传输".into());
+    };
+    let bytes = bytes.clone();
+    let output = request
+        .headers()
+        .get("x-pin-output")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("输出方式无效")?
+        .to_owned();
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::pin_output(
+            &app, &window, bytes, &output
+        ))
+        .await
+        .map_err(|e| e.to_string())?
+    )
 }
 #[tauri::command]
 pub fn capture_pin_close(

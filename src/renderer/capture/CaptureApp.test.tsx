@@ -1,12 +1,12 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { decodePng } from './drawing';
+import { decodePng, pngBytes } from './drawing';
 import { CaptureApp } from './CaptureApp';
 import type { CaptureHitTest, ScrollCaptureProgress, ScrollCaptureSession } from '../../shared/capture';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
-vi.mock('./drawing', () => ({ decodePng: vi.fn(), renderScene: vi.fn(), pngBytes: vi.fn() }));
+vi.mock('./drawing', async (importOriginal) => ({ ...await importOriginal<typeof import('./drawing')>(), decodePng: vi.fn(), renderScene: vi.fn(), pngBytes: vi.fn() }));
 const meta = { id: 'session', screen: { x: -1920, y: 0, width: 1920, height: 1080 }, scale: 1.5, color: '#ff4545', lineWidth: 3 };
 beforeEach(() => {
   vi.clearAllMocks();
@@ -51,6 +51,29 @@ describe('scroll capture integration', () => {
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(view.getByRole('toolbar', { name: '滚动截图操作' })).toBeInTheDocument()); return view;
   }
+  it('hands off a cropped base image and independently translated annotations when creating a pin', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, ...args) => command === 'capture_crop'
+      ? Promise.resolve(new Uint8Array([7, 8, 9]).buffer) : implementation(command, ...args));
+    const view = await selected(), main = view.container.querySelector('main')!;
+    fireEvent.click(view.getByLabelText('矩形'));
+    const point = (x: number, y: number) => ({ clientX: x * window.innerWidth / meta.screen.width, clientY: y * window.innerHeight / meta.screen.height, button: 0 });
+    fireEvent.pointerDown(main, point(60, 70));
+    fireEvent.pointerMove(main, point(160, 170));
+    fireEvent.pointerUp(main, point(160, 170));
+    fireEvent.click(view.getByLabelText('创建贴图'));
+    await waitFor(() => expect(calls('capture_export')).toBe(1));
+    const args = vi.mocked(invoke).mock.calls.find(([command]) => command === 'capture_crop')![1] as { rect: object; annotations: { points: { x: number; y: number }[] }[] };
+    expect(args.rect).toEqual(rect);
+    expect(args.annotations).toHaveLength(1);
+    expect(args.annotations[0]!.points[0]!.x).toBeCloseTo(40);
+    expect(args.annotations[0]!.points[0]!.y).toBeCloseTo(50);
+    expect(args.annotations[0]!.points[1]!.x).toBeCloseTo(140);
+    expect(args.annotations[0]!.points[1]!.y).toBeCloseTo(150);
+    expect(invoke).toHaveBeenCalledWith('capture_export', new Uint8Array([7, 8, 9]), expect.objectContaining({ headers: expect.objectContaining({ 'x-capture-output': 'pin' }) }));
+    expect(pngBytes).not.toHaveBeenCalled();
+    view.unmount();
+  });
   it('keeps the frozen canvas and selection until the final scrolling layout is ready', async () => {
     let resolve!: (value: ScrollCaptureSession) => void;
     const implementation = vi.mocked(invoke).getMockImplementation()!;

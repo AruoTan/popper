@@ -2,14 +2,14 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { decodePng } from './drawing';
+import { decodePng, pngBytes, renderScene } from './drawing';
 import { PinApp } from './PinApp';
 import type { PinnedImageState } from '../../shared/capture';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
-vi.mock('./drawing', () => ({ decodePng: vi.fn() }));
-const state: PinnedImageState = { id: 'pin', width: 400, height: 240, zoom: 1, opacity: 1, clickThrough: false, shadowInset: 24 };
+vi.mock('./drawing', () => ({ decodePng: vi.fn(), renderScene: vi.fn(), pngBytes: vi.fn(async () => new Uint8Array([1, 2, 3])) }));
+const state: PinnedImageState = { id: 'pin', width: 400, height: 240, zoom: 1, opacity: 1, shadowInset: 24, toolbarVisible: false, annotationsVisible: true, alwaysOnTop: true };
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:pin-image'), revokeObjectURL: vi.fn() });
@@ -18,8 +18,71 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === 'capture_pin_state') return state;
     if (command === 'capture_image') return new ArrayBuffer(0);
+    if (command === 'capture_pin_annotations') return [];
     if (command === 'capture_pin_update') return { ...state, ...(args as { update: object }).update };
     if (command === 'capture_pin_drag') return { x: 124, y: 84 };
+  });
+});
+
+describe('pinned image menu actions', () => {
+  const emit = (name: string, payload: unknown): void => {
+    const callback = vi.mocked(listen).mock.calls.find(([event]) => event === name)![1];
+    act(() => callback({ event: name, id: 1, payload }));
+  };
+  it('uses the native menu and reports failures without showing an obsolete fallback', async () => {
+    const view = render(<PinApp />), image = await view.findByAltText('浮动图片');
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('menu unavailable'));
+    fireEvent.contextMenu(image);
+    expect(invoke).toHaveBeenCalledWith('capture_pin_menu');
+    expect(await view.findByRole('alert')).toHaveTextContent('menu unavailable');
+    expect(view.queryByRole('menu')).toBeNull();
+    view.unmount();
+  });
+  it('toggles toolbar and annotation visibility from native menu state without losing the annotation layer', async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    const annotations = [{ id: 'a', tool: 'rectangle', points: [{ x: 10, y: 10 }, { x: 40, y: 40 }], color: '#ff4545', width: 3 }];
+    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_annotations' ? Promise.resolve(annotations) : original(command, args));
+    const view = render(<PinApp />); await view.findByAltText('浮动图片');
+    expect(view.queryByRole('toolbar')).toBeNull();
+    emit('popper:pin-updated', { ...state, toolbarVisible: true });
+    expect(view.getByRole('toolbar', { name: '贴图工具条' })).toBeVisible();
+    emit('popper:pin-updated', { ...state, toolbarVisible: true, annotationsVisible: false });
+    expect(view.getByRole('button', { name: '矩形' })).toBeDisabled();
+    emit('popper:pin-updated', { ...state, toolbarVisible: true });
+    expect(renderScene).toHaveBeenLastCalledWith(expect.any(HTMLCanvasElement), expect.anything(), 400, 240, annotations);
+    fireEvent.click(view.getByRole('button', { name: '隐藏工具条' }));
+    expect(invoke).toHaveBeenCalledWith('capture_pin_action', { action: 'toolbar' });
+    view.unmount();
+  });
+  it('copies and saves from the native menu without closing the pin, and retries after an output failure', async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    let failed = false;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === 'capture_pin_output') { if (!failed) { failed = true; return Promise.reject(new Error('clipboard busy')); } return Promise.resolve(false); }
+      return original(command, args);
+    });
+    const view = render(<PinApp />); await view.findByAltText('浮动图片');
+    emit('popper:pin-output', 'copy');
+    expect(await view.findByRole('alert')).toHaveTextContent('clipboard busy');
+    emit('popper:pin-output', 'save');
+    await waitFor(() => expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'capture_pin_output')).toHaveLength(2));
+    expect(invoke).toHaveBeenLastCalledWith('capture_pin_output', expect.any(Uint8Array), { headers: { 'x-pin-output': 'save' } });
+    expect(invoke).not.toHaveBeenCalledWith('capture_pin_close', expect.anything());
+    expect(view.getByAltText('浮动图片')).toBeVisible();
+    view.unmount();
+  });
+  it.each(['close', 'unmount'])('discards an encoded output after %s', async (reason) => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_annotations' ? Promise.resolve([{ id: 'a', tool: 'pen', points: [{ x: 10, y: 10 }], color: '#ff4545', width: 3 }]) : original(command, args));
+    let finish!: (bytes: Uint8Array) => void;
+    vi.mocked(pngBytes).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const view = render(<PinApp />); await view.findByAltText('浮动图片');
+    emit('popper:pin-output', 'copy'); emit('popper:pin-output', 'copy');
+    expect(pngBytes).toHaveBeenCalledTimes(1);
+    if (reason === 'close') fireEvent.keyDown(window, { key: 'Escape' }); else view.unmount();
+    await act(async () => { finish(new Uint8Array([1])); });
+    expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'capture_pin_output')).toHaveLength(0);
+    if (reason === 'close') view.unmount();
   });
 });
 
@@ -119,6 +182,7 @@ describe('pinned image presentation', () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_pin_state') return state;
       if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_pin_annotations') return [];
       if (command === 'capture_show') return new Promise<void>((resolve) => { shown = resolve; });
     });
     const view = render(<PinApp />);
@@ -144,7 +208,7 @@ describe('pinned image presentation', () => {
     const main = image.closest('main')!;
     vi.spyOn(main, 'getBoundingClientRect').mockReturnValue({ left: 24, top: 24, width: 400, height: 240 } as DOMRect);
     fireEvent.wheel(main, { deltaY: -120, clientX: 124, clientY: 204 });
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_update', { update: { zoom: 1.1, opacity: 1, clickThrough: false, anchorX: 0.25, anchorY: 0.75 } }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_update', { update: { zoom: 1.1, opacity: 1, anchorX: 0.25, anchorY: 0.75 } }));
     view.unmount();
   });
 
@@ -153,6 +217,7 @@ describe('pinned image presentation', () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_pin_state') return state;
       if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_pin_annotations') return [];
       if (command === 'capture_show') return new Promise<void>((resolve) => { shown = resolve; });
     });
     const view = render(<PinApp />);

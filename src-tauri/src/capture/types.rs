@@ -141,15 +141,71 @@ pub struct PinnedImageState {
     pub height: u32,
     pub zoom: f64,
     pub opacity: f64,
-    pub click_through: bool,
     pub shadow_inset: u32,
+    pub toolbar_visible: bool,
+    pub annotations_visible: bool,
+    pub always_on_top: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CaptureAnnotation {
+    pub id: String,
+    pub tool: AnnotationTool,
+    pub points: Vec<AnnotationPoint>,
+    pub color: String,
+    pub width: f64,
+    pub text: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AnnotationTool {
+    Rectangle,
+    Ellipse,
+    Arrow,
+    Pen,
+    Text,
+    Mosaic,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnnotationPoint {
+    pub x: f64,
+    pub y: f64,
+}
+
+pub fn validate_annotations(items: &[CaptureAnnotation]) -> Result<(), String> {
+    let points: usize = items.iter().map(|item| item.points.len()).sum();
+    if items.len() > 2048
+        || points > 262144
+        || items.iter().any(|item| {
+            item.id.len() > 128
+                || item.points.is_empty()
+                || item.color.len() != 7
+                || !item.color.starts_with('#')
+                || !item.color[1..].bytes().all(|c| c.is_ascii_hexdigit())
+                || !item.width.is_finite()
+                || !(1.0..=32.0).contains(&item.width)
+                || item.points.iter().any(|point| {
+                    !point.x.is_finite()
+                        || !point.y.is_finite()
+                        || point.x.abs() > 1e7
+                        || point.y.abs() > 1e7
+                })
+                || item
+                    .text
+                    .as_ref()
+                    .is_some_and(|text| text.chars().count() > 4000)
+        })
+    {
+        return Err("标注数据无效或过大".into());
+    }
+    Ok(())
 }
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PinUpdate {
     pub zoom: f64,
     pub opacity: f64,
-    pub click_through: bool,
     pub anchor_x: f64,
     pub anchor_y: f64,
 }
@@ -163,6 +219,29 @@ pub struct PendingAttachment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn annotation_layers_preserve_fractional_coordinates_and_reject_invalid_payloads() {
+        let value = serde_json::json!({"id":"shape", "tool":"rectangle", "points":[{"x":-12.5,"y":30.25},{"x":300.5,"y":140.75}], "color":"#ff4545", "width":3.0});
+        let item: CaptureAnnotation = serde_json::from_value(value.clone()).unwrap();
+        validate_annotations(&[item.clone()]).unwrap();
+        assert_eq!(item.points[0].x, -12.5);
+        for patch in [
+            serde_json::json!({"tool":"select"}),
+            serde_json::json!({"points":[]}),
+            serde_json::json!({"width":0}),
+            serde_json::json!({"color":"invalid"}),
+            serde_json::json!({"points":[{"x":1e20,"y":0}]}),
+        ] {
+            let mut invalid = value.clone();
+            for (key, value) in patch.as_object().unwrap() {
+                invalid[key] = value.clone();
+            }
+            assert!(serde_json::from_value::<CaptureAnnotation>(invalid)
+                .map(|item| validate_annotations(&[item]).is_err())
+                .unwrap_or(true));
+        }
+        assert!(validate_annotations(&vec![item; 2049]).is_err());
+    }
     #[test]
     fn drag_anchor_decodes_nullable_signed_pixel_coordinates() {
         let empty = serde_json::from_str::<Option<CapturePoint>>("null").unwrap();

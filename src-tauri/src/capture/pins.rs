@@ -1,4 +1,4 @@
-use super::{CaptureRect, PinUpdate, PinnedImageState};
+use super::{CaptureAnnotation, CaptureRect, PinUpdate, PinnedImageState};
 use std::{collections::HashMap, sync::Arc};
 const MAX_PINS: usize = 12;
 const PIN_BUDGET: u64 = 256 * 1024 * 1024;
@@ -46,6 +46,7 @@ pub fn resized_frame(
 pub struct Pin {
     pub meta: PinnedImageState,
     pub png: Arc<Vec<u8>>,
+    pub annotations: Vec<CaptureAnnotation>,
     pub visible: bool,
     pub closed: bool,
     pub ready: bool,
@@ -102,10 +103,13 @@ mod tests {
                 height,
                 zoom: 1.0,
                 opacity: 1.0,
-                click_through: false,
                 shadow_inset: SHADOW_INSET,
+                toolbar_visible: false,
+                annotations_visible: true,
+                always_on_top: true,
             },
             png: Arc::new(vec![1, 2, 3]),
+            annotations: Vec::new(),
             visible: true,
             closed: false,
             ready: true,
@@ -149,7 +153,6 @@ mod tests {
                 let update = PinUpdate {
                     zoom,
                     opacity: 1.0,
-                    click_through: false,
                     anchor_x,
                     anchor_y,
                 };
@@ -173,7 +176,6 @@ mod tests {
         let opacity_only = PinUpdate {
             zoom: 1.0,
             opacity: 0.5,
-            click_through: true,
             anchor_x: 0.5,
             anchor_y: 0.5,
         };
@@ -191,7 +193,6 @@ mod tests {
         let update = PinUpdate {
             zoom: 1.1,
             opacity: 1.0,
-            click_through: false,
             anchor_x: 0.25,
             anchor_y: 0.75,
         };

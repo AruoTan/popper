@@ -3,7 +3,8 @@ mod scrolling;
 mod shortcuts;
 use pinned::{create_pin, PinPlacement};
 pub use pinned::{
-    paste, pin_close, pin_drag, pin_menu, pin_state, pin_update, recover_click_through, toggle_pins,
+    paste, pin_action, pin_annotations, pin_close, pin_drag, pin_menu, pin_output, pin_state,
+    pin_update, toggle_pins,
 };
 pub use scrolling::{scroll_begin, scroll_finish, scroll_preview, scroll_step};
 pub use shortcuts::ShortcutChange;
@@ -47,6 +48,7 @@ struct Session {
     scroll_completed: bool,
     scroll_escape: Option<scrolling::ScrollEscape>,
     hidden_until: std::time::Instant,
+    pin_annotations: Vec<super::CaptureAnnotation>,
 }
 struct AttachmentDelivery {
     payload: PendingAttachment,
@@ -180,7 +182,6 @@ pub fn launch(app: &AppHandle, operation: &'static str) {
             "capture" => start(&handle),
             "paste" => paste(&handle),
             "toggle" => toggle_pins(&handle),
-            "recover" => recover_click_through(&handle),
             _ => Ok(()),
         };
         if let Err(error) = result {
@@ -295,6 +296,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         scroll_completed: false,
         scroll_escape: None,
         hidden_until: std::time::Instant::now() + Duration::from_secs(10),
+        pin_annotations: Vec::new(),
     });
     app.state::<RuntimeState>()
         .set_screen_capture_active(app, true);
@@ -581,6 +583,7 @@ pub fn select(
     }
     session.selection = Some(rect);
     session.version = version;
+    session.pin_annotations.clear();
     Ok(())
 }
 pub fn crop(
@@ -588,15 +591,20 @@ pub fn crop(
     window: &WebviewWindow,
     rect: CaptureRect,
     version: u64,
+    annotations: Option<Vec<super::CaptureAnnotation>>,
 ) -> Result<Vec<u8>, String> {
+    let annotations = annotations.unwrap_or_default();
+    super::validate_annotations(&annotations)?;
     select(app, window, rect, version)?;
     let image = {
         let state = manager(app);
         let mut slot = state.session.lock();
-        ensure_session(&mut slot, session_id(window)?)?
-            .image
-            .clone()
-            .ok_or("屏幕图像不可用")?
+        let session = ensure_session(&mut slot, session_id(window)?)?;
+        if session.version != version || session.selection != Some(rect) {
+            return Err("选区已经变化，请重新输出".into());
+        }
+        session.pin_annotations = annotations;
+        session.image.clone().ok_or("屏幕图像不可用")?
     };
     clipboard::png(
         &image::imageops::crop_imm(
@@ -723,37 +731,25 @@ pub fn export(
     match output {
         "clipboard" => clipboard::write(window.hwnd().map_err(|e| e.to_string())?, &image, &bytes)?,
         "file" => {
-            let Some(path) =
-                platform::save_dialog(app, window.hwnd().map_err(|e| e.to_string())?.0 as usize)?
-            else {
+            if !save_image(app, window, &bytes)? {
                 return Ok(false);
-            };
-            let parent = path.parent().ok_or("保存位置无效")?;
-            let temporary = parent.join(format!(".popper-{}.tmp", Uuid::new_v4()));
-            let result = (|| -> Result<(), String> {
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&temporary)
-                    .map_err(|e| e.to_string())?;
-                file.write_all(&bytes)
-                    .and_then(|_| file.sync_all())
-                    .map_err(|e| e.to_string())?;
-                drop(file);
-                crate::settings::atomic_file::replace_file(&temporary, &path)
-                    .map_err(|e| e.to_string())
-            })();
-            if result.is_err() {
-                let _ = std::fs::remove_file(&temporary);
             }
-            result?;
         }
         "pin" => {
+            let annotations = {
+                let mut slot = state.session.lock();
+                let session = ensure_session(&mut slot, id)?;
+                if session.version != version || session.selection != Some(rect) {
+                    return Err("选区已经变化，请重新输出".into());
+                }
+                session.pin_annotations.clone()
+            };
             new_pin = Some(create_pin(
                 app,
                 bytes,
                 image.width(),
                 image.height(),
+                annotations,
                 Some(PinPlacement {
                     position: CapturePoint {
                         x: screen.x + origin.x + rect.x,
@@ -776,6 +772,31 @@ pub fn export(
         crate::windows::show_quick_ask_window(app).map_err(|e| e.to_string())?;
     }
     Ok(true)
+}
+fn save_image(app: &AppHandle, window: &WebviewWindow, bytes: &[u8]) -> Result<bool, String> {
+    let Some(path) =
+        platform::save_dialog(app, window.hwnd().map_err(|e| e.to_string())?.0 as usize)?
+    else {
+        return Ok(false);
+    };
+    let parent = path.parent().ok_or("保存位置无效")?;
+    let temporary = parent.join(format!(".popper-{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|e| e.to_string())?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        drop(file);
+        crate::settings::atomic_file::replace_file(&temporary, &path).map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map(|_| true)
 }
 fn deliver_attachment(app: &AppHandle, bytes: Vec<u8>) -> Result<(), String> {
     if bytes.len() > crate::quick_ask::MAX_ATTACHMENT_BYTES {

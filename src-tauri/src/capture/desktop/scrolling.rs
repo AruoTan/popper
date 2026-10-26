@@ -124,6 +124,7 @@ pub fn scroll_begin(
     let session = ensure_session(&mut slot, id)?;
     session.version = version;
     session.selection = Some(rect);
+    session.pin_annotations.clear();
     session.scroll = Some(ScrollSession {
         target,
         rect,

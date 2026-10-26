@@ -1870,8 +1870,6 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     let paste = MenuItemBuilder::with_id("popper-capture-paste", "贴出图片").build(app)?;
     #[cfg(target_os = "windows")]
     let toggle = MenuItemBuilder::with_id("popper-capture-toggle", "显示／隐藏全部贴图").build(app)?;
-    #[cfg(target_os = "windows")]
-    let recover = MenuItemBuilder::with_id("popper-capture-recover", "取消全部贴图穿透").build(app)?;
     let open_settings = MenuItemBuilder::with_id(TRAY_SETTINGS_ID, "打开设置…").build(app)?;
     let version = MenuItemBuilder::new(format!("Popper {}", app.package_info().version))
         .enabled(false)
@@ -1881,7 +1879,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     #[cfg(not(target_os = "windows"))]
     let menu = menu.item(&permission).separator();
     #[cfg(target_os = "windows")]
-    let menu = menu.item(&capture).item(&paste).item(&toggle).item(&recover).separator();
+    let menu = menu.item(&capture).item(&paste).item(&toggle).separator();
     menu.item(&open_settings)
         .item(&version)
         .separator()
@@ -1911,8 +1909,6 @@ fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         "popper-capture-paste" => crate::capture::launch(app, "paste"),
         #[cfg(target_os = "windows")]
         "popper-capture-toggle" => crate::capture::launch(app, "toggle"),
-        #[cfg(target_os = "windows")]
-        "popper-capture-recover" => crate::capture::launch(app, "recover"),
         TRAY_SETTINGS_ID => open_settings_window(app),
         TRAY_QUIT_ID => quit_application(app),
         _ => {}

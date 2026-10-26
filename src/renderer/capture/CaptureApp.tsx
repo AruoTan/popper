@@ -1,17 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ArrowUpRight, Check, Circle, Copy, Download, MessageSquare, MousePointer2, Pencil, Pin, Redo2, Square, Type, Undo2, X, Grid3X3, Trash2, ScanLine } from 'lucide-react';
+import { Check, Copy, Download, MessageSquare, Pin, Redo2, Undo2, X, Trash2, ScanLine } from 'lucide-react';
 import type { CaptureAnnotation, CaptureCandidate, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, contains, emptyHistory, HANDLES, handlePoint, hitAnnotation, keyRect, moveRect, rectangle, redo, resizeRect, undo, type Handle } from './geometry';
-import { decodePng, pngBytes, renderScene } from './drawing';
+import { decodePng, pngBytes, renderScene, translateAnnotations } from './drawing';
 import { createCaptureHover } from './hover';
 import { createCaptureNavigation } from './navigation';
 import { ScrollCapture } from './ScrollCapture';
+import { ANNOTATION_TOOLS } from './annotationTools';
 
 type Gesture = { mode: 'new' | 'move' | 'resize' | 'draw' | 'object'; start: CapturePoint; rect: CaptureRect | null; handle?: Handle; item?: CaptureAnnotation; moved: boolean };
 type TextEdit = { id: string; point: CapturePoint; text: string; color: string; width: number };
-const TOOLS = [ ['select', MousePointer2, '选择与调整'], ['rectangle', Square, '矩形'], ['ellipse', Circle, '椭圆'], ['arrow', ArrowUpRight, '箭头'], ['pen', Pencil, '画笔'], ['text', Type, '文字'], ['mosaic', Grid3X3, '马赛克'] ] as const;
 
 function Magnifier({ image, point, screen, viewport }: { image: HTMLImageElement; point: CapturePoint; screen: CaptureRect; viewport: { width: number; height: number } }): JSX.Element {
   const panel = useRef<HTMLElement>(null);
@@ -161,10 +161,10 @@ export function CaptureApp(): JSX.Element {
       await invoke('capture_preferences', { color, lineWidth }).catch(() => {});
       if (!current()) return;
       const revision = ++version.current;
-      const original = await invoke<ArrayBuffer>('capture_crop', { rect: selection, version: revision });
+      const original = await invoke<ArrayBuffer>('capture_crop', { rect: selection, version: revision, ...(destination === 'pin' ? { annotations: translateAnnotations(history.present, selection) } : {}) });
       if (!current()) return;
       let bytes: Uint8Array;
-      if (!history.present.length) bytes = new Uint8Array(original);
+      if (destination === 'pin' || !history.present.length) bytes = new Uint8Array(original);
       else {
         const scene = document.createElement('canvas');
         renderScene(scene, image, bounds.width, bounds.height, history.present);
@@ -336,7 +336,7 @@ export function CaptureApp(): JSX.Element {
     {selectedItem && !textEdit && <div className="capture-object-outline" style={sceneStyle(annotationBounds(draft?.id === selectedItem.id ? draft : selectedItem))} />}
     {image && session && !textEdit && !busy && (tool === 'select' || alt) && <Magnifier image={image} point={point} screen={session.screen} viewport={viewport} />}
     {selection && !textEdit && <div className="capture-toolbar" data-capture-ui style={{ left: clamp(selection.x * sx, 12, Math.max(12, viewport.width - 790)), top: selection.y * sy + selection.height * sy + 66 < viewport.height ? selection.y * sy + selection.height * sy + 12 : Math.max(12, selection.y * sy - 62) }}>
-      <div className="capture-tools">{TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy} onClick={() => { setTool(value); setSelectedId(null); }}><Icon size={18} /></button>)}</div>
+      <div className="capture-tools">{ANNOTATION_TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy} onClick={() => { setTool(value); setSelectedId(null); }}><Icon size={18} /></button>)}</div>
       <input type="color" value={color} aria-label="标注颜色" disabled={busy} onChange={(event) => setColor(event.target.value)} />
       <input type="number" className="capture-line-width" min={1} max={32} value={lineWidth} aria-label="线宽" disabled={busy} onChange={(event) => setLineWidth(clamp(Number(event.target.value) || 1, 1, 32))} />
       <button title="撤销 Ctrl+Z" aria-label="撤销" disabled={busy || !history.past.length} onClick={() => { setHistory(undo(history)); setSelectedId(null); }}><Undo2 size={18} /></button>
