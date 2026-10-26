@@ -5,7 +5,7 @@ import { ANNOTATION_TOOLS } from './annotationTools';
 import { clamp } from './geometry';
 
 export function PinToolbar({ state, onAction }: { state: PinToolbarState; onAction: (action: PinToolbarAction) => void }): JSX.Element {
-  return <div className="capture-pin-toolbar" role="toolbar" aria-label="贴图工具条" data-pin-ui>
+  return <div className="capture-toolbar-surface capture-pin-toolbar" role="toolbar" aria-label="贴图工具条" data-pin-ui>
     {ANNOTATION_TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={state.tool === value} disabled={!state.enabled} onClick={() => onAction({ action: 'tool', tool: value })}><Icon size={16} /></button>)}
     <input type="color" aria-label="标注颜色" value={state.color} disabled={!state.enabled} onChange={(event) => onAction({ action: 'color', color: event.target.value })} />
     <input type="number" aria-label="线宽" min={1} max={32} value={state.lineWidth} disabled={!state.enabled} onChange={(event) => onAction({ action: 'width', width: clamp(Number(event.target.value) || 1, 1, 32) })} />

@@ -335,20 +335,20 @@ export function CaptureApp(): JSX.Element {
     {selection && HANDLES.map((handle) => { const p = handlePoint(selection, handle); return <span key={handle} className={`capture-handle capture-handle--${handle}`} style={{ left: p.x * sx, top: p.y * sy }} />; })}
     {selectedItem && !textEdit && <div className="capture-object-outline" style={sceneStyle(annotationBounds(draft?.id === selectedItem.id ? draft : selectedItem))} />}
     {image && session && !textEdit && !busy && (tool === 'select' || alt) && <Magnifier image={image} point={point} screen={session.screen} viewport={viewport} />}
-    {selection && !textEdit && <div className="capture-toolbar" data-capture-ui style={{ left: clamp(selection.x * sx, 12, Math.max(12, viewport.width - 790)), top: selection.y * sy + selection.height * sy + 66 < viewport.height ? selection.y * sy + selection.height * sy + 12 : Math.max(12, selection.y * sy - 62) }}>
-      <div className="capture-tools">{ANNOTATION_TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy} onClick={() => { setTool(value); setSelectedId(null); }}><Icon size={18} /></button>)}</div>
+    {selection && !textEdit && <div className="capture-toolbar-surface capture-toolbar" data-capture-ui style={{ left: clamp(selection.x * sx, 12, Math.max(12, viewport.width - 790)), top: selection.y * sy + selection.height * sy + 66 < viewport.height ? selection.y * sy + selection.height * sy + 12 : Math.max(12, selection.y * sy - 62) }}>
+      <div className="capture-tools">{ANNOTATION_TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy} onClick={() => { setTool(value); setSelectedId(null); }}><Icon size={16} /></button>)}</div>
       <input type="color" value={color} aria-label="标注颜色" disabled={busy} onChange={(event) => setColor(event.target.value)} />
-      <input type="number" className="capture-line-width" min={1} max={32} value={lineWidth} aria-label="线宽" disabled={busy} onChange={(event) => setLineWidth(clamp(Number(event.target.value) || 1, 1, 32))} />
-      <button title="撤销 Ctrl+Z" aria-label="撤销" disabled={busy || !history.past.length} onClick={() => { setHistory(undo(history)); setSelectedId(null); }}><Undo2 size={18} /></button>
-      <button title="重做 Ctrl+Y" aria-label="重做" disabled={busy || !history.future.length} onClick={() => { setHistory(redo(history)); setSelectedId(null); }}><Redo2 size={18} /></button>
-      {selectedId && <button title="删除标注" aria-label="删除标注" disabled={busy} onClick={() => { setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }}><Trash2 size={18} /></button>}
+      <input type="number" min={1} max={32} value={lineWidth} aria-label="线宽" disabled={busy} onChange={(event) => setLineWidth(clamp(Number(event.target.value) || 1, 1, 32))} />
+      <button title="撤销 Ctrl+Z" aria-label="撤销" disabled={busy || !history.past.length} onClick={() => { setHistory(undo(history)); setSelectedId(null); }}><Undo2 size={16} /></button>
+      <button title="重做 Ctrl+Y" aria-label="重做" disabled={busy || !history.future.length} onClick={() => { setHistory(redo(history)); setSelectedId(null); }}><Redo2 size={16} /></button>
+      {selectedId && <button title="删除标注" aria-label="删除标注" disabled={busy} onClick={() => { setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }}><Trash2 size={16} /></button>}
       <span className="capture-divider" />
-      <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginScroll()}><ScanLine size={18} /></button>
-      <button title="保存 Ctrl+S" aria-label="保存 PNG" disabled={busy} onClick={() => void output('file')}><Download size={18} /></button>
-      <button title="贴到屏幕 Ctrl+T" aria-label="创建贴图" disabled={busy} onClick={() => void output('pin')}><Pin size={18} /></button>
-      <button title="问 AI" aria-label="问 AI" disabled={busy} onClick={() => void output('ask')}><MessageSquare size={18} /></button>
-      <button title="复制 Enter / Ctrl+C" aria-label="复制截图" className="capture-primary" disabled={busy} onClick={() => void output('clipboard')}><Copy size={18} /></button>
-      <button title="取消 Esc" aria-label="取消截图" disabled={busy} onClick={cancel}><X size={18} /></button>
+      <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginScroll()}><ScanLine size={16} /></button>
+      <button title="保存 Ctrl+S" aria-label="保存 PNG" disabled={busy} onClick={() => void output('file')}><Download size={16} /></button>
+      <button title="贴到屏幕 Ctrl+T" aria-label="创建贴图" disabled={busy} onClick={() => void output('pin')}><Pin size={16} /></button>
+      <button title="问 AI" aria-label="问 AI" disabled={busy} onClick={() => void output('ask')}><MessageSquare size={16} /></button>
+      <button title="复制 Enter / Ctrl+C" aria-label="复制截图" disabled={busy} onClick={() => void output('clipboard')}><Copy size={16} /></button>
+      <button title="取消 Esc" aria-label="取消截图" disabled={busy} onClick={cancel}><X size={16} /></button>
     </div>}
     {textEdit && <div className="capture-text-editor" data-capture-ui style={{ left: clamp(textEdit.point.x * sx, 8, Math.max(8, viewport.width - 320)), top: clamp(textEdit.point.y * sy, 8, Math.max(8, viewport.height - 160)) }}>
       <textarea autoFocus aria-label="标注文字" maxLength={4000} value={textEdit.text} style={{ color: textEdit.color }} onChange={(event) => setTextEdit({ ...textEdit, text: event.target.value })} onKeyDown={(event) => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); finishText(); } }} />
