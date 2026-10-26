@@ -12,7 +12,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_session' ? meta : command === 'capture_image' ? new ArrayBuffer(0) : undefined);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); Reflect.deleteProperty(HTMLImageElement.prototype, 'decode'); });
 describe('scroll capture integration', () => {
   const rect = { x: 20, y: 20, width: 800, height: 600 };
   const progress: ScrollCaptureProgress = { width: 800, height: 600, revision: 1, viewport: { x: 0, y: 0, width: 800, height: 600 }, status: 'unchanged' };
@@ -20,6 +20,7 @@ describe('scroll capture integration', () => {
   const calls = (command: string): number => vi.mocked(invoke).mock.calls.filter(([name]) => name === command).length;
   beforeEach(() => {
     vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:preview'), revokeObjectURL: vi.fn() });
+    Object.defineProperty(HTMLImageElement.prototype, 'decode', { configurable: true, value: vi.fn().mockResolvedValue(undefined) });
     vi.stubGlobal('PointerEvent', MouseEvent);
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     vi.mocked(decodePng).mockResolvedValue(new Image());

@@ -10,3 +10,23 @@ export function decodeScrollPreview(bytes: ArrayBuffer): { progress: ScrollCaptu
     || progress.viewport.y + progress.viewport.height > progress.height) throw new Error('长图预览尺寸无效');
   return { progress, png: bytes.slice(4 + length) };
 }
+
+export interface PreparedScrollPreview { url: string; progress: ScrollCaptureProgress }
+
+/** Keep the previous thumbnail visible until both its replacement and metadata are ready. */
+export async function prepareScrollPreview(bytes: ArrayBuffer, signal: AbortSignal): Promise<PreparedScrollPreview> {
+  const snapshot = decodeScrollPreview(bytes);
+  if (signal.aborted) throw new DOMException('预览已取消', 'AbortError');
+  const url = URL.createObjectURL(new Blob([snapshot.png], { type: 'image/png' }));
+  const image = new Image(); image.src = url;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const abort = (): void => { image.src = ''; reject(new DOMException('预览已取消', 'AbortError')); };
+      signal.addEventListener('abort', abort, { once: true });
+      void image.decode().then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+    });
+    return { url, progress: snapshot.progress };
+  } catch (error) {
+    image.src = ''; URL.revokeObjectURL(url); throw error;
+  }
+}

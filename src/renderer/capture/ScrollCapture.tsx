@@ -3,9 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { Mouse } from 'lucide-react';
 import type { CaptureRect, CaptureOutput, ScrollCaptureProgress, ScrollCaptureSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
-import { decodeScrollPreview } from './scrollPreview';
+import { prepareScrollPreview, type PreparedScrollPreview } from './scrollPreview';
+import { ScrollCapturePreview } from './ScrollCapturePreview';
 import { CaptureOutputToolbar } from './CaptureOutputToolbar';
 
+const PREVIEW_INTERVAL_MS = 50;
 const MESSAGES: Record<ScrollCaptureProgress['status'], string> = {
   appended: '滚动鼠标截取更多内容',
   tracked: '滚动鼠标截取更多内容',
@@ -26,10 +28,11 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
 }): JSX.Element {
   const [finishing, setFinishing] = useState(false);
   const [message, setMessage] = useState(MESSAGES.unchanged);
-  const [preview, setPreview] = useState<{ url: string; progress: ScrollCaptureProgress } | null>(null);
+  const [preview, setPreview] = useState<PreparedScrollPreview | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const ending = useRef(false), retry = useRef(false), inFlight = useRef<Promise<void>>(Promise.resolve());
-  const mounted = useRef(true), cancelled = useRef(false), previewUrl = useRef('');
+  const mounted = useRef(true), cancelled = useRef(false);
+  const previewUrls = useRef(new Set<string>()), decoding = useRef<AbortController | null>(null);
   const cancelRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -42,44 +45,54 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
     return () => {
       mounted.current = false;
       window.removeEventListener('resize', resize); window.removeEventListener('keydown', keyDown);
-      if (previewUrl.current) { URL.revokeObjectURL(previewUrl.current); previewUrl.current = ''; }
+      decoding.current?.abort();
+      for (const url of previewUrls.current) URL.revokeObjectURL(url);
+      previewUrls.current.clear();
     };
   }, []);
 
   useEffect(() => {
+    // Release the old URL only after React commits its replacement.
+    for (const url of previewUrls.current) {
+      if (url !== preview?.url) { URL.revokeObjectURL(url); previewUrls.current.delete(url); }
+    }
+  }, [preview]);
+  useEffect(() => {
     let alive = true, revision = 0, timer: ReturnType<typeof setTimeout> | undefined;
     const poll = (): void => {
       if (!alive || ending.current) return;
+      const started = performance.now();
       inFlight.current = (async () => {
         let limited = false;
         try {
           const next = await invoke<ScrollCaptureProgress>('capture_scroll_step');
           if (!alive || ending.current) return;
           setMessage(MESSAGES[next.status]); limited = next.status === 'limit';
-          if (next.revision !== revision) {
+          if (next.revision > revision) {
             const bytes = await invoke<ArrayBuffer>('capture_scroll_preview');
             if (!alive || ending.current) return;
-            const snapshot = decodeScrollPreview(bytes);
-            const url = URL.createObjectURL(new Blob([snapshot.png], { type: 'image/png' }));
-            const previous = previewUrl.current;
-            previewUrl.current = url; revision = snapshot.progress.revision;
-            setPreview({ url, progress: snapshot.progress });
-            if (previous) URL.revokeObjectURL(previous);
+            const controller = new AbortController(); decoding.current = controller;
+            const snapshot = await prepareScrollPreview(bytes, controller.signal).finally(() => {
+              if (decoding.current === controller) decoding.current = null;
+            });
+            if (!alive || ending.current) { URL.revokeObjectURL(snapshot.url); return; }
+            revision = snapshot.progress.revision; previewUrls.current.add(snapshot.url);
+            setPreview(snapshot);
           }
         } catch (captureError) {
           if (!alive || ending.current) return;
           setMessage(getErrorMessage(captureError, '无法获取页面，已保留当前长图'));
         }
-        if (alive && !ending.current && !limited) timer = setTimeout(poll, 180);
+        if (alive && !ending.current && !limited) timer = setTimeout(poll, Math.max(0, PREVIEW_INTERVAL_MS - (performance.now() - started)));
       })();
     };
     poll();
-    return () => { alive = false; clearTimeout(timer); };
+    return () => { alive = false; clearTimeout(timer); decoding.current?.abort(); };
   }, [initial]);
 
   const finish = async (action: CaptureOutput): Promise<void> => {
     if (cancelled.current || (ending.current && !retry.current)) return;
-    ending.current = true; retry.current = false; setFinishing(true);
+    ending.current = true; retry.current = false; decoding.current?.abort(); setFinishing(true);
     await inFlight.current;
     if (!mounted.current || cancelled.current) return;
     let finished = false;
@@ -90,26 +103,20 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
   };
   const cancel = (): void => {
     if (cancelled.current) return;
-    cancelled.current = true; ending.current = true; onCancel();
+    cancelled.current = true; ending.current = true; decoding.current?.abort(); onCancel();
   };
   cancelRef.current = cancel;
 
   const layout = initial.layout;
-  const progress = preview?.progress ?? initial.progress;
-  const fit = Math.max(0, Math.min(
-    (layout.panel.width * viewport.width / screen.width - 26) / progress.width,
-    (layout.panel.height * viewport.height / screen.height - 134) / progress.height,
-  ));
   return <section className="capture-scroll-overlay" aria-label="滚动截图预览" aria-busy={finishing}
     onContextMenu={(event) => { event.preventDefault(); cancel(); }}>
     <div className="capture-scroll-border" style={position(layout.selection, screen)} data-interrupted={message === MESSAGES.unmatched} />
     <aside className="capture-scroll-panel" style={position(layout.panel, screen)} data-capture-ui>
       <header><Mouse size={22} aria-hidden="true" /><p role="status">{finishing ? '正在处理长图…' : message}</p><small>使用选区下方工具栏输出 · Esc 取消</small></header>
       <div className="capture-scroll-preview-area">
-        {preview && <div className="capture-scroll-thumbnail" style={{ width: preview.progress.width * fit, height: preview.progress.height * fit }}>
-          <img src={preview.url} alt="已截取的长图" draggable={false} />
-          <div className="capture-scroll-viewport" aria-label="当前页面位置" style={{ top: `${preview.progress.viewport.y / preview.progress.height * 100}%`, height: `${preview.progress.viewport.height / preview.progress.height * 100}%` }} />
-        </div>}
+        {preview && <ScrollCapturePreview preview={preview}
+          width={Math.max(0, layout.panel.width * viewport.width / screen.width - 26)}
+          height={Math.max(0, layout.panel.height * viewport.height / screen.height - 134)} />}
       </div>
       {error && <div className="capture-scroll-error" role="alert">{error}</div>}
     </aside>

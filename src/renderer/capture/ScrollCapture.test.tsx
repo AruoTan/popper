@@ -19,9 +19,11 @@ function packet(state = progress): ArrayBuffer {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(invoke).mockReset().mockImplementation(async (command) => command === 'capture_scroll_preview' ? packet() : progress);
-  vi.stubGlobal('URL', { createObjectURL: vi.fn().mockReturnValue('blob:preview'), revokeObjectURL: vi.fn() });
+  let urls = 0;
+  vi.stubGlobal('URL', { createObjectURL: vi.fn().mockImplementation(() => `blob:preview-${++urls}`), revokeObjectURL: vi.fn() });
+  Object.defineProperty(HTMLImageElement.prototype, 'decode', { configurable: true, value: vi.fn().mockResolvedValue(undefined) });
 });
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); Reflect.deleteProperty(HTMLImageElement.prototype, 'decode'); });
 const advance = async (ms = 180): Promise<void> => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
 const overlay = (view: ReturnType<typeof render>): HTMLElement => view.getByLabelText('滚动截图预览');
 const flush = async (): Promise<void> => { await act(async () => {}); };
@@ -40,14 +42,16 @@ describe('manual scrolling overlay', () => {
     const snapshot = { ...progress, height: 2400, revision: 4, viewport: { ...progress.viewport, y: 1200 } };
     vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_scroll_preview' ? packet(snapshot) : progress);
     const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
-    expect(view.getByRole('img', { name: '已截取的长图' })).toHaveAttribute('src', 'blob:preview');
-    const marker = view.getByLabelText('当前页面位置'); expect(marker.style.top).toBe('50%'); expect(marker.style.height).toBe('25%');
+    expect(view.getByRole('img', { name: '已截取的长图' })).toHaveAttribute('src', 'blob:preview-1');
+    const marker = view.getByLabelText('当前页面位置');
+    const fit = Math.min((initial.layout.panel.width * innerWidth / screen.width - 26) / snapshot.width, (initial.layout.panel.height * innerHeight / screen.height - 134) / snapshot.height);
+    expect(parseFloat(marker.style.top)).toBeCloseTo(1200 * fit); expect(parseFloat(marker.style.height)).toBeCloseTo(600 * fit);
     const border = view.container.querySelector<HTMLElement>('.capture-scroll-border')!;
     expect(parseFloat(border.style.left)).toBeCloseTo(100 / 1920 * 100); expect(parseFloat(border.style.top)).toBeCloseTo(100 / 1080 * 100);
     const toolbar = view.getByRole('toolbar', { name: '滚动截图操作' });
     expect(parseFloat(toolbar.style.top)).toBeCloseTo(712 / 1080 * 100);
     expect(parseFloat(toolbar.style.left) + parseFloat(toolbar.style.width)).toBeCloseTo(900 / 1920 * 100);
-    view.unmount(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview');
+    view.unmount(); expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview-1');
   });
   it('ignores outside clicks, preview clicks and Enter as completion triggers', async () => {
     const onAction = vi.fn();
@@ -69,6 +73,44 @@ describe('manual scrolling overlay', () => {
     vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_scroll_preview' ? packet(next) : next);
     await advance(); expect(URL.createObjectURL).toHaveBeenCalledTimes(2); expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
     view.unmount(); expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+  });
+  it('publishes a new image and its geometry only after decoding, keeping the previous image alive', async () => {
+    const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
+    let resolve!: () => void;
+    vi.mocked(HTMLImageElement.prototype.decode).mockImplementationOnce(() => new Promise<void>((done) => { resolve = done; }));
+    const next = { ...progress, height: 2400, revision: 2, viewport: { ...progress.viewport, y: 1200 } };
+    vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_scroll_preview' ? packet(next) : next);
+    const old = view.getByRole('img').getAttribute('src'); const top = view.getByLabelText('当前页面位置').style.top;
+    await advance(50); expect(resolve).toBeTypeOf('function');
+    expect(view.getByRole('img')).toHaveAttribute('src', old); expect(view.getByLabelText('当前页面位置').style.top).toBe(top);
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    await act(async () => { resolve(); });
+    expect(view.getByRole('img')).toHaveAttribute('src', 'blob:preview-2'); expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith(old);
+    view.unmount(); expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
+  });
+  it('keeps the last image on decode failure and releases the failed replacement', async () => {
+    const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
+    vi.mocked(HTMLImageElement.prototype.decode).mockRejectedValueOnce(new Error('invalid preview'));
+    const next = { ...progress, revision: 2 };
+    vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_scroll_preview' ? packet(next) : next);
+    await advance(50);
+    expect(view.getByRole('img')).toHaveAttribute('src', 'blob:preview-1'); expect(view.getByRole('status')).toHaveTextContent('invalid preview');
+    expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:preview-2'); view.unmount();
+  });
+  it.each(['output', 'cancel', 'unmount'] as const)('aborts pending decoding promptly on %s and discards its late completion', async (action) => {
+    let resolve!: () => void;
+    vi.mocked(HTMLImageElement.prototype.decode).mockImplementationOnce(() => new Promise<void>((done) => { resolve = done; }));
+    const onAction = vi.fn().mockResolvedValue(true), onCancel = vi.fn();
+    const view = render(<ScrollCapture initial={initial} screen={screen} onAction={onAction} onCancel={onCancel} />); await flush();
+    expect(resolve).toBeTypeOf('function');
+    if (action === 'output') fireEvent.click(view.getByLabelText('复制截图'));
+    else if (action === 'cancel') fireEvent.keyDown(window, { key: 'Escape' });
+    else view.unmount();
+    await flush(); expect(URL.revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:preview-1');
+    if (action === 'output') expect(onAction).toHaveBeenCalledExactlyOnceWith('clipboard');
+    if (action === 'cancel') expect(onCancel).toHaveBeenCalledOnce();
+    await act(async () => { resolve(); }); expect(view.queryByRole('img')).toBeNull();
+    if (action !== 'unmount') view.unmount();
   });
   it.each(['unmatched', 'limit'] as const)('preserves the preview and output actions on %s', async (status) => {
     const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
