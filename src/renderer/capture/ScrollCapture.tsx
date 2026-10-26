@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Mouse } from 'lucide-react';
 import type { CaptureRect, CaptureOutput, ScrollCaptureProgress, ScrollCaptureSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { prepareScrollPreview, type PreparedScrollPreview } from './scrollPreview';
@@ -9,9 +8,9 @@ import { CaptureOutputToolbar } from './CaptureOutputToolbar';
 
 const PREVIEW_INTERVAL_MS = 50;
 const MESSAGES: Record<ScrollCaptureProgress['status'], string> = {
-  appended: '滚动鼠标截取更多内容',
-  tracked: '滚动鼠标截取更多内容',
-  unchanged: '滚动鼠标截取更多内容',
+  appended: '',
+  tracked: '',
+  unchanged: '',
   unmatched: '滚回已截取的位置后继续',
   limit: '已达到长图容量上限，请输出图片',
 };
@@ -27,15 +26,15 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
   error?: string;
 }): JSX.Element {
   const [finishing, setFinishing] = useState(false);
-  const [message, setMessage] = useState(MESSAGES.unchanged);
+  const [message, setMessage] = useState(MESSAGES[initial.progress.status]);
   const [preview, setPreview] = useState<PreparedScrollPreview | null>(null);
   const [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const ending = useRef(false), retry = useRef(false), inFlight = useRef<Promise<void>>(Promise.resolve());
   const mounted = useRef(true), cancelled = useRef(false);
   const previewUrls = useRef(new Set<string>()), decoding = useRef<AbortController | null>(null);
   const cancelRef = useRef<() => void>(() => {});
-  const previewWidth = Math.max(0, initial.layout.panel.width * viewport.width / screen.width - 26);
-  const previewHeight = Math.max(0, initial.layout.panel.height * viewport.height / screen.height - 134);
+  const previewWidth = Math.max(0, initial.layout.panel.width * viewport.width / screen.width);
+  const previewHeight = Math.max(0, initial.layout.panel.height * viewport.height / screen.height);
   const previewSize = useRef({ maxWidth: 1, maxHeight: 1 });
   // Supersample at the display density to keep text sharp during animated scaling.
   const density = window.devicePixelRatio || 1;
@@ -115,14 +114,13 @@ export function ScrollCapture({ initial, screen, onAction, onCancel, error = '' 
   cancelRef.current = cancel;
 
   const layout = initial.layout;
+  const align = layout.panel.x < layout.selection.x || layout.panel.x + layout.panel.width >= screen.width ? 'right' : 'left';
   return <section className="capture-scroll-overlay" aria-label="滚动截图预览" aria-busy={finishing}
     onContextMenu={(event) => { event.preventDefault(); cancel(); }}>
     <div className="capture-scroll-border" style={position(layout.selection, screen)} data-interrupted={message === MESSAGES.unmatched} />
     <aside className="capture-scroll-panel" style={position(layout.panel, screen)} data-capture-ui>
-      <header><Mouse size={22} aria-hidden="true" /><p role="status">{finishing ? '正在处理长图…' : message}</p><small>使用选区下方工具栏输出 · Esc 取消</small></header>
-      <div className="capture-scroll-preview-area">
-        {preview && <ScrollCapturePreview preview={preview} width={previewWidth} height={previewHeight} />}
-      </div>
+      {preview && <ScrollCapturePreview preview={preview} width={previewWidth} height={previewHeight} align={align} />}
+      {!error && message && <div className="capture-scroll-message" role="status">{message}</div>}
       {error && <div className="capture-scroll-error" role="alert">{error}</div>}
     </aside>
     <CaptureOutputToolbar label="滚动截图操作" style={position(layout.toolbar, screen)} busy={finishing}

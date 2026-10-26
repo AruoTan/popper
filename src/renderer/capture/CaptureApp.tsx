@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, Copy, Download, MessageSquare, Pin, Redo2, Undo2, X, Trash2, ScanLine } from 'lucide-react';
+import { Check, Copy, Download, MessageSquare, Pin, Redo2, Undo2, X, Trash2 } from 'lucide-react';
 import type { CaptureAnnotation, CaptureCandidate, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, contains, emptyHistory, HANDLES, handlePoint, hitAnnotation, keyRect, moveRect, rectangle, redo, resizeRect, undo, type Handle } from './geometry';
@@ -9,6 +9,7 @@ import { createCaptureHover } from './hover';
 import { createCaptureNavigation } from './navigation';
 import { ScrollCapture } from './ScrollCapture';
 import { ANNOTATION_TOOLS } from './annotationTools';
+import { ScrollCaptureIcon } from './ScrollCaptureIcon';
 
 type Gesture = { mode: 'new' | 'move' | 'resize' | 'draw' | 'object'; start: CapturePoint; rect: CaptureRect | null; handle?: Handle; item?: CaptureAnnotation; moved: boolean };
 type TextEdit = { id: string; point: CapturePoint; text: string; color: string; width: number };
@@ -343,7 +344,7 @@ export function CaptureApp(): JSX.Element {
       <button title="重做 Ctrl+Y" aria-label="重做" disabled={busy || !history.future.length} onClick={() => { setHistory(redo(history)); setSelectedId(null); }}><Redo2 size={16} /></button>
       {selectedId && <button title="删除标注" aria-label="删除标注" disabled={busy} onClick={() => { setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }}><Trash2 size={16} /></button>}
       <span className="capture-divider" />
-      <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginScroll()}><ScanLine size={16} /></button>
+      <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginScroll()}><ScrollCaptureIcon /></button>
       <button title="保存 Ctrl+S" aria-label="保存 PNG" disabled={busy} onClick={() => void output('file')}><Download size={16} /></button>
       <button title="贴到屏幕 Ctrl+T" aria-label="创建贴图" disabled={busy} onClick={() => void output('pin')}><Pin size={16} /></button>
       <button title="问 AI" aria-label="问 AI" disabled={busy} onClick={() => void output('ask')}><MessageSquare size={16} /></button>

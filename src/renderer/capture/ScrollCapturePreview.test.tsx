@@ -33,9 +33,9 @@ describe('scroll preview motion', () => {
     expect(box.style.height).toBe('100px'); expect(img.style.transform).toBe('translateY(0px) scale(0.25)');
     frame(80);
     expect(parseFloat(box.style.height)).toBeCloseTo(143.75);
-    expect(parseFloat(marker.style.top)).toBeCloseTo(43.75);
+    expect(parseFloat(marker.style.top)).toBeCloseTo(100);
     expect(marker.style.width).toBe(box.style.width);
-    frame(160); expect(box.style.height).toBe('150px'); expect(marker.style.top).toBe('50px'); expect(frames.size).toBe(0);
+    frame(160); expect(box.style.height).toBe('150px'); expect(marker.style.top).toBe('100px'); expect(frames.size).toBe(0);
     view.unmount();
   });
   it('retargets the displayed scale and synchronizes viewport geometry on every frame', () => {
@@ -48,11 +48,41 @@ describe('scroll preview motion', () => {
     view.rerender(<ScrollCapturePreview preview={preview(4000, 1000)} width={200} height={200} />);
     expect(box.style.width).toBe(currentWidth); expect(img.style.transform).toBe(currentTransform); expect(frames.size).toBe(1);
     frame(160); expect(marker.style.width).toBe(box.style.width);
-    expect(parseFloat(marker.style.left)).toBeCloseTo((200 - parseFloat(box.style.width)) / 2);
+    expect(parseFloat(marker.style.left)).toBeCloseTo(0);
     frame(240); expect(box.style.width).toBe('40px'); expect(marker.style.top).toBe('50px'); expect(frames.size).toBe(0);
     view.rerender(<ScrollCapturePreview preview={preview(4000, 2000)} width={200} height={200} />);
     frame(280); expect(parseFloat(marker.style.top)).toBeGreaterThan(50); expect(parseFloat(marker.style.top)).toBeLessThan(100);
     view.unmount(); expect(frames.size).toBe(0);
+  });
+  it('grows upward from the selection bottom and only shrinks after reaching the screen top', () => {
+    const view = render(<ScrollCapturePreview preview={preview(800)} width={200} height={600} align="right" />);
+    const { box, img, marker } = parts(view);
+    expect(box.style.height).toBe('200px'); expect(box.style.left).toBe('0px'); expect(marker.style.top).toBe('400px');
+    view.rerender(<ScrollCapturePreview preview={preview(1600)} width={200} height={600} align="right" />);
+    frame(80); expect(parseFloat(box.style.height)).toBeGreaterThan(200); expect(parseFloat(box.style.height)).toBeLessThan(400);
+    expect(img.style.transform).toBe('translateY(0px) scale(0.25)');
+    expect(parseFloat(marker.style.top) + parseFloat(box.style.height)).toBeCloseTo(600);
+    frame(160); expect(box.style.height).toBe('400px');
+    view.rerender(<ScrollCapturePreview preview={preview(2400)} width={200} height={600} align="right" />);
+    frame(320); expect(box.style.height).toBe('600px'); expect(box.style.width).toBe('200px'); expect(marker.style.top).toBe('0px');
+    view.rerender(<ScrollCapturePreview preview={preview(3200)} width={200} height={600} align="right" />);
+    frame(400); expect(box.style.height).toBe('600px'); expect(parseFloat(box.style.width)).toBeLessThan(200);
+    expect(parseFloat(marker.style.left) + parseFloat(marker.style.width)).toBeCloseTo(200);
+    frame(480); expect(box.style.width).toBe('150px'); expect(box.style.left).toBe('50px'); view.unmount();
+  });
+  it('uses the remaining vertical space before scaling when one update crosses the screen top', () => {
+    const view = render(<ScrollCapturePreview preview={preview(800)} width={200} height={600} />);
+    view.rerender(<ScrollCapturePreview preview={preview(3200)} width={200} height={600} />);
+    const { box } = parts(view);
+    frame(40); expect(box.style.width).toBe('200px'); expect(parseFloat(box.style.height)).toBeLessThan(600);
+    frame(80); expect(parseFloat(box.style.height)).toBeCloseTo(600); expect(parseFloat(box.style.width)).toBeLessThan(200);
+    frame(160); expect(box.style.height).toBe('600px'); expect(box.style.width).toBe('150px'); view.unmount();
+  });
+  it('keeps the bottom anchor when the available screen height changes without changing scale', () => {
+    const view = render(<ScrollCapturePreview preview={preview(400)} width={200} height={600} />);
+    expect(parts(view).marker.style.top).toBe('500px');
+    view.rerender(<ScrollCapturePreview preview={preview(400)} width={200} height={700} />);
+    expect(parts(view).marker.style.top).toBe('600px'); expect(frames.size).toBe(0); view.unmount();
   });
   it('anchors existing content before revealing rows added above it', () => {
     const view = render(<ScrollCapturePreview preview={preview(400)} width={200} height={200} />);

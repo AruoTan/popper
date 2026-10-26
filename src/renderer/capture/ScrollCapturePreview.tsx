@@ -5,10 +5,11 @@ const MOTION_MS = 160;
 interface Geometry { scale: number; height: number; offset: number; markerY: number; markerHeight: number }
 const mix = (from: number, to: number, amount: number): number => from + (to - from) * amount;
 
-export function ScrollCapturePreview({ preview, width, height }: {
+export function ScrollCapturePreview({ preview, width, height, align = 'left' }: {
   preview: PreparedScrollPreview;
   width: number;
   height: number;
+  align?: 'left' | 'right';
 }): JSX.Element {
   const thumbnail = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), marker = useRef<HTMLDivElement>(null);
   const motion = useRef<{ current: Geometry; target: Geometry; origin: number; frame: number } | null>(null);
@@ -19,10 +20,12 @@ export function ScrollCapturePreview({ preview, width, height }: {
     const box = thumbnail.current, img = image.current, viewport = marker.current;
     if (!box || !img || !viewport) return;
     const imageWidth = progress.width * geometry.scale;
+    const left = align === 'right' ? width - imageWidth : 0;
+    box.style.left = `${left}px`;
     box.style.width = `${imageWidth}px`; box.style.height = `${geometry.height}px`;
     img.style.transform = `translateY(${geometry.offset}px) scale(${geometry.scale})`;
-    viewport.style.left = `${(width - imageWidth) / 2}px`; viewport.style.width = `${imageWidth}px`;
-    viewport.style.top = `${geometry.markerY}px`; viewport.style.height = `${geometry.markerHeight}px`;
+    viewport.style.left = `${left}px`; viewport.style.width = `${imageWidth}px`;
+    viewport.style.top = `${height - geometry.height + geometry.markerY}px`; viewport.style.height = `${geometry.markerHeight}px`;
   };
   useLayoutEffect(() => {
     const target: Geometry = { scale: fit, height: progress.height * fit, offset: 0, markerY: progress.viewport.y * fit, markerHeight: progress.viewport.height * fit };
@@ -47,12 +50,24 @@ export function ScrollCapturePreview({ preview, width, height }: {
         offset: mix(from.offset, target.offset, amount), markerY: mix(from.markerY, target.markerY, amount),
         markerHeight: mix(from.markerHeight, target.markerHeight, amount),
       };
+      // A large update can cross the screen top in one step. Grow to that
+      // boundary before shrinking, rather than scaling while space remains.
+      if (from.scale > target.scale && from.height < height && target.height >= height && from.scale > 0) {
+        const revealed = mix(from.height / from.scale, progress.height, amount);
+        const scale = Math.min(from.scale, height / revealed);
+        state.current = {
+          scale, height: revealed * scale,
+          offset: mix(from.offset / from.scale, 0, amount) * scale,
+          markerY: mix(from.markerY / from.scale, progress.viewport.y, amount) * scale,
+          markerHeight: mix(from.markerHeight / from.scale, progress.viewport.height, amount) * scale,
+        };
+      }
       paint.current(state.current);
       state.frame = elapsed < 1 ? requestAnimationFrame(tick) : 0;
     };
     state.frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(state.frame);
-  }, [fit, width, progress.width, progress.height, progress.viewport.y, progress.viewport.height, originY]);
+  }, [fit, width, height, align, progress.width, progress.height, progress.viewport.y, progress.viewport.height, originY]);
   useEffect(() => {
     const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
     const changed = (): void => {

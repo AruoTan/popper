@@ -168,7 +168,8 @@ describe('scroll capture integration', () => {
     const implementation = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, ...args) => { if (command === 'capture_image' && ++imageRequests === 2) throw new Error('transient image transport'); return implementation(command, ...args); });
     const view = await started(); fireEvent.click(view.getByLabelText('复制截图'));
-    await waitFor(() => expect(view.getByRole('status')).toHaveTextContent('内容已保留')); fireEvent.click(view.getByLabelText('复制截图'));
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('transient image transport'));
+    await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled()); fireEvent.click(view.getByLabelText('复制截图'));
     await waitFor(() => expect(calls('capture_export')).toBe(1)); expect(calls('capture_scroll_finish')).toBe(1); expect(calls('capture_show')).toBe(1); view.unmount();
   });
 });

@@ -8,7 +8,7 @@ import { decodeScrollPreview } from './scrollPreview';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const screen = { x: -1920, y: -1080, width: 1920, height: 1080 };
 const progress: ScrollCaptureProgress = { width: 800, height: 600, revision: 1, viewport: { x: 0, y: 0, width: 800, height: 600 }, status: 'unchanged' };
-const initial: ScrollCaptureSession = { progress, layout: { selection: { x: 100, y: 100, width: 800, height: 600 }, panel: { x: 924, y: 100, width: 324, height: 765 }, toolbar: { x: 492, y: 712, width: 408, height: 72 } } };
+const initial: ScrollCaptureSession = { progress, layout: { selection: { x: 100, y: 100, width: 800, height: 600 }, panel: { x: 924, y: 0, width: 324, height: 700 }, toolbar: { x: 492, y: 712, width: 408, height: 72 } } };
 function packet(state = progress, originY?: number): ArrayBuffer {
   const metadata = new TextEncoder().encode(JSON.stringify({ ...state, ...(originY === undefined ? {} : { originY }) }));
   const bytes = new Uint8Array(4 + metadata.length + 8);
@@ -36,7 +36,7 @@ describe('manual scrolling overlay', () => {
     await advance(2000); expect(invoke).toHaveBeenCalledTimes(1);
     await act(async () => { resolve(progress); });
     expect(invoke).toHaveBeenCalledWith('capture_scroll_step'); expect(invoke).toHaveBeenCalledWith('capture_scroll_preview', expect.objectContaining({ maxWidth: expect.any(Number), maxHeight: expect.any(Number) }));
-    expect(view.queryByText(/帧/)).toBeNull(); expect(view.getAllByRole('button')).toHaveLength(4); view.unmount();
+    expect(view.queryByText(/帧/)).toBeNull(); expect(view.queryByRole('status')).toBeNull(); expect(view.container.querySelector('header')).toBeNull(); expect(view.getAllByRole('button')).toHaveLength(4); view.unmount();
   });
   it('shows the selection, bottom-right toolbar and viewport from one preview snapshot', async () => {
     const snapshot = { ...progress, height: 2400, revision: 4, viewport: { ...progress.viewport, y: 1200 } };
@@ -44,8 +44,8 @@ describe('manual scrolling overlay', () => {
     const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
     expect(view.getByRole('img', { name: '已截取的长图' })).toHaveAttribute('src', 'blob:preview-1');
     const marker = view.getByLabelText('当前页面位置');
-    const fit = Math.min((initial.layout.panel.width * innerWidth / screen.width - 26) / snapshot.width, (initial.layout.panel.height * innerHeight / screen.height - 134) / snapshot.height);
-    expect(parseFloat(marker.style.top)).toBeCloseTo(1200 * fit); expect(parseFloat(marker.style.height)).toBeCloseTo(600 * fit);
+    const fit = Math.min((initial.layout.panel.width * innerWidth / screen.width) / snapshot.width, (initial.layout.panel.height * innerHeight / screen.height) / snapshot.height);
+    expect(parseFloat(marker.style.top)).toBeCloseTo(initial.layout.panel.height * innerHeight / screen.height - snapshot.height * fit + 1200 * fit); expect(parseFloat(marker.style.height)).toBeCloseTo(600 * fit);
     const border = view.container.querySelector<HTMLElement>('.capture-scroll-border')!;
     expect(parseFloat(border.style.left)).toBeCloseTo(100 / 1920 * 100); expect(parseFloat(border.style.top)).toBeCloseTo(100 / 1080 * 100);
     const toolbar = view.getByRole('toolbar', { name: '滚动截图操作' });
@@ -78,7 +78,7 @@ describe('manual scrolling overlay', () => {
     vi.stubGlobal('devicePixelRatio', 2);
     const view = render(<ScrollCapture initial={initial} screen={screen} onAction={vi.fn()} onCancel={vi.fn()} />); await flush();
     const requests = (): unknown[][] => vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_scroll_preview');
-    expect(requests()[0]?.[1]).toEqual({ maxWidth: Math.ceil((324 * innerWidth / 1920 - 26) * 4), maxHeight: Math.ceil((765 * innerHeight / 1080 - 134) * 4) });
+    expect(requests()[0]?.[1]).toEqual({ maxWidth: Math.ceil((324 * innerWidth / 1920) * 4), maxHeight: Math.ceil((700 * innerHeight / 1080) * 4) });
     vi.stubGlobal('innerWidth', 3840); vi.stubGlobal('innerHeight', 2160);
     fireEvent(window, new Event('resize')); await advance(50);
     expect(requests()).toHaveLength(2); expect(requests()[1]?.[1]).toEqual({ maxWidth: 1024, maxHeight: 2048 });
