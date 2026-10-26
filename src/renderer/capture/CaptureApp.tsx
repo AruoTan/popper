@@ -15,6 +15,7 @@ import { CaptureMouseIcon } from './CaptureMouseIcon';
 
 type Gesture = { mode: 'new' | 'move' | 'resize' | 'draw' | 'object'; start: CapturePoint; rect: CaptureRect | null; handle?: Handle; item?: CaptureAnnotation; moved: boolean };
 type TextEdit = { id: string; point: CapturePoint; text: string; color: string; width: number };
+const POINTER_KEYS: Readonly<Record<string, string>> = { w: 'ArrowUp', a: 'ArrowLeft', s: 'ArrowDown', d: 'ArrowRight' };
 
 export function CaptureApp(): JSX.Element {
   const [session, setSession] = useState<CaptureSession | null>(null), [image, setImage] = useState<HTMLImageElement | null>(null);
@@ -315,14 +316,16 @@ export function CaptureApp(): JSX.Element {
         }
         return;
       }
-      if (event.key.startsWith('Arrow') && session && image && !textEdit) {
+      const movementKey = event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || event.isComposing
+        ? event.key : POINTER_KEYS[event.key.toLowerCase()] ?? event.key;
+      if (movementKey.startsWith('Arrow') && session && image && !textEdit) {
         if (event.altKey || event.metaKey) return;
         event.preventDefault();
         if (event.ctrlKey || event.shiftKey) {
-          if (selection) setSelection(keyRect(selection, event.key, event.ctrlKey, event.shiftKey, bounds));
+          if (selection) setSelection(keyRect(selection, movementKey, event.ctrlKey, event.shiftKey, bounds));
         } else {
-          const dx = event.key === 'ArrowRight' ? 1 : event.key === 'ArrowLeft' ? -1 : 0;
-          const dy = event.key === 'ArrowDown' ? 1 : event.key === 'ArrowUp' ? -1 : 0;
+          const dx = movementKey === 'ArrowRight' ? 1 : movementKey === 'ArrowLeft' ? -1 : 0;
+          const dy = movementKey === 'ArrowDown' ? 1 : movementKey === 'ArrowUp' ? -1 : 0;
           pointerMoves.current = pointerMoves.current.then(async () => {
             if (!mounted.current || busyRef.current) return;
             const next = await invoke<CapturePoint>('capture_move_pointer', { dx, dy });
@@ -371,10 +374,10 @@ export function CaptureApp(): JSX.Element {
     {selectedItem && !textEdit && <div className="capture-object-outline" style={sceneStyle(annotationBounds(draft?.id === selectedItem.id ? draft : selectedItem))} />}
     {!textEdit && !busy && <dl ref={help} className="capture-help" aria-label="截图操作提示" aria-hidden={helpHidden} style={{ visibility: helpHidden ? 'hidden' : undefined }}>
       {!selection ? <>
-        <dt aria-label="方向键"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>移动鼠标，每次 1 像素</dd>
-        <dt><kbd>单击</kbd></dt><dd>选择窗口或控件</dd>
-        <dt><kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-up" /></dt><dd>切换到父级</dd>
-        <dt><kbd>Shift</kbd>+<kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-down" /></dt><dd>返回子级</dd>
+        <dt aria-label="方向键"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>鼠标移动 1 像素</dd>
+        <dt aria-label="WASD"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>鼠标移动 1 像素</dd>
+        <dt><kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-up" /></dt><dd>提升控件层级</dd>
+        <dt><kbd>Shift</kbd>+<kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-down" /></dt><dd>降低控件层级</dd>
         <dt><kbd>Esc</kbd>／<CaptureMouseIcon action="right" /></dt><dd>退出截图</dd>
       </> : <>
         <dt><kbd>Ctrl</kbd>+<kbd>方向键</kbd></dt><dd>向对应方向扩大选区 1 像素</dd>

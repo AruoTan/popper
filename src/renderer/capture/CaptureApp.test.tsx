@@ -150,6 +150,34 @@ describe('normal capture selection interaction', () => {
     expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'capture_copy_color')).toBe(false);
     view.unmount();
   });
+  it('preserves modified WASD shortcuts, input editing, and Ctrl+S saving without moving the pointer', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_crop') return new ArrayBuffer(0);
+      if (command === 'capture_export') return false;
+      return implementation(command, ...args);
+    });
+    const view = await selected();
+    for (const key of ['w', 'a', 's', 'd']) {
+      for (const modifier of [{ ctrlKey: true }, { shiftKey: true }, { altKey: true }, { metaKey: true }, { isComposing: true }]) {
+        if (key === 's' && 'ctrlKey' in modifier) continue;
+        fireEvent.keyDown(window, { key, ...modifier });
+      }
+      expect(fireEvent.keyDown(view.getByLabelText('线宽'), { key })).toBe(true);
+    }
+    await act(async () => {});
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'capture_move_pointer')).toBe(false);
+    fireEvent.keyDown(window, { key: 's', ctrlKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_export', expect.any(Uint8Array), expect.objectContaining({ headers: expect.objectContaining({ 'x-capture-output': 'file' }) })));
+    await waitFor(() => expect(view.getByLabelText('线宽')).not.toBeDisabled());
+    fireEvent.click(view.getByRole('button', { name: '文字' }));
+    fireEvent.pointerDown(view.main, at(300, 250));
+    const input = view.getByRole('textbox', { name: '标注文字' });
+    for (const key of ['w', 'a', 's', 'd']) expect(fireEvent.keyDown(input, { key })).toBe(true);
+    await act(async () => {});
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'capture_move_pointer')).toBe(false);
+    view.unmount();
+  });
   it('does not toggle color format for Shift combinations, pointer gestures, input fields, or interrupted focus', async () => {
     sampleColor();
     const view = await shown();
@@ -593,7 +621,11 @@ describe('capture keyboard pointer movement', () => {
     vi.mocked(decodePng).mockResolvedValueOnce(new Image());
   });
 
-  it('moves one physical pixel in every direction and synchronizes magnifier sampling and control feedback', async () => {
+  it.each([
+    ['arrow keys', ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp']],
+    ['WASD', ['d', 's', 'a', 'w']],
+    ['uppercase WASD', ['D', 'S', 'A', 'W']],
+  ] as const)('moves one physical pixel with %s and synchronizes magnifier sampling and control feedback', async (_, keys) => {
     let point = { x: 100, y: 100 };
     const context = {
       fillRect: vi.fn(), drawImage: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), strokeRect: vi.fn(),
@@ -614,7 +646,7 @@ describe('capture keyboard pointer movement', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
     const panel = view.container.querySelector<HTMLElement>('.capture-magnifier')!;
     const initialLeft = Number.parseFloat(panel.style.left);
-    for (const [key, x, y] of [['ArrowRight', 101, 100], ['ArrowDown', 101, 101], ['ArrowLeft', 100, 101], ['ArrowUp', 100, 100]] as const) {
+    for (const [key, x, y] of [[keys[0], 101, 100], [keys[1], 101, 101], [keys[2], 100, 101], [keys[3], 100, 100]] as const) {
       fireEvent.keyDown(window, { key });
       await waitFor(() => {
         expect(panel).toHaveTextContent(`${meta.screen.x + x}, ${y}`);
@@ -630,7 +662,7 @@ describe('capture keyboard pointer movement', () => {
     view.unmount();
   });
 
-  it('serializes repeated keys so every press moves the native pointer once', async () => {
+  it.each(['ArrowRight', 'd'])('serializes repeated %s keys so every press moves the native pointer once', async (key) => {
     let resolve!: (point: { x: number; y: number }) => void;
     let calls = 0;
     vi.mocked(invoke).mockImplementation(async (command) => {
@@ -640,7 +672,7 @@ describe('capture keyboard pointer movement', () => {
     });
     const view = render(<CaptureApp />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
-    fireEvent.keyDown(window, { key: 'ArrowRight' }); fireEvent.keyDown(window, { key: 'ArrowRight', repeat: true });
+    fireEvent.keyDown(window, { key }); fireEvent.keyDown(window, { key, repeat: true });
     await waitFor(() => expect(calls).toBe(1));
     await act(async () => { resolve({ x: 101, y: 100 }); });
     await waitFor(() => expect(view.container.querySelector('.capture-magnifier')).toHaveTextContent('-1818, 100'));
@@ -677,7 +709,7 @@ describe('capture keyboard pointer movement', () => {
     view.unmount();
   });
 
-  it('ignores late movement responses and queued keys after cancellation', async () => {
+  it.each([['ArrowRight', 'ArrowDown'], ['d', 's']])('ignores late movement responses and queued %s/%s keys after cancellation', async (right, down) => {
     let resolve!: (point: { x: number; y: number }) => void;
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_session') return { ...meta, pointer: { x: 100, y: 100 } };
@@ -686,7 +718,7 @@ describe('capture keyboard pointer movement', () => {
     });
     const view = render(<CaptureApp />);
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
-    fireEvent.keyDown(window, { key: 'ArrowRight' }); fireEvent.keyDown(window, { key: 'ArrowDown' });
+    fireEvent.keyDown(window, { key: right }); fireEvent.keyDown(window, { key: down });
     await waitFor(() => expect(resolve).toBeTypeOf('function'));
     fireEvent.keyDown(window, { key: 'Escape' });
     await act(async () => { resolve({ x: 101, y: 100 }); });
