@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Check, Copy, Download, MessageSquare, Pin, Redo2, Undo2, X, Trash2 } from 'lucide-react';
 import type { CaptureAnnotation, CaptureCandidate, CaptureColorFormat, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession } from '../../shared/capture';
@@ -25,6 +25,7 @@ export function CaptureApp(): JSX.Element {
   const [scrollProgress, setScrollProgress] = useState<ScrollCaptureSession | null>(null);
   const [gestureMode, setGestureMode] = useState<Gesture['mode'] | null>(null);
   const [colorFormat, setColorFormat] = useState<CaptureColorFormat>('hex');
+  const help = useRef<HTMLDListElement>(null), [helpHidden, setHelpHidden] = useState(false);
   const shiftColorToggle = useRef(false);
   const scrolling = scrollProgress !== null;
   const scrollingRef = useRef(false), scrollVersion = useRef<number | null>(null);
@@ -45,6 +46,16 @@ export function CaptureApp(): JSX.Element {
   const selectedItem = history.present.find((item) => item.id === selectedId);
   const displayedItems = history.present.filter((item) => item.id !== textEdit?.id && item.id !== (gesture.current?.mode === 'object' ? draft?.id : undefined));
   const magnifierActive = !!image && !!session && !textEdit && !busy && !scrolling && (!selection || gestureMode === 'new' || gestureMode === 'resize');
+
+  useLayoutEffect(() => {
+    const rect = help.current?.getBoundingClientRect();
+    if (!rect) return;
+    const pointerInside = contains({ x: rect.left, y: rect.top, width: rect.width, height: rect.height }, { x: point.x * sx, y: point.y * sy });
+    const selectionNear = !!selection && selection.x * sx <= rect.right + 16 && (selection.x + selection.width) * sx >= rect.left - 16
+      && selection.y * sy <= rect.bottom + 16 && (selection.y + selection.height) * sy >= rect.top - 16;
+    const hidden = rect.width > 0 && rect.height > 0 && (pointerInside || selectionNear);
+    if (hidden !== helpHidden) setHelpHidden(hidden);
+  });
 
   const cancel = (): void => {
     if (cancelling.current) return;
@@ -351,6 +362,24 @@ export function CaptureApp(): JSX.Element {
     </> : <div className="capture-shade" />}
     {selection && HANDLES.map((handle) => { const p = handlePoint(selection, handle); return <span key={handle} className={`capture-handle capture-handle--${handle}`} style={{ left: p.x * sx, top: p.y * sy }} />; })}
     {selectedItem && !textEdit && <div className="capture-object-outline" style={sceneStyle(annotationBounds(draft?.id === selectedItem.id ? draft : selectedItem))} />}
+    {!textEdit && !busy && <dl ref={help} className="capture-help" aria-label="截图操作提示" aria-hidden={helpHidden} style={{ visibility: helpHidden ? 'hidden' : undefined }}>
+      <dt aria-label="方向键"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>移动鼠标，每次 1 像素</dd>
+      {!selection ? <>
+        <dt><kbd>单击</kbd></dt><dd>选择窗口或控件</dd>
+        <dt><kbd>拖动</kbd></dt><dd>手动框选</dd>
+        <dt><kbd>Tab</kbd></dt><dd>切换到父级</dd>
+        <dt><kbd>Shift</kbd>+<kbd>Tab</kbd></dt><dd>返回子级</dd>
+        <dt><kbd>Esc</kbd></dt><dd>退出截图</dd>
+      </> : <>
+        <dt><kbd>Ctrl</kbd>+<kbd>方向键</kbd></dt><dd>向对应方向扩大选区 1 像素</dd>
+        <dt><kbd>Shift</kbd>+<kbd>方向键</kbd></dt><dd>从对应方向缩小选区 1 像素</dd>
+        {tool === 'select' && <><dt><kbd>拖动</kbd></dt><dd>移动选区，拖动边框调整大小</dd></>}
+        {tool === 'select' && history.present.some((item) => item.tool === 'text') && <><dt><kbd>双击文字</kbd></dt><dd>再次编辑标注文字</dd></>}
+        {tool !== 'select' && <><dt><kbd>滚轮</kbd></dt><dd>调整标注线宽</dd></>}
+        {['rectangle', 'ellipse', 'arrow', 'mosaic'].includes(tool) && <><dt><kbd>Shift</kbd>+<kbd>拖动</kbd></dt><dd>{tool === 'arrow' ? '按 45° 间隔约束箭头方向' : '绘制时保持宽高相等'}</dd></>}
+        {(tool !== 'select' || selectedId) && <><dt><kbd>右键</kbd></dt><dd>结束标注，返回选区模式</dd></>}
+      </>}
+    </dl>}
     {magnifierActive && image && session && <Magnifier image={image} point={point} screen={session.screen} viewport={viewport} format={colorFormat} />}
     {selection && !adjusting && !textEdit && <div className="capture-toolbar-surface capture-toolbar" role="toolbar" aria-label="截图工具栏" data-capture-ui style={{ left: clamp(selection.x * sx, 12, Math.max(12, viewport.width - 790)), top: selection.y * sy + selection.height * sy + 66 < viewport.height ? selection.y * sy + selection.height * sy + 12 : Math.max(12, selection.y * sy - 62) }}>
       <div className="capture-tools">{ANNOTATION_TOOLS.map(([value, Icon, title]) => <button key={value} title={title} aria-label={title} aria-pressed={tool === value} disabled={busy} onClick={() => { setTool(value); setSelectedId(null); }}><Icon size={16} /></button>)}</div>
@@ -371,7 +400,6 @@ export function CaptureApp(): JSX.Element {
       <textarea autoFocus aria-label="标注文字" maxLength={4000} value={textEdit.text} style={{ color: textEdit.color }} onChange={(event) => setTextEdit({ ...textEdit, text: event.target.value })} onKeyDown={(event) => { if (event.ctrlKey && event.key === 'Enter') { event.preventDefault(); finishText(); } }} />
       <button onClick={finishText}><Check size={16} /> 完成文字</button>
     </div>}
-    {!selection && <div className="capture-help" data-capture-ui>拖动框选 · 单击选择窗口或控件 · Tab 切换层级 · Esc 取消</div>}
     {busy && <div className="capture-status" role="status">正在处理图片…</div>}
     {error && <div className="capture-error" role="alert" data-capture-ui>{error}<button onClick={() => setError('')} aria-label="关闭错误提示"><X size={14} /></button></div>}
   </main>;
