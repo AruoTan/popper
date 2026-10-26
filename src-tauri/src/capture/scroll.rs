@@ -147,6 +147,10 @@ impl ScrollStitcher {
         if position < self.top {
             let added = (self.top - position) as usize;
             self.strips.push_front(crop(&image, header, added));
+            if let Some(first) = self.rows.front() {
+                self.index
+                    .add_boundary(&body[added - 1], first, self.top - 1);
+            }
             self.index.add(&body[..added], position);
             for row in body[..added].iter().rev() {
                 self.rows.push_front(row.clone());
@@ -159,6 +163,9 @@ impl ScrollStitcher {
             let start = (self.bottom - position) as usize;
             self.strips
                 .push_back(crop(&image, header + start, body.len() - start));
+            if let Some(last) = self.rows.back() {
+                self.index.add_boundary(last, &body[start], self.bottom - 1);
+            }
             self.index.add(&body[start..], self.bottom);
             self.rows.extend(body[start..].iter().cloned());
             self.footer = (footer > 0).then(|| crop(&image, sampled.len() - footer, footer));
@@ -500,6 +507,111 @@ mod tests {
         let shifted = RgbaImage::from_fn(160, 240, |x, y| *repeated.get_pixel(x, (y + 5) % 240));
         let mut stitcher = ScrollStitcher::new(repeated).unwrap();
         assert_eq!(stitcher.push(shifted).status, ScrollStatus::Unmatched);
+    }
+    #[test]
+    fn page_boundaries_bridge_sparse_margins_in_both_directions() {
+        let textured = page();
+        let document = RgbaImage::from_fn(160, 1200, |x, y| {
+            if y < 180 || y >= 500 {
+                *textured.get_pixel(x, y)
+            } else if (356..364).contains(&y) {
+                let gray = [250, 235, 220, 210, 220, 235, 250, 254][(y - 356) as usize];
+                image::Rgba([gray, gray, gray, 255])
+            } else {
+                image::Rgba([255; 4])
+            }
+        });
+        let mut stitcher = ScrollStitcher::new(frame(&document, 160)).unwrap();
+        for y in [210, 260, 320, 380, 460, 210, 160, 100] {
+            assert!(
+                matches!(
+                    stitcher.push(frame(&document, y)).status,
+                    ScrollStatus::Appended | ScrollStatus::Tracked
+                ),
+                "page boundary at {y}"
+            );
+        }
+        assert_eq!(
+            stitcher.compose(),
+            image::imageops::crop_imm(&document, 0, 100, 160, 600).to_image()
+        );
+    }
+    #[test]
+    fn repetitive_page_separators_and_blank_only_overlap_remain_unmatched() {
+        let repeated = RgbaImage::from_fn(160, 640, |_, y| {
+            let gray = if y % 80 < 4 { 200 } else { 255 };
+            image::Rgba([gray, gray, gray, 255])
+        });
+        let shifted = RgbaImage::from_fn(160, 640, |x, y| *repeated.get_pixel(x, (y + 19) % 640));
+        let mut stitcher = ScrollStitcher::new(repeated.clone()).unwrap();
+        assert_eq!(stitcher.push(shifted).status, ScrollStatus::Unmatched);
+        assert_eq!(stitcher.compose(), repeated);
+
+        let band = |start| {
+            RgbaImage::from_fn(160, 240, |_, y| {
+                let gray = if (start..start + 4).contains(&y) {
+                    200
+                } else {
+                    255
+                };
+                image::Rgba([gray, gray, gray, 255])
+            })
+        };
+        let initial = band(30);
+        let mut stitcher = ScrollStitcher::new(initial.clone()).unwrap();
+        assert_eq!(
+            stitcher
+                .push(RgbaImage::from_pixel(160, 240, image::Rgba([255; 4])))
+                .status,
+            ScrollStatus::Unmatched
+        );
+        assert_eq!(stitcher.compose(), initial);
+
+        let edge = |start| {
+            RgbaImage::from_fn(160, 240, |_, y| {
+                let gray = if y < start { 200 } else { 255 };
+                image::Rgba([gray, gray, gray, 255])
+            })
+        };
+        let initial = edge(100);
+        let mut stitcher = ScrollStitcher::new(initial.clone()).unwrap();
+        assert_eq!(stitcher.push(edge(50)).status, ScrollStatus::Unmatched);
+        assert_eq!(stitcher.compose(), initial);
+    }
+    #[test]
+    fn page_separator_transitions_across_strip_joins_remain_indexed_in_both_directions() {
+        let textured = page();
+        let document = RgbaImage::from_fn(160, 1200, |x, y| {
+            if y < 220 || y >= 500 {
+                *textured.get_pixel(x, y)
+            } else {
+                let gray = if (237..240).contains(&y) { 200 } else { 255 };
+                image::Rgba([gray, gray, gray, 255])
+            }
+        });
+        let mut stitcher = ScrollStitcher::new(frame(&document, 0)).unwrap();
+        for y in [20, 220] {
+            assert_eq!(
+                stitcher.push(frame(&document, y)).status,
+                ScrollStatus::Appended
+            );
+        }
+        assert_eq!(
+            stitcher.compose(),
+            image::imageops::crop_imm(&document, 0, 0, 160, 460).to_image()
+        );
+        let reversed = image::imageops::flip_vertical(&document);
+        let mut stitcher = ScrollStitcher::new(frame(&reversed, 960)).unwrap();
+        for y in [940, 740] {
+            assert_eq!(
+                stitcher.push(frame(&reversed, y)).status,
+                ScrollStatus::Appended
+            );
+        }
+        assert_eq!(
+            stitcher.compose(),
+            image::imageops::crop_imm(&reversed, 0, 740, 160, 460).to_image()
+        );
     }
     #[test]
     fn repeated_revisits_do_not_exhaust_a_frame_count_budget() {

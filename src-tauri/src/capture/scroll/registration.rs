@@ -52,6 +52,10 @@ pub(super) fn rows(image: &RgbaImage) -> Vec<Row> {
 pub(super) fn distance(a: &Row, b: &Row) -> f64 {
     difference(&a.pixels, &b.pixels)
 }
+fn boundary(a: &Row, b: &Row) -> Option<(u64, u64)> {
+    // Page separators can vary vertically while every individual row is uniform.
+    (a.key.is_none() && b.key.is_none() && distance(a, b) >= 1.0).then_some((a.exact, b.exact))
+}
 pub fn settled(a: &RgbaImage, b: &RgbaImage) -> bool {
     // Sparse samples can miss small text and whole bands during fast motion.
     a.dimensions() == b.dimensions() && a.as_raw() == b.as_raw()
@@ -61,6 +65,7 @@ pub fn settled(a: &RgbaImage, b: &RgbaImage) -> bool {
 pub(super) struct Index {
     perceptual: HashMap<u32, Vec<i64>>,
     exact: HashMap<u64, Vec<i64>>,
+    boundaries: HashMap<(u64, u64), Vec<i64>>,
 }
 impl Index {
     pub fn add(&mut self, rows: &[Row], start: i64) {
@@ -75,6 +80,14 @@ impl Index {
                     .or_default()
                     .push(start + i as i64);
             }
+        }
+        for (i, pair) in rows.windows(2).enumerate() {
+            self.add_boundary(&pair[0], &pair[1], start + i as i64);
+        }
+    }
+    pub fn add_boundary(&mut self, a: &Row, b: &Row, position: i64) {
+        if let Some(key) = boundary(a, b) {
+            self.boundaries.entry(key).or_default().push(position);
         }
     }
     pub fn locate(
@@ -102,11 +115,21 @@ impl Index {
                 .collect();
         anchors.sort_by_key(|&(y, _)| y);
         anchors.dedup_by_key(|(y, _)| *y);
-        let mut exact_votes: HashMap<i64, u32> = HashMap::new();
+        let mut exact_votes: HashMap<i64, (u32, u32)> = HashMap::new();
         for &(y, row) in &anchors {
             if let Some(positions) = self.exact.get(&row.exact).filter(|p| p.len() <= 1024) {
                 for &position in positions {
-                    *exact_votes.entry(position - y as i64).or_default() += 1;
+                    exact_votes.entry(position - y as i64).or_default().0 += 1;
+                }
+            }
+        }
+        for (y, pair) in viewport.windows(2).enumerate() {
+            if let Some(positions) = boundary(&pair[0], &pair[1])
+                .and_then(|key| self.boundaries.get(&key))
+                .filter(|p| p.len() <= 1024)
+            {
+                for &position in positions {
+                    exact_votes.entry(position - y as i64).or_default().1 += 1;
                 }
             }
         }
@@ -114,8 +137,8 @@ impl Index {
         let mut exact_match = None;
         // Verify every sampled row, including blank rows; hashes only propose offsets.
         // Dense edge anchors retain tiny overlaps after a near-viewport-sized jump.
-        for (position, count) in exact_votes {
-            if count < 6 {
+        for (position, (text, boundaries)) in exact_votes {
+            if text < 6 && boundaries < 2 {
                 continue;
             }
             let begin = top.max(position);
@@ -124,13 +147,21 @@ impl Index {
                 continue;
             }
             let mut evidence = 0;
+            let mut boundary_evidence = 0;
             let identical = (begin..end).all(|y| {
                 let a = &document[(y - top) as usize];
                 let b = &viewport[(y - position) as usize];
                 evidence += usize::from(a.key.is_some());
+                boundary_evidence += usize::from(
+                    y + 1 < end && boundary(a, &document[(y + 1 - top) as usize]).is_some(),
+                );
                 a.pixels == b.pixels
             });
-            if identical && evidence >= 6 && exact_match.replace(position).is_some() {
+            // A complete separator needs two transitions; blank overlap alone cannot locate it.
+            if identical
+                && (evidence >= 6 || boundary_evidence >= 2)
+                && exact_match.replace(position).is_some()
+            {
                 return None;
             }
         }
