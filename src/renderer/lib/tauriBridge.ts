@@ -232,6 +232,7 @@ export function installTauriBridge(): void {
   }
 
   const quickAskOpened = new EventHub<void>(EVENTS.quickAskOpened, () => undefined);
+  const captureAttachments = new EventHub<void>("popper:capture-attachment", () => undefined);
   const selectionEvents = new EventHub<SelectionPayload>(
     EVENTS.selection,
     (payload) => selectionPayloadSchema.parse(payload),
@@ -408,12 +409,9 @@ export function installTauriBridge(): void {
     onQuickAskOpened: (listener) => quickAskOpened.subscribe(listener),
     async startCapture() { await invoke("capture_start"); },
     async pasteCapture() { await invoke("capture_paste"); },
-    async pendingCaptureAttachment() { return await invoke("capture_pending_attachment"); },
+    async pendingCaptureAttachment() { await captureAttachments.ready(); return await invoke("capture_pending_attachment"); },
     async ackCaptureAttachment(id, error) { await invoke("capture_ack_attachment", { id, error: error ?? null }); },
-    onCaptureAttachment(listener) { let dispose: (() => void) | undefined; let stopped = false;
-      void listen("popper:capture-attachment", () => listener()).then((unlisten) => { if (stopped) unlisten(); else dispose = unlisten; }).catch(() => {});
-      return () => { stopped = true; dispose?.(); };
-    },
+    onCaptureAttachment: (listener) => captureAttachments.subscribe(listener),
     async runAction(
       actionId: string,
       cursor?: Point,

@@ -51,6 +51,27 @@ describe('scroll capture integration', () => {
     const view = await selected(); fireEvent.click(view.getByLabelText('滚动截图'));
     await waitFor(() => expect(view.getByRole('toolbar', { name: '滚动截图操作' })).toBeInTheDocument()); return view;
   }
+  it('hands a normal screenshot directly to Quick Ask and ignores focus loss during delivery', async () => {
+    let complete!: (value: boolean) => void;
+    const bytes = new Uint8Array([7, 8, 9]);
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, ...args) => {
+      if (command === 'capture_crop') return Promise.resolve(bytes.buffer);
+      if (command === 'capture_export') return new Promise((done) => { complete = done; });
+      return implementation(command, ...args);
+    });
+    const view = await selected();
+    fireEvent.click(view.getByLabelText('问 AI'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_export', bytes, { headers: { 'x-capture-version': '1', 'x-capture-output': 'ask' } }));
+    fireEvent.blur(window);
+    await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
+    expect(calls('capture_cancel')).toBe(0);
+    expect(view.getByLabelText('问 AI')).toBeDisabled();
+    await act(async () => complete(true));
+    expect(calls('capture_scroll_begin')).toBe(0);
+    expect(calls('capture_export')).toBe(1);
+    view.unmount();
+  });
   it('hands off a cropped base image and independently translated annotations when creating a pin', async () => {
     const implementation = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation((command, ...args) => command === 'capture_crop'

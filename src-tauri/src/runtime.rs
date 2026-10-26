@@ -2288,7 +2288,7 @@ pub fn get_accessibility_status(
     window: WebviewWindow,
     state: State<'_, RuntimeState>,
 ) -> Result<AccessibilityStatus, String> {
-    ensure_settings_caller(&window)?;
+    ensure_accessibility_status_caller(window.label())?;
     Ok(state.accessibility_status())
 }
 
@@ -3346,6 +3346,12 @@ fn ensure_settings_caller(window: &WebviewWindow) -> Result<(), String> {
         .ok_or_else(|| "该操作只能从设置窗口执行".to_owned())
 }
 
+fn ensure_accessibility_status_caller(label: &str) -> Result<(), String> {
+    matches!(label, SETTINGS_LABEL | "quick-ask")
+        .then_some(())
+        .ok_or_else(|| "该操作只能从设置或快捷提问窗口执行".to_owned())
+}
+
 fn ensure_toolbar_caller(window: &WebviewWindow) -> Result<(), String> {
     (window.label() == TOOLBAR_LABEL)
         .then_some(())
@@ -3868,6 +3874,20 @@ mod tests {
             ResultReadyAck, SessionGeneration,
         },
     };
+
+    #[test]
+    fn accessibility_status_accepts_quick_ask_without_allowing_other_windows() {
+        assert!(ensure_accessibility_status_caller("settings").is_ok());
+        assert!(ensure_accessibility_status_caller("quick-ask").is_ok());
+        for label in [
+            "selection-toolbar",
+            "capture-session-test",
+            "capture-pin-test",
+            "unknown",
+        ] {
+            assert!(ensure_accessibility_status_caller(label).is_err());
+        }
+    }
 
     fn result_meta() -> ResultSessionMeta {
         ResultSessionMeta {

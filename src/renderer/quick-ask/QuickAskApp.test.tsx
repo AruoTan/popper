@@ -11,6 +11,7 @@ beforeEach(() => {
   close.mockReset().mockResolvedValue(undefined);
   Object.defineProperty(window, '_popper_', { configurable: true, value: {
     submitQuickAsk: submit, closeQuickAsk: close,
+    getAccessibilityStatus: vi.fn().mockResolvedValue({ platform: 'windows' }),
     quickAskReady: vi.fn().mockResolvedValue(undefined),
     onQuickAskOpened: (listener: () => void) => { opened = listener; return () => { opened = undefined; }; },
   } as unknown as WindowPopperApi });
@@ -105,6 +106,7 @@ describe('Quick Ask', () => {
 
   it('preserves draft on reopen and supports Escape, IME and Shift+Enter', async () => {
     render(<QuickAskApp />);
+    await act(async () => {});
     const input = screen.getByRole('textbox');
     fireEvent.change(input, { target: { value: 'draft' } });
     fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
@@ -137,7 +139,8 @@ it('receives a captured image once while preserving the existing question draft'
   window._popper_.onCaptureAttachment = (listener) => { receive = listener; return () => { receive = undefined; }; };
   render(<QuickAskApp />);
   fireEvent.change(screen.getByRole('textbox'), { target: { value: '保留这段草稿' } });
-  await act(async () => {});
+  fireEvent.change(screen.getByLabelText('选择附件'), { target: { files: [new File(['draft context'], 'context.txt', { type: 'text/plain' })] } });
+  await screen.findByText('context.txt');
   available = { id: 'capture-1', attachment: { name: 'Popper-capture.png', mime: 'image/png', kind: 'image' as const, data: 'iVBORw0KGgo=' } };
   act(() => { receive?.(); receive?.(); });
   await screen.findByRole('img', { name: 'Popper-capture.png' });
@@ -145,7 +148,7 @@ it('receives a captured image once while preserving the existing question draft'
   expect(screen.getByRole('textbox')).toHaveValue('保留这段草稿');
   expect(submit).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
-  await waitFor(() => expect(submit).toHaveBeenCalledWith('保留这段草稿', [expect.objectContaining({ name: 'Popper-capture.png' })]));
+  await waitFor(() => expect(submit).toHaveBeenCalledWith('保留这段草稿', [expect.objectContaining({ name: 'context.txt' }), expect.objectContaining({ name: 'Popper-capture.png' })]));
 });
 
 it('rolls back a captured attachment if its native acknowledgement expires', async () => {
@@ -155,6 +158,31 @@ it('rolls back a captured attachment if its native acknowledgement expires', asy
   expect(await screen.findByRole('alert')).toHaveTextContent('图片交接已结束');
   expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull();
   expect(submit).not.toHaveBeenCalled();
+});
+
+it('receives a new capture notification that arrives during an empty pending query', async () => {
+  let resolve!: (value: null) => void;
+  let receive: (() => void) | undefined;
+  const pending = { id: 'next-capture', attachment: { name: 'next.png', mime: 'image/png', kind: 'image' as const, data: 'iVBORw0KGgo=' } };
+  window._popper_.pendingCaptureAttachment = vi.fn()
+    .mockImplementationOnce(() => new Promise((done) => { resolve = done; }))
+    .mockResolvedValueOnce(pending)
+    .mockResolvedValue(null);
+  window._popper_.ackCaptureAttachment = vi.fn().mockResolvedValue(undefined);
+  window._popper_.onCaptureAttachment = (listener) => { receive = listener; return () => { receive = undefined; }; };
+  render(<QuickAskApp />);
+  await waitFor(() => expect(resolve).toBeTypeOf('function'));
+  act(() => receive?.());
+  await act(async () => resolve(null));
+  expect(await screen.findByRole('img', { name: 'next.png' })).toBeInTheDocument();
+  expect(window._popper_.ackCaptureAttachment).toHaveBeenCalledExactlyOnceWith('next-capture');
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it('reports capture setup failures instead of silently disabling attachment delivery', async () => {
+  window._popper_.getAccessibilityStatus = vi.fn().mockRejectedValue(new Error('读取屏幕捕捉状态失败'));
+  render(<QuickAskApp />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('读取屏幕捕捉状态失败');
 });
 
 it('keeps capture integration inactive on a platform without screen capture', async () => {

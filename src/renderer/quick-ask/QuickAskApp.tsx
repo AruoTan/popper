@@ -22,9 +22,10 @@ export function QuickAskApp(): JSX.Element {
   attachmentsRef.current = attachments;
 
   useEffect(() => {
-    let active = true, receiving = false;
+    let active = true, receiving = false, queued = false;
     const receive = async (): Promise<void> => {
-      if (receiving) return;
+      if (!active) return;
+      if (receiving) { queued = true; return; }
       receiving = true;
       let id: string | undefined;
       try {
@@ -47,7 +48,10 @@ export function QuickAskApp(): JSX.Element {
       } catch (error) {
         if (active) setError(getErrorMessage(error, '无法接收截图'));
         if (id) await window._popper_.ackCaptureAttachment?.(id, getErrorMessage(error, '无法接收截图')).catch(() => {});
-      } finally { receiving = false; }
+      } finally {
+        receiving = false;
+        if (queued && active) { queued = false; void receive(); }
+      }
     };
     let stop: (() => void) | undefined;
     void (async () => {
@@ -56,7 +60,9 @@ export function QuickAskApp(): JSX.Element {
       setCaptureAvailable(Boolean(window._popper_.startCapture));
       stop = window._popper_.onCaptureAttachment?.(() => void receive());
       await receive();
-    })().catch(() => {});
+    })().catch((error: unknown) => {
+      if (active) setError(getErrorMessage(error, '无法接收截图'));
+    });
     return () => { active = false; stop?.(); };
   }, []);
 
