@@ -43,6 +43,15 @@ export function keyRect(rect: CaptureRect, key: string, control: boolean, shift:
 export function handlePoint(rect: CaptureRect, handle: Handle): CapturePoint {
   return { x: rect.x + (handle.includes('w') ? 0 : handle.includes('e') ? rect.width : rect.width / 2), y: rect.y + (handle.includes('n') ? 0 : handle.includes('s') ? rect.height : rect.height / 2) };
 }
+export function resizeHandle(rect: CaptureRect, point: CapturePoint, scale: CapturePoint, tolerance = 7): Handle | null {
+  const left = Math.abs(point.x - rect.x) * scale.x, right = Math.abs(point.x - rect.x - rect.width) * scale.x;
+  const top = Math.abs(point.y - rect.y) * scale.y, bottom = Math.abs(point.y - rect.y - rect.height) * scale.y;
+  if (point.x < rect.x - tolerance / scale.x || point.x > rect.x + rect.width + tolerance / scale.x
+    || point.y < rect.y - tolerance / scale.y || point.y > rect.y + rect.height + tolerance / scale.y) return null;
+  const vertical = Math.min(top, bottom) <= tolerance ? (top <= bottom ? 'n' : 's') : '';
+  const horizontal = Math.min(left, right) <= tolerance ? (left <= right ? 'w' : 'e') : '';
+  return vertical || horizontal ? (vertical + horizontal) as Handle : null;
+}
 export function constrainedEnd(start: CapturePoint, end: CapturePoint, tool: string, shift: boolean): CapturePoint {
   if (!shift) return end;
   const dx = end.x - start.x, dy = end.y - start.y;

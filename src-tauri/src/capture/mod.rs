@@ -21,6 +21,8 @@ pub use recognition::run_helper_if_requested;
 #[cfg(any(target_os = "windows", test))]
 mod bitmap;
 #[cfg(any(target_os = "windows", test))]
+mod color;
+#[cfg(any(target_os = "windows", test))]
 mod hit_test;
 #[cfg(any(target_os = "windows", test))]
 mod pins;
@@ -78,6 +80,20 @@ pub fn capture_move_pointer(
     dy: i32,
 ) -> Result<CapturePoint, String> {
     desktop_call!(desktop::move_pointer(&app, &window, dx, dy))
+}
+#[tauri::command]
+pub async fn capture_copy_color(
+    app: AppHandle,
+    window: WebviewWindow,
+    x: i32,
+    y: i32,
+    format: CaptureColorFormat,
+) -> Result<(), String> {
+    desktop_call!(tauri::async_runtime::spawn_blocking(move || desktop::copy_color(
+        &app, &window, CapturePoint { x, y }, format
+    ))
+    .await
+    .map_err(|e| e.to_string())?)
 }
 #[tauri::command]
 pub async fn capture_candidates(

@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureColorFormat {
+    Hex,
+    Rgb,
+}
+impl CaptureColorFormat {
+    pub fn format(self, [r, g, b]: [u8; 3]) -> String {
+        match self {
+            Self::Hex => format!("#{r:02X}{g:02X}{b:02X}"),
+            Self::Rgb => format!("{r}, {g}, {b}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CaptureRect {

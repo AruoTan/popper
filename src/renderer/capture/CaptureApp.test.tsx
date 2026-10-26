@@ -13,6 +13,219 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_session' ? meta : command === 'capture_image' ? new ArrayBuffer(0) : undefined);
 });
 afterEach(() => { vi.unstubAllGlobals(); Reflect.deleteProperty(HTMLImageElement.prototype, 'decode'); });
+describe('normal capture selection interaction', () => {
+  beforeEach(() => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    vi.stubGlobal('innerWidth', 1000); vi.stubGlobal('innerHeight', 700);
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    vi.mocked(decodePng).mockResolvedValue(new Image());
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return { ...meta, screen: { x: -2000, y: -1400, width: 2000, height: 1400 } };
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_candidates') return { candidates: [], pending: false };
+    });
+  });
+  const at = (clientX: number, clientY: number) => ({ clientX, clientY, button: 0 });
+  async function shown() {
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
+    const main = view.container.querySelector('main')!;
+    Object.assign(main, { setPointerCapture: vi.fn(), hasPointerCapture: () => false });
+    return { ...view, main };
+  }
+  async function selected() {
+    const view = await shown();
+    fireEvent.pointerDown(view.main, at(200, 150));
+    fireEvent.pointerMove(view.main, at(700, 500));
+    fireEvent.pointerUp(view.main, at(700, 500));
+    return view;
+  }
+  function sampleColor(): void {
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue({
+      fillRect: vi.fn(), drawImage: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(),
+      getImageData: () => ({ data: new Uint8ClampedArray([35, 39, 46, 255]) }),
+    } as unknown as CanvasRenderingContext2D);
+  }
+  const toggleFormat = (): void => { fireEvent.keyDown(window, { key: 'Shift', shiftKey: true }); fireEvent.keyUp(window, { key: 'Shift' }); };
+  it('copies the displayed color format without finishing capture and ignores held-key repeats', async () => {
+    sampleColor();
+    const view = await shown();
+    fireEvent.pointerMove(view.main, at(400, 300));
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('#23272E');
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    expect(invoke).toHaveBeenCalledWith('capture_copy_color', { x: 800, y: 600, format: 'hex' });
+    toggleFormat();
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('35, 39, 46');
+    fireEvent.keyDown(window, { key: 'C', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true, repeat: true });
+    expect(invoke).toHaveBeenCalledWith('capture_copy_color', { x: 800, y: 600, format: 'rgb' });
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_copy_color')).toHaveLength(2);
+    fireEvent.keyDown(window, { key: 'Shift', shiftKey: true });
+    fireEvent.keyDown(window, { key: 'Shift', shiftKey: true, repeat: true });
+    fireEvent.keyUp(window, { key: 'Shift' });
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('#23272E');
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => ['capture_crop', 'capture_export', 'capture_cancel'].includes(command))).toBe(false);
+    view.unmount();
+  });
+  it('retains the color format across selection and resizing while completed-selection Ctrl+C copies the image', async () => {
+    sampleColor();
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_crop') return new ArrayBuffer(0);
+      if (command === 'capture_export') return false;
+      return implementation(command, ...args);
+    });
+    const view = await shown();
+    toggleFormat();
+    fireEvent.pointerDown(view.main, at(200, 150));
+    fireEvent.pointerMove(view.main, at(700, 500));
+    fireEvent.pointerUp(view.main, at(700, 500));
+    toggleFormat();
+    fireEvent.pointerDown(view.main, at(350, 150));
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('35, 39, 46');
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    expect(invoke).toHaveBeenCalledWith('capture_copy_color', { x: 700, y: 300, format: 'rgb' });
+    expect(view.queryByRole('toolbar')).toBeNull();
+    fireEvent.pointerUp(view.main, at(350, 150));
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_export', expect.any(Uint8Array), expect.objectContaining({ headers: expect.objectContaining({ 'x-capture-output': 'clipboard' }) })));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_copy_color')).toHaveLength(1);
+    view.unmount();
+  });
+  it('does not toggle color format for Shift combinations, pointer gestures, input fields, or interrupted focus', async () => {
+    sampleColor();
+    const view = await shown();
+    for (const key of ['Tab', 'ArrowRight', 'Control']) {
+      fireEvent.keyDown(window, { key: 'Shift', shiftKey: true });
+      fireEvent.keyDown(window, { key, shiftKey: true });
+      fireEvent.keyUp(window, { key: 'Shift' });
+      expect(view.getByLabelText('像素放大预览')).toHaveTextContent('#23272E');
+    }
+    fireEvent.keyDown(window, { key: 'Shift', shiftKey: true });
+    fireEvent.blur(window); fireEvent.focus(window); fireEvent.keyUp(window, { key: 'Shift' });
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('#23272E');
+    fireEvent.keyDown(window, { key: 'Shift', shiftKey: true });
+    fireEvent.pointerDown(view.main, at(200, 150));
+    fireEvent.pointerMove(view.main, { ...at(700, 500), shiftKey: true });
+    fireEvent.keyUp(window, { key: 'Shift' });
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('#23272E');
+    fireEvent.pointerUp(view.main, at(700, 500));
+    fireEvent.keyDown(view.getByLabelText('线宽'), { key: 'Shift', shiftKey: true });
+    fireEvent.keyUp(view.getByLabelText('线宽'), { key: 'Shift' });
+    fireEvent.keyDown(view.getByLabelText('线宽'), { key: 'c', ctrlKey: true });
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => ['capture_copy_color', 'capture_export'].includes(command))).toBe(false);
+    view.unmount();
+  });
+  it('reports clipboard errors and allows retry without leaving capture', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    let copies = 0;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_copy_color') { if (++copies === 1) throw new Error('剪贴板正被占用，请重试'); return; }
+      return implementation(command, ...args);
+    });
+    const view = await shown();
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('剪贴板正被占用，请重试'));
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    expect(copies).toBe(2);
+    expect(view.queryByRole('alert')).toBeNull();
+    expect(view.getByLabelText('像素放大预览')).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    view.unmount();
+  });
+  it('shows the toolbar only after selection and hides it while moving the selection', async () => {
+    const view = await shown();
+    expect(view.getByLabelText('像素放大预览')).toBeInTheDocument();
+    fireEvent.pointerDown(view.main, at(700, 500));
+    fireEvent.pointerMove(view.main, at(200, 150));
+    expect(view.getByLabelText('截图选区')).toHaveStyle({ left: '200px', top: '150px', width: '500px', height: '350px' });
+    expect(view.queryByRole('toolbar')).toBeNull();
+    expect(view.getByLabelText('像素放大预览')).toBeInTheDocument();
+    fireEvent.pointerUp(view.main, at(200, 150));
+    expect(view.getByRole('toolbar', { name: '截图工具栏' })).toBeInTheDocument();
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    fireEvent.pointerMove(view.main, at(100, 100));
+    expect(view.main.style.cursor).toBe('default');
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    fireEvent.pointerMove(view.main, at(400, 300));
+    expect(view.main.style.cursor).toBe('move');
+    fireEvent.pointerDown(view.main, at(400, 300));
+    expect(view.queryByRole('toolbar')).toBeNull();
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    fireEvent.pointerMove(view.main, at(450, 320));
+    expect(view.getByLabelText('截图选区')).toHaveStyle({ left: '250px', top: '170px' });
+    fireEvent.pointerUp(view.main, at(450, 320));
+    expect(view.getByRole('toolbar')).toBeInTheDocument();
+    view.unmount();
+  });
+  it.each([[200, 150, 'nw'], [350, 150, 'n'], [700, 150, 'ne'], [700, 250, 'e'], [700, 500, 'se'], [350, 500, 's'], [200, 500, 'sw'], [200, 250, 'w']] as const)(
+    'uses the %s,%s border as a %s resize target and updates the magnifier during adjustment', async (x, y, handle) => {
+      const view = await selected();
+      fireEvent.pointerMove(view.main, at(x, y));
+      expect(view.main.style.cursor).toBe(`${handle}-resize`);
+      expect(view.queryByLabelText('像素放大预览')).toBeNull();
+      fireEvent.pointerDown(view.main, at(x, y));
+      expect(view.queryByRole('toolbar')).toBeNull();
+      expect(view.getByLabelText('像素放大预览')).toHaveTextContent(`${-2000 + x * 2}, ${-1400 + y * 2}`);
+      fireEvent.pointerMove(view.main, at(x + 10, y + 20));
+      expect(view.main.style.cursor).toBe(`${handle}-resize`);
+      expect(view.getByLabelText('像素放大预览')).toHaveTextContent(`${-2000 + (x + 10) * 2}, ${-1400 + (y + 20) * 2}`);
+      const selection = view.getByLabelText('截图选区');
+      expect(selection).toHaveStyle({
+        left: `${handle.includes('w') ? 210 : 200}px`, top: `${handle.includes('n') ? 170 : 150}px`,
+        width: `${handle.includes('w') ? 490 : handle.includes('e') ? 510 : 500}px`,
+        height: `${handle.includes('n') ? 330 : handle.includes('s') ? 370 : 350}px`,
+      });
+      fireEvent.pointerUp(view.main, at(x + 10, y + 20));
+      expect(view.queryByLabelText('像素放大预览')).toBeNull();
+      expect(view.getByRole('toolbar')).toBeInTheDocument();
+      view.unmount();
+    });
+  it('does not jump to the pointer when a drag starts slightly inside the border', async () => {
+    const view = await selected();
+    fireEvent.pointerMove(view.main, at(350, 153));
+    expect(view.main.style.cursor).toBe('n-resize');
+    fireEvent.pointerDown(view.main, at(350, 153));
+    fireEvent.pointerMove(view.main, at(350, 173));
+    expect(view.getByLabelText('截图选区')).toHaveStyle({ top: '170px', height: '330px' });
+    fireEvent.pointerCancel(view.main);
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    expect(view.getByRole('toolbar')).toBeInTheDocument();
+    view.unmount();
+  });
+  it('preserves annotation cursors and keeps border adjustment available with a drawing tool', async () => {
+    const view = await selected();
+    fireEvent.click(view.getByLabelText('文字'));
+    fireEvent.pointerMove(view.main, at(400, 300));
+    expect(view.main.style.cursor).toBe('text');
+    fireEvent.pointerMove(view.main, at(100, 100));
+    expect(view.main.style.cursor).toBe('default');
+    fireEvent.click(view.getByLabelText('矩形'));
+    fireEvent.pointerMove(view.main, at(400, 300));
+    expect(view.main.style.cursor).toBe('crosshair');
+    fireEvent.pointerDown(view.main, at(400, 300));
+    fireEvent.pointerMove(view.main, at(450, 350));
+    fireEvent.pointerUp(view.main, at(450, 350));
+    expect(view.getByRole('toolbar')).toBeInTheDocument();
+    fireEvent.pointerDown(view.main, at(350, 150));
+    expect(view.main.style.cursor).toBe('n-resize');
+    expect(view.queryByRole('toolbar')).toBeNull();
+    expect(view.getByLabelText('像素放大预览')).toBeInTheDocument();
+    fireEvent.contextMenu(view.main);
+    expect(view.getByRole('toolbar')).toBeInTheDocument();
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    view.unmount();
+  });
+  it('does not show an output toolbar after a zero-area drag', async () => {
+    const view = await shown();
+    fireEvent.pointerDown(view.main, at(200, 150));
+    fireEvent.pointerMove(view.main, at(200, 500));
+    fireEvent.pointerUp(view.main, at(200, 500));
+    expect(view.queryByRole('toolbar')).toBeNull();
+    expect(view.getByLabelText('像素放大预览')).toBeInTheDocument();
+    view.unmount();
+  });
+});
 describe('scroll capture integration', () => {
   const rect = { x: 20, y: 20, width: 800, height: 600 };
   const progress: ScrollCaptureProgress = { width: 800, height: 600, revision: 1, viewport: { x: 0, y: 0, width: 800, height: 600 }, status: 'unchanged' };
@@ -344,7 +557,7 @@ describe('capture keyboard pointer movement', () => {
       await waitFor(() => {
         expect(panel).toHaveTextContent(`${meta.screen.x + x}, ${y}`);
         expect(panel).toHaveTextContent(`#${x.toString(16)}${y.toString(16)}00`.toUpperCase());
-        expect(context.drawImage.mock.lastCall?.slice(1, 3)).toEqual([x - 5, y - 5]);
+        expect(context.drawImage.mock.lastCall?.slice(1, 3)).toEqual([x - 10, y - 10]);
         expect(Number.parseFloat(panel.style.left)).toBeCloseTo(initialLeft + (x - 100) * window.innerWidth / meta.screen.width);
         if (y === 100) expect(view.container.querySelector('.capture-size')).toHaveTextContent(`pixel ${x}`);
       });
@@ -388,7 +601,9 @@ describe('capture keyboard pointer movement', () => {
     fireEvent.pointerDown(main, { ...at, button: 0 }); fireEvent.pointerUp(main, { ...at, button: 0 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 100');
     fireEvent.keyDown(window, { key: 'ArrowRight' });
-    await waitFor(() => expect(view.container.querySelector('.capture-magnifier')).toHaveTextContent('-1869, 50'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_move_pointer', { dx: 1, dy: 0 }));
+    expect(view.container.querySelector('.capture-magnifier')).toBeNull();
+    expect(main.style.cursor).toBe('move');
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 100');
     fireEvent.keyDown(window, { key: 'ArrowRight', ctrlKey: true });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('201 × 100');

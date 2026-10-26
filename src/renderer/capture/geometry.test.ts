@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CaptureAnnotation } from '../../shared/capture';
-import { commit, constrainPoint, emptyHistory, intersect, keyRect, moveRect, rectangle, redo, resizeRect, undo } from './geometry';
+import { commit, constrainPoint, emptyHistory, intersect, keyRect, moveRect, rectangle, redo, resizeHandle, resizeRect, undo } from './geometry';
 
 const bounds = { x: 0, y: 0, width: 3840, height: 2160 };
 describe('screen pixel selection', () => {
@@ -22,6 +22,23 @@ describe('screen pixel selection', () => {
     expect(moveRect(rect, 9000, -9000, bounds)).toEqual({ x: 3640, y: 0, width: 200, height: 200 });
     expect(resizeRect(rect, 'nw', { x: 500, y: 500 }, bounds)).toEqual({ x: 299, y: 299, width: 1, height: 1 });
     expect(resizeRect(rect, 'se', { x: 9000, y: 9000 }, bounds)).toEqual({ x: 100, y: 100, width: 3740, height: 2060 });
+  });
+  it.each([.5, .8, 1, 2])('hits the entire border with logical-pixel tolerance at scale %s', (scale) => {
+    const rect = { x: 200, y: 200, width: 800, height: 600 }, factor = { x: scale, y: scale };
+    for (const [x, y, handle] of [[200, 200, 'nw'], [600, 200, 'n'], [1000, 200, 'ne'], [1000, 500, 'e'], [1000, 800, 'se'], [600, 800, 's'], [200, 800, 'sw'], [200, 500, 'w']] as const) {
+      expect(resizeHandle(rect, { x, y }, factor)).toBe(handle);
+    }
+    expect(resizeHandle(rect, { x: 350, y: 200 - 6 / scale }, factor)).toBe('n');
+    expect(resizeHandle(rect, { x: 350, y: 200 + 6 / scale }, factor)).toBe('n');
+    expect(resizeHandle(rect, { x: 350, y: 200 - 8 / scale }, factor)).toBeNull();
+    expect(resizeHandle(rect, { x: 350, y: 200 + 8 / scale }, factor)).toBeNull();
+    expect(resizeHandle(rect, { x: 200 - 8 / scale, y: 200 }, factor)).toBeNull();
+    expect(resizeHandle(rect, { x: 600, y: 500 }, factor)).toBeNull();
+  });
+  it('chooses the nearest edge when a tiny selection has overlapping hit areas', () => {
+    const rect = { x: 10, y: 10, width: 2, height: 2 };
+    expect(resizeHandle(rect, { x: 10, y: 10 }, { x: .5, y: .5 })).toBe('nw');
+    expect(resizeHandle(rect, { x: 12, y: 12 }, { x: .5, y: .5 })).toBe('se');
   });
 });
 describe('annotation history', () => {

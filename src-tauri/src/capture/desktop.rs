@@ -507,6 +507,24 @@ pub fn move_pointer(
     }
     platform::move_pointer(session.meta.screen, dx, dy)
 }
+pub fn copy_color(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    point: CapturePoint,
+    format: super::CaptureColorFormat,
+) -> Result<(), String> {
+    let value = {
+        let state = manager(app);
+        let mut slot = state.session.lock();
+        let session = ensure_session(&mut slot, session_id(window)?)?;
+        if session.scroll.is_some() || session.scroll_completed {
+            return Err("滚动截图不支持取色".into());
+        }
+        let image = session.image.as_ref().ok_or("屏幕图像不可用")?;
+        super::color::sample(image, point, format)?
+    };
+    crate::clipboard::write_text(&value)
+}
 pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String> {
     if let Ok(id) = session_id(window) {
         let state = manager(app);

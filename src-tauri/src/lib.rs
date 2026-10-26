@@ -188,6 +188,7 @@ pub fn run() {
             capture::capture_show,
             capture::capture_is_foreground,
             capture::capture_move_pointer,
+            capture::capture_copy_color,
             capture::capture_candidates,
             capture::capture_select,
             capture::capture_preferences,
