@@ -88,6 +88,7 @@ pub fn scroll_begin(
     let setup = (|| {
         // Keep the frozen surface visible until the renderer receives the final layout.
         // Capture exclusion makes hiding and re-showing this window unnecessary.
+        platform::prepare_scroll_frame(app, window)?;
         platform::exclude_from_capture(window, true)?;
         platform::scroll_surface(window, screen, Some(&layout))?;
         platform::restore_foreground(target);

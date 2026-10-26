@@ -1,3 +1,5 @@
+#[path = "platform/frame.rs"]
+mod frame;
 use super::{CaptureCandidate, CapturePoint, CaptureRect};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
@@ -104,6 +106,10 @@ pub fn exclude_from_capture(window: &tauri::WebviewWindow, exclude: bool) -> Res
     }
     Ok(())
 }
+pub fn prepare_scroll_frame(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let handle = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
+    on_ui(app, move |_| frame::install(HWND(handle as *mut _)))?
+}
 pub fn scroll_surface(
     window: &tauri::WebviewWindow,
     screen: CaptureRect,
@@ -136,6 +142,7 @@ pub fn scroll_surface(
         }
     }
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    frame::remove_capture_frame(hwnd)?;
     let Some(layout) = layout else {
         return if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
             Err("无法恢复截图编辑窗口".into())
