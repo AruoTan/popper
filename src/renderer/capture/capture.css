@@ -31,7 +31,8 @@ button:focus-visible { outline: 2px solid #7fa9ff; outline-offset: 1px; }
 .capture-magnifier-info > div { display: flex; justify-content: space-between; gap: 4px; white-space: nowrap; }
 .capture-magnifier-info p { margin: 2px 0 0; color: #999aa3; font-size: 11px; text-align: center; white-space: nowrap; }
 .capture-help { position: absolute; left: 24px; bottom: 24px; display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 10px 14px; max-width: calc(100% - 48px); margin: 0; padding: 14px 16px; border: 1px solid #ffffff22; border-radius: 6px; background: #181818d9; color: #f5f5f5; font-size: 13px; line-height: 20px; pointer-events: none; }
-.capture-help dt { display: flex; justify-content: flex-end; gap: 3px; }
+.capture-help dt { display: flex; align-items: center; justify-content: flex-end; gap: 3px; }
+.capture-help svg { flex-shrink: 0; }
 .capture-help dd { margin: 0; }
 .capture-help kbd { min-width: 21px; height: 21px; padding: 0 4px; border: 1px solid #ffffffa6; border-radius: 1px; font: inherit; line-height: 19px; text-align: center; }
 .capture-status { position: absolute; left: 50%; bottom: 28px; transform: translateX(-50%); padding: 10px 18px; border: 1px solid #ffffff22; border-radius: 8px; background: #171b25ec; font-size: 13px; white-space: nowrap; pointer-events: none; }

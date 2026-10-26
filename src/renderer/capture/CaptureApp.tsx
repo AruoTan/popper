@@ -11,6 +11,7 @@ import { ScrollCapture } from './ScrollCapture';
 import { ANNOTATION_TOOLS } from './annotationTools';
 import { ScrollCaptureIcon } from './ScrollCaptureIcon';
 import { Magnifier } from './Magnifier';
+import { CaptureMouseIcon } from './CaptureMouseIcon';
 
 type Gesture = { mode: 'new' | 'move' | 'resize' | 'draw' | 'object'; start: CapturePoint; rect: CaptureRect | null; handle?: Handle; item?: CaptureAnnotation; moved: boolean };
 type TextEdit = { id: string; point: CapturePoint; text: string; color: string; width: number };
@@ -273,6 +274,10 @@ export function CaptureApp(): JSX.Element {
     setDraft(null);
     if (selection && selection.width > 0 && selection.height > 0) void invoke('capture_select', { rect: selection, version: ++version.current }).catch(() => {});
   };
+  const cycleCandidate = (direction: number): void => {
+    const next = navigation.current?.cycle(direction);
+    if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
+  };
   keyboard.current = (event: KeyboardEvent): void => {
       if (event.type === 'keyup') {
         if (event.key === 'Shift') {
@@ -286,10 +291,7 @@ export function CaptureApp(): JSX.Element {
       if (scrollingRef.current) return;
       if (event.key === 'Tab' && !selection && !textEdit && !event.ctrlKey && !event.altKey && !event.metaKey) {
         event.preventDefault();
-        if (!busyRef.current) {
-          const next = navigation.current?.cycle(event.shiftKey ? -1 : 1);
-          if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
-        }
+        if (!busyRef.current) cycleCandidate(event.shiftKey ? -1 : 1);
         return;
       }
       if (busyRef.current) { if (event.key === 'Tab') event.preventDefault(); return; }
@@ -353,7 +355,12 @@ export function CaptureApp(): JSX.Element {
       if (item?.tool === 'text') { setTextEdit({ id: item.id, point: item.points[0]!, text: item.text ?? '', color: item.color, width: item.width }); return; }
       void output('clipboard');
     }}
-    onWheel={(event) => { if (tool !== 'select' && !(event.target as HTMLElement).closest('[data-capture-ui]')) setLineWidth((width) => clamp(width + (event.deltaY < 0 ? 1 : -1), 1, 32)); }}
+    onWheel={(event) => {
+      if (busyRef.current || scrollingRef.current || textEdit || event.deltaY === 0 || (event.target as HTMLElement).closest('[data-capture-ui]')) return;
+      shiftColorToggle.current = false;
+      if (!selection) { if (!gesture.current) cycleCandidate(event.deltaY < 0 ? 1 : -1); }
+      else if (tool !== 'select') setLineWidth((width) => clamp(width + (event.deltaY < 0 ? 1 : -1), 1, 32));
+    }}
 >
     <canvas className="capture-scene" ref={canvas} />
     {displayed ? <>
@@ -363,17 +370,15 @@ export function CaptureApp(): JSX.Element {
     {selection && HANDLES.map((handle) => { const p = handlePoint(selection, handle); return <span key={handle} className={`capture-handle capture-handle--${handle}`} style={{ left: p.x * sx, top: p.y * sy }} />; })}
     {selectedItem && !textEdit && <div className="capture-object-outline" style={sceneStyle(annotationBounds(draft?.id === selectedItem.id ? draft : selectedItem))} />}
     {!textEdit && !busy && <dl ref={help} className="capture-help" aria-label="截图操作提示" aria-hidden={helpHidden} style={{ visibility: helpHidden ? 'hidden' : undefined }}>
-      <dt aria-label="方向键"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>移动鼠标，每次 1 像素</dd>
       {!selection ? <>
+        <dt aria-label="方向键"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>移动鼠标，每次 1 像素</dd>
         <dt><kbd>单击</kbd></dt><dd>选择窗口或控件</dd>
-        <dt><kbd>拖动</kbd></dt><dd>手动框选</dd>
-        <dt><kbd>Tab</kbd></dt><dd>切换到父级</dd>
-        <dt><kbd>Shift</kbd>+<kbd>Tab</kbd></dt><dd>返回子级</dd>
-        <dt><kbd>Esc</kbd></dt><dd>退出截图</dd>
+        <dt><kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-up" /></dt><dd>切换到父级</dd>
+        <dt><kbd>Shift</kbd>+<kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-down" /></dt><dd>返回子级</dd>
+        <dt><kbd>Esc</kbd>／<CaptureMouseIcon action="right" /></dt><dd>退出截图</dd>
       </> : <>
         <dt><kbd>Ctrl</kbd>+<kbd>方向键</kbd></dt><dd>向对应方向扩大选区 1 像素</dd>
         <dt><kbd>Shift</kbd>+<kbd>方向键</kbd></dt><dd>从对应方向缩小选区 1 像素</dd>
-        {tool === 'select' && <><dt><kbd>拖动</kbd></dt><dd>移动选区，拖动边框调整大小</dd></>}
         {tool === 'select' && history.present.some((item) => item.tool === 'text') && <><dt><kbd>双击文字</kbd></dt><dd>再次编辑标注文字</dd></>}
         {tool !== 'select' && <><dt><kbd>滚轮</kbd></dt><dd>调整标注线宽</dd></>}
         {['rectangle', 'ellipse', 'arrow', 'mosaic'].includes(tool) && <><dt><kbd>Shift</kbd>+<kbd>拖动</kbd></dt><dd>{tool === 'arrow' ? '按 45° 间隔约束箭头方向' : '绘制时保持宽高相等'}</dd></>}
