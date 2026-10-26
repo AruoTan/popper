@@ -513,8 +513,9 @@ pub fn copy_color(
     point: CapturePoint,
     format: super::CaptureColorFormat,
 ) -> Result<(), String> {
+    let state = manager(app);
+    let _operation = state.operation.lock();
     let value = {
-        let state = manager(app);
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, session_id(window)?)?;
         if session.scroll.is_some() || session.scroll_completed {
@@ -523,7 +524,8 @@ pub fn copy_color(
         let image = session.image.as_ref().ok_or("屏幕图像不可用")?;
         super::color::sample(image, point, format)?
     };
-    crate::clipboard::write_text(&value)
+    crate::clipboard::write_text(&value)?;
+    finish(app, true)
 }
 pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String> {
     if let Ok(id) = session_id(window) {

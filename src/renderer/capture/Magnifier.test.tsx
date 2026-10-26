@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Magnifier } from './Magnifier';
 
 describe('capture magnifier', () => {
-  it.each([[100, 100], [0, 0], [1999, 0], [0, 1399], [2000, 1400]])('keeps pixel sampling centered at (%s, %s) with half zoom and a solid crosshair', (x, y) => {
+  it.each([[100, 100], [0, 0], [1999, 0], [0, 1399], [2000, 1400]])('keeps pixel sampling centered at (%s, %s) with 3x zoom and a solid crosshair', (x, y) => {
     const context = {
       fillRect: vi.fn(), drawImage: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), strokeRect: vi.fn(),
       getImageData: vi.fn(() => ({ data: new Uint8ClampedArray([35, 39, 46, 255]) })),
@@ -12,10 +12,10 @@ describe('capture magnifier', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
     const image = new Image(), screen = { x: -2000, y: -1400, width: 2000, height: 1400 };
     const view = render(<Magnifier image={image} point={{ x, y }} screen={screen} viewport={{ width: 1000, height: 700 }} />);
-    const px = Math.min(1999, x), py = Math.min(1399, y), left = Math.max(0, px - 10), top = Math.max(0, py - 10);
-    const width = Math.min(2000, px + 11) - left, height = Math.min(1400, py + 11) - top;
+    const px = Math.min(1999, x), py = Math.min(1399, y), left = Math.max(0, px - 22), top = Math.max(0, py - 22);
+    const width = Math.min(2000, px + 23) - left, height = Math.min(1400, py + 23) - top;
     expect(context.drawImage).toHaveBeenLastCalledWith(image, left, top, width, height,
-      65 + (left - px - .5) * 6.5, 65 + (top - py - .5) * 6.5, width * 6.5, height * 6.5);
+      65 + (left - px - .5) * 3, 65 + (top - py - .5) * 3, width * 3, height * 3);
     expect(context.imageSmoothingEnabled).toBe(false);
     expect(context.getImageData).toHaveBeenCalledWith(65, 65, 1, 1);
     expect(context.getImageData.mock.invocationCallOrder[0]).toBeLessThan(context.stroke.mock.invocationCallOrder[0]!);

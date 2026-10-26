@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef, useState, type JSX } from 'react';
 import type { CaptureColorFormat, CapturePoint, CaptureRect } from '../../shared/capture';
 import { clamp } from './geometry';
 
-const SIZE = 130, ZOOM = 6.5, RADIUS = 10;
+const SIZE = 130, ZOOM = 3, RADIUS = Math.ceil(SIZE / ZOOM / 2);
 
 export function Magnifier({ image, point, screen, viewport, format = 'hex' }: { image: HTMLImageElement; point: CapturePoint; screen: CaptureRect; viewport: { width: number; height: number }; format?: CaptureColorFormat }): JSX.Element {
   const panel = useRef<HTMLElement>(null), canvas = useRef<HTMLCanvasElement>(null);

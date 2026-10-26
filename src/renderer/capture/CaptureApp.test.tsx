@@ -47,36 +47,37 @@ describe('normal capture selection interaction', () => {
     } as unknown as CanvasRenderingContext2D);
   }
   const toggleFormat = (): void => { fireEvent.keyDown(window, { key: 'Shift', shiftKey: true }); fireEvent.keyUp(window, { key: 'Shift' }); };
-  it('copies the displayed color format without finishing capture and ignores held-key repeats', async () => {
+  it.each(['hex', 'rgb'] as const)('copies %s color and waits for native teardown without exporting an image or duplicating requests', async (format) => {
     sampleColor();
+    let complete!: () => void;
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => command === 'capture_copy_color'
+      ? new Promise<void>((done) => { complete = done; }) : implementation(command, ...args));
     const view = await shown();
     fireEvent.pointerMove(view.main, at(400, 300));
-    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('#23272E');
+    if (format === 'rgb') toggleFormat();
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent(format === 'rgb' ? '35, 39, 46' : '#23272E');
     fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
-    expect(invoke).toHaveBeenCalledWith('capture_copy_color', { x: 800, y: 600, format: 'hex' });
-    toggleFormat();
-    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('35, 39, 46');
-    fireEvent.keyDown(window, { key: 'C', ctrlKey: true });
+    expect(invoke).toHaveBeenCalledWith('capture_copy_color', { x: 800, y: 600, format });
     fireEvent.keyDown(window, { key: 'c', ctrlKey: true, repeat: true });
-    expect(invoke).toHaveBeenCalledWith('capture_copy_color', { x: 800, y: 600, format: 'rgb' });
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_copy_color')).toHaveLength(2);
+    fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'ArrowRight' });
+    fireEvent.blur(window);
+    await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_copy_color')).toHaveLength(1);
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    expect(view.getByRole('status')).toBeInTheDocument();
+    await act(async () => complete());
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => ['capture_crop', 'capture_export', 'capture_cancel', 'capture_move_pointer'].includes(command))).toBe(false);
+    view.unmount();
+  });
+  it('retains the color format across selection and resizing before copying it and ending capture', async () => {
+    sampleColor();
+    const view = await shown();
     fireEvent.keyDown(window, { key: 'Shift', shiftKey: true });
     fireEvent.keyDown(window, { key: 'Shift', shiftKey: true, repeat: true });
     fireEvent.keyUp(window, { key: 'Shift' });
-    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('#23272E');
-    expect(vi.mocked(invoke).mock.calls.some(([command]) => ['capture_crop', 'capture_export', 'capture_cancel'].includes(command))).toBe(false);
-    view.unmount();
-  });
-  it('retains the color format across selection and resizing while completed-selection Ctrl+C copies the image', async () => {
-    sampleColor();
-    const implementation = vi.mocked(invoke).getMockImplementation()!;
-    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
-      if (command === 'capture_crop') return new ArrayBuffer(0);
-      if (command === 'capture_export') return false;
-      return implementation(command, ...args);
-    });
-    const view = await shown();
-    toggleFormat();
+    expect(view.getByLabelText('像素放大预览')).toHaveTextContent('35, 39, 46');
     fireEvent.pointerDown(view.main, at(200, 150));
     fireEvent.pointerMove(view.main, at(700, 500));
     fireEvent.pointerUp(view.main, at(700, 500));
@@ -86,10 +87,21 @@ describe('normal capture selection interaction', () => {
     fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
     expect(invoke).toHaveBeenCalledWith('capture_copy_color', { x: 700, y: 300, format: 'rgb' });
     expect(view.queryByRole('toolbar')).toBeNull();
-    fireEvent.pointerUp(view.main, at(350, 150));
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => ['capture_crop', 'capture_export'].includes(command))).toBe(false);
+    view.unmount();
+  });
+  it('still copies an image with Ctrl+C after completing selection', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_crop') return new ArrayBuffer(0);
+      if (command === 'capture_export') return false;
+      return implementation(command, ...args);
+    });
+    const view = await selected();
     fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_export', expect.any(Uint8Array), expect.objectContaining({ headers: expect.objectContaining({ 'x-capture-output': 'clipboard' }) })));
-    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_copy_color')).toHaveLength(1);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'capture_copy_color')).toBe(false);
     view.unmount();
   });
   it('does not toggle color format for Shift combinations, pointer gestures, input fields, or interrupted focus', async () => {
@@ -126,10 +138,12 @@ describe('normal capture selection interaction', () => {
     const view = await shown();
     fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
     await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('剪贴板正被占用，请重试'));
+    expect(view.getByLabelText('像素放大预览')).toBeInTheDocument();
     fireEvent.keyDown(window, { key: 'c', ctrlKey: true });
     expect(copies).toBe(2);
     expect(view.queryByRole('alert')).toBeNull();
-    expect(view.getByLabelText('像素放大预览')).toBeInTheDocument();
+    expect(view.queryByLabelText('像素放大预览')).toBeNull();
+    expect(view.getByRole('status')).toBeInTheDocument();
     expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
     view.unmount();
   });
@@ -557,7 +571,7 @@ describe('capture keyboard pointer movement', () => {
       await waitFor(() => {
         expect(panel).toHaveTextContent(`${meta.screen.x + x}, ${y}`);
         expect(panel).toHaveTextContent(`#${x.toString(16)}${y.toString(16)}00`.toUpperCase());
-        expect(context.drawImage.mock.lastCall?.slice(1, 3)).toEqual([x - 10, y - 10]);
+        expect(context.drawImage.mock.lastCall?.slice(1, 3)).toEqual([x - 22, y - 22]);
         expect(Number.parseFloat(panel.style.left)).toBeCloseTo(initialLeft + (x - 100) * window.innerWidth / meta.screen.width);
         if (y === 100) expect(view.container.querySelector('.capture-size')).toHaveTextContent(`pixel ${x}`);
       });

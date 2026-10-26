@@ -290,10 +290,14 @@ export function CaptureApp(): JSX.Element {
       if (event.ctrlKey && event.key.toLowerCase() === 'c' && !event.shiftKey && !event.altKey && !event.metaKey && magnifierActive) {
         event.preventDefault();
         if (!event.repeat) {
+          focusGeneration.current++;
+          busyRef.current = true; setBusy(true);
           setError('');
           const started = lifecycle.current;
           void invoke('capture_copy_color', { x: point.x, y: point.y, format: colorFormat }).catch((e: unknown) => {
-            if (mounted.current && !cancelling.current && lifecycle.current === started) setError(getErrorMessage(e, '无法复制色值'));
+            if (mounted.current && !cancelling.current && lifecycle.current === started) {
+              busyRef.current = false; setBusy(false); setError(getErrorMessage(e, '无法复制色值')); root.current?.focus();
+            }
           });
         }
         return;
