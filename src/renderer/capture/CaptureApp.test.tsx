@@ -47,7 +47,7 @@ describe('normal capture selection interaction', () => {
     } as unknown as CanvasRenderingContext2D);
   }
   const toggleFormat = (): void => { fireEvent.keyDown(window, { key: 'Shift', shiftKey: true }); fireEvent.keyUp(window, { key: 'Shift' }); };
-  it('shares hierarchy choices between wheel and Tab navigation and reverses at completed endpoints', async () => {
+  it('navigates hierarchy only with the wheel and reverses at completed endpoints', async () => {
     const leaf = { rect: { x: 100, y: 100, width: 200, height: 150 }, label: 'control' };
     const parent = { rect: { x: 80, y: 80, width: 500, height: 400 }, label: 'panel' };
     const target = { rect: { x: 0, y: 0, width: 2000, height: 1400 }, label: 'window', controls: [leaf, parent] };
@@ -59,14 +59,18 @@ describe('normal capture selection interaction', () => {
     const view = await shown();
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_candidates', expect.anything()));
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 150');
+    expect(fireEvent.keyDown(window, { key: 'Tab' })).toBe(true);
+    expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 150');
     fireEvent.wheel(view.main, { deltaY: -100 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('500 × 400');
-    fireEvent.keyDown(window, { key: 'Tab' });
+    expect(fireEvent.keyDown(window, { key: 'Tab', shiftKey: true })).toBe(true);
+    expect(view.container.querySelector('.capture-size')).toHaveTextContent('500 × 400');
+    fireEvent.wheel(view.main, { deltaY: -100 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('2000 × 1400');
     fireEvent.wheel(view.main, { deltaY: -100 });
     fireEvent.wheel(view.main, { deltaY: 100 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('500 × 400');
-    fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+    fireEvent.wheel(view.main, { deltaY: 100 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 150');
     fireEvent.wheel(view.main, { deltaX: 100, deltaY: 0 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 150');
@@ -547,7 +551,7 @@ describe('capture hover integration', () => {
     checkPosition(790, 590);
     view.unmount();
   });
-  it.each(['keyboard', 'wheel'] as const)('keeps a %s-selected parent when late point recognition adds smaller controls', async (input) => {
+  it('keeps a wheel-selected parent when late point recognition adds smaller controls', async () => {
     vi.stubGlobal('PointerEvent', MouseEvent);
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     vi.mocked(decodePng).mockResolvedValueOnce(new Image());
@@ -560,13 +564,11 @@ describe('capture hover integration', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
     fireEvent.pointerMove(view.container.querySelector('main')!, { clientX: 20, clientY: 20 });
     await waitFor(() => expect(vi.mocked(invoke).mock.calls.some(([command]) => command === 'capture_candidates')).toBe(true));
-    if (input === 'wheel') fireEvent.wheel(view.container.querySelector('main')!, { deltaY: -100 });
-    else fireEvent.keyDown(window, { key: 'Tab' });
+    fireEvent.wheel(view.container.querySelector('main')!, { deltaY: -100 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('1920 × 1080');
     await act(async () => { resolve({ candidates: [{ rect: { x: 15, y: 15, width: 40, height: 40 }, label: 'text' }, control, root], pending: false }); });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('1920 × 1080');
-    if (input === 'wheel') fireEvent.wheel(view.container.querySelector('main')!, { deltaY: 100 });
-    else fireEvent.keyDown(window, { key: 'Tab', shiftKey: true });
+    fireEvent.wheel(view.container.querySelector('main')!, { deltaY: 100 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 150');
     fireEvent.pointerMove(view.container.querySelector('main')!, { clientX: 21, clientY: 22 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 150');
@@ -931,7 +933,7 @@ describe('capture keyboard lifecycle', () => {
     view.unmount();
   });
 
-  it('applies Tab pressed before provider results and traps focus even when a descendant stops bubbling', async () => {
+  it('applies wheel navigation requested before provider results', async () => {
     let resolve!: (response: CaptureHitTest) => void;
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_session') return { ...meta, pointer: { x: 50, y: 50 }, targets: [] };
@@ -941,12 +943,11 @@ describe('capture keyboard lifecycle', () => {
     const view = render(<CaptureApp />);
     await waitFor(() => expect(resolve).toBeTypeOf('function'));
     const main = view.container.querySelector('main')!;
-    main.addEventListener('keydown', (event) => event.stopPropagation());
-    expect(fireEvent.keyDown(main, { key: 'Tab' })).toBe(false);
+    fireEvent.wheel(main, { deltaY: -100 });
     const parent = { rect: { x: 0, y: 0, width: 1000, height: 800 }, label: 'parent' };
     await act(async () => { resolve({ candidates: [{ rect, label: 'control' }, parent], pending: false }); });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('1000 × 800');
-    fireEvent.keyDown(main, { key: 'Tab', shiftKey: true });
+    fireEvent.wheel(main, { deltaY: 100 });
     expect(view.container.querySelector('.capture-size')).toHaveTextContent('200 × 100');
     view.unmount();
   });

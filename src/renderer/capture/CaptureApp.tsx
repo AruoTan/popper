@@ -275,10 +275,6 @@ export function CaptureApp(): JSX.Element {
     setDraft(null);
     if (selection && selection.width > 0 && selection.height > 0) void invoke('capture_select', { rect: selection, version: ++version.current }).catch(() => {});
   };
-  const cycleCandidate = (direction: number): void => {
-    const next = navigation.current?.cycle(direction);
-    if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
-  };
   keyboard.current = (event: KeyboardEvent): void => {
       if (event.type === 'keyup') {
         if (event.key === 'Shift') {
@@ -290,12 +286,7 @@ export function CaptureApp(): JSX.Element {
       if (event.key !== 'Shift') shiftColorToggle.current = false;
       if (event.key === 'Escape') { event.preventDefault(); cancel(); return; }
       if (scrollingRef.current) return;
-      if (event.key === 'Tab' && !selection && !textEdit && !event.ctrlKey && !event.altKey && !event.metaKey) {
-        event.preventDefault();
-        if (!busyRef.current) cycleCandidate(event.shiftKey ? -1 : 1);
-        return;
-      }
-      if (busyRef.current) { if (event.key === 'Tab') event.preventDefault(); return; }
+      if (busyRef.current) return;
       if (event.target instanceof Element && event.target.closest('input, textarea')) return;
       if (event.key === 'Shift' && magnifierActive && !event.ctrlKey && !event.altKey && !event.metaKey) {
         if (!event.repeat) shiftColorToggle.current = true;
@@ -361,8 +352,11 @@ export function CaptureApp(): JSX.Element {
     onWheel={(event) => {
       if (busyRef.current || scrollingRef.current || textEdit || event.deltaY === 0 || (event.target as HTMLElement).closest('[data-capture-ui]')) return;
       shiftColorToggle.current = false;
-      if (!selection) { if (!gesture.current) cycleCandidate(event.deltaY < 0 ? 1 : -1); }
-      else if (tool !== 'select') setLineWidth((width) => clamp(width + (event.deltaY < 0 ? 1 : -1), 1, 32));
+      if (!selection) {
+        if (gesture.current) return;
+        const next = navigation.current?.cycle(event.deltaY < 0 ? 1 : -1);
+        if (next) { setCandidates(next.items); setCandidateIndex(next.index); }
+      } else if (tool !== 'select') setLineWidth((width) => clamp(width + (event.deltaY < 0 ? 1 : -1), 1, 32));
     }}
 >
     <canvas className="capture-scene" ref={canvas} />
@@ -376,8 +370,7 @@ export function CaptureApp(): JSX.Element {
       {!selection ? <>
         <dt aria-label="方向键"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>鼠标移动 1 像素</dd>
         <dt aria-label="WASD"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>鼠标移动 1 像素</dd>
-        <dt><kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-up" /></dt><dd>提升控件层级</dd>
-        <dt><kbd>Shift</kbd>+<kbd>Tab</kbd>／<CaptureMouseIcon action="wheel-down" /></dt><dd>降低控件层级</dd>
+        <dt><CaptureMouseIcon action="wheel-up" /><CaptureMouseIcon action="wheel-down" /></dt><dd>切换控件层级</dd>
         <dt><kbd>Esc</kbd>／<CaptureMouseIcon action="right" /></dt><dd>退出截图</dd>
       </> : <>
         <dt><kbd>Ctrl</kbd>+<kbd>方向键</kbd></dt><dd>向对应方向扩大选区 1 像素</dd>

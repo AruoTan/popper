@@ -8,7 +8,7 @@ const text: CaptureCandidate = { rect: { x: 15, y: 15, width: 40, height: 40 }, 
 const point = { x: 20, y: 20 }, scale = { x: 1, y: 1 };
 
 describe('capture hierarchy navigation', () => {
-  it('applies an early Tab after asynchronous recognition provides the hierarchy', () => {
+  it('applies early navigation after asynchronous recognition provides the hierarchy', () => {
     const navigation = createCaptureNavigation();
     navigation.update([], point, 0, scale, true);
     navigation.cycle(1);
@@ -25,7 +25,7 @@ describe('capture hierarchy navigation', () => {
     const refined = navigation.update([text, leaf, root], point, 0, scale);
     expect(refined.items[refined.index]).toEqual(root);
   });
-  it('lets reverse traversal cancel pending Tab steps and clears pending steps on deliberate movement', () => {
+  it('lets reverse traversal cancel pending steps and clears pending steps on deliberate movement', () => {
     const navigation = createCaptureNavigation();
     navigation.update([text], point, 0, scale, true);
     navigation.cycle(1); navigation.cycle(-1);
