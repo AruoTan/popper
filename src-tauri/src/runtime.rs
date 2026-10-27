@@ -1,3 +1,7 @@
+#[cfg(target_os = "windows")]
+#[path = "runtime/tray_menu.rs"]
+mod tray_menu;
+
 use std::{
     collections::{HashMap, HashSet},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -1887,11 +1891,15 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
     let menu = menu.item(&permission).separator();
     #[cfg(target_os = "windows")]
     let menu = menu.item(&capture).item(&paste).item(&toggle).separator();
-    menu.item(&open_settings)
+    let menu = menu
+        .item(&open_settings)
         .item(&version)
         .separator()
         .item(&quit)
-        .build()
+        .build()?;
+    #[cfg(target_os = "windows")]
+    tray_menu::fit(&menu)?;
+    Ok(menu)
 }
 
 pub(crate) fn refresh_tray(app: &AppHandle) {

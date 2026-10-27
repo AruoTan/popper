@@ -141,6 +141,7 @@ pub(super) fn create_pin(
             .set_size(PhysicalSize::new(frame.width, frame.height))
             .map_err(|e| e.to_string())?;
         let app = app.clone();
+        let native_handle = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
         let closed_id = id.clone();
         window.on_window_event(move |event| {
             if matches!(
@@ -153,6 +154,7 @@ pub(super) fn create_pin(
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let state = manager(&app);
+                state.desktop_visibility.remove(native_handle);
                 let mut pins = state.pins.lock();
                 pins.items.remove(&closed_id);
                 if pins.closed.as_deref() == Some(&closed_id) {
@@ -391,7 +393,12 @@ pub fn pin_action(app: &AppHandle, window: &WebviewWindow, action: &str) -> Resu
             let state = manager(app);
             let _operation = state.operation.lock();
             active_pin_state(app, window)?;
-            return platform::assign_pin_desktop(window, &action[8..]);
+            let target = platform::assign_pin_desktop(window, &action[8..])?;
+            let tools = super::toolbar::window(app, &meta.id);
+            state
+                .desktop_visibility
+                .assign(window, target, tools.as_ref())?;
+            return super::toolbar::sync(app, &meta.id);
         }
         _ => return Err("贴图操作无效".into()),
     }

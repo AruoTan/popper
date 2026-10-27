@@ -1,9 +1,12 @@
 //! Assign a floating window to an existing Windows virtual desktop.
 #[path = "desktops/pinning.rs"]
 mod pinning;
+#[path = "desktops/visibility.rs"]
+mod visibility;
 use pinning::Pinning;
 use tauri::WebviewWindow;
 use uuid::Uuid;
+pub use visibility::DesktopVisibility;
 use windows::{
     core::{GUID, PCWSTR},
     Win32::{
@@ -150,11 +153,14 @@ fn desktop_registry() -> DesktopRegistry {
 }
 
 fn window_desktop(window: &WebviewWindow) -> Result<Option<Uuid>, String> {
+    desktop_at(window.hwnd().map_err(|e| e.to_string())?)
+}
+
+fn desktop_at(hwnd: windows::Win32::Foundation::HWND) -> Result<Option<Uuid>, String> {
     let _apartment = Apartment::enter()?;
     let manager: IVirtualDesktopManager =
         unsafe { CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL) }
             .map_err(|e| e.to_string())?;
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     let id = unsafe { manager.GetWindowDesktopId(hwnd) }.map_err(|e| e.to_string())?;
     if id != GUID::zeroed() {
         return Ok(Some(Uuid::from_u128(id.to_u128())));
@@ -283,7 +289,7 @@ fn assign(
     Ok(())
 }
 
-pub fn assign_pin_desktop(window: &WebviewWindow, value: &str) -> Result<(), String> {
+pub fn assign_pin_desktop(window: &WebviewWindow, value: &str) -> Result<Option<Uuid>, String> {
     // Resolve the active desktop at click time and reject targets removed since the menu opened.
     let target = if value == "all" {
         None
@@ -306,9 +312,15 @@ pub fn assign_pin_desktop(window: &WebviewWindow, value: &str) -> Result<(), Str
                 unsafe { CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL) }
                     .map_err(|e| e.to_string())?;
             unsafe { manager.MoveWindowToDesktop(hwnd, &GUID::from_u128(id.as_u128())) }
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            let actual = unsafe { manager.GetWindowDesktopId(hwnd) }.map_err(|e| e.to_string())?;
+            if actual != GUID::from_u128(id.as_u128()) {
+                return Err("系统未确认贴图已分配到目标桌面".into());
+            }
+            Ok(())
         },
-    )
+    )?;
+    Ok(target)
 }
 
 pub fn initialize_pin_desktop(window: &WebviewWindow) -> Result<(), String> {
@@ -316,7 +328,7 @@ pub fn initialize_pin_desktop(window: &WebviewWindow) -> Result<(), String> {
     loop {
         // A newly visible window may not have a Shell view immediately.
         match assign_pin_desktop(window, "all") {
-            Ok(()) => return Ok(()),
+            Ok(_) => return Ok(()),
             Err(error) if std::time::Instant::now() >= deadline => {
                 return Err(format!("无法将贴图显示在所有桌面：{error}"));
             }
