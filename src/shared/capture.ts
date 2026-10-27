@@ -46,6 +46,14 @@ export interface CaptureAnnotation {
   width: number;
   text?: string;
 }
+export interface PinEditorState {
+  history: { past: CaptureAnnotation[][]; present: CaptureAnnotation[]; future: CaptureAnnotation[][] };
+  tool: CaptureTool;
+  color: string;
+  lineWidth: number;
+  selected: string | null;
+  text: { item: CaptureAnnotation; text: string } | null;
+}
 export interface PinToolbarState {
   tool: CaptureTool;
   color: string;

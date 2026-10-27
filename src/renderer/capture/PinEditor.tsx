@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useImperativeHandle, useMemo, useRef, useState, type JSX, type Ref, type PointerEvent } from 'react';
 import { Check } from 'lucide-react';
-import type { CaptureAnnotation, CapturePoint, CaptureTool, PinToolbarAction, PinToolbarState } from '../../shared/capture';
+import type { CaptureAnnotation, CapturePoint, CaptureTool, PinEditorState, PinToolbarAction, PinToolbarState } from '../../shared/capture';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, emptyHistory, hitAnnotation, redo, undo } from './geometry';
 import { pngBytes, renderScene } from './drawing';
 
@@ -9,18 +9,20 @@ export interface PinEditorHandle {
   keyDown: (event: KeyboardEvent) => boolean;
   cancelGesture: () => void;
   toolbarAction: (action: PinToolbarAction) => void;
+  recoveryState: () => PinEditorState;
 }
 type Gesture = { pointer: number; start: CapturePoint; item: CaptureAnnotation; move: boolean; changed: boolean; target: HTMLCanvasElement };
 type TextEdit = { item: CaptureAnnotation; text: string };
 
-export function PinEditor({ ref, image, original, initial, toolbar, visible, busy, onToolbarState, onError }: {
+export function PinEditor({ ref, image, original, initial, restored, toolbar, visible, busy, onToolbarState, onError }: {
   ref: Ref<PinEditorHandle>; image: HTMLImageElement; original: ArrayBuffer; initial: CaptureAnnotation[];
+  restored?: PinEditorState;
   toolbar: boolean; visible: boolean; busy: boolean; onToolbarState: (state: PinToolbarState) => void;
   onError: (error: unknown) => void;
 }): JSX.Element {
-  const [history, setHistory] = useState(() => ({ ...emptyHistory(), present: initial }));
-  const [tool, setTool] = useState<CaptureTool>('select'), [color, setColor] = useState('#ff4545'), [width, setWidth] = useState(3);
-  const [draft, setDraft] = useState<CaptureAnnotation | null>(null), [selected, setSelected] = useState<string | null>(null), [text, setText] = useState<TextEdit | null>(null);
+  const [history, setHistory] = useState(() => restored?.history ?? ({ ...emptyHistory(), present: initial }));
+  const [tool, setTool] = useState<CaptureTool>(restored?.tool ?? 'select'), [color, setColor] = useState(restored?.color ?? '#ff4545'), [width, setWidth] = useState(restored?.lineWidth ?? 3);
+  const [draft, setDraft] = useState<CaptureAnnotation | null>(null), [selected, setSelected] = useState<string | null>(restored?.selected ?? null), [text, setText] = useState<TextEdit | null>(restored?.text ?? null);
   const canvas = useRef<HTMLCanvasElement>(null), gesture = useRef<Gesture | null>(null), errorHandler = useRef(onError);
   errorHandler.current = onError;
   const stateHandler = useRef(onToolbarState); stateHandler.current = onToolbarState;
@@ -53,6 +55,7 @@ export function PinEditor({ ref, image, original, initial, toolbar, visible, bus
   const remove = (): void => { setHistory(commit(history, history.present.filter((item) => item.id !== selected))); setSelected(null); };
   useImperativeHandle(ref, () => ({
     cancelGesture,
+    recoveryState: () => ({ history, tool, color, lineWidth: width, selected, text }),
     toolbarAction: (action) => {
       if (action.action === 'hide') { finishText(); return; }
       if (!toolbar || !visible || busy) return;

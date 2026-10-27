@@ -1,4 +1,4 @@
-use super::{CaptureAnnotation, CaptureRect, PinUpdate, PinnedImageState};
+use super::{CaptureRect, PinEditorState, PinUpdate, PinnedImageState};
 use std::{collections::HashMap, sync::Arc};
 #[path = "pins/toolbar.rs"]
 pub mod toolbar;
@@ -48,9 +48,12 @@ pub fn resized_frame(
 pub struct Pin {
     pub meta: PinnedImageState,
     pub png: Arc<Vec<u8>>,
-    pub annotations: Vec<CaptureAnnotation>,
+    pub editor: PinEditorState,
+    pub frame: Option<CaptureRect>,
+    pub scale: f64,
     pub visible: bool,
     pub closed: bool,
+    pub creating: bool,
     pub ready: bool,
     pub toolbar: toolbar::Toolbar,
 }
@@ -76,7 +79,7 @@ impl Pins {
             .map(|pin| u64::from(pin.meta.width) * u64::from(pin.meta.height) * 4)
             .sum()
     }
-    /// Return the previously closed window whose image has just been released.
+    /// Replace the single data-only recovery item and release its predecessor.
     pub fn close(&mut self, id: &str, destroy: bool) -> Result<Option<String>, String> {
         if destroy {
             self.items.remove(id);
@@ -88,11 +91,32 @@ impl Pins {
         let pin = self.items.get_mut(id).ok_or("贴图已结束")?;
         pin.closed = true;
         pin.visible = false;
+        pin.creating = false;
+        pin.ready = false;
         let previous = self.closed.replace(id.to_owned()).filter(|old| old != id);
         if let Some(previous) = &previous {
             self.items.remove(previous);
         }
         Ok(previous)
+    }
+    pub fn window_destroyed(&mut self, id: &str) {
+        // A failed creation is still owned by its caller, which either drops
+        // a new image or returns a failed recovery to the data-only cache.
+        if self
+            .items
+            .get(id)
+            .is_some_and(|pin| pin.closed || pin.creating)
+        {
+            return;
+        }
+        self.items.remove(id);
+        if self.closed.as_deref() == Some(id) {
+            self.closed = None;
+        }
+    }
+    pub fn take_closed(&mut self) -> Option<Pin> {
+        let id = self.closed.take()?;
+        self.items.remove(&id)
     }
 }
 #[cfg(test)]
@@ -112,9 +136,12 @@ mod tests {
                 always_on_top: true,
             },
             png: Arc::new(vec![1, 2, 3]),
-            annotations: Vec::new(),
+            editor: PinEditorState::new(Vec::new()),
+            frame: None,
+            scale: 1.0,
             visible: true,
             closed: false,
+            creating: false,
             ready: true,
             toolbar: Default::default(),
         }
@@ -216,6 +243,7 @@ mod tests {
             let reference = Arc::downgrade(&item.png);
             pins.insert(item).unwrap();
             pins.close(&id, false).unwrap();
+            pins.window_destroyed(&id);
             assert_eq!(pins.items.len(), 1);
             assert_eq!(pins.allocated(), 1920 * 1080 * 4);
             if let Some(old) = previous.take() {
@@ -228,6 +256,69 @@ mod tests {
         pins.close(&id, true).unwrap();
         assert_eq!(pins.allocated(), 0);
         assert!(previous.unwrap().upgrade().is_none());
+    }
+    #[test]
+    fn closed_window_release_preserves_recovery_and_old_events_cannot_remove_its_replacement() {
+        let mut pins = Pins::default();
+        let mut item = pin("original", 400, 240);
+        item.meta.zoom = 1.7;
+        item.meta.opacity = 0.4;
+        item.meta.always_on_top = false;
+        item.meta.toolbar_visible = true;
+        item.frame = Some(CaptureRect {
+            x: -800,
+            y: -120,
+            width: 728,
+            height: 456,
+        });
+        item.scale = 1.5;
+        item.editor.color = "#123456".into();
+        item.editor.line_width = 7;
+        let image = Arc::downgrade(&item.png);
+        pins.insert(item).unwrap();
+        pins.close("original", false).unwrap();
+        pins.window_destroyed("original");
+        let mut restored = pins.take_closed().unwrap();
+        assert!(pins.items.is_empty());
+        assert!(pins.closed.is_none());
+        assert!(image.upgrade().is_some());
+        assert_eq!(restored.frame.unwrap().x, -800);
+        assert_eq!(restored.meta.zoom, 1.7);
+        assert_eq!(restored.meta.opacity, 0.4);
+        assert!(!restored.meta.always_on_top);
+        assert!(restored.meta.toolbar_visible);
+        assert_eq!(restored.scale, 1.5);
+        assert_eq!(restored.editor.line_width, 7);
+        assert_eq!(restored.editor.color, "#123456");
+        restored.meta.id = "restored".into();
+        restored.closed = false;
+        restored.creating = true;
+        restored.ready = true;
+        pins.insert(restored).unwrap();
+        pins.window_destroyed("original");
+        assert!(pins.items.contains_key("restored"));
+        // A failed restore retains model data until its caller re-caches it.
+        pins.window_destroyed("restored");
+        pins.close("restored", false).unwrap();
+        assert!(pins.take_closed().is_some());
+        assert!(image.upgrade().is_none());
+    }
+
+    #[test]
+    fn unexpected_active_window_destruction_releases_image_and_explicit_destruction_has_no_recovery(
+    ) {
+        let mut pins = Pins::default();
+        let item = pin("active", 4, 4);
+        let reference = Arc::downgrade(&item.png);
+        pins.insert(item).unwrap();
+        pins.window_destroyed("active");
+        assert!(reference.upgrade().is_none());
+        pins.insert(pin("closed", 4, 4)).unwrap();
+        pins.close("closed", false).unwrap();
+        pins.close("closed", true).unwrap();
+        pins.window_destroyed("closed");
+        assert!(pins.take_closed().is_none());
+        assert_eq!(pins.allocated(), 0);
     }
     #[test]
     fn hidden_and_closed_images_still_count_toward_capacity() {

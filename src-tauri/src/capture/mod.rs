@@ -285,11 +285,11 @@ pub fn capture_pin_menu(app: AppHandle, window: WebviewWindow) -> Result<(), Str
     desktop_call!(desktop::pin_menu(&app, &window))
 }
 #[tauri::command]
-pub fn capture_pin_annotations(
+pub fn capture_pin_editor_state(
     app: AppHandle,
     window: WebviewWindow,
-) -> Result<Vec<CaptureAnnotation>, String> {
-    desktop_call!(desktop::pin_annotations(&app, &window))
+) -> Result<PinEditorState, String> {
+    desktop_call!(desktop::pin_editor_state(&app, &window))
 }
 #[tauri::command]
 pub fn capture_pin_action(
@@ -361,12 +361,17 @@ pub async fn capture_pin_output(
     )
 }
 #[tauri::command]
-pub fn capture_pin_close(
+pub async fn capture_pin_close(
     app: AppHandle,
     window: WebviewWindow,
     destroy: bool,
+    editor: Option<PinEditorState>,
 ) -> Result<(), String> {
-    desktop_call!(desktop::pin_close(&app, &window, destroy))
+    desktop_call!(tauri::async_runtime::spawn_blocking(move || {
+        desktop::pin_close(&app, &window, destroy, editor)
+    })
+    .await
+    .map_err(|e| e.to_string())?)
 }
 #[tauri::command]
 pub fn capture_pending_attachment(

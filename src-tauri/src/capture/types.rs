@@ -185,6 +185,72 @@ pub enum CaptureTool {
     Mosaic,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinEditorState {
+    pub history: PinAnnotationHistory,
+    pub tool: CaptureTool,
+    pub color: String,
+    pub line_width: u8,
+    pub selected: Option<String>,
+    pub text: Option<PinTextEdit>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinAnnotationHistory {
+    pub past: Vec<Vec<CaptureAnnotation>>,
+    pub present: Vec<CaptureAnnotation>,
+    pub future: Vec<Vec<CaptureAnnotation>>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinTextEdit {
+    pub item: CaptureAnnotation,
+    pub text: String,
+}
+impl PinEditorState {
+    pub fn new(annotations: Vec<CaptureAnnotation>) -> Self {
+        Self {
+            history: PinAnnotationHistory {
+                past: Vec::new(),
+                present: annotations,
+                future: Vec::new(),
+            },
+            tool: CaptureTool::Select,
+            color: "#ff4545".into(),
+            line_width: 3,
+            selected: None,
+            text: None,
+        }
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        if self.history.past.len() + self.history.future.len() > 100
+            || !(1..=32).contains(&self.line_width)
+            || self.color.len() != 7
+            || !self.color.starts_with('#')
+            || !self.color[1..].bytes().all(|c| c.is_ascii_hexdigit())
+            || self.selected.as_ref().is_some_and(|id| id.len() > 128)
+        {
+            return Err("贴图编辑状态无效".into());
+        }
+        for items in self
+            .history
+            .past
+            .iter()
+            .chain(std::iter::once(&self.history.present))
+            .chain(self.history.future.iter())
+        {
+            validate_annotations(items)?;
+        }
+        if let Some(text) = &self.text {
+            validate_annotations(std::slice::from_ref(&text.item))?;
+            if text.text.chars().count() > 4000 {
+                return Err("贴图文字过长".into());
+            }
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase", deny_unknown_fields)]
 pub enum PinToolbarAction {
     Tool { tool: CaptureTool },
@@ -271,6 +337,36 @@ pub struct PendingAttachment {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn editor_recovery_round_trips_history_and_rejects_invalid_nested_annotations() {
+        let item: CaptureAnnotation = serde_json::from_value(serde_json::json!({
+            "id":"text", "tool":"text", "points":[{"x":12.5,"y":-8.25}], "color":"#123456", "width":3, "text":"中文"
+        })).unwrap();
+        let mut state = PinEditorState::new(vec![item.clone()]);
+        state.history.past.push(Vec::new());
+        state.history.future.push(vec![item.clone()]);
+        state.text = Some(PinTextEdit {
+            item,
+            text: "继续编辑😀".into(),
+        });
+        state.validate().unwrap();
+        let serialized = serde_json::to_value(&state).unwrap();
+        let recovered: PinEditorState = serde_json::from_value(serialized.clone()).unwrap();
+        recovered.validate().unwrap();
+        assert_eq!(serde_json::to_value(recovered).unwrap(), serialized);
+        let mut invalid = state.clone();
+        invalid.history.future[0][0].points[0].x = f64::NAN;
+        assert!(invalid.validate().is_err());
+        let mut invalid = state.clone();
+        invalid.history.past = vec![Vec::new(); 100];
+        assert!(invalid.validate().is_err());
+        let mut invalid = state.clone();
+        invalid.text.as_mut().unwrap().text = "文".repeat(4001);
+        assert!(invalid.validate().is_err());
+        let mut invalid = state;
+        invalid.line_width = 0;
+        assert!(invalid.validate().is_err());
+    }
     #[test]
     fn annotation_layers_preserve_fractional_coordinates_and_reject_invalid_payloads() {
         let value = serde_json::json!({"id":"shape", "tool":"rectangle", "points":[{"x":-12.5,"y":30.25},{"x":300.5,"y":140.75}], "color":"#ff4545", "width":3.0});

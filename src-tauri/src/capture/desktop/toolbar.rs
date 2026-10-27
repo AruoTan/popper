@@ -107,7 +107,18 @@ pub fn toolbar_publish(
                     }
                 }
             });
-            if !manager(app).pins.lock().items.contains_key(&meta.id) {
+            if !manager(app)
+                .pins
+                .lock()
+                .items
+                .get(&meta.id)
+                .is_some_and(|pin| {
+                    !pin.closed && pin.visible && pin.ready && pin.meta.toolbar_visible
+                })
+                || app
+                    .get_webview_window(&format!("{PIN_PREFIX}{}", meta.id))
+                    .is_none()
+            {
                 let _ = tools.destroy();
             }
             Ok::<_, String>(())
@@ -154,7 +165,12 @@ pub fn toolbar_action(
         PinToolbarAction::Width { width } if !(1..=32).contains(width) => {
             return Err("标注线宽无效".into())
         }
-        PinToolbarAction::Close { destroy } => return pinned::pin_close(app, &parent, *destroy),
+        PinToolbarAction::Close { .. } => {
+            // Let the image renderer hand off its latest editing state before closing.
+            return parent
+                .emit("popper:pin-toolbar-action", action)
+                .map_err(|e| e.to_string());
+        }
         PinToolbarAction::Hide => {
             parent
                 .emit("popper:pin-toolbar-action", PinToolbarAction::Hide)
@@ -193,6 +209,13 @@ pub fn toolbar_action(
 
 fn valid_color(color: &str) -> bool {
     color.len() == 7 && color.starts_with('#') && color[1..].bytes().all(|c| c.is_ascii_hexdigit())
+}
+
+pub(super) fn destroy(app: &AppHandle, id: &str) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(&format!("{PREFIX}{id}")) {
+        window.destroy().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub(super) fn sync(app: &AppHandle, id: &str) -> Result<(), String> {

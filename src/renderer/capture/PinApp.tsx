@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { CaptureAnnotation, PinnedImageState } from '../../shared/capture';
+import type { PinEditorState, PinnedImageState, PinToolbarState } from '../../shared/capture';
 import { decodePng } from './drawing';
 import { clamp } from './geometry';
 import { getErrorMessage } from '../lib/errors';
@@ -11,34 +11,38 @@ import { usePinToolbar } from './usePinToolbar';
 
 export function PinApp(): JSX.Element {
   const [meta, setMeta] = useState<PinnedImageState | null>(null), [source, setSource] = useState(''), [error, setError] = useState('');
-  const [content, setContent] = useState<{ image: HTMLImageElement; bytes: ArrayBuffer; annotations: CaptureAnnotation[] } | null>(null);
+  const [content, setContent] = useState<{ image: HTMLImageElement; bytes: ArrayBuffer; editor: PinEditorState } | null>(null);
   const [busy, setBusy] = useState(false);
   const editor = useRef<PinEditorHandle>(null), outputting = useRef(false), outputGeneration = useRef(0);
   const outputHandler = useRef<(output: 'copy' | 'save') => void>(() => {});
   const [shadowEpoch, setShadowEpoch] = useState(0);
   const alive = useRef(false), showing = useRef(false);
+  const presented = useRef(false), toolbarSnapshot = useRef<PinToolbarState | null>(null);
   const root = useRef<HTMLElement>(null), closing = useRef(false);
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const current = useRef(meta), queue = useRef<Promise<unknown>>(Promise.resolve()), revision = useRef(0);
   const drag = usePinDrag((e) => setError(getErrorMessage(e, '无法移动贴图')));
-  const publishToolbar = usePinToolbar((action) => editor.current?.toolbarAction(action), (e) => { if (current.current?.toolbarVisible) setError(getErrorMessage(e, '无法显示贴图工具条')); });
+  const publishToolbar = usePinToolbar((action) => {
+    if (action.action === 'close') close(action.destroy);
+    else if (!closing.current) editor.current?.toolbarAction(action);
+  }, (e) => { if (current.current?.toolbarVisible) setError(getErrorMessage(e, '无法显示贴图工具条')); });
   current.current = meta;
   useEffect(() => {
     alive.current = true;
     let active = true; let unlisten: (() => void) | undefined, unlistenShown: (() => void) | undefined, unlistenOutput: (() => void) | undefined;
     void (async () => {
       try {
-        const [state, bytes, annotations] = await Promise.all([invoke<PinnedImageState>('capture_pin_state'), invoke<ArrayBuffer>('capture_image'), invoke<CaptureAnnotation[]>('capture_pin_annotations')]);
+        const [state, bytes, editor] = await Promise.all([invoke<PinnedImageState>('capture_pin_state'), invoke<ArrayBuffer>('capture_image'), invoke<PinEditorState>('capture_pin_editor_state')]);
         const image = await decodePng(bytes); if (!active) return;
         if (image.naturalWidth !== state.width || image.naturalHeight !== state.height) throw new Error('贴图尺寸无效');
         // Keep an owned URL until this window unmounts.
         const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
         setSource(url); setMeta(state); current.current = state;
-        setContent({ image, bytes, annotations });
+        setContent({ image, bytes, editor });
       } catch (e) { if (active) setError(getErrorMessage(e, '无法显示贴图')); }
     })();
     void listen<PinnedImageState>('popper:pin-updated', (event) => { if (active) { current.current = event.payload; setMeta(event.payload); } }).then((dispose) => { if (active) unlisten = dispose; else dispose(); });
-    void listen('popper:pin-shown', () => { if (active) { closing.current = false; setShadowEpoch((epoch) => epoch + 1); } }).then((dispose) => { if (active) unlistenShown = dispose; else dispose(); });
+    void listen('popper:pin-shown', () => { if (active) setShadowEpoch((epoch) => epoch + 1); }).then((dispose) => { if (active) unlistenShown = dispose; else dispose(); });
     void listen<string>('popper:pin-output', (event) => { if (active && (event.payload === 'copy' || event.payload === 'save')) outputHandler.current(event.payload); }).then((dispose) => { if (active) unlistenOutput = dispose; else dispose(); });
     const keyDown = (event: KeyboardEvent): void => keyboard.current(event);
     const focus = (): void => { if (!(window.document.activeElement instanceof Element && window.document.activeElement.closest('[data-pin-ui]'))) root.current?.focus(); };
@@ -57,7 +61,9 @@ export function PinApp(): JSX.Element {
     if (closing.current) return;
     drag.stop();
     editor.current?.cancelGesture(); outputGeneration.current++; closing.current = true;
-    void invoke('capture_pin_close', { destroy }).catch((e: unknown) => { if (alive.current) { closing.current = false; setError(getErrorMessage(e, '无法关闭贴图')); } });
+    const recovery = destroy ? null : editor.current?.recoveryState() ?? null;
+    // Flush pending zoom/opacity updates before the backend records native geometry.
+    void queue.current.catch(() => {}).then(() => invoke('capture_pin_close', { destroy, editor: recovery })).catch((e: unknown) => { if (alive.current) { closing.current = false; setError(getErrorMessage(e, '无法关闭贴图')); } });
   };
   const output = async (destination: 'copy' | 'save'): Promise<void> => {
     if (!editor.current || outputting.current || closing.current) return;
@@ -89,9 +95,9 @@ export function PinApp(): JSX.Element {
     {source && <img src={source} alt="浮动图片" draggable={false} onLoad={(event) => {
       if (showing.current) return;
       const main = event.currentTarget.closest<HTMLElement>('main'); showing.current = true;
-      void invoke('capture_show').then(() => { if (alive.current) { setShadowEpoch((epoch) => epoch + 1); main?.focus(); } }).catch((e: unknown) => { if (alive.current) { showing.current = false; setError(getErrorMessage(e, '无法显示贴图')); } });
+      void invoke('capture_show').then(() => { if (alive.current && !closing.current) { presented.current = true; if (toolbarSnapshot.current) publishToolbar(toolbarSnapshot.current); setShadowEpoch((epoch) => epoch + 1); main?.focus(); } }).catch((e: unknown) => { if (alive.current) { showing.current = false; setError(getErrorMessage(e, '无法显示贴图')); } });
     }} />}
-    {content && meta && <PinEditor ref={editor} image={content.image} original={content.bytes} initial={content.annotations} toolbar={meta.toolbarVisible} visible={meta.annotationsVisible} busy={busy} onToolbarState={publishToolbar} onError={(e) => setError(getErrorMessage(e, '无法绘制贴图'))} />}
+    {content && meta && <PinEditor ref={editor} image={content.image} original={content.bytes} initial={content.editor.history.present} restored={content.editor} toolbar={meta.toolbarVisible} visible={meta.annotationsVisible} busy={busy} onToolbarState={(snapshot) => { toolbarSnapshot.current = snapshot; if (presented.current && !closing.current) publishToolbar(snapshot); }} onError={(e) => setError(getErrorMessage(e, '无法绘制贴图'))} />}
     {error && <div className="capture-pin-error" role="alert">{error}</div>}
   </main></div>;
 }

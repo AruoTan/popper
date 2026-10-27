@@ -4,7 +4,7 @@ mod shortcuts;
 mod toolbar;
 use pinned::{create_pin, PinPlacement};
 pub use pinned::{
-    paste, pin_action, pin_annotations, pin_close, pin_drag, pin_menu, pin_output, pin_state,
+    paste, pin_action, pin_editor_state, pin_close, pin_drag, pin_menu, pin_output, pin_state,
     pin_update, toggle_pins,
 };
 pub use scrolling::{scroll_begin, scroll_finish, scroll_preview, scroll_step};
@@ -595,15 +595,18 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
         })
     } else {
         let id = pin_id(window)?;
-        let visible = {
+        let (visible, opacity) = {
             let state = manager(app);
             let mut pins = state.pins.lock();
             let pin = pins.items.get_mut(id).ok_or("贴图已结束")?;
-            pin.visible && !pin.closed
+            (pin.visible && !pin.closed, pin.meta.opacity)
         };
         if visible {
             if let Ok(hwnd) = window.hwnd() {
                 platform::configure_capture_surface(hwnd);
+            }
+            if opacity != 1.0 {
+                crate::windows::set_native_opacity(window, opacity).map_err(|e| e.to_string())?;
             }
             window.show().map_err(|e| e.to_string())?;
             if !manager(app).active.load(Ordering::Acquire) {

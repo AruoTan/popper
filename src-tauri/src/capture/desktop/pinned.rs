@@ -2,7 +2,7 @@
 use super::{clipboard, manager, notify, pin_id, platform, PIN_PREFIX};
 use crate::capture::{
     pins::{image_frame, resized_frame, Pin, SHADOW_INSET},
-    CaptureAnnotation, CapturePoint, CaptureRect, PinUpdate, PinnedImageState,
+    CaptureAnnotation, CapturePoint, CaptureRect, PinEditorState, PinUpdate, PinnedImageState,
 };
 use std::{
     sync::{atomic::Ordering, Arc},
@@ -78,9 +78,12 @@ pub(super) fn create_pin(
         pins.insert(Pin {
             meta,
             png: Arc::new(bytes),
-            annotations,
+            editor: PinEditorState::new(annotations),
+            frame: None,
+            scale: 1.0,
             visible: true,
             closed: false,
+            creating: true,
             ready: false,
             toolbar: Default::default(),
         })?;
@@ -109,78 +112,13 @@ pub(super) fn create_pin(
             },
             SHADOW_INSET,
         );
-        let label = format!("{PIN_PREFIX}{id}");
-        let builder = WebviewWindowBuilder::new(
-            app,
-            &label,
-            WebviewUrl::App("capture/index.html?mode=pin".into()),
-        )
-        .title("Popper 贴图")
-        .theme(Some(tauri::Theme::Light))
-        .inner_size(frame.width as f64 / scale, frame.height as f64 / scale)
-        .decorations(false)
-        .transparent(true)
-        .shadow(false)
-        .resizable(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .visible(false)
-        .focused(false);
-        let window = crate::app_paths::configure_webview(builder)
-            .map_err(|e| e.to_string())?
-            .build()
-            .map_err(|e| e.to_string())?;
-        if let Ok(hwnd) = window.hwnd() {
-            platform::configure_capture_surface(hwnd);
+        {
+            let mut pins = state.pins.lock();
+            let pin = pins.items.get_mut(&id).ok_or("贴图已结束")?;
+            pin.frame = Some(frame);
+            pin.scale = scale;
         }
-        window
-            .set_position(PhysicalPosition::new(frame.x, frame.y))
-            .map_err(|e| e.to_string())?;
-        // Moving between monitors can change DPI; apply the physical size afterwards.
-        window
-            .set_size(PhysicalSize::new(frame.width, frame.height))
-            .map_err(|e| e.to_string())?;
-        let app = app.clone();
-        let closed_id = id.clone();
-        window.on_window_event(move |event| {
-            if matches!(
-                event,
-                tauri::WindowEvent::Moved(_)
-                    | tauri::WindowEvent::Resized(_)
-                    | tauri::WindowEvent::ScaleFactorChanged { .. }
-            ) {
-                let _ = super::toolbar::sync(&app, &closed_id);
-            }
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                let state = manager(&app);
-                let mut pins = state.pins.lock();
-                pins.items.remove(&closed_id);
-                if pins.closed.as_deref() == Some(&closed_id) {
-                    pins.closed = None;
-                }
-            }
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            if state.stopped.load(Ordering::Acquire) {
-                return Err("应用正在退出".into());
-            }
-            let ready = state
-                .pins
-                .lock()
-                .items
-                .get(&id)
-                .map(|pin| pin.ready)
-                .ok_or("贴图窗口已关闭")?;
-            if ready {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err("贴图窗口未能就绪，请重试".into());
-            }
-            std::thread::sleep(Duration::from_millis(15));
-        }
-        Ok::<_, String>(window)
+        create_pin_window(app, &id)
     })();
     if result.is_err() {
         state.pins.lock().items.remove(&id);
@@ -190,29 +128,127 @@ pub(super) fn create_pin(
     }
     result
 }
+fn create_pin_window(app: &AppHandle, id: &str) -> Result<WebviewWindow, String> {
+    let state = manager(app);
+    let (meta, frame, scale) = {
+        let pins = state.pins.lock();
+        let pin = pins.items.get(id).ok_or("贴图已结束")?;
+        (
+            pin.meta.clone(),
+            pin.frame.ok_or("贴图位置不可用")?,
+            pin.scale,
+        )
+    };
+    let id = id.to_owned();
+    let label = format!("{PIN_PREFIX}{id}");
+    let builder = WebviewWindowBuilder::new(
+        app,
+        &label,
+        WebviewUrl::App("capture/index.html?mode=pin".into()),
+    )
+    .title("Popper 贴图")
+    .theme(Some(tauri::Theme::Light))
+    .inner_size(frame.width as f64 / scale, frame.height as f64 / scale)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .resizable(false)
+    .always_on_top(meta.always_on_top)
+    .skip_taskbar(true)
+    .visible(false)
+    .focused(false);
+    let window = crate::app_paths::configure_webview(builder)
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())?;
+    if let Ok(hwnd) = window.hwnd() {
+        platform::configure_capture_surface(hwnd);
+    }
+    window
+        .set_position(PhysicalPosition::new(frame.x, frame.y))
+        .map_err(|e| e.to_string())?;
+    // Moving between monitors can change DPI; apply the physical size afterwards.
+    window
+        .set_size(PhysicalSize::new(frame.width, frame.height))
+        .map_err(|e| e.to_string())?;
+    let handle = app.clone();
+    let closed_id = id.clone();
+    window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::Moved(_)
+                | tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::ScaleFactorChanged { .. }
+        ) {
+            let _ = super::toolbar::sync(&handle, &closed_id);
+        }
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            manager(&handle).pins.lock().window_destroyed(&closed_id);
+        }
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if state.stopped.load(Ordering::Acquire) {
+            return Err("应用正在退出".into());
+        }
+        if app.get_webview_window(&label).is_none() {
+            return Err("贴图窗口已关闭".into());
+        }
+        let ready = state
+            .pins
+            .lock()
+            .items
+            .get(&id)
+            .map(|pin| pin.ready)
+            .ok_or("贴图窗口已关闭")?;
+        if ready {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("贴图窗口未能就绪，请重试".into());
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+
+    manager(app)
+        .pins
+        .lock()
+        .items
+        .get_mut(&id)
+        .ok_or("贴图已结束")?
+        .creating = false;
+    Ok(window)
+}
 pub fn paste(app: &AppHandle) -> Result<(), String> {
     let state = manager(app);
     let _operation = state.operation.lock();
     if state.stopped.load(Ordering::Acquire) || state.active.load(Ordering::Acquire) {
         return Err("请先完成当前截图".into());
     }
-    let restore = {
-        let mut pins = state.pins.lock();
-        pins.closed.take().and_then(|id| {
-            pins.items.get_mut(&id).map(|pin| {
-                pin.closed = false;
-                pin.visible = true;
-                id
-            })
-        })
-    };
-    if let Some(id) = restore {
-        if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
-            show_pin(&window)?;
-            platform::focus(&window)?;
-            return Ok(());
+    let restore = state.pins.lock().take_closed();
+    if let Some(mut pin) = restore {
+        // A fresh label prevents delayed destruction of the old window from
+        // touching the restored image or colliding with its new native host.
+        let id = Uuid::new_v4().to_string();
+        pin.meta.id = id.clone();
+        pin.closed = false;
+        pin.creating = true;
+        pin.visible = true;
+        pin.ready = false;
+        pin.toolbar.ready = false;
+        pin.toolbar.creating = false;
+        pin.toolbar.sync_pending = false;
+        pin.toolbar.topmost = None;
+        state.pins.lock().insert(pin)?;
+        let result = create_pin_window(app, &id);
+        if result.is_err() {
+            state.pins.lock().close(&id, false)?;
+            let _ = super::toolbar::destroy(app, &id);
+            if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{id}")) {
+                let _ = window.destroy();
+            }
         }
-        state.pins.lock().items.remove(&id);
+        return result.map(|_| ());
     }
     let image = clipboard::read()?;
     create_pin(
@@ -315,22 +351,54 @@ pub fn pin_update(
     super::toolbar::sync(app, id)?;
     Ok(updated)
 }
-pub fn pin_close(app: &AppHandle, window: &WebviewWindow, destroy: bool) -> Result<(), String> {
-    let id = pin_id(window)?.to_owned();
+pub fn pin_close(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    destroy: bool,
+    editor: Option<PinEditorState>,
+) -> Result<(), String> {
     let state = manager(app);
-    let discard = state.pins.lock().close(&id, destroy)?;
-    super::toolbar::sync(app, &id)?;
+    let _operation = state.operation.lock();
+    let meta = {
+        let pins = state.pins.lock();
+        let pin = pins.items.get(pin_id(window)?).ok_or("贴图已结束")?;
+        if pin.closed {
+            return Ok(());
+        }
+        pin.meta.clone()
+    };
+    if !destroy {
+        if let Some(editor) = &editor {
+            editor.validate()?;
+        }
+        let position = window.outer_position().map_err(|e| e.to_string())?;
+        let size = window.inner_size().map_err(|e| e.to_string())?;
+        let scale = window.scale_factor().map_err(|e| e.to_string())?;
+        let mut pins = state.pins.lock();
+        let pin = pins.items.get_mut(&meta.id).ok_or("贴图已结束")?;
+        if let Some(editor) = editor {
+            pin.editor = editor;
+        }
+        pin.frame = Some(CaptureRect {
+            x: position.x,
+            y: position.y,
+            width: size.width,
+            height: size.height,
+        });
+        pin.scale = scale;
+    }
+    let discard = state.pins.lock().close(&meta.id, destroy)?;
+    let toolbar = super::toolbar::destroy(app, &meta.id);
     if let Some(discard) = discard {
+        let _ = super::toolbar::destroy(app, &discard);
         if let Some(window) = app.get_webview_window(&format!("{PIN_PREFIX}{discard}")) {
             let _ = window.destroy();
         }
     }
-    if destroy {
-        window.destroy()
-    } else {
-        window.hide()
-    }
-    .map_err(|e| e.to_string())
+    // Both recovery-close and explicit destruction release the native host.
+    // Recovery retains only model data; never synchronously close its browser.
+    let closed = window.destroy().map_err(|e| e.to_string());
+    toolbar.and(closed)
 }
 pub fn toggle_pins(app: &AppHandle) -> Result<(), String> {
     let state = manager(app);
@@ -363,17 +431,14 @@ pub fn toggle_pins(app: &AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
-pub fn pin_annotations(
-    app: &AppHandle,
-    window: &WebviewWindow,
-) -> Result<Vec<CaptureAnnotation>, String> {
+pub fn pin_editor_state(app: &AppHandle, window: &WebviewWindow) -> Result<PinEditorState, String> {
     let id = pin_id(window)?;
     manager(app)
         .pins
         .lock()
         .items
         .get(id)
-        .map(|pin| pin.annotations.clone())
+        .map(|pin| pin.editor.clone())
         .ok_or_else(|| "贴图已结束".into())
 }
 

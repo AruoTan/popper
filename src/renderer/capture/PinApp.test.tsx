@@ -4,12 +4,13 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { decodePng, pngBytes, renderScene } from './drawing';
 import { PinApp } from './PinApp';
-import type { PinnedImageState } from '../../shared/capture';
+import type { CaptureAnnotation, PinEditorState, PinnedImageState } from '../../shared/capture';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 vi.mock('./drawing', () => ({ decodePng: vi.fn(), renderScene: vi.fn(), pngBytes: vi.fn(async () => new Uint8Array([1, 2, 3])) }));
 const state: PinnedImageState = { id: 'pin', width: 400, height: 240, zoom: 1, opacity: 1, shadowInset: 24, toolbarVisible: false, annotationsVisible: true, alwaysOnTop: true };
+const editorState = (present: CaptureAnnotation[] = []): PinEditorState => ({ history: { past: [], present, future: [] }, tool: 'select', color: '#ff4545', lineWidth: 3, selected: null, text: null });
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:pin-image'), revokeObjectURL: vi.fn() });
@@ -18,7 +19,7 @@ beforeEach(() => {
   vi.mocked(invoke).mockImplementation(async (command, args) => {
     if (command === 'capture_pin_state') return state;
     if (command === 'capture_image') return new ArrayBuffer(0);
-    if (command === 'capture_pin_annotations') return [];
+    if (command === 'capture_pin_editor_state') return editorState();
     if (command === 'capture_pin_update') return { ...state, ...(args as { update: object }).update };
     if (command === 'capture_pin_drag') return { x: 124, y: 84 };
   });
@@ -40,9 +41,10 @@ describe('pinned image menu actions', () => {
   });
   it('toggles toolbar and annotation visibility from native menu state without losing the annotation layer', async () => {
     const original = vi.mocked(invoke).getMockImplementation()!;
-    const annotations = [{ id: 'a', tool: 'rectangle', points: [{ x: 10, y: 10 }, { x: 40, y: 40 }], color: '#ff4545', width: 3 }];
-    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_annotations' ? Promise.resolve(annotations) : original(command, args));
-    const view = render(<PinApp />); await view.findByAltText('浮动图片');
+    const annotations: CaptureAnnotation[] = [{ id: 'a', tool: 'rectangle', points: [{ x: 10, y: 10 }, { x: 40, y: 40 }], color: '#ff4545', width: 3 }];
+    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_editor_state' ? Promise.resolve(editorState(annotations)) : original(command, args));
+    const view = render(<PinApp />); fireEvent.load(await view.findByAltText('浮动图片'));
+    await act(async () => {});
     expect(view.queryByRole('toolbar')).toBeNull();
     emit('popper:pin-updated', { ...state, toolbarVisible: true });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_toolbar_publish', { snapshot: expect.objectContaining({ enabled: true }) }));
@@ -74,7 +76,7 @@ describe('pinned image menu actions', () => {
   });
   it.each(['close', 'unmount'])('discards an encoded output after %s', async (reason) => {
     const original = vi.mocked(invoke).getMockImplementation()!;
-    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_annotations' ? Promise.resolve([{ id: 'a', tool: 'pen', points: [{ x: 10, y: 10 }], color: '#ff4545', width: 3 }]) : original(command, args));
+    vi.mocked(invoke).mockImplementation((command, args) => command === 'capture_pin_editor_state' ? Promise.resolve(editorState([{ id: 'a', tool: 'pen', points: [{ x: 10, y: 10 }], color: '#ff4545', width: 3 }])) : original(command, args));
     let finish!: (bytes: Uint8Array) => void;
     vi.mocked(pngBytes).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const view = render(<PinApp />); await view.findByAltText('浮动图片');
@@ -178,12 +180,32 @@ describe('pinned image dragging', () => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('pinned image presentation', () => {
-  it('shows the decoded image before starting its shadow and replays the shadow on restoration', async () => {
+  it('waits for a restored image to be ready before recreating its toolbar', async () => {
+    let show!: () => void;
+    const recovered = { ...editorState(), tool: 'pen' as const, color: '#123456', lineWidth: 7 };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_pin_state') return { ...state, toolbarVisible: true };
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_pin_editor_state') return recovered;
+      if (command === 'capture_show') return new Promise<void>((resolve) => { show = resolve; });
+    });
+    const view = render(<PinApp />);
+    const image = await view.findByAltText('浮动图片');
+    fireEvent.load(image);
+    expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'capture_pin_toolbar_publish')).toHaveLength(0);
+    await act(async () => { show(); });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_toolbar_publish', {
+      snapshot: expect.objectContaining({ tool: 'pen', color: '#123456', lineWidth: 7 }),
+    }));
+    view.unmount();
+  });
+
+  it('shows the decoded image before starting its shadow and replays the shadow when shown again', async () => {
     let shown!: () => void;
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_pin_state') return state;
       if (command === 'capture_image') return new ArrayBuffer(0);
-      if (command === 'capture_pin_annotations') return [];
+      if (command === 'capture_pin_editor_state') return editorState();
       if (command === 'capture_show') return new Promise<void>((resolve) => { shown = resolve; });
     });
     const view = render(<PinApp />);
@@ -218,7 +240,7 @@ describe('pinned image presentation', () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_pin_state') return state;
       if (command === 'capture_image') return new ArrayBuffer(0);
-      if (command === 'capture_pin_annotations') return [];
+      if (command === 'capture_pin_editor_state') return editorState();
       if (command === 'capture_show') return new Promise<void>((resolve) => { shown = resolve; });
     });
     const view = render(<PinApp />);
@@ -230,18 +252,50 @@ describe('pinned image presentation', () => {
 });
 
 describe('pinned image keyboard focus', () => {
-  it('handles Escape outside the image and accepts another close after restoration', async () => {
+  it('hands off editor state before closing from the toolbar', async () => {
+    const view = render(<PinApp />);
+    await view.findByAltText('浮动图片');
+    const callback = vi.mocked(listen).mock.calls.find(([event]) => event === 'popper:pin-toolbar-action')![1];
+    act(() => callback({ event: 'popper:pin-toolbar-action', id: 1, payload: { action: 'close', destroy: false } }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_close', { destroy: false, editor: editorState() }));
+    view.unmount();
+  });
+
+  it('waits for pending zoom updates before closing and keeps the page usable after a rejected close', async () => {
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    let finishZoom!: (value: PinnedImageState) => void;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      if (command === 'capture_pin_update') return new Promise((done) => { finishZoom = done; });
+      if (command === 'capture_pin_close') return Promise.reject(new Error('close rejected'));
+      return original(command, args);
+    });
+    const view = render(<PinApp />);
+    const image = await view.findByAltText('浮动图片');
+    fireEvent.wheel(image.closest('main')!, { deltaY: -120 });
+    await waitFor(() => expect(finishZoom).toBeDefined());
+    fireEvent.doubleClick(image);
+    await act(async () => {});
+    expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'capture_pin_close')).toHaveLength(0);
+    await act(async () => { finishZoom({ ...state, zoom: 1.1 }); });
+    expect(await view.findByRole('alert')).toHaveTextContent('close rejected');
+    fireEvent.keyDown(window, { key: 'Escape', shiftKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenLastCalledWith('capture_pin_close', { destroy: true, editor: null }));
+    view.unmount();
+  });
+
+  it('coalesces Escape and restores close handling in a recreated renderer', async () => {
     const view = render(<PinApp />);
     await view.findByAltText('浮动图片');
     fireEvent.keyDown(document.body, { key: 'Escape' });
     fireEvent.keyDown(window, { key: 'Escape', repeat: true });
-    expect(invoke).toHaveBeenCalledWith('capture_pin_close', { destroy: false });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_close', { destroy: false, editor: editorState() }));
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_pin_close')).toHaveLength(1);
-    const callback = vi.mocked(listen).mock.calls.find(([event]) => event === 'popper:pin-shown')![1];
-    act(() => callback({ event: 'popper:pin-shown', id: 1, payload: undefined }));
-    fireEvent.keyDown(window, { key: 'Escape', shiftKey: true });
-    expect(invoke).toHaveBeenLastCalledWith('capture_pin_close', { destroy: true });
     view.unmount();
+    const restored = render(<PinApp />);
+    await restored.findByAltText('浮动图片');
+    fireEvent.keyDown(window, { key: 'Escape', shiftKey: true });
+    await waitFor(() => expect(invoke).toHaveBeenLastCalledWith('capture_pin_close', { destroy: true, editor: null }));
+    restored.unmount();
   });
   it('restores DOM focus on native window activation and intercepts stopped key events', async () => {
     const view = render(<PinApp />);
@@ -251,7 +305,7 @@ describe('pinned image keyboard focus', () => {
     expect(document.activeElement).toBe(main);
     main.addEventListener('keydown', (event) => event.stopPropagation());
     fireEvent.keyDown(main, { key: 'Escape' });
-    expect(invoke).toHaveBeenCalledWith('capture_pin_close', { destroy: false });
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_pin_close', { destroy: false, editor: editorState() }));
     view.unmount();
   });
 });

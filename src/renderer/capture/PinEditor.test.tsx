@@ -4,16 +4,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PinEditor, type PinEditorHandle } from './PinEditor';
 import { PinToolbar } from './PinToolbar';
 import { renderScene } from './drawing';
-import type { CaptureAnnotation, PinToolbarState } from '../../shared/capture';
+import type { CaptureAnnotation, PinEditorState, PinToolbarState } from '../../shared/capture';
 
 vi.mock('./drawing', () => ({ renderScene: vi.fn(), pngBytes: vi.fn(async () => new Uint8Array([1, 2, 3])) }));
 const image = { naturalWidth: 800, naturalHeight: 480 } as HTMLImageElement;
 const initial: CaptureAnnotation[] = [{ id: 'original', tool: 'rectangle', points: [{ x: 40.5, y: 20.5 }, { x: 120.5, y: 100.5 }], color: '#ff4545', width: 3 }];
 beforeEach(() => vi.clearAllMocks());
 
-function setup(items: CaptureAnnotation[] = []) {
+function setup(items: CaptureAnnotation[] = [], restored?: PinEditorState) {
   const ref = createRef<PinEditorHandle>();
-  const props = { ref, image, original: new Uint8Array([8, 9]).buffer, initial: items, toolbar: true, visible: true, busy: false, onToolbarState: vi.fn(), onError: vi.fn() };
+  const props = { ref, image, original: new Uint8Array([8, 9]).buffer, initial: items, restored, toolbar: true, visible: true, busy: false, onToolbarState: vi.fn(), onError: vi.fn() };
   const pointerDown = vi.fn(), wheel = vi.fn();
   function Shell({ child }: { child: ReactNode }) {
     const [state, setState] = useState<PinToolbarState | null>(null);
@@ -35,6 +35,40 @@ function draw(canvas: HTMLCanvasElement, shiftKey = false) {
 const renderedItems = () => vi.mocked(renderScene).mock.calls.at(-1)?.[4] ?? [];
 
 describe('pin annotation layers', () => {
+  it('restores annotation history and drawing preferences after releasing the renderer', () => {
+    const view = setup(initial);
+    fireEvent.click(view.getByRole('button', { name: '箭头' }));
+    fireEvent.wheel(view.canvas, { deltaY: -120 });
+    draw(view.canvas);
+    const complete = renderedItems();
+    fireEvent.click(view.getByRole('button', { name: '撤销' }));
+    const saved = JSON.parse(JSON.stringify(view.ref.current!.recoveryState())) as PinEditorState;
+    expect(saved.history.future).toHaveLength(1);
+    view.unmount();
+    const restored = setup([], saved);
+    expect(restored.getByLabelText('线宽')).toHaveValue(4);
+    expect(restored.getByRole('button', { name: '箭头' })).toHaveAttribute('aria-pressed', 'true');
+    expect(restored.getByRole('button', { name: '重做' })).toBeEnabled();
+    fireEvent.click(restored.getByRole('button', { name: '重做' }));
+    expect(renderedItems()).toEqual(complete);
+    fireEvent.click(restored.getByRole('button', { name: '撤销' }));
+    expect(renderedItems()).toEqual(initial);
+    restored.unmount();
+  });
+
+  it('restores unfinished Chinese text without flattening editable annotations', () => {
+    const view = setup(initial);
+    fireEvent.click(view.getByRole('button', { name: '文字' }));
+    fireEvent.pointerDown(view.canvas, { button: 0, clientX: 44, clientY: 44 });
+    fireEvent.change(view.getByLabelText('标注文字'), { target: { value: '未完成的中文标注' } });
+    const saved = view.ref.current!.recoveryState();
+    view.unmount();
+    const restored = setup([], saved);
+    expect(restored.getByLabelText('标注文字')).toHaveValue('未完成的中文标注');
+    fireEvent.click(restored.getByRole('button', { name: '完成文字' }));
+    expect(renderedItems()).toEqual([...initial, expect.objectContaining({ tool: 'text', text: '未完成的中文标注' })]);
+    restored.unmount();
+  });
   it('hides initial and edited annotations without discarding them, and exports the visible layer at original dimensions', async () => {
     const view = setup(initial);
     expect(renderedItems()).toEqual(initial);

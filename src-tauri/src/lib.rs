@@ -194,7 +194,7 @@ pub fn run() {
             capture::capture_pin_update,
             capture::capture_pin_close,
             capture::capture_pin_menu,
-            capture::capture_pin_annotations,
+            capture::capture_pin_editor_state,
             capture::capture_pin_action,
             capture::capture_pin_output,
             capture::capture_pin_toolbar_publish,
