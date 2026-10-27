@@ -76,7 +76,9 @@ export function CaptureApp(): JSX.Element {
         const [meta, bytes] = await Promise.all([invoke<CaptureSession>('capture_session'), invoke<ArrayBuffer>('capture_image')]);
         const decoded = await decodePng(bytes); if (!alive || cancelling.current) return;
         setSession(meta); setImage(decoded); setColor(meta.color); setLineWidth(meta.lineWidth); if (meta.pointer) setPoint(meta.pointer);
-        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        // Layout effects paint the frozen canvas before the first browser frame;
+        // allow that frame to reach WebView2 before requesting native visibility.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
         if (alive && !cancelling.current) { await invoke('capture_show'); if (alive && !cancelling.current) { ready = true; focus(); } }
       } catch (e) { if (alive && !cancelling.current) {
         const message = getErrorMessage(e, '无法初始化屏幕图像'); setError(message);
@@ -122,7 +124,7 @@ export function CaptureApp(): JSX.Element {
     if (session.pointer) controller.update(session.pointer);
     return () => { controller.destroy(); if (hover.current === controller) hover.current = null; if (navigation.current === navigator) navigation.current = null; };
   }, [session, scrolling]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!canvas.current || !image || scrolling) return;
     try { renderScene(canvas.current, image, bounds.width, bounds.height, draft ? [...displayedItems, draft] : displayedItems); }
     catch (e) { setError(getErrorMessage(e, '无法绘制标注')); }

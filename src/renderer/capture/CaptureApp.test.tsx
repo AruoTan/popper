@@ -1,7 +1,7 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { decodePng, pngBytes } from './drawing';
+import { decodePng, pngBytes, renderScene } from './drawing';
 import { CaptureApp } from './CaptureApp';
 import type { CaptureHitTest, ScrollCaptureProgress, ScrollCaptureSession } from '../../shared/capture';
 
@@ -758,6 +758,33 @@ describe('capture focus lifecycle', () => {
     expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
     await act(async () => { resolve(new Image()); });
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_show'));
+    view.unmount();
+  });
+
+  it('paints the frozen canvas and yields a browser frame before showing the native surface', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frames.push(callback); return frames.length; });
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(frames).toHaveLength(1));
+    expect(renderScene).toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith('capture_show');
+    await act(async () => { frames.shift()!(0); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_show');
+    await act(async () => { frames.shift()!(16); });
+    expect(invoke).toHaveBeenCalledWith('capture_show');
+    view.unmount();
+  });
+
+  it('does not show the surface after cancellation between its initial browser frames', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => { frames.push(callback); return frames.length; });
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(frames).toHaveLength(1));
+    await act(async () => { frames.shift()!(0); });
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    await act(async () => { frames.shift()!(16); });
+    expect(invoke).toHaveBeenCalledWith('capture_cancel');
+    expect(invoke).not.toHaveBeenCalledWith('capture_show');
     view.unmount();
   });
 

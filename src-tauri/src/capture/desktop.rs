@@ -538,24 +538,41 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 }
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
-        super::activation::wait_for_activation(|initial| {
-            let window = window.clone();
-            platform::on_ui(app, move |app| {
-                let state = manager(&app);
-                let mut slot = state.session.lock();
-                let session = ensure_session(&mut slot, session_id(&window)?)?;
-                if session.scroll.is_some() || session.scroll_completed {
-                    return Err("滚动截图仅支持直接输出".into());
-                }
-                // Revalidate on every UI turn, including after a pending
-                // foreground transfer. Cancellation makes the next attempt fail.
-                let active = platform::present_capture(&window, initial)?;
-                if active {
-                    session.presented = true;
-                }
-                Ok(active)
-            })?
-        })
+        super::activation::wait_for_activation(
+            || {
+                let window = window.clone();
+                platform::on_ui(app, move |app| {
+                    let state = manager(&app);
+                    let mut slot = state.session.lock();
+                    let session = ensure_session(&mut slot, session_id(&window)?)?;
+                    if session.scroll.is_some() || session.scroll_completed {
+                        return Err("滚动截图仅支持直接输出".into());
+                    }
+                    platform::reveal_capture(&window)
+                })??;
+                // Focus changes close transient shell UI. First commit the frozen
+                // surface while it is still passive, without blocking the UI thread.
+                platform::commit_capture_frame()
+            },
+            |initial| {
+                let window = window.clone();
+                platform::on_ui(app, move |app| {
+                    let state = manager(&app);
+                    let mut slot = state.session.lock();
+                    let session = ensure_session(&mut slot, session_id(&window)?)?;
+                    if session.scroll.is_some() || session.scroll_completed {
+                        return Err("滚动截图仅支持直接输出".into());
+                    }
+                    // Revalidate on every UI turn, including after a pending
+                    // foreground transfer. Cancellation makes the next attempt fail.
+                    let active = platform::present_capture(&window, initial)?;
+                    if active {
+                        session.presented = true;
+                    }
+                    Ok(active)
+                })?
+            },
+        )
     } else {
         let id = pin_id(window)?;
         let visible = {
@@ -579,6 +596,7 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
         Ok(())
     }
 }
+
 pub fn select(
     app: &AppHandle,
     window: &WebviewWindow,
