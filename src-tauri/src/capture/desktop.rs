@@ -63,7 +63,6 @@ pub struct CaptureManager {
     session: Mutex<Option<Session>>,
     pins: Mutex<Pins>,
     recognition: Recognition,
-    desktop_visibility: Arc<platform::DesktopVisibility>,
     generation: AtomicU64,
     shortcuts: Mutex<Vec<String>>,
     attachment: Mutex<Option<AttachmentDelivery>>,
@@ -77,7 +76,6 @@ impl CaptureManager {
             session: Mutex::new(None),
             pins: Mutex::new(Pins::default()),
             recognition: Recognition::new(),
-            desktop_visibility: Arc::new(platform::DesktopVisibility::default()),
             generation: AtomicU64::new(0),
             shortcuts: Mutex::new(Vec::new()),
             attachment: Mutex::new(None),
@@ -111,7 +109,6 @@ pub fn initialize(app: &AppHandle) {
 }
 pub fn setup(app: &AppHandle) {
     pinned::setup_menu(app);
-    manager(app).desktop_visibility.start();
     let settings = app.state::<RuntimeState>().settings.get_settings().capture;
     match ShortcutChange::prepare(app, &settings) {
         Ok(change) => change.commit(),
@@ -124,7 +121,6 @@ pub fn shutdown(app: &AppHandle) {
     if let Some(state) = app.try_state::<CaptureManager>() {
         state.stopped.store(true, Ordering::Release);
         state.recognition.stop();
-        state.desktop_visibility.stop();
         state.session.lock().take();
         state.pins.lock().items.clear();
         state.attachment.lock().take();

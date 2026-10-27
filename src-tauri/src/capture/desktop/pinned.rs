@@ -141,7 +141,6 @@ pub(super) fn create_pin(
             .set_size(PhysicalSize::new(frame.width, frame.height))
             .map_err(|e| e.to_string())?;
         let app = app.clone();
-        let native_handle = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
         let closed_id = id.clone();
         window.on_window_event(move |event| {
             if matches!(
@@ -154,7 +153,6 @@ pub(super) fn create_pin(
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 let state = manager(&app);
-                state.desktop_visibility.remove(native_handle);
                 let mut pins = state.pins.lock();
                 pins.items.remove(&closed_id);
                 if pins.closed.as_deref() == Some(&closed_id) {
@@ -182,7 +180,6 @@ pub(super) fn create_pin(
             }
             std::thread::sleep(Duration::from_millis(15));
         }
-        platform::initialize_pin_desktop(&window)?;
         Ok::<_, String>(window)
     })();
     if result.is_err() {
@@ -389,17 +386,6 @@ pub fn pin_action(app: &AppHandle, window: &WebviewWindow, action: &str) -> Resu
                 .map_err(|e| e.to_string())
         }
         "toolbar" | "annotations" | "top" => {}
-        _ if action.starts_with("desktop-") => {
-            let state = manager(app);
-            let _operation = state.operation.lock();
-            active_pin_state(app, window)?;
-            let target = platform::assign_pin_desktop(window, &action[8..])?;
-            let tools = super::toolbar::window(app, &meta.id);
-            state
-                .desktop_visibility
-                .assign(window, target, tools.as_ref())?;
-            return super::toolbar::sync(app, &meta.id);
-        }
         _ => return Err("贴图操作无效".into()),
     }
     if action == "top" {
@@ -449,9 +435,7 @@ pub fn pin_output(
 }
 
 pub fn pin_menu(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
-    use tauri::menu::{CheckMenuItem, ContextMenu, Menu, MenuItem, PredefinedMenuItem, Submenu};
-    let manager = manager(app);
-    let _operation = manager.operation.lock();
+    use tauri::menu::{CheckMenuItem, ContextMenu, Menu, MenuItem, PredefinedMenuItem};
     let state = active_pin_state(app, window)?;
     let id = |action: &str| format!("capture-pin:{action}:{}", state.id);
     let copy = MenuItem::with_id(app, id("copy"), "复制图像", true, Some("Ctrl+C"))
@@ -486,64 +470,9 @@ pub fn pin_menu(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
         None::<&str>,
     )
     .map_err(|e| e.to_string())?;
-    let desktops = platform::pin_desktops(window);
-    let placement_separator = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
-    let desktop = Submenu::new(app, "分配到桌面", true).map_err(|e| e.to_string())?;
-    match desktops {
-        Ok(menu) => {
-            let all = CheckMenuItem::with_id(
-                app,
-                id("desktop-all"),
-                "所有桌面",
-                menu.all.is_some(),
-                menu.all == Some(true),
-                None::<&str>,
-            )
-            .map_err(|e| e.to_string())?;
-            let first = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
-            let current = MenuItem::with_id(
-                app,
-                id("desktop-current"),
-                "此桌面",
-                menu.active.is_some() && menu.all.is_some(),
-                None::<&str>,
-            )
-            .map_err(|e| e.to_string())?;
-            let second = PredefinedMenuItem::separator(app).map_err(|e| e.to_string())?;
-            desktop
-                .append_items(&[&all, &first, &current, &second])
-                .map_err(|e| e.to_string())?;
-            for entry in menu.items {
-                let item = CheckMenuItem::with_id(
-                    app,
-                    id(&format!("desktop-{}", entry.id)),
-                    entry.label,
-                    menu.all.is_some(),
-                    entry.current,
-                    None::<&str>,
-                )
-                .map_err(|e| e.to_string())?;
-                desktop.append(&item).map_err(|e| e.to_string())?;
-            }
-        }
-        Err(_) => {
-            let item = MenuItem::new(app, "暂时无法读取桌面", false, None::<&str>)
-                .map_err(|e| e.to_string())?;
-            desktop.append(&item).map_err(|e| e.to_string())?;
-        }
-    }
     Menu::with_items(
         app,
-        &[
-            &copy,
-            &save,
-            &separator,
-            &toolbar,
-            &annotations,
-            &top,
-            &placement_separator,
-            &desktop,
-        ],
+        &[&copy, &save, &separator, &toolbar, &annotations, &top],
     )
     .and_then(|menu| menu.popup(window.as_ref().window().clone()))
     .map_err(|e| e.to_string())

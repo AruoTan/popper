@@ -10,10 +10,6 @@ use uuid::Uuid;
 
 const PREFIX: &str = "capture-pin-toolbar-";
 
-pub(super) fn window(app: &AppHandle, id: &str) -> Option<WebviewWindow> {
-    app.get_webview_window(&format!("{PREFIX}{id}"))
-}
-
 fn owner(app: &AppHandle, window: &WebviewWindow) -> Result<WebviewWindow, String> {
     let id = window
         .label()
@@ -91,7 +87,6 @@ pub fn toolbar_publish(
             if let Ok(hwnd) = tools.hwnd() {
                 platform::configure_capture_surface(hwnd);
             }
-            manager(app).desktop_visibility.attach_toolbar(window, &tools)?;
             let handle = app.clone();
             let id = meta.id.clone();
             tools.on_window_event(move |event| {

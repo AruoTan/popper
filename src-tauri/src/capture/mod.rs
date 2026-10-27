@@ -292,12 +292,8 @@ pub fn capture_pin_update(
     desktop_call!(desktop::pin_update(&app, &window, update))
 }
 #[tauri::command]
-pub async fn capture_pin_menu(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    desktop_call!(
-        tauri::async_runtime::spawn_blocking(move || desktop::pin_menu(&app, &window))
-            .await
-            .map_err(|e| e.to_string())?
-    )
+pub fn capture_pin_menu(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    desktop_call!(desktop::pin_menu(&app, &window))
 }
 #[tauri::command]
 pub fn capture_pin_annotations(
@@ -307,16 +303,12 @@ pub fn capture_pin_annotations(
     desktop_call!(desktop::pin_annotations(&app, &window))
 }
 #[tauri::command]
-pub async fn capture_pin_action(
+pub fn capture_pin_action(
     app: AppHandle,
     window: WebviewWindow,
     action: String,
 ) -> Result<(), String> {
-    desktop_call!(
-        tauri::async_runtime::spawn_blocking(move || desktop::pin_action(&app, &window, &action))
-            .await
-            .map_err(|e| e.to_string())?
-    )
+    desktop_call!(desktop::pin_action(&app, &window, &action))
 }
 #[tauri::command]
 pub async fn capture_pin_toolbar_publish(
