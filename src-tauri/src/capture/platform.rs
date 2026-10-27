@@ -23,9 +23,8 @@ use windows::{
             },
             WindowsAndMessaging::{
                 EnumChildWindows, EnumWindows, GetAncestor, GetForegroundWindow,
-                GetPhysicalCursorPos, GetWindowRect, GetWindowTextW, IsChild, IsIconic,
-                IsWindow, IsWindowVisible, SetForegroundWindow, SetPhysicalCursorPos, GA_ROOT,
-                GA_ROOTOWNER,
+                GetPhysicalCursorPos, GetWindowRect, GetWindowTextW, IsChild, IsIconic, IsWindow,
+                IsWindowVisible, SetForegroundWindow, SetPhysicalCursorPos, GA_ROOT, GA_ROOTOWNER,
             },
         },
     },
@@ -398,57 +397,76 @@ pub fn screen() -> Result<(xcap::Monitor, CaptureRect, f64), String> {
     }
     Ok((monitor, rect, scale))
 }
+fn target_window(hwnd: HWND) -> Option<TargetWindow> {
+    unsafe {
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return None;
+        }
+        let mut cloaked: u32 = 0;
+        let _ = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut _ as *mut _,
+            size_of::<u32>() as u32,
+        );
+        if cloaked != 0 {
+            return None;
+        }
+        let mut rect = RECT::default();
+        if DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            &mut rect as *mut _ as *mut _,
+            size_of::<RECT>() as u32,
+        )
+        .is_err()
+            || rect.right <= rect.left
+            || rect.bottom <= rect.top
+        {
+            if GetWindowRect(hwnd, &mut rect).is_err() {
+                return None;
+            }
+        }
+        if rect.right <= rect.left || rect.bottom <= rect.top {
+            return None;
+        }
+        let mut title = [0u16; 256];
+        let count = GetWindowTextW(hwnd, &mut title).max(0) as usize;
+        Some(TargetWindow {
+            handle: hwnd.0 as usize,
+            rect: CaptureRect {
+                x: rect.left,
+                y: rect.top,
+                width: (rect.right - rect.left) as u32,
+                height: (rect.bottom - rect.top) as u32,
+            },
+            title: String::from_utf16_lossy(&title[..count]),
+            controls: Vec::new(),
+        })
+    }
+}
 pub fn windows() -> Vec<TargetWindow> {
     unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
-        unsafe {
-            if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
-                return BOOL(1);
-            }
-            let mut cloaked: u32 = 0;
-            let _ = DwmGetWindowAttribute(
-                hwnd,
-                DWMWA_CLOAKED,
-                &mut cloaked as *mut _ as *mut _,
-                size_of::<u32>() as u32,
-            );
-            if cloaked != 0 {
-                return BOOL(1);
-            }
-            let mut rect = RECT::default();
-            if DwmGetWindowAttribute(
-                hwnd,
-                DWMWA_EXTENDED_FRAME_BOUNDS,
-                &mut rect as *mut _ as *mut _,
-                size_of::<RECT>() as u32,
-            )
-            .is_err()
-                && GetWindowRect(hwnd, &mut rect).is_err()
-            {
-                return BOOL(1);
-            }
-            if rect.right <= rect.left || rect.bottom <= rect.top {
-                return BOOL(1);
-            }
-            let mut title = [0u16; 256];
-            let count = GetWindowTextW(hwnd, &mut title).max(0) as usize;
-            let targets = &mut *(data.0 as *mut Vec<TargetWindow>);
-            targets.push(TargetWindow {
-                handle: hwnd.0 as usize,
-                rect: CaptureRect {
-                    x: rect.left,
-                    y: rect.top,
-                    width: (rect.right - rect.left) as u32,
-                    height: (rect.bottom - rect.top) as u32,
-                },
-                title: String::from_utf16_lossy(&title[..count]),
-                controls: Vec::new(),
-            });
+        if let Some(target) = target_window(hwnd) {
+            let targets = unsafe { &mut *(data.0 as *mut Vec<TargetWindow>) };
+            targets.push(target);
         }
         BOOL(1)
     }
-    let mut targets = Vec::new();
+    let mut targets = Vec::<TargetWindow>::new();
     unsafe {
         let _ = EnumWindows(Some(visit), LPARAM(&mut targets as *mut _ as isize));
+    }
+    // Some shell surfaces are not returned with desktop application windows.
+    // A missing foreground surface must precede the application behind it.
+    let foreground = unsafe { GetForegroundWindow() };
+    if !targets
+        .iter()
+        .any(|target| target.handle == foreground.0 as usize)
+    {
+        if let Some(target) = target_window(foreground) {
+            targets.insert(0, target);
+        }
     }
     targets
 }

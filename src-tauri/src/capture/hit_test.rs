@@ -1,5 +1,6 @@
 use super::{CaptureCandidate, CaptureHitTest, CaptureRect};
 use std::{
+    collections::HashSet,
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -58,6 +59,47 @@ pub fn candidate_chain(
 pub trait HitTree {
     fn candidate(&self, node: usize) -> Option<&CaptureCandidate>;
     fn children(&mut self, node: usize) -> Vec<usize>;
+}
+
+/// Preserve geometry across focus changes, including branches away from the pointer.
+/// Window-sized rectangles are already recorded separately. Copy useful subregions.
+pub fn snapshot(
+    tree: &mut impl HitTree,
+    bounds: CaptureRect,
+    budget: Duration,
+) -> Vec<CaptureCandidate> {
+    let started = Instant::now();
+    let mut stack = vec![(0, 0)];
+    let mut visited = 0;
+    let mut rectangles = HashSet::new();
+    let mut candidates = Vec::new();
+    while let Some((node, depth)) = stack.pop() {
+        if visited >= 8192 || candidates.len() >= 4096 || started.elapsed() >= budget {
+            break;
+        }
+        visited += 1;
+        if depth >= 64 {
+            continue;
+        }
+        if let Some(candidate) = tree.candidate(node) {
+            if let Some(rect) = candidate.rect.intersect(bounds) {
+                if rect != bounds && rectangles.insert((rect.x, rect.y, rect.width, rect.height)) {
+                    candidates.push(CaptureCandidate {
+                        rect,
+                        label: candidate.label.clone(),
+                    });
+                }
+            }
+        }
+        // Layout containers can have missing or misleading bounds. Descendants
+        // still need examination; the provider has already cached this subtree.
+        stack.extend(
+            tree.children(node)
+                .into_iter()
+                .map(|child| (child, depth + 1)),
+        );
+    }
+    candidates
 }
 
 /// Explore every containing branch rather than committing to the smallest container.
@@ -130,6 +172,104 @@ mod tests {
             },
             label: label.into(),
         }
+    }
+    #[test]
+    fn frozen_geometry_keeps_siblings_available_after_the_source_closes() {
+        let bounds = candidate(1000, "window").rect;
+        let left = candidate(40, "first item");
+        let mut right = candidate(40, "second item");
+        right.rect.x = 100;
+        let mut tree = Tree(vec![
+            (Some(candidate(1000, "window")), vec![1]),
+            (None, vec![2, 3]),
+            (Some(left), vec![]),
+            (Some(right), vec![]),
+        ]);
+        let frozen = snapshot(&mut tree, bounds, Duration::from_secs(1));
+        tree.0.clear();
+        assert_eq!(
+            candidate_chain(frozen.clone(), -90, -90)[0].label,
+            "first item"
+        );
+        assert_eq!(candidate_chain(frozen, 110, -90)[0].label, "second item");
+    }
+    #[test]
+    fn snapshot_clips_negative_screen_coordinates_and_removes_duplicates() {
+        let bounds = CaptureRect {
+            x: -90,
+            y: -90,
+            width: 200,
+            height: 200,
+        };
+        let mut outside = candidate(40, "outside");
+        outside.rect.x = 1000;
+        let mut tree = Tree(vec![
+            (Some(candidate(1000, "window")), vec![1, 2, 3, 4]),
+            (Some(candidate(40, "clipped item")), vec![]),
+            (Some(candidate(40, "duplicate")), vec![]),
+            (Some(outside), vec![]),
+            (Some(candidate(1000, "root layout")), vec![]),
+        ]);
+        let result = snapshot(&mut tree, bounds, Duration::from_secs(1));
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0].rect,
+            CaptureRect {
+                x: -90,
+                y: -90,
+                width: 30,
+                height: 30
+            }
+        );
+    }
+    #[test]
+    fn snapshot_traverses_layout_containers_with_misleading_bounds() {
+        let mut layout = candidate(40, "layout");
+        layout.rect.x = 2000;
+        let mut tree = Tree(vec![
+            (Some(candidate(1000, "window")), vec![1]),
+            (Some(layout), vec![2]),
+            (Some(candidate(40, "visible item")), vec![]),
+        ]);
+        let result = snapshot(
+            &mut tree,
+            candidate(1000, "window").rect,
+            Duration::from_secs(1),
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].label, "visible item");
+    }
+    #[test]
+    fn snapshot_is_bounded_even_for_a_cyclic_provider_tree() {
+        let mut tree = Tree(vec![(Some(candidate(1000, "window")), vec![0])]);
+        assert!(snapshot(
+            &mut tree,
+            candidate(1000, "window").rect,
+            Duration::from_secs(1)
+        )
+        .is_empty());
+        assert!(snapshot(&mut tree, candidate(1000, "window").rect, Duration::ZERO).is_empty());
+    }
+    #[test]
+    fn a_root_only_snapshot_does_not_invent_fine_grained_controls() {
+        let mut tree = Tree(vec![(Some(candidate(1000, "window")), vec![])]);
+        assert!(snapshot(
+            &mut tree,
+            candidate(1000, "window").rect,
+            Duration::from_secs(1)
+        )
+        .is_empty());
+    }
+    #[test]
+    fn snapshot_keeps_a_provider_root_smaller_than_its_native_window() {
+        let mut tree = Tree(vec![(Some(candidate(300, "popup surface")), vec![])]);
+        let result = snapshot(
+            &mut tree,
+            candidate(1000, "native host").rect,
+            Duration::from_secs(1),
+        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].label, "popup surface");
     }
     #[test]
     fn a_smaller_overlapping_container_does_not_hide_a_deeper_control() {

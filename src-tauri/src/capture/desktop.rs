@@ -251,6 +251,29 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     let pointer = platform::cursor()
         .ok()
         .filter(|&(x, y)| screen.contains(x, y));
+    let snapshot = targets
+        .iter()
+        .position(|target| target.handle == foreground)
+        .and_then(|index| {
+            targets[index].rect.intersect(screen).map(|bounds| {
+                (index, manager(app).recognition.snapshot(&id, foreground, bounds))
+            })
+        });
+    app.state::<RuntimeState>()
+        .set_screen_capture_active(app, true);
+    // Pixel capture and provider prefetch run concurrently. Do not create or
+    // activate the overlay until transient controls have been copied.
+    platform::flush();
+    let image = monitor
+        .capture_image()
+        .map_err(|e| format!("无法捕捉屏幕：{e}"))?;
+    if image.width() != screen.width || image.height() != screen.height {
+        return Err("显示器布局已变化，请重新截图".into());
+    }
+    let png = Arc::new(clipboard::png(&image)?);
+    if let Some((index, snapshot)) = snapshot {
+        targets[index].controls.extend(snapshot.finish());
+    }
     if let Some((x, y)) = pointer {
         if let Some(target) = targets.iter().find(|target| target.rect.contains(x, y)) {
             manager(app).recognition.warm_up(&id, target.handle, x, y);
@@ -299,8 +322,8 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     *manager(app).session.lock() = Some(Session {
         meta,
         presented: false,
-        image: None,
-        png: None,
+        image: Some(Arc::new(image)),
+        png: Some(png),
         selection: None,
         version: 0,
         targets: targets.into_iter().map(Arc::new).collect(),
@@ -312,23 +335,6 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         hidden_until: std::time::Instant::now() + Duration::from_secs(10),
         pin_annotations: Vec::new(),
     });
-    app.state::<RuntimeState>()
-        .set_screen_capture_active(app, true);
-    platform::flush();
-    let image = monitor
-        .capture_image()
-        .map_err(|e| format!("无法捕捉屏幕：{e}"))?;
-    if image.width() != screen.width || image.height() != screen.height {
-        return Err("显示器布局已变化，请重新截图".into());
-    }
-    let png = Arc::new(clipboard::png(&image)?);
-    {
-        let state = manager(app);
-        let mut slot = state.session.lock();
-        let session = ensure_session(&mut slot, &id)?;
-        session.image = Some(Arc::new(image));
-        session.png = Some(png);
-    }
     let label = format!("{CAPTURE_PREFIX}{id}");
     let builder = WebviewWindowBuilder::new(
         app,

@@ -49,7 +49,9 @@ impl Worker {
                     let Ok(line) = line else {
                         break;
                     };
-                    if line.len() > 128 * 1024 {
+                    // A frozen subtree contains up to 4096 bounded rectangles
+                    // and labels, rather than one short point-hit hierarchy.
+                    if line.len() > 2 * 1024 * 1024 {
                         break;
                     }
                     let Ok(value) = serde_json::from_str::<CaptureHitTest>(&line) else {

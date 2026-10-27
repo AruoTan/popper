@@ -2,13 +2,15 @@
 mod automation;
 mod worker;
 
-use super::{accessibility::PointInspector, hit_test, CaptureHitTest};
+use super::{
+    accessibility::PointInspector, hit_test, CaptureCandidate, CaptureHitTest, CaptureRect,
+};
 use automation::Inspector;
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, Write},
     sync::mpsc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows::Win32::{
     System::Com::{
@@ -39,6 +41,20 @@ struct Probe {
     handle: usize,
     x: i32,
     y: i32,
+    snapshot: Option<CaptureRect>,
+}
+
+pub(super) struct SnapshotRequest {
+    results: mpsc::Receiver<CaptureHitTest>,
+    deadline: Instant,
+}
+impl SnapshotRequest {
+    pub(super) fn finish(self) -> Vec<CaptureCandidate> {
+        self.results
+            .recv_timeout(self.deadline.saturating_duration_since(Instant::now()))
+            .map(|result| result.candidates)
+            .unwrap_or_default()
+    }
 }
 
 pub struct Recognition {
@@ -58,9 +74,30 @@ impl Recognition {
             handle,
             x,
             y,
+            snapshot: None,
         };
         self.accessibility.submit(probe.clone(), None);
         self.automation.submit(probe, None);
+    }
+    pub(super) fn snapshot(
+        &self,
+        session: &str,
+        handle: usize,
+        bounds: CaptureRect,
+    ) -> SnapshotRequest {
+        let (reply, results) = mpsc::sync_channel(1);
+        let deadline = Instant::now() + Duration::from_millis(300);
+        self.automation.submit(
+            Probe {
+                session: session.into(),
+                handle,
+                x: bounds.x,
+                y: bounds.y,
+                snapshot: Some(bounds),
+            },
+            Some(reply),
+        );
+        SnapshotRequest { results, deadline }
     }
     pub fn query(&self, session: &str, handle: usize, x: i32, y: i32) -> CaptureHitTest {
         let probe = Probe {
@@ -68,6 +105,7 @@ impl Recognition {
             handle,
             x,
             y,
+            snapshot: None,
         };
         let (reply, results) = mpsc::sync_channel(2);
         self.accessibility

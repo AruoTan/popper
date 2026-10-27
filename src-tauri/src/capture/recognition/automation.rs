@@ -8,9 +8,10 @@ use std::time::Duration;
 use windows::Win32::{
     Foundation::HWND,
     UI::Accessibility::{
-        IUIAutomation, IUIAutomationCacheRequest, IUIAutomationCondition, IUIAutomationElement,
-        TreeScope_Children, TreeScope_Element, UIA_BoundingRectanglePropertyId,
-        UIA_IsOffscreenPropertyId, UIA_NamePropertyId,
+        AutomationElementMode_None, IUIAutomation, IUIAutomationCacheRequest,
+        IUIAutomationCondition, IUIAutomationElement, TreeScope_Children, TreeScope_Element,
+        TreeScope_Subtree, UIA_BoundingRectanglePropertyId, UIA_IsOffscreenPropertyId,
+        UIA_NamePropertyId,
     },
 };
 
@@ -50,10 +51,16 @@ struct CachedTree {
     nodes: Vec<Node>,
     cache: IUIAutomationCacheRequest,
     condition: IUIAutomationCondition,
+    frozen: bool,
 }
 impl HitTree for CachedTree {
     fn candidate(&self, node: usize) -> Option<&CaptureCandidate> {
-        self.nodes[node].candidate.as_ref()
+        let node = &self.nodes[node];
+        if node.offscreen {
+            None
+        } else {
+            node.candidate.as_ref()
+        }
     }
     fn children(&mut self, node: usize) -> Vec<usize> {
         if let Some(children) = &self.nodes[node].children {
@@ -63,13 +70,18 @@ impl HitTree for CachedTree {
         if !self.nodes[node].offscreen && self.nodes.len() < 8192 {
             // Batch all child properties in one provider round trip. TrueCondition
             // includes raw text, images and layout elements omitted by Control View.
-            if let Ok(elements) = unsafe {
-                self.nodes[node].element.FindAllBuildCache(
-                    TreeScope_Children,
-                    &self.condition,
-                    &self.cache,
-                )
-            } {
+            let elements = unsafe {
+                if self.frozen {
+                    self.nodes[node].element.GetCachedChildren()
+                } else {
+                    self.nodes[node].element.FindAllBuildCache(
+                        TreeScope_Children,
+                        &self.condition,
+                        &self.cache,
+                    )
+                }
+            };
+            if let Ok(elements) = elements {
                 let count = unsafe { elements.Length() }
                     .unwrap_or_default()
                     .min((8192 - self.nodes.len()) as i32);
@@ -108,16 +120,24 @@ impl Inspector {
             self.trees.clear();
             self.session = probe.session;
         }
-        let tree = if let Some(index) = self
+        let cached = self
             .trees
             .iter()
             .position(|(handle, _)| *handle == probe.handle)
-        {
-            self.trees.remove(index).1
+            .map(|index| self.trees.remove(index).1);
+        let tree = if let Some(tree) = cached.filter(|_| probe.snapshot.is_none()) {
+            tree
         } else {
             let cache = unsafe { self.automation.CreateCacheRequest()? };
             unsafe {
-                cache.SetTreeScope(TreeScope_Element)?;
+                cache.SetTreeScope(if probe.snapshot.is_some() {
+                    TreeScope_Subtree
+                } else {
+                    TreeScope_Element
+                })?;
+                if probe.snapshot.is_some() {
+                    cache.SetAutomationElementMode(AutomationElementMode_None)?;
+                }
                 cache.SetTreeFilter(&self.automation.RawViewCondition()?)?;
                 cache.AddProperty(UIA_BoundingRectanglePropertyId)?;
                 cache.AddProperty(UIA_NamePropertyId)?;
@@ -131,6 +151,7 @@ impl Inspector {
                 nodes: vec![Node::cached(root)],
                 cache,
                 condition: unsafe { self.automation.CreateTrueCondition()? },
+                frozen: probe.snapshot.is_some(),
             }
         };
         if self.trees.len() >= 8 {
@@ -138,6 +159,12 @@ impl Inspector {
         }
         self.trees.push((probe.handle, tree));
         let tree = &mut self.trees.last_mut().unwrap().1;
+        if let Some(bounds) = probe.snapshot {
+            return Ok(CaptureHitTest {
+                candidates: hit_test::snapshot(tree, bounds, Duration::from_millis(100)),
+                pending: false,
+            });
+        }
         Ok(hit_test::search(
             tree,
             probe.x,

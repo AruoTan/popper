@@ -59,6 +59,26 @@ describe('capture hover feedback', () => {
     expect(show.mock.lastCall?.[0].map((item: CaptureCandidate) => item.label)).toEqual(['front']);
     hover.destroy();
   });
+  it.each(['empty', 'error'] as const)('keeps every frozen popup control after its live provider returns %s', async (mode) => {
+    const second = { rect: { x: 220, y: 10, width: 100, height: 80 }, label: 'second item' };
+    const parent = { rect: { x: 0, y: 0, width: 350, height: 200 }, label: 'popup group' };
+    const popup: CaptureTarget = { ...parent, controls: [parent, control, second] };
+    const request = vi.fn(async () => {
+      if (mode === 'error') throw new Error('popup closed');
+      return response([]);
+    });
+    const show = vi.fn();
+    const hover = createCaptureHover({ targets: [popup, windowTarget], active: () => true, request, show });
+    hover.update({ x: 20, y: 20 });
+    expect(show.mock.lastCall?.[0].map((item: CaptureCandidate) => item.label)).toEqual(['control', 'popup group']);
+    await vi.runAllTimersAsync();
+    hover.update({ x: 240, y: 20 });
+    expect(show.mock.lastCall?.[0][0]).toEqual(second);
+    await vi.runAllTimersAsync();
+    expect(show.mock.lastCall?.[0].map((item: CaptureCandidate) => item.label)).toEqual(['second item', 'popup group']);
+    expect(show.mock.lastCall?.[1].pending).toBe(false);
+    hover.destroy();
+  });
   it('refines a stationary timeout with bounded retries while preserving immediate window feedback', async () => {
     const show = vi.fn(), request = vi.fn(async () => response([], true));
     const hover = createCaptureHover({ targets: [windowTarget], active: () => true, request, show });
