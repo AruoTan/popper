@@ -177,6 +177,10 @@ pub fn notify(app: &AppHandle, message: &str) {
         }
     });
 }
+pub fn pins_visible(app: &AppHandle) -> bool {
+    !manager(app).pins.lock().hidden
+}
+
 pub fn launch(app: &AppHandle, operation: &'static str) {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -186,6 +190,9 @@ pub fn launch(app: &AppHandle, operation: &'static str) {
             "toggle" => toggle_pins(&handle),
             _ => Ok(()),
         };
+        if operation == "toggle" {
+            crate::runtime::refresh_tray(&handle);
+        }
         if let Err(error) = result {
             notify(&handle, &error);
         }

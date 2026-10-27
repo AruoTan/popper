@@ -3,7 +3,7 @@ mod desktops;
 #[path = "platform/frame.rs"]
 mod frame;
 use super::{CaptureCandidate, CapturePoint, CaptureRect};
-pub use desktops::{assign_pin_desktop, pin_desktops};
+pub use desktops::{assign_pin_desktop, initialize_pin_desktop, pin_desktops};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
 use tauri::AppHandle;
