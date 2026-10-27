@@ -149,12 +149,6 @@ const SETTINGS_SELECTION_SUBTAB_STORAGE_KEY = "popper.settings.selection-subtab"
 function restoredSettingsSection(): SettingsSectionId {
   try {
     const value = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
-    if (value === "selection" || value === "result" || value === "filter" || value === "actions") {
-      return "actions";
-    }
-    if (value === "capture" || value === "screen") {
-      return "screen";
-    }
     return SETTINGS_SECTIONS.some((section) => section.id === value)
       ? (value as SettingsSectionId)
       : "general";
@@ -165,11 +159,6 @@ function restoredSettingsSection(): SettingsSectionId {
 
 function restoredSelectionSubTab(): SelectionSubTab {
   try {
-    const prevSection = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
-    if (prevSection === "result") return "result";
-    if (prevSection === "filter") return "filter";
-    if (prevSection === "actions" || prevSection === "selection") return "actions";
-
     const value = window.sessionStorage.getItem(SETTINGS_SELECTION_SUBTAB_STORAGE_KEY);
     return value === "actions" || value === "result" || value === "filter" ? value : "actions";
   } catch {
@@ -374,7 +363,7 @@ export function SettingsApp(): JSX.Element {
     if (focus === "providers") {
       setActiveSection("general");
       targetId = "providers-title";
-    } else if (focus === "actions" || focus === "selection") {
+    } else if (focus === "actions") {
       setActiveSection("actions");
       setSelectionSubTab("actions");
       targetId = "actions-title";
@@ -386,10 +375,10 @@ export function SettingsApp(): JSX.Element {
       setActiveSection("actions");
       setSelectionSubTab("filter");
       targetId = "filter-title";
-    } else if (focus === "quick-ask" || focus === "quickAsk") {
+    } else if (focus === "quick-ask") {
       setActiveSection("actions");
       targetId = "quick-ask-title";
-    } else if (focus === "capture" || focus === "screen") {
+    } else if (focus === "screen") {
       setActiveSection("screen");
       targetId = "capture-title";
     }

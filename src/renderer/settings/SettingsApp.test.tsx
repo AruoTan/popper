@@ -32,23 +32,19 @@ function stubScrollIntoView(): ReturnType<typeof vi.fn> {
 
 async function goToSettingsSection(label: string): Promise<void> {
   await screen.findByRole("navigation", { name: "设置分区" });
-  const getActionsButton = () => screen.queryByRole("button", { name: "动作" }) ?? screen.getByRole("button", { name: "划词" });
-  if (label === "动作" || label === "划词") {
-    fireEvent.click(getActionsButton());
-    const tab = screen.queryByRole("tab", { name: /划词动作/ }) ?? screen.queryByRole("tab", { name: /工具栏动作/ });
-    if (tab) fireEvent.click(tab);
+  if (label === "动作") {
+    fireEvent.click(screen.getByRole("button", { name: "动作" }));
+    fireEvent.click(screen.getByRole("tab", { name: /划词动作/ }));
     return;
   }
   if (label === "结果") {
-    fireEvent.click(getActionsButton());
-    const tab = screen.queryByRole("tab", { name: /结果窗口/ });
-    if (tab) fireEvent.click(tab);
+    fireEvent.click(screen.getByRole("button", { name: "动作" }));
+    fireEvent.click(screen.getByRole("tab", { name: /结果窗口/ }));
     return;
   }
   if (label === "过滤") {
-    fireEvent.click(getActionsButton());
-    const tab = screen.queryByRole("tab", { name: /应用过滤/ });
-    if (tab) fireEvent.click(tab);
+    fireEvent.click(screen.getByRole("button", { name: "动作" }));
+    fireEvent.click(screen.getByRole("tab", { name: /应用过滤/ }));
     return;
   }
   fireEvent.click(screen.getByRole("button", { name: label }));
@@ -89,6 +85,27 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
 }
 
 describe("SettingsApp provider deletion", () => {
+  it.each(["结果窗口", "应用过滤"])("restores the current %s subtab when reopening settings", async (label) => {
+    const sectionKey = "popper.settings.active-section";
+    const subtabKey = "popper.settings.selection-subtab";
+    const previousSection = sessionStorage.getItem(sectionKey);
+    const previousSubtab = sessionStorage.getItem(subtabKey);
+    try {
+      sessionStorage.setItem(sectionKey, "actions");
+      sessionStorage.setItem(subtabKey, label === "结果窗口" ? "result" : "filter");
+      installDefaultBridge();
+      const view = render(<SettingsApp />);
+      try {
+        expect(await screen.findByRole("tab", { name: new RegExp(label) })).toHaveAttribute("aria-selected", "true");
+      } finally { view.unmount(); }
+    } finally {
+      if (previousSection === null) sessionStorage.removeItem(sectionKey);
+      else sessionStorage.setItem(sectionKey, previousSection);
+      if (previousSubtab === null) sessionStorage.removeItem(subtabKey);
+      else sessionStorage.setItem(subtabKey, previousSubtab);
+    }
+  });
+
   it("places the default model first and saves it independently from action overrides", async () => {
     const settings: PublicSettings = {
       ...DEFAULT_PUBLIC_SETTINGS,

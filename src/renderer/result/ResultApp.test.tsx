@@ -321,14 +321,13 @@ describe("ResultApp sessionId query", () => {
     return { beginResultReady, closeResult };
   }
 
-  it("shows a fatal error when sessionId is missing and does not begin a legacy session", async () => {
+  it("rejects a missing sessionId without starting or closing a session", async () => {
     const { beginResultReady, closeResult } = await renderWithoutSessionId();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("结果会话无效");
     await waitFor(() => {
       expect(beginResultReady).not.toHaveBeenCalled();
     });
-    expect(closeResult).not.toHaveBeenCalledWith("legacy");
     expect(closeResult).not.toHaveBeenCalled();
   });
 
@@ -337,7 +336,7 @@ describe("ResultApp sessionId query", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("结果会话无效");
     expect(beginResultReady).not.toHaveBeenCalled();
-    expect(closeResult).not.toHaveBeenCalledWith("legacy");
+    expect(closeResult).not.toHaveBeenCalled();
   });
 });
 

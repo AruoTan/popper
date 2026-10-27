@@ -11,7 +11,7 @@ try {
     $source = Join-Path $temporary 'source'
     $data = Join-Path $temporary 'portable data'
     $null = New-Item -ItemType Directory -Path $source -Force
-    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":17}')
+    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":18}')
     [System.IO.File]::WriteAllText((Join-Path $source 'api-keys.enc.json'), 'test ciphertext')
     [System.IO.File]::WriteAllText((Join-Path $source '.api-keys.key'), 'test local key')
     & $import -DataDirectory $data -SourceDirectory $source
@@ -27,22 +27,26 @@ try {
     try { & $import -DataDirectory $brokenData -SourceDirectory $source } catch { $refused = $true }
     Assert-True ($refused -and -not (Test-Path -LiteralPath $brokenData)) 'Import accepted ciphertext without its key'
 
-    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":16}')
-    $refused = $false
-    try { & $import -DataDirectory $brokenData -SourceDirectory $source } catch { $refused = $true }
-    Assert-True ($refused -and -not (Test-Path -LiteralPath $brokenData)) 'Import accepted an unsupported settings format'
-    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":17}')
+    [System.IO.File]::WriteAllText((Join-Path $source '.api-keys.key'), 'test local key')
+    foreach ($unsupportedVersion in @(16, 17, 19)) {
+        [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), ('{"version":' + $unsupportedVersion + '}'))
+        $refused = $false
+        try { & $import -DataDirectory $brokenData -SourceDirectory $source } catch {
+            $refused = $_.Exception.Message.Contains('Only settings format v18 can be imported')
+        }
+        Assert-True ($refused -and -not (Test-Path -LiteralPath $brokenData)) 'Import accepted an unsupported settings format'
+    }
+    [System.IO.File]::WriteAllText((Join-Path $source 'settings.json'), '{"version":18}')
 
     # The packaged import script defaults to config beside the script/executable.
-    [System.IO.File]::WriteAllText((Join-Path $source '.api-keys.key'), 'test local key')
     $defaultRoot = Join-Path $temporary 'default portable'
     $null = New-Item -ItemType Directory -Path $defaultRoot
     Copy-Item -LiteralPath $import -Destination $defaultRoot
     & (Join-Path $defaultRoot 'Import-InstalledSettings.ps1') -SourceDirectory $source
     Assert-True (Test-Path -LiteralPath (Join-Path $defaultRoot 'config/.api-keys.key')) 'Import did not default to the executable root'
-    Assert-True (-not (Test-Path -LiteralPath (Join-Path $defaultRoot 'data'))) 'Import created the legacy data directory'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $defaultRoot 'data'))) 'Import created an unexpected data directory'
 
-    # Exercise the actual generated Scoop pre_install, without legacy migration.
+    # Exercise the actual generated Scoop pre_install.
     Push-Location $projectRoot
     try {
         $manifest = (& node --input-type=module -e 'import {createScoopManifest} from "./apps/windows/scripts/prepare-release-assets.mjs"; console.log(JSON.stringify(createScoopManifest({version:"1.2.3",repository:"example/popper",hash:"a".repeat(64)})));') | ConvertFrom-Json

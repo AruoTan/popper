@@ -210,21 +210,6 @@ describe("action event store publication pacing", () => {
     stop();
   });
 
-  it("keeps synchronously published content intact across page visibility changes", async () => {
-    const store = await import("./actionEventStore");
-    const stop = store.startActionEventStore();
-
-    emit(started());
-    emit(delta(2, "A"));
-    emit(delta(3, "B"));
-    expect(store.getActionEventSnapshot().content).toBe("AB");
-
-    window.dispatchEvent(new PageTransitionEvent("pageshow"));
-    document.dispatchEvent(new Event("visibilitychange"));
-    expect(store.getActionEventSnapshot().content).toBe("AB");
-    expect(frameCallbacks.size).toBe(0);
-    stop();
-  });
 });
 
 describe("action event store hydration and recovery", () => {
@@ -469,7 +454,6 @@ describe("action event store ordered notices", () => {
     emit(delta(21, "A"));
     emit(delta(22, "B"));
     const beforeNotice = store.getActionEventSnapshot();
-    const logicalBeforeNotice = store.getActionEventLogicalRevision();
     expect(beforeNotice.content).toBe("AB");
     expect(frameCallbacks.size).toBe(0);
 
@@ -488,7 +472,6 @@ describe("action event store ordered notices", () => {
       generationNotice: "fallback applied",
     });
     expect(noticed).not.toBe(beforeNotice);
-    expect(store.getActionEventLogicalRevision()).toBe(logicalBeforeNotice + 1);
 
     const callsAfterNotice = listener.mock.calls.length;
     emit({

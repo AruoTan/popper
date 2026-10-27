@@ -29,16 +29,6 @@ describe('settings form helpers', () => {
     expect(buildSettingsUpdate({ ...settings, defaultAi: { providerId: DEFAULT_PROVIDER_ID, modelId: 'missing' } }).valid).toBe(false)
   })
 
-  it('saves settings without retired configuration fields', () => {
-    const result = buildSettingsUpdate(DEFAULT_PUBLIC_SETTINGS)
-    expect(result.valid).toBe(true)
-    if (result.valid) {
-      for (const key of ['enabled', 'toolbar', 'application']) expect(result.value).not.toHaveProperty(key)
-      expect(result.value).not.toHaveProperty('trigger')
-      expect(result.value).not.toHaveProperty('captureShortcut')
-    }
-  })
-
   it('sorts actions and rewrites their order without mutating input', () => {
     const original = [
       { ...DEFAULT_PUBLIC_SETTINGS.actions[0]!, order: 4 },

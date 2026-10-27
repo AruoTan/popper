@@ -34,7 +34,6 @@ let publishedSnapshot = INITIAL_RESULT_STATE;
 let phase: StorePhase = "hydrating";
 let cursor: LogicalCursor | null = null;
 let bufferedEvents: ActionStreamEvent[] = [];
-let logicalRevision = 0;
 
 let stopBridgeListener: Unsubscribe | null = null;
 let activeSessionId: string | null = null;
@@ -78,7 +77,6 @@ function acceptInitialStarted(
     lastContentSequence: 0,
     contentScalarCount: 0,
   };
-  logicalRevision += 1;
   publishReducedEvent(event, notify);
 }
 
@@ -88,7 +86,6 @@ function acceptDelta(
 ): void {
   if (!cursor) return;
   cursor.lastSequence = event.sequence;
-  logicalRevision += 1;
   if (!event.delta) return;
 
   cursor.lastContentSequence = event.sequence;
@@ -114,7 +111,6 @@ function acceptThinkingDelta(
 ): void {
   if (!cursor) return;
   cursor.lastSequence = event.sequence;
-  logicalRevision += 1;
   if (!event.delta) return;
 
   // Thinking advances sequence only — not answer integrity counters.
@@ -146,7 +142,6 @@ function acceptTerminal(
   }
 
   cursor.lastSequence = event.sequence;
-  logicalRevision += 1;
   const stateBeforeTerminal = publishedSnapshot;
   const terminalChanged = publishReducedEvent(event, false);
   if (notify && (terminalChanged || publishedSnapshot !== stateBeforeTerminal)) {
@@ -218,7 +213,6 @@ function processLiveEvent(
   }
   if (event.type === "notice") {
     cursor.lastSequence = event.sequence;
-    logicalRevision += 1;
     publishReducedEvent(event, options.notify);
     return;
   }
@@ -262,10 +256,6 @@ export function startActionEventStore(
   };
 }
 
-export function getActionEventLogicalRevision(): number {
-  return logicalRevision;
-}
-
 export function hydrateActionEventStore(
   sessionSnapshot: ResultSessionSnapshot,
 ): ResultHydrationOutcome {
@@ -295,7 +285,6 @@ export function hydrateActionEventStore(
   };
   bufferedEvents = [];
   phase = "live";
-  logicalRevision += 1;
   notifySubscribers();
 
   const replayCandidates = eventsWaitingForSnapshot.filter((event) => {
