@@ -71,13 +71,7 @@ jobs:
         run: |
           rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Rust installation failed' }
-          choco install nasm --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'NASM installation failed' }
-          $nasmDirectory = Join-Path $env:ProgramFiles 'NASM'
-          if (-not (Test-Path -LiteralPath (Join-Path $nasmDirectory 'nasm.exe'))) {
-            throw 'NASM executable was not installed at the expected location'
-          }
-          $nasmDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & ./.github/scripts/setup-nasm.ps1
           $tauriCache = Join-Path $env:LOCALAPPDATA 'tauri'
           "tauri-cache=$tauriCache" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
@@ -85,7 +79,7 @@ jobs:
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri -> target
-          key: windows-2022-x64-msvc
+          key: windows-2022-x64-msvc-${{ hashFiles('.github/scripts/setup-nasm.ps1') }}
           cache-bin: "false"
           # NSIS, its Tauri plugin and WebView2 installer downloads are reusable.
           cache-directories: ${{ steps.native-tools.outputs.tauri-cache }}

@@ -40,7 +40,11 @@ Import-Module (Join-Path $installation 'Common7/Tools/Microsoft.VisualStudio.Dev
 Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
 
 # Prefer the explicitly installed NASM, not a bundled Strawberry Perl copy.
-$env:PATH = (Join-Path $env:ProgramFiles 'NASM') + ';' + $env:PATH
+$nasmDirectory = $env:POPPER_NASM_DIRECTORY
+if ([string]::IsNullOrWhiteSpace($nasmDirectory) -or -not (Test-Path -LiteralPath (Join-Path $nasmDirectory 'nasm.exe') -PathType Leaf)) {
+    throw 'Verified NASM directory is missing; run the native tools setup first.'
+}
+$env:PATH = $nasmDirectory + ';' + $env:PATH
 Get-Command cl.exe, link.exe, rc.exe, cmake.exe, nasm.exe | Select-Object Name, Source
 rustc --version
 if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain unavailable' }
