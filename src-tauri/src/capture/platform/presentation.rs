@@ -12,8 +12,8 @@ use windows::Win32::{
         Shell::{ITaskbarList2, TaskbarList},
         WindowsAndMessaging::{
             GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, IsChild,
-            SetForegroundWindow, SetWindowPos, GA_ROOT, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_SHOWWINDOW,
+            SetForegroundWindow, SetWindowPos, GA_ROOT, HWND_TOPMOST, SWP_NOMOVE,
+            SWP_NOOWNERZORDER, SWP_NOSIZE,
         },
     },
 };
@@ -45,24 +45,6 @@ pub(super) fn mark_fullscreen(hwnd: HWND, fullscreen: bool) -> Result<(), String
         taskbar
             .MarkFullscreenWindow(hwnd, fullscreen)
             .map_err(|e| e.to_string())
-    }
-}
-
-pub(super) fn reveal(hwnd: HWND) -> Result<(), String> {
-    check_thread(hwnd)?;
-    // Show the painted surface without closing transient UI through activation.
-    // Native visibility avoids framework ShowWindow variants that can take focus.
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            Some(HWND_TOPMOST),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
-        )
-        .map_err(|e| e.to_string())
     }
 }
 
@@ -185,35 +167,16 @@ mod tests {
 
     #[test]
     fn presentation_rejects_destroyed_windows_and_the_wrong_thread() {
-        assert!(reveal(HWND::default()).is_err());
         assert!(raise(HWND::default()).is_err());
         assert!(mark_fullscreen(HWND::default(), true).is_err());
         let window = window(100, false);
         let handle = window.0 .0 as usize;
         std::thread::spawn(move || {
             let hwnd = HWND(handle as *mut _);
-            assert!(reveal(hwnd).is_err());
             assert!(raise(hwnd).is_err());
             assert!(mark_fullscreen(hwnd, true).is_err());
         })
         .join()
         .unwrap();
-    }
-
-    #[test]
-    fn passive_reveal_preserves_foreground_and_geometry() {
-        let overlay = window(500, false);
-        let before = rect(overlay.0);
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-                overlay.0,
-                windows::Win32::UI::WindowsAndMessaging::SW_HIDE,
-            );
-        }
-        let foreground = unsafe { GetForegroundWindow() };
-        reveal(overlay.0).unwrap();
-        assert!(unsafe { IsWindowVisible(overlay.0) }.as_bool());
-        assert_eq!(unsafe { GetForegroundWindow() }, foreground);
-        assert_eq!(rect(overlay.0), before);
     }
 }

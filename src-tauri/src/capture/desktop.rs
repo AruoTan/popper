@@ -38,6 +38,7 @@ const CAPTURE_PREFIX: &str = "capture-session-";
 const PIN_PREFIX: &str = "capture-pin-";
 struct Session {
     meta: CaptureSession,
+    animations: super::animations::AnimationPause,
     presented: bool,
     image: Option<Arc<RgbaImage>>,
     png: Option<Arc<Vec<u8>>>,
@@ -121,7 +122,10 @@ pub fn shutdown(app: &AppHandle) {
     if let Some(state) = app.try_state::<CaptureManager>() {
         state.stopped.store(true, Ordering::Release);
         state.recognition.stop();
-        state.session.lock().take();
+        let session = state.session.lock().take();
+        // Restoring system settings broadcasts messages. Never hold a session
+        // lock while other windows process that notification.
+        drop(session);
         state.pins.lock().items.clear();
         state.attachment.lock().take();
         state.active.store(false, Ordering::Release);
@@ -319,8 +323,19 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
             })
             .collect(),
     };
-    *manager(app).session.lock() = Some(Session {
+    // Keep the screenshot and its control snapshot unchanged; suspend effects
+    // only after they are captured, before creating or activating the overlay.
+    let animations =
+        super::animations::AnimationPause::suspend(super::animations::WindowsSettings)?;
+    let state = manager(app);
+    let mut slot = state.session.lock();
+    if state.stopped.load(Ordering::Acquire) {
+        drop(slot);
+        return Err("应用正在退出".into());
+    }
+    *slot = Some(Session {
         meta,
+        animations,
         presented: false,
         image: Some(Arc::new(image)),
         png: Some(png),
@@ -335,6 +350,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         hidden_until: std::time::Instant::now() + Duration::from_secs(10),
         pin_annotations: Vec::new(),
     });
+    drop(slot);
     let label = format!("{CAPTURE_PREFIX}{id}");
     let builder = WebviewWindowBuilder::new(
         app,
@@ -419,6 +435,7 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
     state.generation.fetch_add(1, Ordering::AcqRel);
     let id = previous.meta.id;
     let foreground = previous.foreground;
+    let mut animations = previous.animations;
     let result = platform::on_ui(app, move |handle| {
         if let Some(window) = handle.get_webview_window(&format!("{CAPTURE_PREFIX}{id}")) {
             let _ = window.destroy();
@@ -427,11 +444,12 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
             platform::restore_foreground(foreground);
         }
     });
+    let restored = animations.restore();
     state.active.store(false, Ordering::Release);
     app.state::<RuntimeState>()
         .set_screen_capture_active(app, false);
     toolbar::refresh_visible(app);
-    result
+    result.and(restored)
 }
 pub fn fail(app: &AppHandle, window: &WebviewWindow, message: &str) -> Result<(), String> {
     let state = manager(app);
@@ -538,41 +556,24 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 }
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
-        super::activation::wait_for_activation(
-            || {
-                let window = window.clone();
-                platform::on_ui(app, move |app| {
-                    let state = manager(&app);
-                    let mut slot = state.session.lock();
-                    let session = ensure_session(&mut slot, session_id(&window)?)?;
-                    if session.scroll.is_some() || session.scroll_completed {
-                        return Err("滚动截图仅支持直接输出".into());
-                    }
-                    platform::reveal_capture(&window)
-                })??;
-                // Focus changes close transient shell UI. First commit the frozen
-                // surface while it is still passive, without blocking the UI thread.
-                platform::commit_capture_frame()
-            },
-            |initial| {
-                let window = window.clone();
-                platform::on_ui(app, move |app| {
-                    let state = manager(&app);
-                    let mut slot = state.session.lock();
-                    let session = ensure_session(&mut slot, session_id(&window)?)?;
-                    if session.scroll.is_some() || session.scroll_completed {
-                        return Err("滚动截图仅支持直接输出".into());
-                    }
-                    // Revalidate on every UI turn, including after a pending
-                    // foreground transfer. Cancellation makes the next attempt fail.
-                    let active = platform::present_capture(&window, initial)?;
-                    if active {
-                        session.presented = true;
-                    }
-                    Ok(active)
-                })?
-            },
-        )
+        super::activation::wait_for_activation(|initial| {
+            let window = window.clone();
+            platform::on_ui(app, move |app| {
+                let state = manager(&app);
+                let mut slot = state.session.lock();
+                let session = ensure_session(&mut slot, session_id(&window)?)?;
+                if session.scroll.is_some() || session.scroll_completed {
+                    return Err("滚动截图仅支持直接输出".into());
+                }
+                // Revalidate on every UI turn, including after a pending
+                // foreground transfer. Cancellation makes the next attempt fail.
+                let active = platform::present_capture(&window, initial)?;
+                if active {
+                    session.presented = true;
+                }
+                Ok(active)
+            })?
+        })
     } else {
         let id = pin_id(window)?;
         let visible = {

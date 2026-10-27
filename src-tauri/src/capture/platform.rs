@@ -302,25 +302,13 @@ pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
     // Activating the frame alone does not direct keyboard input to WebView2.
     window.as_ref().set_focus().map_err(|e| e.to_string())
 }
-/// Stage the painted surface without taking focus. Commit it before activation.
-pub fn reveal_capture(window: &tauri::WebviewWindow) -> Result<(), String> {
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    configure_capture_surface(hwnd);
-    frame::install(hwnd)?;
-    presentation::mark_fullscreen(hwnd, true)?;
-    presentation::reveal(hwnd)
-}
-
-/// Wait from the worker thread, leaving the UI thread free to present its frame.
-pub fn commit_capture_frame() -> Result<(), String> {
-    unsafe { DwmFlush() }.map_err(|e| format!("无法显示冻结画面：{e}"))
-}
-
-/// One UI-thread attempt, after the frozen surface has been committed.
+/// One UI-thread attempt, after the session has suspended system animations.
 pub fn present_capture(window: &tauri::WebviewWindow, initial: bool) -> Result<bool, String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
     if initial {
-        // Synchronize framework visibility only after the passive native reveal.
+        configure_capture_surface(hwnd);
+        frame::install(hwnd)?;
+        presentation::mark_fullscreen(hwnd, true)?;
         window.show().map_err(|e| e.to_string())?;
     }
     let active = presentation::raise(hwnd)?;
