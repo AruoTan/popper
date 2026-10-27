@@ -325,8 +325,9 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     };
     // Keep the screenshot and its control snapshot unchanged; suspend effects
     // only after they are captured, before creating or activating the overlay.
-    let animations =
-        super::animations::AnimationPause::suspend(super::animations::WindowsSettings)?;
+    let animations = super::animations::AnimationPause::suspend(
+        super::animations::WindowsSettings::acquire()?,
+    )?;
     let state = manager(app);
     let mut slot = state.session.lock();
     if state.stopped.load(Ordering::Acquire) {

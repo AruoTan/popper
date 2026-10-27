@@ -86,6 +86,10 @@ pub fn run() {
         // shortcuts do not reach the active input in packaged builds.
         .enable_macos_default_menu(true)
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Err(error) = capture::recover_animation_settings() {
+                startup::stage(&format!("animation recovery pending: {error}"));
+            }
             startup::stage("initializing UI thread");
             #[cfg(target_os = "windows")]
             windows::initialize_windows_ui_thread();

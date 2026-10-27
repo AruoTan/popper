@@ -2,6 +2,10 @@
 
 fn main() {
     #[cfg(target_os = "windows")]
+    if popper_lib::capture::run_animation_recovery_if_requested() {
+        return;
+    }
+    #[cfg(target_os = "windows")]
     if popper_lib::selection::run_windows_selection_helper_if_requested() {
         return;
     }

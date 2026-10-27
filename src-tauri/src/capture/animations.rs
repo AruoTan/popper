@@ -1,5 +1,12 @@
 //! Temporary system animation settings owned by a capture session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(target_os = "windows", test))]
+#[path = "animations/recovery.rs"]
+mod recovery;
+#[cfg(target_os = "windows")]
+pub use recovery::{recover_pending, run_if_requested};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) enum Effect {
     ClientArea,
     Window,
@@ -16,11 +23,18 @@ const EFFECTS: [Effect; 4] = [
 pub(super) trait Settings {
     fn read(&self, effect: Effect) -> Result<i32, String>;
     fn write(&self, effect: Effect, value: i32) -> Result<(), String>;
+    fn arm_recovery(&self, _original: &[(Effect, i32)]) -> Result<(), String> {
+        Ok(())
+    }
+    fn clear_recovery(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 pub(super) struct Pause<S: Settings> {
     system: S,
     changed: Vec<(Effect, i32)>,
+    recovery_armed: bool,
 }
 impl<S: Settings> Pause<S> {
     pub(super) fn suspend(system: S) -> Result<Self, String> {
@@ -32,11 +46,19 @@ impl<S: Settings> Pause<S> {
         let mut pause = Self {
             system,
             changed: Vec::new(),
+            recovery_armed: false,
         };
+        let original: Vec<_> = original
+            .into_iter()
+            .filter(|(_, value)| *value != 0)
+            .collect();
+        if !original.is_empty() {
+            // Persist recovery before the first system change. Drop also cleans
+            // up partially registered recovery when registration fails.
+            pause.recovery_armed = true;
+            pause.system.arm_recovery(&original)?;
+        }
         for (effect, value) in original {
-            if value == 0 {
-                continue;
-            }
             // A failed setter may still have changed the value. Include it in rollback.
             pause.changed.push((effect, value));
             pause.system.write(effect, 0)?;
@@ -48,28 +70,37 @@ impl<S: Settings> Pause<S> {
     }
 
     pub(super) fn restore(&mut self) -> Result<(), String> {
-        let mut errors = Vec::new();
-        self.changed.retain(|&(effect, value)| {
-            let restored = self.system.write(effect, value).and_then(|()| {
-                if self.system.read(effect)? == value {
-                    Ok(())
-                } else {
-                    Err("系统动画未恢复原值".into())
-                }
-            });
-            match restored {
-                Ok(()) => false,
-                Err(error) => {
-                    errors.push(error);
-                    true
-                }
+        restore_effects(&self.system, &mut self.changed)?;
+        if self.recovery_armed {
+            self.system.clear_recovery()?;
+            self.recovery_armed = false;
+        }
+        Ok(())
+    }
+}
+
+fn restore_effects(system: &impl Settings, changed: &mut Vec<(Effect, i32)>) -> Result<(), String> {
+    let mut errors = Vec::new();
+    changed.retain(|&(effect, value)| {
+        let restored = system.write(effect, value).and_then(|()| {
+            if system.read(effect)? == value {
+                Ok(())
+            } else {
+                Err("系统动画未恢复原值".into())
             }
         });
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("无法恢复系统动画：{}", errors.join("；")))
+        match restored {
+            Ok(()) => false,
+            Err(error) => {
+                errors.push(error);
+                true
+            }
         }
+    });
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("无法恢复系统动画：{}", errors.join("；")))
     }
 }
 impl<S: Settings> Drop for Pause<S> {
@@ -86,12 +117,24 @@ impl<S: Settings> Drop for Pause<S> {
 }
 
 #[cfg(target_os = "windows")]
-pub(super) struct WindowsSettings;
+pub(super) struct WindowsSettings {
+    // The exclusive file handle is released by Windows even after a crash.
+    // Unlike an owned mutex, it can move between capture worker threads.
+    _lease: std::fs::File,
+}
 #[cfg(target_os = "windows")]
 pub(super) type AnimationPause = Pause<WindowsSettings>;
 
 #[cfg(target_os = "windows")]
 impl Settings for WindowsSettings {
+    fn arm_recovery(&self, original: &[(Effect, i32)]) -> Result<(), String> {
+        recovery::arm(original)
+    }
+
+    fn clear_recovery(&self) -> Result<(), String> {
+        recovery::clear()
+    }
+
     fn read(&self, effect: Effect) -> Result<i32, String> {
         use windows::{core::BOOL, Win32::UI::WindowsAndMessaging::*};
         unsafe {

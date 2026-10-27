@@ -17,6 +17,11 @@ mod recognition;
 pub use desktop::{initialize, launch, pins_visible, setup, shutdown, ShortcutChange};
 #[cfg(target_os = "windows")]
 pub use recognition::run_helper_if_requested;
+#[cfg(target_os = "windows")]
+pub use animations::{
+    recover_pending as recover_animation_settings,
+    run_if_requested as run_animation_recovery_if_requested,
+};
 
 #[cfg(any(target_os = "windows", test))]
 mod activation;
