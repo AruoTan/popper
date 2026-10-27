@@ -77,6 +77,16 @@ impl StartupNoticeKind {
     }
 }
 
+/// Release the page before its host window, so hidden renderer resources do
+/// not depend on a later native Destroyed event to be detached.
+pub fn destroy_webview_window(window: &WebviewWindow) -> tauri::Result<()> {
+    let webview: &tauri::Webview = window.as_ref();
+    let released = webview.close();
+    // Always attempt both steps, including when the page is already gone.
+    let destroyed = window.destroy();
+    released.and(destroyed)
+}
+
 /// Records Tauri's Windows event-loop thread before any configured WebView is
 /// created. The setup hook runs on that thread; registering it here prevents
 /// the first toolbar operation from trying to post a task to, and then wait

@@ -1597,12 +1597,11 @@ impl RuntimeState {
                 WindowEvent::CloseRequested { api, .. } => {
                     self.quick_ask_shortcut_recording
                         .store(false, Ordering::Release);
-                    if self.shutting_down.load(Ordering::Acquire) {
-                        return;
-                    }
                     api.prevent_close();
                     if let Some(window) = app.get_webview_window(label) {
-                        let _ = window.hide();
+                        if let Err(error) = crate::windows::destroy_webview_window(&window) {
+                            eprintln!("[settings] failed to release window: {error}");
+                        }
                     }
                 }
                 _ => {}
@@ -1935,15 +1934,54 @@ pub fn open_settings_window(app: &AppHandle) {
 }
 
 pub fn open_settings_window_with_options(app: &AppHandle, options: Option<OpenSettingsOptions>) {
-    if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
-        let _ = app.emit_to(SETTINGS_LABEL, "popper:settings-opened", ());
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+    let handle = app.clone();
+    // Serialize creation and showing on the event loop, including requests
+    // from the tray, another launch, and renderer commands.
+    if let Err(error) = app.run_on_main_thread(move || {
+        if let Err(error) = open_settings_on_ui(&handle, options) {
+            eprintln!("[settings] failed to open window: {error}");
+        }
+    }) {
+        eprintln!("[settings] failed to dispatch window opening: {error}");
     }
-    let Some(options) = options else {
-        return;
+}
+
+fn open_settings_on_ui(app: &AppHandle, options: Option<OpenSettingsOptions>) -> tauri::Result<()> {
+    if app.state::<RuntimeState>().shutting_down.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    // Queue guidance before creating the renderer: its initial IPC may run
+    // during WebView creation, before an event listener can be installed.
+    let guidance = queue_settings_guidance(app, options);
+    let window = if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
+        let _ = app.emit_to(SETTINGS_LABEL, "popper:settings-opened", ());
+        if let Some(guidance) = guidance {
+            let _ = app.emit_to(SETTINGS_LABEL, SETTINGS_GUIDANCE_EVENT, guidance);
+        }
+        window
+    } else {
+        let config = app
+            .config()
+            .app
+            .windows
+            .iter()
+            .find(|window| window.label == SETTINGS_LABEL)
+            .ok_or_else(|| std::io::Error::other("缺少设置窗口配置"))?;
+        let builder = tauri::WebviewWindowBuilder::from_config(app, config)?;
+        #[cfg(target_os = "windows")]
+        let builder = crate::app_paths::configure_webview(builder)?;
+        builder.build()?
     };
+    window.show()?;
+    window.unminimize()?;
+    window.set_focus()
+}
+
+fn queue_settings_guidance(
+    app: &AppHandle,
+    options: Option<OpenSettingsOptions>,
+) -> Option<SettingsGuidance> {
+    let options = options?;
     let has_guidance = options
         .focus
         .as_ref()
@@ -1953,7 +1991,7 @@ pub fn open_settings_window_with_options(app: &AppHandle, options: Option<OpenSe
             .as_ref()
             .is_some_and(|value| !value.trim().is_empty());
     if !has_guidance {
-        return;
+        return None;
     }
     let guidance = SettingsGuidance {
         focus: options
@@ -1968,7 +2006,7 @@ pub fn open_settings_window_with_options(app: &AppHandle, options: Option<OpenSe
     if let Some(state) = app.try_state::<RuntimeState>() {
         *state.pending_settings_guidance.lock() = Some(guidance.clone());
     }
-    let _ = app.emit_to(SETTINGS_LABEL, SETTINGS_GUIDANCE_EVENT, guidance);
+    Some(guidance)
 }
 
 #[tauri::command]
@@ -1977,7 +2015,7 @@ pub fn open_settings(
     window: WebviewWindow,
     options: Option<OpenSettingsOptions>,
 ) -> Result<(), String> {
-    // Settings is a shared, long-lived workspace. Result windows, the
+    // Settings is created on demand. Result windows, the
     // toolbar, and the settings window itself may all bring it forward; an
     // unknown WebView must still be rejected.
     ensure_known_caller(&window)?;

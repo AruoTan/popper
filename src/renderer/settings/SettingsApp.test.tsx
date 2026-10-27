@@ -448,7 +448,7 @@ describe("SettingsApp provider deletion", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  it("collapses saved providers when the settings renderer is recreated", async () => {
+  it("reloads saved providers and discards the closed renderer's unsaved draft", async () => {
     const settings: PublicSettings = {
       ...DEFAULT_PUBLIC_SETTINGS,
       providers: [
@@ -464,14 +464,23 @@ describe("SettingsApp provider deletion", () => {
         },
       ],
     };
-    installDefaultBridge({ getSettings: vi.fn(async () => settings) });
+    const getSettings = vi.fn(async () => settings);
+    installDefaultBridge({ getSettings });
     const view = render(<SettingsApp />);
     await openProviderConfigurations();
+    fireEvent.change(screen.getByDisplayValue("https://new.example.com/v1"), {
+      target: { value: "https://unsaved.example.com/v1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加服务商" }));
+    expect(screen.getByDisplayValue("https://unsaved.example.com/v1")).toBeInTheDocument();
     view.unmount();
     render(<SettingsApp />);
     await screen.findByRole("heading", { name: "AI 服务商与模型" });
     expect(screen.getAllByRole("button", { name: /^展开.*配置$/ })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: /^收起.*配置$/ })).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://new.example.com/v1")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("https://unsaved.example.com/v1")).not.toBeInTheDocument();
+    expect(getSettings).toHaveBeenCalledTimes(2);
   });
 
   it("shows AI default reply language under the language section", async () => {

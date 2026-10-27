@@ -314,8 +314,8 @@ export function SettingsApp(): JSX.Element {
   }, [dirty]);
 
   useEffect(() => {
-    // The settings WebView stays mounted while hidden. Each explicit open
-    // starts with collapsed providers without discarding unsaved form values.
+    // Bringing an already open panel forward collapses providers while
+    // preserving its current draft. Closing the panel releases this renderer.
     return window._popper_.onSettingsOpened?.(() => setExpandedProviders({}));
   }, []);
 

@@ -120,20 +120,6 @@ pub fn run() {
                 capture::initialize(app.handle());
             }
             let handle = app.handle().clone();
-            // Create configured UI only after state exists: its first events
-            // and renderer IPC are allowed to arrive during WebView creation.
-            startup::stage("creating settings window");
-            let settings_window = handle
-                .config()
-                .app
-                .windows
-                .iter()
-                .find(|window| window.label == "settings")
-                .ok_or("缺少设置窗口配置")?;
-            let builder = tauri::WebviewWindowBuilder::from_config(&handle, settings_window)?;
-            #[cfg(target_os = "windows")]
-            let builder = app_paths::configure_webview(builder)?;
-            builder.build()?;
             startup::stage("creating toolbar");
             handle
                 .state::<RuntimeState>()

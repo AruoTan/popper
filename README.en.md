@@ -163,7 +163,7 @@ Windows builds target Windows 10/11 x64 with standard-user, current-user NSIS in
 1. Run the NSIS installer; if WebView2 Runtime is missing, the bootstrapper is launched automatically.
 2. Unsigned test builds may trigger Microsoft Defender SmartScreen; after verifying SHA-256 you can choose “More info → Run anyway”.
 3. On first launch the app stays in the notification area and does not open Settings automatically; use the tray menu.
-4. Closing Settings with X hides it to the tray. Full quit is available from the tray menu (“Quit Popper”).
+4. Settings is created on demand and destroyed when closed. Reopening loads saved settings; unsaved changes are discarded. Full quit is available from the tray menu (“Quit Popper”).
 5. Popper does not elevate, so it cannot read selections from admin-elevated apps; normal-privilege apps are fine.
 
 The Windows installer is still an unsigned test build and may trigger SmartScreen. Automated checks do not replace real-world app, privilege, and DPI testing. Not suitable for public distribution before code signing and full compatibility acceptance.

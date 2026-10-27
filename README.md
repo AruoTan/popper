@@ -167,7 +167,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 1. 运行生成的 NSIS 安装包；如果系统没有 WebView2 Runtime，安装程序会自动拉起 bootstrapper。
 2. 未签名测试包可能触发 Microsoft Defender SmartScreen，可在确认 SHA-256 后选择“更多信息 → 仍要运行”。
 3. 首次启动后应用会常驻通知区域，不会自动打开设置页；设置窗口由通知区域菜单打开。
-4. 点击设置窗口 X 会隐藏到通知区域。完整退出可使用通知区域菜单的“退出 Popper”。
+4. 设置窗口按需创建，点击 X 后销毁并释放页面资源；重新打开时加载已保存的设置，未保存的修改不会保留。完整退出可使用通知区域菜单的“退出 Popper”。
 5. Popper 不提权，因此无法读取“以管理员身份运行”的高权限应用选区；普通权限应用不受此限制。
 
 当前 Windows 安装包仍是未签名测试版，可能触发 Microsoft Defender SmartScreen；自动化验证不能替代不同应用、权限和 DPI 环境下的实机验收，不适合在完成代码签名和完整兼容性验收前公开分发。

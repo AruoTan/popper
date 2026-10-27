@@ -175,7 +175,9 @@ pub fn notify(app: &AppHandle, message: &str) {
                 let _ = window.set_ignore_cursor_events(true);
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(4)).await;
-                    let _ = window.destroy();
+                    if let Err(error) = crate::windows::destroy_webview_window(&window) {
+                        eprintln!("[capture] failed to release notice: {error}");
+                    }
                 });
             }
         }
@@ -437,13 +439,27 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
     let id = previous.meta.id;
     let foreground = previous.foreground;
     let mut animations = previous.animations;
-    let result = platform::on_ui(app, move |handle| {
+    let (reply, completed) = mpsc::sync_channel(1);
+    let handle = app.clone();
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    // Cleanup must still run if the UI is busy longer than the caller waits.
+    // Unlike presentation, discarding a late cleanup would orphan its WebView.
+    let result = app.run_on_main_thread(move || {
+        let mut result = Ok(());
         if let Some(window) = handle.get_webview_window(&format!("{CAPTURE_PREFIX}{id}")) {
-            let _ = window.destroy();
+            result = crate::windows::destroy_webview_window(&window).map_err(|e| e.to_string());
         }
-        if restore_focus {
+        // A delayed cleanup must not steal focus from a subsequent operation.
+        if restore_focus && std::time::Instant::now() < deadline {
             platform::restore_foreground(foreground);
         }
+        let _ = reply.send(result);
+    })
+    .map_err(|e| e.to_string())
+    .and_then(|()| {
+        completed
+            .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+            .map_err(|_| "截图窗口清理超时".to_owned())?
     });
     let restored = animations.restore();
     state.active.store(false, Ordering::Release);

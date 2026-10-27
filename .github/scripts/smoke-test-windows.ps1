@@ -30,7 +30,7 @@ $checkpoint = 'logger not observed'
 $checkpoints = @(
     'building application', 'initializing UI thread', 'loading settings',
     'initializing HTTP clients', 'initializing selection monitor',
-    'initializing screen capture', 'creating settings window', 'creating toolbar',
+    'initializing screen capture', 'creating toolbar',
     'creating tray', 'initializing quick ask shortcut',
     'initializing screen capture shortcuts', 'starting selection listener',
     'showing startup notice', 'setup complete', 'ready'
