@@ -370,7 +370,7 @@ export function CaptureApp(): JSX.Element {
       {!selection ? <>
         <dt aria-label="方向键"><kbd>↑</kbd><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></dt><dd>鼠标移动 1 像素</dd>
         <dt aria-label="WASD"><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></dt><dd>鼠标移动 1 像素</dd>
-        <dt><CaptureMouseIcon action="wheel-up" /><CaptureMouseIcon action="wheel-down" /></dt><dd>切换控件层级</dd>
+        <dt><CaptureMouseIcon action="wheel-up" />／<CaptureMouseIcon action="wheel-down" /></dt><dd>切换控件层级</dd>
         <dt><kbd>Esc</kbd>／<CaptureMouseIcon action="right" /></dt><dd>退出截图</dd>
       </> : <>
         <dt><kbd>Ctrl</kbd>+<kbd>方向键</kbd></dt><dd>向对应方向扩大选区 1 像素</dd>
