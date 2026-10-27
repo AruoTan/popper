@@ -414,19 +414,18 @@ pub struct DefaultAiModel {
 pub struct CaptureSettings {
     pub shortcut: String,
     pub paste_shortcut: String,
-    pub toggle_pins_shortcut: String,
     pub color: String,
     pub line_width: u8,
 }
 impl Default for CaptureSettings {
     fn default() -> Self {
         Self { shortcut: "PrintScreen".into(), paste_shortcut: String::new(),
-            toggle_pins_shortcut: String::new(), color: "#ff4545".into(), line_width: 3 }
+            color: "#ff4545".into(), line_width: 3 }
     }
 }
 impl CaptureSettings {
-    pub fn shortcuts(&self) -> [&str; 3] {
-        [&self.shortcut, &self.paste_shortcut, &self.toggle_pins_shortcut]
+    pub fn shortcuts(&self) -> [&str; 2] {
+        [&self.shortcut, &self.paste_shortcut]
     }
     pub fn validate(&self, quick_ask: &str) -> Result<(), String> {
         let canonical = |value: &str| { let mut parts: Vec<_> = value.split('+').collect(); parts.sort_unstable(); parts.join("+") };
@@ -1127,18 +1126,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pin_shortcuts_may_be_unset_but_configured_shortcuts_must_be_valid_and_unique() {
+    fn pin_shortcut_may_be_unset_but_configured_shortcuts_must_be_valid_and_unique() {
         let mut capture = CaptureSettings::default();
         assert!(capture.paste_shortcut.is_empty());
-        assert!(capture.toggle_pins_shortcut.is_empty());
         assert!(capture.validate(&default_quick_ask_shortcut()).is_ok());
         capture.paste_shortcut = "Control+Shift+KeyP".into();
         assert!(capture.validate(&default_quick_ask_shortcut()).is_ok());
-        capture.toggle_pins_shortcut = "Shift+Control+KeyP".into();
+        capture.shortcut = "Shift+Control+KeyP".into();
         assert!(capture.validate(&default_quick_ask_shortcut()).is_err());
-        capture.toggle_pins_shortcut = " ".into();
+        capture.paste_shortcut = " ".into();
         assert!(capture.validate(&default_quick_ask_shortcut()).is_err());
-        capture.toggle_pins_shortcut.clear();
+        capture.paste_shortcut.clear();
         capture.shortcut.clear();
         assert!(capture.validate(&default_quick_ask_shortcut()).is_err());
     }

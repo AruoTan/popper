@@ -47,8 +47,6 @@ impl ShortcutChange {
                         "capture"
                     } else if preferences.paste_shortcut == expected {
                         "paste"
-                    } else if preferences.toggle_pins_shortcut == expected {
-                        "toggle"
                     } else {
                         return;
                     };

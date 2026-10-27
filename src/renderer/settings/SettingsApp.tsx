@@ -2058,7 +2058,6 @@ export function SettingsApp(): JSX.Element {
                   {([
                     ["shortcut", "截图快捷键"],
                     ["pasteShortcut", "贴图快捷键"],
-                    ["togglePinsShortcut", "显示／隐藏贴图快捷键"],
                   ] as const).map(([field, label]) => (
                     <div className="settings-card quick-ask-setting" key={field}>
                       <div className="quick-ask-setting__label">
@@ -2143,38 +2142,6 @@ export function SettingsApp(): JSX.Element {
                       {accessibility.diagnostics.captureShortcutError}，请更换组合键并保存。
                     </p>
                   )}
-                  <div className="settings-card quick-ask-setting">
-                    <div className="quick-ask-setting__label">
-                      <strong>快捷操作</strong>
-                      <span>测试屏幕捕捉与贴图功能。</span>
-                    </div>
-                    <div className="quick-ask-setting__controls">
-                      <button
-                        type="button"
-                        className="button button--quiet"
-                        disabled={busy}
-                        onClick={() =>
-                          void window._popper_.startCapture?.().catch((error: unknown) =>
-                            setBanner({ kind: "error", text: getErrorMessage(error, "无法开始屏幕捕捉") })
-                          )
-                        }
-                      >
-                        开始截图
-                      </button>
-                      <button
-                        type="button"
-                        className="button button--quiet"
-                        disabled={busy}
-                        onClick={() =>
-                          void window._popper_.pasteCapture?.().catch((error: unknown) =>
-                            setBanner({ kind: "error", text: getErrorMessage(error, "无法创建贴图") })
-                          )
-                        }
-                      >
-                        贴出图片
-                      </button>
-                    </div>
-                  </div>
                 </div>
               )}
             </section>

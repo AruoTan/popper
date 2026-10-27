@@ -39,17 +39,6 @@ macro_rules! desktop_call {
 }
 
 #[tauri::command]
-pub async fn capture_start(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    if !matches!(window.label(), "settings" | "quick-ask") {
-        return Err("无法从该窗口开始截图".into());
-    }
-    desktop_call!(
-        tauri::async_runtime::spawn_blocking(move || desktop::start(&app))
-            .await
-            .map_err(|e| e.to_string())?
-    )
-}
-#[tauri::command]
 pub fn capture_session(app: AppHandle, window: WebviewWindow) -> Result<CaptureSession, String> {
     desktop_call!(desktop::session(&app, &window))
 }
@@ -253,17 +242,6 @@ pub async fn capture_fail(
 pub async fn capture_cancel(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     desktop_call!(
         tauri::async_runtime::spawn_blocking(move || desktop::cancel(&app, &window))
-            .await
-            .map_err(|e| e.to_string())?
-    )
-}
-#[tauri::command]
-pub async fn capture_paste(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    if window.label() != "settings" {
-        return Err("无法从该窗口创建贴图".into());
-    }
-    desktop_call!(
-        tauri::async_runtime::spawn_blocking(move || desktop::paste(&app))
             .await
             .map_err(|e| e.to_string())?
     )

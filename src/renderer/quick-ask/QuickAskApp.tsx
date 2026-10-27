@@ -1,4 +1,4 @@
-import { CircleAlert, ScanLine, FileText, LoaderCircle, Paperclip, SendHorizontal, Settings2, X } from 'lucide-react';
+import { CircleAlert, FileText, LoaderCircle, Paperclip, SendHorizontal, Settings2, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react';
 import { PopperIcon } from '../components/PopperIcon';
 import { getErrorMessage } from '../lib/errors';
@@ -16,7 +16,6 @@ export function QuickAskApp(): JSX.Element {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
-  const [captureAvailable, setCaptureAvailable] = useState(false);
   const busy = reading || sending;
   const attachmentsRef = useRef(attachments);
   attachmentsRef.current = attachments;
@@ -57,7 +56,6 @@ export function QuickAskApp(): JSX.Element {
     void (async () => {
       const status = await window._popper_.getAccessibilityStatus?.();
       if (!active || (status && status.platform !== 'windows')) return;
-      setCaptureAvailable(Boolean(window._popper_.startCapture));
       stop = window._popper_.onCaptureAttachment?.(() => void receive());
       await receive();
     })().catch((error: unknown) => {
@@ -162,7 +160,6 @@ export function QuickAskApp(): JSX.Element {
       <footer className="quick-ask__footer">
         <input ref={picker} type="file" multiple accept={ATTACHMENT_ACCEPT} aria-label="选择附件" hidden onChange={(event) => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void addFiles(files); }} />
         <button type="button" className="quick-ask__attach" disabled={busy} onClick={() => picker.current?.click()} title="图片、文档或其他文件 · 每个最多 8 MB，合计最多 20 MB">{reading ? <LoaderCircle size={16} className="quick-ask__spin" /> : <Paperclip size={16} />}<span>{reading ? '读取中' : '添加附件'}</span></button>
-        {captureAvailable && <button type="button" className="quick-ask__capture" aria-label="截图并添加附件" title="截图并添加附件" disabled={busy} onClick={() => void window._popper_.startCapture?.().catch((error: unknown) => setError(getErrorMessage(error, '无法开始屏幕捕捉')))}><ScanLine size={16} /></button>}
         <span className="quick-ask__hint">Enter 发送 · Shift + Enter 换行</span>
         <button type="button" className="quick-ask__send" aria-label="发送问题" disabled={busy || (!question.trim() && attachments.length === 0)} onClick={() => void submit()}>{sending ? <LoaderCircle className="quick-ask__spin" size={17} /> : <SendHorizontal size={17} />}</button>
       </footer>

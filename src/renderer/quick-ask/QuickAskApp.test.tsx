@@ -185,13 +185,11 @@ it('reports capture setup failures instead of silently disabling attachment deli
   expect(await screen.findByRole('alert')).toHaveTextContent('读取屏幕捕捉状态失败');
 });
 
-it('keeps capture integration inactive on a platform without screen capture', async () => {
+it('keeps screenshot attachment delivery inactive on a platform without screen capture', async () => {
   window._popper_.getAccessibilityStatus = vi.fn(async () => ({ platform: 'darwin' as const, trusted: true, canRequest: false, available: true, diagnostics: {} }));
   window._popper_.pendingCaptureAttachment = vi.fn().mockRejectedValue(new Error('unsupported'));
-  window._popper_.startCapture = vi.fn();
   render(<QuickAskApp />);
   await act(async () => {});
   expect(window._popper_.pendingCaptureAttachment).not.toHaveBeenCalled();
-  expect(screen.queryByRole('button', { name: '截图并添加附件' })).toBeNull();
   expect(screen.queryByRole('alert')).toBeNull();
 });

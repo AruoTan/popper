@@ -407,8 +407,6 @@ export function installTauriBridge(): void {
     async quickAskReady() { await quickAskOpened.ready(); await invoke(TAURI_COMMANDS.quickAskReady); },
     async reportQuickAskSize(height) { await invoke(TAURI_COMMANDS.reportQuickAskSize, { height }); },
     onQuickAskOpened: (listener) => quickAskOpened.subscribe(listener),
-    async startCapture() { await invoke("capture_start"); },
-    async pasteCapture() { await invoke("capture_paste"); },
     async pendingCaptureAttachment() { await captureAttachments.ready(); return await invoke("capture_pending_attachment"); },
     async ackCaptureAttachment(id, error) { await invoke("capture_ack_attachment", { id, error: error ?? null }); },
     onCaptureAttachment: (listener) => captureAttachments.subscribe(listener),

@@ -589,7 +589,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         let mut capture = crate::models::CaptureSettings::default();
         if let Some(quick_ask) = object.get("quickAskShortcut").and_then(|value| value.as_str()) {
             let canonical = |value: &str| { let mut keys: Vec<_> = value.split('+').collect(); keys.sort_unstable(); keys.join("+") };
-            for shortcut in [&mut capture.shortcut, &mut capture.paste_shortcut, &mut capture.toggle_pins_shortcut] {
+            for shortcut in [&mut capture.shortcut, &mut capture.paste_shortcut] {
                 if canonical(shortcut) == canonical(quick_ask) {
                     if shortcut.contains("Control+") {
                         *shortcut = shortcut.replacen("Control+", "Control+Alt+", 1);
@@ -604,6 +604,14 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         object.insert("capture".into(), serde_json::to_value(capture)?);
         object.insert("version".into(), SETTINGS_VERSION.into());
     }
+    // Retire the stored visibility binding without changing any remaining settings.
+    let removed_binding = value.get("version").and_then(|version| version.as_u64())
+        == Some(SETTINGS_VERSION as u64)
+        && value
+            .get_mut("capture")
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|capture| capture.remove("togglePinsShortcut"))
+            .is_some();
     let mut settings: AppSettings = serde_json::from_value(value)?;
     if settings.version != SETTINGS_VERSION {
         return Err(SettingsError::Validation(
@@ -617,7 +625,7 @@ fn load_settings(path: &Path) -> Result<LoadedSettings, SettingsError> {
         .normalize_and_validate()
         .map_err(SettingsError::Validation)?;
     Ok(LoadedSettings {
-        must_persist: upgraded || settings != persisted,
+        must_persist: upgraded || removed_binding || settings != persisted,
         settings,
     })
 }
@@ -802,6 +810,50 @@ mod tests {
     }
 
     #[test]
+    fn retired_visibility_binding_is_removed_without_changing_settings_or_secrets() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let secrets = Arc::new(MemorySecrets::default());
+        let repository = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
+        configure_ai_repository(&repository, "preserved-model", "preserved-secret");
+        let mut capture = repository.get_settings().capture;
+        capture.paste_shortcut = "Control+Shift+KeyP".into();
+        capture.color = "#123456".into();
+        capture.line_width = 7;
+        repository.update(SettingsUpdate { capture: Some(capture), ..Default::default() }).unwrap();
+        let expected = repository.get_settings();
+        let mut saved = serde_json::to_value(&expected).unwrap();
+        // A retired binding must not participate in active shortcut validation.
+        saved["capture"]["togglePinsShortcut"] = "PrintScreen".into();
+        fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        drop(repository);
+
+        let reopened = SettingsRepository::with_secret_store(&path, secrets.clone()).unwrap();
+        assert_eq!(reopened.get_settings(), expected);
+        assert_eq!(reopened.get_api_key(DEFAULT_PROVIDER_ID).unwrap().as_deref(), Some("preserved-secret"));
+        let cleaned = fs::read(&path).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&cleaned).unwrap();
+        assert!(value["capture"].get("togglePinsShortcut").is_none());
+        drop(reopened);
+        let reopened = SettingsRepository::with_secret_store(&path, secrets).unwrap();
+        assert_eq!(reopened.get_settings(), expected);
+        assert_eq!(fs::read(&path).unwrap(), cleaned);
+    }
+
+    #[test]
+    fn invalid_settings_with_a_retired_binding_are_not_rewritten() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["capture"]["togglePinsShortcut"] = "Control+Shift+KeyH".into();
+        value["capture"]["unexpected"] = true.into();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert!(SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default())).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
     fn version_17_upgrade_preserves_secrets_and_custom_routes() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -820,7 +872,6 @@ mod tests {
         assert_eq!(settings.quick_ask_shortcut, "PrintScreen");
         assert_eq!(settings.capture.shortcut, "Alt+PrintScreen");
         assert!(settings.capture.paste_shortcut.is_empty());
-        assert!(settings.capture.toggle_pins_shortcut.is_empty());
         assert_eq!(settings.actions[0].prompt.as_deref(), Some("自定义说明：{{text}}"));
         assert_eq!(reopened.get_api_key(DEFAULT_PROVIDER_ID).unwrap().as_deref(), Some("upgrade-secret"));
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

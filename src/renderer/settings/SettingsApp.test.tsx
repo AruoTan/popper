@@ -1455,18 +1455,12 @@ describe("SettingsApp provider deletion", () => {
     expect(screen.getByRole("button", { name: "截图快捷键" })).toBeInTheDocument();
     expect(screen.getByText("PrtSc")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "贴图快捷键" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "显示／隐藏贴图快捷键" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "开始截图" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "贴出图片" })).toBeInTheDocument();
   });
 
   it("configures and saves capture screen settings independently under 屏幕 section", async () => {
-    const startCapture = vi.fn(async () => {});
-    const pasteCapture = vi.fn(async () => {});
     const settings = structuredClone(DEFAULT_PUBLIC_SETTINGS);
     settings.capture.pasteShortcut = "Control+Shift+KeyP";
-    settings.capture.togglePinsShortcut = "Control+Shift+KeyH";
-    installDefaultBridge({ startCapture, pasteCapture, getSettings: vi.fn(async () => settings) });
+    installDefaultBridge({ getSettings: vi.fn(async () => settings) });
     render(<SettingsApp />);
 
     await goToSettingsSection("屏幕");
@@ -1474,17 +1468,8 @@ describe("SettingsApp provider deletion", () => {
 
     // Existing bindings remain available until explicitly reset.
     expect(screen.getByRole("button", { name: "贴图快捷键" })).toHaveTextContent(/Ctrl.*Shift.*P/);
-    expect(screen.getByRole("button", { name: "显示／隐藏贴图快捷键" })).toHaveTextContent(/Ctrl.*Shift.*H/);
     fireEvent.click(screen.getByRole("button", { name: "恢复贴图快捷键默认" }));
-    fireEvent.click(screen.getByRole("button", { name: "恢复显示／隐藏贴图快捷键默认" }));
     expect(screen.getByRole("button", { name: "贴图快捷键" })).toHaveTextContent("未设置");
-    expect(screen.getByRole("button", { name: "显示／隐藏贴图快捷键" })).toHaveTextContent("未设置");
-
-    // Trigger action buttons
-    fireEvent.click(screen.getByRole("button", { name: "开始截图" }));
-    expect(startCapture).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "贴出图片" }));
-    expect(pasteCapture).toHaveBeenCalled();
 
     // Change color and line width
     const colorInput = screen.getByLabelText("默认标注颜色");
@@ -1500,7 +1485,6 @@ describe("SettingsApp provider deletion", () => {
           capture: expect.objectContaining({
             shortcut: "PrintScreen",
             pasteShortcut: "",
-            togglePinsShortcut: "",
             color: "#00ff00",
             lineWidth: 5,
           }),

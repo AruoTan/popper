@@ -137,8 +137,6 @@ export interface WindowPopperApi {
   quickAskReady?(): Promise<void>;
   reportQuickAskSize?(height: number): Promise<void>;
   onQuickAskOpened?(listener: () => void): Unsubscribe;
-  startCapture?(): Promise<void>;
-  pasteCapture?(): Promise<void>;
   pendingCaptureAttachment?(): Promise<{ id: string; attachment: QuickAskAttachment } | null>;
   ackCaptureAttachment?(id: string, error?: string): Promise<void>;
   onCaptureAttachment?(listener: () => void): Unsubscribe;

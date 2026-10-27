@@ -182,7 +182,6 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            capture::capture_start,
             capture::capture_session,
             capture::capture_image,
             capture::capture_show,
@@ -200,7 +199,6 @@ pub fn run() {
             capture::capture_export,
             capture::capture_cancel,
             capture::capture_fail,
-            capture::capture_paste,
             capture::capture_pin_state,
             capture::capture_pin_drag,
             capture::capture_pin_update,

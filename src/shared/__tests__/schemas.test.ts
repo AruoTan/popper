@@ -550,15 +550,12 @@ describe('action stream event schemas', () => {
 })
 
 describe('screen capture settings', () => {
-  it('accepts unset pin shortcuts while requiring a capture shortcut', () => {
+  it('accepts an unset pin shortcut while requiring a capture shortcut', () => {
     const settings = structuredClone(DEFAULT_PUBLIC_SETTINGS);
     expect(settings.capture.pasteShortcut).toBe('');
-    expect(settings.capture.togglePinsShortcut).toBe('');
     expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
     expect(settingsUpdateSchema.parse({ capture: settings.capture }).capture).toEqual(settings.capture);
-    for (const field of ['pasteShortcut', 'togglePinsShortcut'] as const) {
-      expect(settingsUpdateSchema.safeParse({ capture: { ...settings.capture, [field]: ' ' } }).success).toBe(false);
-    }
+    expect(settingsUpdateSchema.safeParse({ capture: { ...settings.capture, pasteShortcut: ' ' } }).success).toBe(false);
     settings.capture.shortcut = '';
     expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
   });
@@ -567,9 +564,9 @@ describe('screen capture settings', () => {
     settings.capture.pasteShortcut = 'PrintScreen';
     expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
     settings.capture.pasteShortcut = 'Control+Shift+KeyP';
-    settings.capture.togglePinsShortcut = 'Shift+Control+KeyP';
+    settings.capture.shortcut = 'Shift+Control+KeyP';
     expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
-    settings.capture.togglePinsShortcut = '';
+    settings.capture.shortcut = 'PrintScreen';
     settings.quickAskShortcut = settings.capture.shortcut;
     expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
   });
