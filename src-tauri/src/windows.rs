@@ -77,48 +77,6 @@ impl StartupNoticeKind {
     }
 }
 
-/// Close the native browser before dropping framework handles and its window.
-pub fn destroy_webview_window(window: &WebviewWindow) -> tauri::Result<()> {
-    #[cfg(target_os = "windows")]
-    {
-        let (reply, completed) = std::sync::mpsc::sync_channel(1);
-        let target = window.clone();
-        // Closing only the framework handle relies on the last browser
-        // reference being dropped. Explicit Close also breaks native event
-        // handler reference cycles, independently of framework ownership.
-        if let Err(error) = window.with_webview(move |webview| {
-            let closed: tauri::Result<()> = unsafe { webview.controller().Close() }
-                .map_err(|error| std::io::Error::other(error.to_string()).into());
-            let released = release_webview_window(&target);
-            let _ = reply.send(closed.and(released));
-        }) {
-            let _ = release_webview_window(window);
-            return Err(error);
-        }
-        return match completed.recv_timeout(std::time::Duration::from_secs(3)) {
-            Ok(result) => result,
-            // The runtime may already have removed the page; still close its host.
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => release_webview_window(window),
-            // Keep the queued callback alive so a busy UI still performs cleanup.
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "WebView cleanup timed out",
-            )
-            .into()),
-        };
-    }
-    #[cfg(not(target_os = "windows"))]
-    release_webview_window(window)
-}
-
-fn release_webview_window(window: &WebviewWindow) -> tauri::Result<()> {
-    let webview: &tauri::Webview = window.as_ref();
-    let released = webview.close();
-    // Always attempt both steps, including when the page is already gone.
-    let destroyed = window.destroy();
-    released.and(destroyed)
-}
-
 /// Records Tauri's Windows event-loop thread before any configured WebView is
 /// created. The setup hook runs on that thread; registering it here prevents
 /// the first toolbar operation from trying to post a task to, and then wait

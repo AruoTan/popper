@@ -1590,19 +1590,11 @@ impl RuntimeState {
         }
         if label == SETTINGS_LABEL {
             match event {
-                WindowEvent::Focused(false) | WindowEvent::Destroyed => {
+                WindowEvent::Focused(false)
+                | WindowEvent::Destroyed
+                | WindowEvent::CloseRequested { .. } => {
                     self.quick_ask_shortcut_recording
                         .store(false, Ordering::Release);
-                }
-                WindowEvent::CloseRequested { api, .. } => {
-                    self.quick_ask_shortcut_recording
-                        .store(false, Ordering::Release);
-                    api.prevent_close();
-                    if let Some(window) = app.get_webview_window(label) {
-                        if let Err(error) = crate::windows::destroy_webview_window(&window) {
-                            eprintln!("[settings] failed to release window: {error}");
-                        }
-                    }
                 }
                 _ => {}
             }

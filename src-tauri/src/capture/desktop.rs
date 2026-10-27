@@ -175,7 +175,7 @@ pub fn notify(app: &AppHandle, message: &str) {
                 let _ = window.set_ignore_cursor_events(true);
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(4)).await;
-                    if let Err(error) = crate::windows::destroy_webview_window(&window) {
+                    if let Err(error) = window.destroy() {
                         eprintln!("[capture] failed to release notice: {error}");
                     }
                 });
@@ -447,7 +447,9 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
     let result = app.run_on_main_thread(move || {
         let mut result = Ok(());
         if let Some(window) = handle.get_webview_window(&format!("{CAPTURE_PREFIX}{id}")) {
-            result = crate::windows::destroy_webview_window(&window).map_err(|e| e.to_string());
+            // Queue destruction through the framework. Closing its browser
+            // synchronously here can re-enter native callbacks on the UI thread.
+            result = window.destroy().map_err(|e| e.to_string());
         }
         // A delayed cleanup must not steal focus from a subsequent operation.
         if restore_focus && std::time::Instant::now() < deadline {
