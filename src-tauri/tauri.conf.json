@@ -41,7 +41,8 @@
         "resources": {
             "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
             "../LICENSE.selection-hook": "LICENSE.selection-hook",
-            "../LICENSE.capture": "LICENSE.capture"
+            "../LICENSE.capture": "LICENSE.capture",
+            "../LICENSE": "LICENSE"
         },
         "category": "Productivity",
         "shortDescription": "轻量 macOS 划词助手",

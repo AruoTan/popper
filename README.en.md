@@ -38,7 +38,7 @@ Choose **Scrolling capture** after selecting a region and scroll manually up or 
 - Cherry Studio is primarily Electron-based; Popper uses the lighter Tauri stack to rebuild that workflow as a standalone desktop tool with its own window management, settings storage, model requests, and UI.
 - The macOS selection-capture bridge is adapted from MIT-licensed [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2). The full MIT license is in [LICENSE.selection-hook](./LICENSE.selection-hook).
 
-Popper does not declare its own open-source license. Materials adapted from Cherry Studio remain under upstream AGPL-3.0; selection-hook adaptations remain under MIT. Read the third-party notices before public distribution or derivative work.
+Popper is licensed under the [GNU General Public License v3.0 (GPL-3.0-only)](./LICENSE). Materials adapted from Cherry Studio remain under upstream AGPL-3.0; selection-hook adaptations remain under MIT. Read the third-party notices before public distribution or derivative work.
 
 ## Features
 
@@ -187,7 +187,7 @@ When distributing source or binaries, retain at least:
 - [LICENSE.selection-hook](./LICENSE.selection-hook)
 - Copyright and license texts required by upstream projects
 
-Popper currently declares no open-source license and has no Apple Developer ID, Windows Authenticode signing, notarization, or auto-update. Before a formal public release, complete full dependency license inventory, security review, signing, notarization, and install acceptance.
+Popper is licensed under GPL-3.0-only and currently has no Apple Developer ID, Windows Authenticode signing, notarization, or auto-update. Before a formal public release, complete full dependency license inventory, security review, signing, notarization, and install acceptance.
 
 ## Friend Links
 

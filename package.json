@@ -6,7 +6,7 @@
     "description": "Popper, a lightweight macOS and Windows selection assistant built with Tauri.",
     "type": "module",
     "author": "Popper contributors",
-    "license": "UNLICENSED",
+    "license": "GPL-3.0-only",
     "packageManager": "pnpm@11.7.0",
     "engines": {
         "node": ">=22.12.0",

@@ -68,7 +68,7 @@ try {
     $extracted = Join-Path $temporary 'extracted'
     Expand-Archive -LiteralPath (Join-Path $release "bundle/portable/Popper_${version}_x64-portable.zip") -DestinationPath $extracted
     $files = @(Get-ChildItem -LiteralPath $extracted -Recurse -Force)
-    $expected = @('popper.exe', 'portable.flag', 'README.txt', 'Import-InstalledSettings.ps1', 'THIRD_PARTY_NOTICES.md', 'LICENSE.selection-hook', 'LICENSE.capture')
+    $expected = @('popper.exe', 'portable.flag', 'README.txt', 'Import-InstalledSettings.ps1', 'THIRD_PARTY_NOTICES.md', 'LICENSE.selection-hook', 'LICENSE.capture', 'LICENSE')
     Assert-True ($files.Count -eq $expected.Count) 'Portable ZIP contains unexpected files'
     foreach ($file in $files) { Assert-True ($file.Name -in $expected -and -not $file.PSIsContainer) "Unexpected archive entry: $($file.Name)" }
     Assert-True ((Get-FileHash -LiteralPath (Join-Path $release 'popper.exe')).Hash -eq (Get-FileHash -LiteralPath (Join-Path $extracted 'popper.exe')).Hash) 'ZIP changed the executable'

@@ -14,7 +14,7 @@ export function createScoopManifest({ version, repository, hash }) {
     version,
     description: "Lightweight Windows selection assistant with AI and dictionary support.",
     homepage,
-    license: "Unknown",
+    license: "GPL-3.0-only",
     architecture: {
       "64bit": {
         url: `${homepage}/releases/download/v${version}/Popper_${version}_x64-portable.zip`,

@@ -3,6 +3,7 @@ name = "popper"
 version = "1.0.0"
 description = "Popper, a lightweight macOS and Windows selection assistant built with Tauri"
 authors = ["Popper contributors"]
+license = "GPL-3.0-only"
 edition = "2021"
 rust-version = "1.88"
 

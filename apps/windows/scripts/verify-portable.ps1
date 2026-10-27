@@ -8,7 +8,7 @@ $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ('Popper portable æµ‹è¯
 $first = Join-Path $temporary 'apps/popper/first'
 $second = Join-Path $temporary 'apps/popper/second'
 $persist = Join-Path $temporary 'persist/popper'
-$expected = @('Import-InstalledSettings.ps1', 'LICENSE.capture', 'LICENSE.selection-hook', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'popper.exe', 'portable.flag')
+$expected = @('Import-InstalledSettings.ps1', 'LICENSE.capture', 'LICENSE', 'LICENSE.selection-hook', 'README.txt', 'THIRD_PARTY_NOTICES.md', 'popper.exe', 'portable.flag')
 try {
     foreach ($name in @('config', 'logs')) {
         $null = New-Item -ItemType Directory -Path (Join-Path $persist $name) -Force

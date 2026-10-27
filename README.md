@@ -42,7 +42,7 @@ Windows 支持便携 ZIP 和 Scoop 安装，程序旁分别存放 `config`、`lo
 - Cherry Studio 主体使用 Electron；Popper 主要使用更轻量的 Tauri 框架，把其中启发性的“划词助手”工作流重构为独立桌面工具，并保留自己的窗口管理、设置存储、模型请求与界面实现。
 - macOS 选区捕获桥接层基于 MIT 许可的 [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2) 改造，完整 MIT 许可保存在 [LICENSE.selection-hook](./LICENSE.selection-hook)。
 
-Popper 当前没有声明独立的开源许可证。Cherry Studio 改编材料仍受其上游 AGPL-3.0 条款约束，selection-hook 改编部分仍受 MIT 许可证约束。公开分发或二次开发前，请先阅读第三方许可文件。
+Popper 采用 [GNU General Public License v3.0（GPL-3.0-only）](./LICENSE)。Cherry Studio 改编材料仍受其上游 AGPL-3.0 条款约束，selection-hook 改编部分仍受 MIT 许可证约束。公开分发或二次开发前，请先阅读第三方许可文件。
 
 ## 主要功能
 
@@ -191,7 +191,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 - [LICENSE.selection-hook](./LICENSE.selection-hook)
 - 上游项目许可证要求的版权和许可文本
 
-Popper 当前未声明开源许可证，也没有完成 Apple Developer ID、Windows Authenticode 签名、公证或自动更新。正式公开发布之前，还应完成完整的依赖许可证清单、安全复核、签名、公证和安装验收。
+Popper 采用 GPL-3.0-only 许可证，目前尚未完成 Apple Developer ID、Windows Authenticode 签名、公证或自动更新。正式公开发布之前，还应完成完整的依赖许可证清单、安全复核、签名、公证和安装验收。
 
 ## 友链
 
