@@ -151,7 +151,7 @@ pub fn notify(app: &AppHandle, message: &str) {
             &label,
             WebviewUrl::App(format!("capture/index.html?{query}").into()),
         )
-        .title("Popper 屏幕捕捉")
+        .title("Popper 屏幕提示")
         .inner_size(380.0, 84.0)
         .decorations(false)
         .transparent(true)

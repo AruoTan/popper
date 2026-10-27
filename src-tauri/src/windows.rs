@@ -77,9 +77,41 @@ impl StartupNoticeKind {
     }
 }
 
-/// Release the page before its host window, so hidden renderer resources do
-/// not depend on a later native Destroyed event to be detached.
+/// Close the native browser before dropping framework handles and its window.
 pub fn destroy_webview_window(window: &WebviewWindow) -> tauri::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        let (reply, completed) = std::sync::mpsc::sync_channel(1);
+        let target = window.clone();
+        // Closing only the framework handle relies on the last browser
+        // reference being dropped. Explicit Close also breaks native event
+        // handler reference cycles, independently of framework ownership.
+        if let Err(error) = window.with_webview(move |webview| {
+            let closed: tauri::Result<()> = unsafe { webview.controller().Close() }
+                .map_err(|error| std::io::Error::other(error.to_string()).into());
+            let released = release_webview_window(&target);
+            let _ = reply.send(closed.and(released));
+        }) {
+            let _ = release_webview_window(window);
+            return Err(error);
+        }
+        return match completed.recv_timeout(std::time::Duration::from_secs(3)) {
+            Ok(result) => result,
+            // The runtime may already have removed the page; still close its host.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => release_webview_window(window),
+            // Keep the queued callback alive so a busy UI still performs cleanup.
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "WebView cleanup timed out",
+            )
+            .into()),
+        };
+    }
+    #[cfg(not(target_os = "windows"))]
+    release_webview_window(window)
+}
+
+fn release_webview_window(window: &WebviewWindow) -> tauri::Result<()> {
     let webview: &tauri::Webview = window.as_ref();
     let released = webview.close();
     // Always attempt both steps, including when the page is already gone.
