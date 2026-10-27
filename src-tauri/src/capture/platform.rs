@@ -1,5 +1,7 @@
 #[path = "platform/frame.rs"]
 mod frame;
+#[path = "platform/presentation.rs"]
+mod presentation;
 use super::{CaptureCandidate, CapturePoint, CaptureRect};
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
@@ -21,9 +23,9 @@ use windows::{
             },
             WindowsAndMessaging::{
                 EnumChildWindows, EnumWindows, GetAncestor, GetForegroundWindow,
-                GetPhysicalCursorPos, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
-                IsChild, IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow,
-                SetPhysicalCursorPos, GA_ROOT, GA_ROOTOWNER,
+                GetPhysicalCursorPos, GetWindowRect, GetWindowTextW, IsChild, IsIconic,
+                IsWindow, IsWindowVisible, SetForegroundWindow, SetPhysicalCursorPos, GA_ROOT,
+                GA_ROOTOWNER,
             },
         },
     },
@@ -226,7 +228,11 @@ pub fn exclude_from_capture(window: &tauri::WebviewWindow, exclude: bool) -> Res
 }
 pub fn prepare_scroll_frame(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
     let handle = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
-    on_ui(app, move |_| frame::install(HWND(handle as *mut _)))?
+    on_ui(app, move |_| {
+        let hwnd = HWND(handle as *mut _);
+        frame::install(hwnd)?;
+        presentation::mark_fullscreen(hwnd, false)
+    })?
 }
 pub fn scroll_surface(
     window: &tauri::WebviewWindow,
@@ -296,6 +302,16 @@ pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|e| e.to_string())?;
     // Activating the frame alone does not direct keyboard input to WebView2.
     window.as_ref().set_focus().map_err(|e| e.to_string())
+}
+/// Called on the UI thread, after the renderer has painted the frozen image.
+pub fn present_capture(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
+    configure_capture_surface(hwnd);
+    frame::install(hwnd)?;
+    presentation::mark_fullscreen(hwnd, true)?;
+    window.show().map_err(|e| e.to_string())?;
+    focus(window)?;
+    presentation::raise(hwnd)
 }
 pub fn is_foreground(window: &tauri::WebviewWindow) -> Result<bool, String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
@@ -376,11 +392,6 @@ pub fn windows() -> Vec<TargetWindow> {
     unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
         unsafe {
             if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
-                return BOOL(1);
-            }
-            let mut pid = 0;
-            GetWindowThreadProcessId(hwnd, Some(&mut pid));
-            if pid == std::process::id() {
                 return BOOL(1);
             }
             let mut cloaked: u32 = 0;
@@ -479,7 +490,7 @@ pub fn snapshot_controls(targets: &mut [TargetWindow], screen: CaptureRect) {
         remaining -= target.controls.len();
     }
 }
-/// Run hide/restore as a single event-loop operation before synchronizing the compositor.
+/// Complete a window operation on the owning UI thread before returning.
 pub fn on_ui<T: Send + 'static>(
     app: &AppHandle,
     action: impl FnOnce(AppHandle) -> T + Send + 'static,

@@ -2473,7 +2473,7 @@ fn classify_result_foreground(
     root_match: bool,
     root_owner_match: bool,
     owner_chain_match: bool,
-    toolbar_match: bool,
+    auxiliary_match: bool,
 ) -> ResultForegroundScope {
     if !foreground_available {
         ResultForegroundScope::Unknown
@@ -2482,12 +2482,17 @@ fn classify_result_foreground(
         || root_match
         || root_owner_match
         || owner_chain_match
-        || toolbar_match
+        || auxiliary_match
     {
         ResultForegroundScope::Internal
     } else {
         ResultForegroundScope::External
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_result_auxiliary_window(label: &str) -> bool {
+    label == TOOLBAR_LABEL || label.starts_with("capture-session-")
 }
 
 #[cfg(target_os = "windows")]
@@ -2524,20 +2529,17 @@ fn result_foreground_scope(app: &AppHandle, window: &WebviewWindow) -> ResultFor
         candidate = owner;
     }
 
-    // The selection toolbar is a separate no-activate top-level webview. On
-    // some WebView2 builds clicking it briefly makes that window foreground;
-    // it is still an internal continuation of a result-window selection and
-    // must not trigger the source result's blur-close before run_action reads
-    // the selection.
-    let toolbar_match = app
-        .get_webview_window(TOOLBAR_LABEL)
-        .and_then(|toolbar| toolbar.hwnd().ok())
-        .is_some_and(|toolbar_hwnd| {
-            foreground == toolbar_hwnd
-                || unsafe { IsChild(toolbar_hwnd, foreground).as_bool() }
-                || unsafe { GetAncestor(foreground, GA_ROOT) } == toolbar_hwnd
-                || unsafe { GetAncestor(foreground, GA_ROOTOWNER) } == toolbar_hwnd
-        });
+    // Toolbar input and screen capture continue the user's current interaction.
+    // Their activation must not dismiss an existing result popover.
+    let auxiliary_match = app.webview_windows().into_iter().any(|(label, auxiliary)| {
+        is_result_auxiliary_window(&label)
+            && auxiliary.hwnd().ok().is_some_and(|hwnd| {
+                foreground == hwnd
+                    || unsafe { IsChild(hwnd, foreground).as_bool() }
+                    || unsafe { GetAncestor(foreground, GA_ROOT) } == hwnd
+                    || unsafe { GetAncestor(foreground, GA_ROOTOWNER) } == hwnd
+            })
+    });
 
     classify_result_foreground(
         true,
@@ -2546,7 +2548,7 @@ fn result_foreground_scope(app: &AppHandle, window: &WebviewWindow) -> ResultFor
         root_match,
         root_owner_match,
         owner_chain_match,
-        toolbar_match,
+        auxiliary_match,
     )
 }
 
@@ -3857,6 +3859,22 @@ mod tests {
             classify_result_foreground(true, false, false, false, false, false, true),
             ResultForegroundScope::Internal
         );
+    }
+
+    #[test]
+    fn capture_activation_is_an_internal_result_interaction() {
+        assert!(is_result_auxiliary_window("selection-toolbar"));
+        assert!(is_result_auxiliary_window(
+            "capture-session-7c3ff0e5-58e8-4e9a-94f7-c53194436487"
+        ));
+        for label in [
+            "settings",
+            "quick-ask",
+            "capture-pin-image",
+            "capture-notice-status",
+        ] {
+            assert!(!is_result_auxiliary_window(label));
+        }
     }
 
     #[test]

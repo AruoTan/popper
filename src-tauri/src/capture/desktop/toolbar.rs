@@ -242,13 +242,17 @@ fn sync_on_ui(app: &AppHandle, id: &str) -> Result<(), String> {
         return Ok(());
     };
     let state = manager(app);
+    // Preserve the visible desktop while a capture is in progress. In particular,
+    // delayed toolbar geometry updates must not hide part of the source image.
+    if state.active.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let meta = {
         let pins = state.pins.lock();
         let Some(pin) = pins.items.get(id) else {
             return Ok(());
         };
-        if state.active.load(Ordering::Acquire)
-            || state.stopped.load(Ordering::Acquire)
+        if state.stopped.load(Ordering::Acquire)
             || pin.closed
             || !pin.visible
             || !pin.meta.toolbar_visible

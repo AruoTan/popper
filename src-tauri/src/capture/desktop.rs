@@ -43,7 +43,6 @@ struct Session {
     selection: Option<CaptureRect>,
     version: u64,
     targets: Vec<Arc<platform::TargetWindow>>,
-    previous: Vec<String>,
     foreground: usize,
     image_origin: CapturePoint,
     scroll: Option<scrolling::ScrollSession>,
@@ -206,9 +205,21 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         return Err("应用正在退出".into());
     }
     if state.active.load(Ordering::Acquire) {
-        if let Some(id) = state.session.lock().as_ref().map(|s| s.meta.id.clone()) {
+        let active = state
+            .session
+            .lock()
+            .as_ref()
+            .map(|s| (s.meta.id.clone(), s.scroll.is_some() || s.scroll_completed));
+        if let Some((id, scrolling)) = active {
             if let Some(window) = app.get_webview_window(&format!("{CAPTURE_PREFIX}{id}")) {
-                platform::focus(&window)?;
+                // The renderer alone commits the first reveal after decoding.
+                if window.is_visible().unwrap_or(false) {
+                    if scrolling {
+                        platform::focus(&window)?;
+                    } else {
+                        show(app, &window)?;
+                    }
+                }
             }
         }
         return Ok(());
@@ -278,19 +289,6 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
             })
             .collect(),
     };
-    let previous = platform::on_ui(app, |handle| {
-        handle
-            .webview_windows()
-            .into_iter()
-            .filter_map(|(label, window)| {
-                if window.is_visible().unwrap_or(false) && !label.starts_with("capture-notice-") {
-                    Some(label)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-    })?;
     *manager(app).session.lock() = Some(Session {
         meta,
         image: None,
@@ -298,7 +296,6 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         selection: None,
         version: 0,
         targets: targets.into_iter().map(Arc::new).collect(),
-        previous: previous.clone(),
         foreground,
         image_origin: CapturePoint { x: 0, y: 0 },
         scroll: None,
@@ -309,13 +306,6 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     });
     app.state::<RuntimeState>()
         .set_screen_capture_active(app, true);
-    platform::on_ui(app, move |handle| {
-        for label in previous {
-            if let Some(window) = handle.get_webview_window(&label) {
-                let _ = window.hide();
-            }
-        }
-    })?;
     platform::flush();
     let image = monitor
         .capture_image()
@@ -418,26 +408,6 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
     let result = platform::on_ui(app, move |handle| {
         if let Some(window) = handle.get_webview_window(&format!("{CAPTURE_PREFIX}{id}")) {
             let _ = window.destroy();
-        }
-        for label in previous.previous {
-            if let Some(window) = handle.get_webview_window(&label) {
-                if label.starts_with(PIN_PREFIX) {
-                    let state = manager(&handle);
-                    let pins = state.pins.lock();
-                    if !pins.items.values().any(|pin| {
-                        format!("{PIN_PREFIX}{}", pin.meta.id) == label
-                            && pin.visible
-                            && !pin.closed
-                    }) {
-                        continue;
-                    }
-                }
-                if label.starts_with(PIN_PREFIX) {
-                    let _ = pinned::show_pin(&window);
-                } else {
-                    let _ = window.show();
-                }
-            }
         }
         if restore_focus {
             platform::restore_foreground(foreground);
@@ -554,20 +524,18 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 }
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
-        {
-            let state = manager(app);
+        let window = window.clone();
+        platform::on_ui(app, move |app| {
+            let state = manager(&app);
             let mut slot = state.session.lock();
-            let session = ensure_session(&mut slot, session_id(window)?)?;
+            let session = ensure_session(&mut slot, session_id(&window)?)?;
             if session.scroll.is_some() || session.scroll_completed {
                 return Err("滚动截图仅支持直接输出".into());
             }
-        }
-        if let Ok(hwnd) = window.hwnd() {
-            platform::configure_capture_surface(hwnd);
-        }
-        window.show().map_err(|e| e.to_string())?;
-        platform::focus(window)?;
-        Ok(())
+            // Keep validation and presentation on the same UI turn so a cancelled
+            // session cannot be shown by a delayed readiness request.
+            platform::present_capture(&window)
+        })?
     } else {
         let id = pin_id(window)?;
         let visible = {

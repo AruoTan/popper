@@ -23,10 +23,11 @@ impl Drop for ScrollEscape {
     }
 }
 
-fn restore_editor(window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
+fn restore_editor(app: &AppHandle, window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
     platform::scroll_surface(window, screen, None)?;
     let _ = platform::exclude_from_capture(window, false);
-    platform::focus(window)
+    let window = window.clone();
+    platform::on_ui(app, move |_| platform::present_capture(&window))?
 }
 
 pub fn scroll_begin(
@@ -98,7 +99,7 @@ pub fn scroll_begin(
     let image = match setup {
         Ok(image) => image,
         Err(error) => {
-            let _ = restore_editor(window, screen);
+            let _ = restore_editor(app, window, screen);
             return Err(error);
         }
     };
@@ -115,7 +116,7 @@ pub fn scroll_begin(
     ) {
         Ok(stream) => stream,
         Err(error) => {
-            let _ = restore_editor(window, screen);
+            let _ = restore_editor(app, window, screen);
             return Err(error);
         }
     };

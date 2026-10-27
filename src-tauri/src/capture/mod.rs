@@ -54,8 +54,10 @@ pub async fn capture_image(
     .map_err(|e| e.to_string())?)
 }
 #[tauri::command]
-pub fn capture_show(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
-    desktop_call!(desktop::show(&app, &window))
+pub async fn capture_show(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    desktop_call!(tauri::async_runtime::spawn_blocking(move || desktop::show(&app, &window))
+        .await
+        .map_err(|e| e.to_string())?)
 }
 #[tauri::command]
 pub fn capture_is_foreground(app: AppHandle, window: WebviewWindow) -> Result<bool, String> {
