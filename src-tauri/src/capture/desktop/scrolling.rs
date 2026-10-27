@@ -26,8 +26,7 @@ impl Drop for ScrollEscape {
 fn restore_editor(app: &AppHandle, window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
     platform::scroll_surface(window, screen, None)?;
     let _ = platform::exclude_from_capture(window, false);
-    let window = window.clone();
-    platform::on_ui(app, move |_| platform::present_capture(&window))?
+    super::show(app, window)
 }
 
 pub fn scroll_begin(

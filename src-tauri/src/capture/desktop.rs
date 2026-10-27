@@ -38,6 +38,7 @@ const CAPTURE_PREFIX: &str = "capture-session-";
 const PIN_PREFIX: &str = "capture-pin-";
 struct Session {
     meta: CaptureSession,
+    presented: bool,
     image: Option<Arc<RgbaImage>>,
     png: Option<Arc<Vec<u8>>>,
     selection: Option<CaptureRect>,
@@ -209,11 +210,17 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
             .session
             .lock()
             .as_ref()
-            .map(|s| (s.meta.id.clone(), s.scroll.is_some() || s.scroll_completed));
-        if let Some((id, scrolling)) = active {
+            .map(|s| {
+                (
+                    s.meta.id.clone(),
+                    s.presented,
+                    s.scroll.is_some() || s.scroll_completed,
+                )
+            });
+        if let Some((id, presented, scrolling)) = active {
             if let Some(window) = app.get_webview_window(&format!("{CAPTURE_PREFIX}{id}")) {
                 // The renderer alone commits the first reveal after decoding.
-                if window.is_visible().unwrap_or(false) {
+                if presented {
                     if scrolling {
                         platform::focus(&window)?;
                     } else {
@@ -291,6 +298,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     };
     *manager(app).session.lock() = Some(Session {
         meta,
+        presented: false,
         image: None,
         png: None,
         selection: None,
@@ -365,13 +373,13 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            let hidden_until = manager(&handle)
+            let pending = manager(&handle)
                 .session
                 .lock()
                 .as_ref()
                 .filter(|s| s.meta.id == id)
-                .map(|s| s.hidden_until);
-            let Some(hidden_until) = hidden_until else {
+                .map(|s| (s.hidden_until, s.presented));
+            let Some((hidden_until, presented)) = pending else {
                 break;
             };
             let ready = handle
@@ -379,7 +387,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
                 .is_some_and(|window| window.is_visible().unwrap_or(false));
             let geometry_ok = platform::same_screen(screen, scale);
             if !geometry_ok
-                || platform::foreground() == 0
+                || (presented && platform::foreground() == 0)
                 || (!ready && std::time::Instant::now() >= hidden_until)
             {
                 let app = handle.clone();
@@ -524,18 +532,24 @@ pub fn image(app: &AppHandle, window: &WebviewWindow) -> Result<Vec<u8>, String>
 }
 pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
     if session_id(window).is_ok() {
-        let window = window.clone();
-        platform::on_ui(app, move |app| {
-            let state = manager(&app);
-            let mut slot = state.session.lock();
-            let session = ensure_session(&mut slot, session_id(&window)?)?;
-            if session.scroll.is_some() || session.scroll_completed {
-                return Err("滚动截图仅支持直接输出".into());
-            }
-            // Keep validation and presentation on the same UI turn so a cancelled
-            // session cannot be shown by a delayed readiness request.
-            platform::present_capture(&window)
-        })?
+        super::activation::wait_for_activation(|initial| {
+            let window = window.clone();
+            platform::on_ui(app, move |app| {
+                let state = manager(&app);
+                let mut slot = state.session.lock();
+                let session = ensure_session(&mut slot, session_id(&window)?)?;
+                if session.scroll.is_some() || session.scroll_completed {
+                    return Err("滚动截图仅支持直接输出".into());
+                }
+                // Revalidate on every UI turn, including after a pending
+                // foreground transfer. Cancellation makes the next attempt fail.
+                let active = platform::present_capture(&window, initial)?;
+                if active {
+                    session.presented = true;
+                }
+                Ok(active)
+            })?
+        })
     } else {
         let id = pin_id(window)?;
         let visible = {

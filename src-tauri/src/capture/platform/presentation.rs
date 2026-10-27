@@ -11,8 +11,9 @@ use windows::Win32::{
     UI::{
         Shell::{ITaskbarList2, TaskbarList},
         WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, SetWindowPos,
-            HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE,
+            GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, IsChild,
+            SetForegroundWindow, SetWindowPos, GA_ROOT, HWND_TOPMOST, SWP_NOMOVE,
+            SWP_NOOWNERZORDER, SWP_NOSIZE,
         },
     },
 };
@@ -47,14 +48,11 @@ pub(super) fn mark_fullscreen(hwnd: HWND, fullscreen: bool) -> Result<(), String
     }
 }
 
-pub(super) fn raise(hwnd: HWND) -> Result<(), String> {
+pub(super) fn raise(hwnd: HWND) -> Result<bool, String> {
     check_thread(hwnd)?;
     unsafe {
         // The snapshot already includes transient shell UI. Activating the frozen
         // surface now dismisses that live UI without losing its captured pixels.
-        if GetForegroundWindow() != hwnd && !SetForegroundWindow(hwnd).as_bool() {
-            return Err("无法激活截图窗口，请重新触发截图".into());
-        }
         SetWindowPos(
             hwnd,
             Some(HWND_TOPMOST),
@@ -62,9 +60,17 @@ pub(super) fn raise(hwnd: HWND) -> Result<(), String> {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER,
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        // The shell can reject a request while dismissing transient UI. Report
+        // the observed foreground state and allow the caller to yield and retry.
+        let _ = SetForegroundWindow(hwnd);
+        let foreground = GetForegroundWindow();
+        Ok(!foreground.0.is_null()
+            && (foreground == hwnd
+                || IsChild(hwnd, foreground).as_bool()
+                || GetAncestor(foreground, GA_ROOT) == hwnd))
     }
 }
 
@@ -135,8 +141,8 @@ mod tests {
                 .any(|target| target.handle == window.0 .0 as usize));
         }
         // Simulate an existing topmost window being above the newly created surface.
-        raise(pin.0).unwrap();
-        raise(overlay.0).unwrap();
+        assert!(raise(pin.0).unwrap());
+        assert!(raise(overlay.0).unwrap());
         assert_eq!(unsafe { GetForegroundWindow() }, overlay.0);
         assert_eq!(before, [rect(settings.0), rect(pin.0), rect(overlay.0)]);
         for window in [&settings, &pin, &overlay] {

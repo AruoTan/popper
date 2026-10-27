@@ -761,6 +761,59 @@ describe('capture focus lifecycle', () => {
     view.unmount();
   });
 
+  it('keeps startup pending while native activation waits for the shell', async () => {
+    let activate!: () => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return meta;
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_show') return new Promise<void>((resolve) => { activate = resolve; });
+    });
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(activate).toBeTypeOf('function'));
+    vi.useFakeTimers();
+    fireEvent.focus(window); fireEvent.blur(window);
+    await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+    expect(invoke).not.toHaveBeenCalledWith('capture_is_foreground');
+    expect(invoke).not.toHaveBeenCalledWith('capture_cancel');
+    expect(invoke).not.toHaveBeenCalledWith('capture_fail', expect.anything());
+    await act(async () => { activate(); });
+    expect(document.activeElement).toBe(view.container.querySelector('main'));
+    view.unmount();
+  });
+
+  it.each(['resolve', 'reject'])('ignores a late activation %s after Escape cancels startup', async (outcome) => {
+    let finish!: () => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return meta;
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_show') return new Promise<void>((resolve, reject) => {
+        finish = outcome === 'resolve' ? resolve : () => reject(new Error('截图会话已结束'));
+      });
+    });
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(finish).toBeTypeOf('function'));
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(invoke).toHaveBeenCalledWith('capture_cancel');
+    const focus = vi.spyOn(view.container.querySelector('main')!, 'focus');
+    await act(async () => { finish(); });
+    expect(focus).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalledWith('capture_fail', expect.anything());
+    view.unmount();
+  });
+
+  it('requests native cleanup when activation remains denied', async () => {
+    const message = '无法激活截图窗口，请重新触发截图';
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_session') return meta;
+      if (command === 'capture_image') return new ArrayBuffer(0);
+      if (command === 'capture_show') throw new Error(message);
+    });
+    const view = render(<CaptureApp />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_fail', { message }));
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'capture_fail')).toHaveLength(1);
+    view.unmount();
+  });
+
   it('survives blur emitted while the native frame and WebView acquire focus', async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_session') return meta;

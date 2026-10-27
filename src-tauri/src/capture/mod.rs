@@ -19,6 +19,8 @@ pub use desktop::{initialize, launch, pins_visible, setup, shutdown, ShortcutCha
 pub use recognition::run_helper_if_requested;
 
 #[cfg(any(target_os = "windows", test))]
+mod activation;
+#[cfg(any(target_os = "windows", test))]
 mod bitmap;
 #[cfg(any(target_os = "windows", test))]
 mod color;

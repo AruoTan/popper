@@ -303,15 +303,25 @@ pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
     // Activating the frame alone does not direct keyboard input to WebView2.
     window.as_ref().set_focus().map_err(|e| e.to_string())
 }
-/// Called on the UI thread, after the renderer has painted the frozen image.
-pub fn present_capture(window: &tauri::WebviewWindow) -> Result<(), String> {
+/// One UI-thread attempt, after the renderer has painted the frozen image.
+pub fn present_capture(window: &tauri::WebviewWindow, initial: bool) -> Result<bool, String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    configure_capture_surface(hwnd);
-    frame::install(hwnd)?;
-    presentation::mark_fullscreen(hwnd, true)?;
-    window.show().map_err(|e| e.to_string())?;
-    focus(window)?;
-    presentation::raise(hwnd)
+    if initial {
+        configure_capture_surface(hwnd);
+        frame::install(hwnd)?;
+        presentation::mark_fullscreen(hwnd, true)?;
+        window.show().map_err(|e| e.to_string())?;
+    }
+    let active = presentation::raise(hwnd)?;
+    if active {
+        // Direct keyboard input to WebView2 only after native activation succeeds.
+        window.as_ref().set_focus().map_err(|e| e.to_string())?;
+    } else if initial {
+        // Request the framework's foreground fallback once. Its input and shell
+        // activation messages must be processed before checking again.
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(active)
 }
 pub fn is_foreground(window: &tauri::WebviewWindow) -> Result<bool, String> {
     let hwnd = window.hwnd().map_err(|e| e.to_string())?;

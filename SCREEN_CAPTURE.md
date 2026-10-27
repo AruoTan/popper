@@ -74,6 +74,8 @@
 
 后端模块位于 `src-tauri/src/capture/`，界面位于 `src/renderer/capture/`，共享类型位于 `src/shared/capture.ts`。`platform/presentation.rs` 负责冻结覆盖层的系统全屏标记、前台激活和层级调整；进入实时滚动前解除全屏标记，失败时恢复。
 
+冻结覆盖层先提升层级并请求激活，再核对实际前台窗口，不把一次前台请求被拒绝视为会话失败。首次未激活时请求一次框架焦点回退，随后由工作线程每隔 16 毫秒重新提交一次 UI 线程检查，总计最多 32 次；等待期间释放会话锁并让 UI 正常处理输入和系统菜单消息，不反复触发回退输入。只有确认覆盖层取得前台焦点后才聚焦 WebView 并标记会话就绪；启动期间重复快捷键不另开激活流程，短暂的空前台窗口也不触发会话监控取消。每次 UI 操作重新检查会话及模式，取消或窗口销毁后停止重试；窗口操作错误立即返回，持续拒绝激活时清理覆盖层并提示。滚动初始化失败恢复普通截图时复用相同流程。
+
 `recognition.rs` 负责识别入口和通路汇合，`recognition/worker.rs` 管理辅助进程与最新请求队列，`recognition/automation.rs` 管理 UIA 遍历和缓存，`accessibility.rs` 负责 MSAA 点命中。`desktop.rs` 编排截图会话和输出，贴图窗口及菜单由 `desktop/pinned.rs` 管理，快捷键注册及回滚由 `desktop/shortcuts.rs` 管理。`scroll.rs` 负责双向文档坐标和图像行存储，`scroll/registration.rs` 负责整图行特征索引和位置复核，`scroll/stream.rs` 管理连续采样、配准线程和队列，`scroll/layout.rs` 计算预览面板和输出工具栏的物理像素位置。`platform/frame.rs` 管理截图窗口的原生边框约束、消息转发及销毁清理，所有安装操作在窗口所属线程执行。`desktop/scrolling.rs` 管理实时覆盖层、临时取消入口和长图提交；提交后覆盖层继续显示，输出成功后结束会话，不再进入编辑阶段。`ScrollCapture.tsx` 管理预览刷新、异常状态和动作入口，`ScrollCapturePreview.tsx` 负责缩略图的等比过渡与位置框显示，`CaptureOutputToolbar.tsx` 提供四项直接输出操作，`scrollPreview.ts` 解码二进制快照，不承担采样调度。
 
 `PinEditor.tsx` 处理贴图标注对象、工具条和原尺寸输出，复用 `drawing.ts`、`geometry.ts` 和 `annotationTools.ts`，未显示标注时直接输出原始 PNG。标注及工具条状态在关闭恢复和显隐时保留，销毁窗口时释放。后端核对调用贴图窗口、可操作状态及 PNG 尺寸，截图和贴图另存复用同一原子保存路径。`runtime/tray_menu.rs` 只在 UI 线程设置托盘原生菜单的列布局，保留系统绘制、勾选和菜单事件。
