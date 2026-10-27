@@ -16,12 +16,6 @@ import {
 
 type StorePhase = "hydrating" | "live" | "recovering";
 export type ActionEventRecoveryReason = "sequence-gap" | "resync-required";
-export type ActionEventFlushReason =
-  | "frame"
-  | "timeout"
-  | "visibility"
-  | "pageshow"
-  | "native-reveal";
 
 interface LogicalCursor {
   sessionGeneration: number;
@@ -41,7 +35,6 @@ let phase: StorePhase = "hydrating";
 let cursor: LogicalCursor | null = null;
 let bufferedEvents: ActionStreamEvent[] = [];
 let logicalRevision = 0;
-let hasPublishedNonEmptyContent = false;
 
 let stopBridgeListener: Unsubscribe | null = null;
 let activeSessionId: string | null = null;
@@ -50,14 +43,6 @@ const listeners = new Set<() => void>();
 
 function notifySubscribers(): void {
   for (const listener of listeners) listener();
-}
-
-/**
- * Compatibility flush: deltas now publish synchronously, so this is a no-op
- * for content. Kept so pageshow/visibility/native-reveal call sites stay valid.
- */
-export function flushPendingActionEvents(_reason: ActionEventFlushReason): void {
-  // no-op: content deltas are applied immediately in acceptDelta
 }
 
 function publishReducedEvent(event: ActionStreamEvent, notify: boolean): boolean {
@@ -94,14 +79,12 @@ function acceptInitialStarted(
     contentScalarCount: 0,
   };
   logicalRevision += 1;
-  hasPublishedNonEmptyContent = false;
   publishReducedEvent(event, notify);
 }
 
 function acceptDelta(
   event: Extract<ActionStreamEvent, { type: "delta" }>,
   notify: boolean,
-  _schedule: boolean,
 ): void {
   if (!cursor) return;
   cursor.lastSequence = event.sequence;
@@ -119,7 +102,6 @@ function acceptDelta(
     delta: event.delta,
     contentScalarCount: cursor.contentScalarCount,
   });
-  hasPublishedNonEmptyContent = true;
   if (next !== publishedSnapshot) {
     publishedSnapshot = next;
     if (notify) notifySubscribers();
@@ -174,7 +156,7 @@ function acceptTerminal(
 
 function processLiveEvent(
   event: ActionStreamEvent,
-  options: { notify: boolean; reportRecovery: boolean; schedule: boolean },
+  options: { notify: boolean; reportRecovery: boolean },
 ): void {
   if (!cursor) {
     if (event.type === "started") {
@@ -227,7 +209,7 @@ function processLiveEvent(
     return;
   }
   if (event.type === "delta") {
-    acceptDelta(event, options.notify, options.schedule);
+    acceptDelta(event, options.notify);
     return;
   }
   if (event.type === "thinkingDelta") {
@@ -249,15 +231,7 @@ function acceptActionEvent(event: ActionStreamEvent): void {
     bufferedEvents.push(event);
     return;
   }
-  processLiveEvent(event, { notify: true, reportRecovery: true, schedule: true });
-}
-
-function handleVisibilityChange(): void {
-  if (document.visibilityState === "visible") flushPendingActionEvents("visibility");
-}
-
-function handlePageShow(): void {
-  flushPendingActionEvents("pageshow");
+  processLiveEvent(event, { notify: true, reportRecovery: true });
 }
 
 function isRecovering(): boolean {
@@ -277,14 +251,7 @@ export function startActionEventStore(
   if (!sessionId && !cursor) phase = "live";
 
   if (!stopBridgeListener) {
-    const stopActionEvents = window._popper_.onActionEvent(acceptActionEvent);
-    window.addEventListener("pageshow", handlePageShow);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    stopBridgeListener = () => {
-      stopActionEvents();
-      window.removeEventListener("pageshow", handlePageShow);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
+    stopBridgeListener = window._popper_.onActionEvent(acceptActionEvent);
   }
 
   return () => {
@@ -299,14 +266,8 @@ export function getActionEventLogicalRevision(): number {
   return logicalRevision;
 }
 
-/** Compatibility alias retained until Task 4 removes the old call site. */
-export function getActionEventStoreRevision(): number {
-  return getActionEventLogicalRevision();
-}
-
 export function hydrateActionEventStore(
   sessionSnapshot: ResultSessionSnapshot,
-  _expectedEventRevision?: number,
 ): ResultHydrationOutcome {
   if (activeSessionId && sessionSnapshot.sessionId !== activeSessionId) {
     throw new Error("Result session snapshot does not match the active session");
@@ -334,7 +295,6 @@ export function hydrateActionEventStore(
   };
   bufferedEvents = [];
   phase = "live";
-  hasPublishedNonEmptyContent = sessionSnapshot.contentScalarCount > 0;
   logicalRevision += 1;
   notifySubscribers();
 
@@ -356,7 +316,6 @@ export function hydrateActionEventStore(
     processLiveEvent(event, {
       notify: false,
       reportRecovery: false,
-      schedule: false,
     });
     if (isRecovering()) {
       bufferedEvents.push(...replayCandidates.slice(index + 1));

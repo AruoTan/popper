@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import {
   AI_OUTPUT_LIMIT,
   DEFAULT_ACTIONS,
-  DEFAULT_ACTION_PROMPTS,
   DEFAULT_APP_SETTINGS,
   DEFAULT_PROVIDER_ID,
   DEFAULT_PUBLIC_SETTINGS,

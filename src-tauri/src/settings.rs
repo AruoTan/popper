@@ -440,6 +440,9 @@ impl SettingsRepository {
         candidate = candidate
             .normalize_and_validate()
             .map_err(SettingsError::Validation)?;
+        if candidate == *state {
+            return Ok(());
+        }
         self.persist(&candidate)?;
         *state = candidate;
         Ok(())
@@ -1328,6 +1331,120 @@ mod tests {
             .get(&secret_account(DEFAULT_PROVIDER_ID))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn unchanged_capture_preferences_do_not_access_the_destination() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        let before = repository.get_settings();
+        // A directory cannot be replaced by the settings file. An unchanged
+        // update must succeed without attempting that replacement.
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        for _ in 0..10 {
+            repository
+                .update_capture_preferences(before.capture.color.clone(), before.capture.line_width)
+                .unwrap();
+        }
+        assert_eq!(repository.get_settings(), before);
+        assert!(path.is_dir());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn unchanged_normalized_transactions_preserve_file_bytes() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        let original = format!("\n{}\n", fs::read_to_string(&path).unwrap());
+        fs::write(&path, &original).unwrap();
+        repository
+            .transact(|settings| {
+                settings.providers[0].name = format!(" {} ", settings.providers[0].name);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn capture_preference_changes_validate_and_commit_only_after_successful_persistence() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository =
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap();
+        let before = repository.get_settings();
+        let original = fs::read(&path).unwrap();
+        assert!(matches!(
+            repository.update_capture_preferences("invalid".into(), 3),
+            Err(SettingsError::Validation(_))
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            repository.update_capture_preferences("#123456".into(), 8),
+            Err(SettingsError::Io(_))
+        ));
+        assert_eq!(repository.get_settings(), before);
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, original).unwrap();
+        repository
+            .update_capture_preferences("#123456".into(), 8)
+            .unwrap();
+        let saved: AppSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved, repository.get_settings());
+        assert_eq!(saved.capture.color, "#123456");
+        assert_eq!(saved.capture.line_width, 8);
+        assert_eq!(saved.providers, before.providers);
+    }
+
+    #[test]
+    fn concurrent_capture_preferences_and_result_sizes_preserve_both_updates() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let repository = Arc::new(
+            SettingsRepository::with_secret_store(&path, Arc::new(MemorySecrets::default()))
+                .unwrap(),
+        );
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        std::thread::scope(|scope| {
+            let capture_repository = repository.clone();
+            let capture_barrier = barrier.clone();
+            scope.spawn(move || {
+                capture_barrier.wait();
+                for _ in 0..16 {
+                    capture_repository
+                        .update_capture_preferences("#123456".into(), 8)
+                        .unwrap();
+                }
+            });
+            barrier.wait();
+            repository
+                .update_result_last_size(WindowSize {
+                    width: 812.0,
+                    height: 536.0,
+                })
+                .unwrap();
+        });
+        let saved: AppSettings = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved, repository.get_settings());
+        assert_eq!(saved.capture.color, "#123456");
+        assert_eq!(saved.capture.line_width, 8);
+        assert_eq!(
+            saved.result.last_size,
+            Some(WindowSize {
+                width: 812.0,
+                height: 536.0
+            })
+        );
     }
 
     #[test]

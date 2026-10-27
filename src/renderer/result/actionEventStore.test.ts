@@ -88,13 +88,6 @@ const thinkingDelta = (
   delta: value,
 });
 
-function runNextFrame(now = 16): void {
-  const [id, callback] = frameCallbacks.entries().next().value ?? [];
-  if (id === undefined || !callback) throw new Error("No frame was scheduled");
-  frameCallbacks.delete(id);
-  callback(now);
-}
-
 beforeEach(() => {
   vi.useFakeTimers();
   vi.resetModules();
@@ -143,7 +136,7 @@ describe("action event store publication pacing", () => {
     emit(delta(3, "二"));
     expect(listener).toHaveBeenCalledTimes(3);
     expect(store.getActionEventSnapshot().content).toBe("一二");
-    // must not require flushPendingActionEvents('frame')
+    // Content is visible before any animation frame runs.
     expect(frameCallbacks.size).toBe(0);
 
     unsubscribe();
@@ -217,7 +210,7 @@ describe("action event store publication pacing", () => {
     stop();
   });
 
-  it("keeps flushPendingActionEvents as a safe no-op after sync publish", async () => {
+  it("keeps synchronously published content intact across page visibility changes", async () => {
     const store = await import("./actionEventStore");
     const stop = store.startActionEventStore();
 
@@ -227,7 +220,7 @@ describe("action event store publication pacing", () => {
     expect(store.getActionEventSnapshot().content).toBe("AB");
 
     window.dispatchEvent(new PageTransitionEvent("pageshow"));
-    store.flushPendingActionEvents("native-reveal");
+    document.dispatchEvent(new Event("visibilitychange"));
     expect(store.getActionEventSnapshot().content).toBe("AB");
     expect(frameCallbacks.size).toBe(0);
     stop();

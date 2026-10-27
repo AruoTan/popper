@@ -4,7 +4,6 @@ import type {
   ResultReadyAck,
   ResultSessionSnapshot
 } from '../../shared'
-import type { ResultHydrationOutcome } from './actionEventStore'
 import {
   createResultSessionBootstrap,
   type ResultSessionBootstrapDependencies

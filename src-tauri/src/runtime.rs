@@ -2644,9 +2644,8 @@ pub async fn run_action(
                         Ok(()) => {
                             state.arm_same_text_selection_suppress(&selected_text);
                             state.clear_and_hide_current_selection_if(&app, &selection_token);
-                            // Do NOT restore_source_app_activation here: default
-                            // result dismiss is Blur; activating the source app
-                            // immediately steals focus and closes the new window.
+                            // Keep focus on the new result window: activating the source
+                            // would immediately dismiss a result configured for blur.
                             RunActionResult::accepted(Some(session_id), Some(request_id))
                         }
                         Err(message) => {
@@ -2679,9 +2678,8 @@ pub async fn run_action(
                             // dismissed must not re-present this selection.
                             state.arm_same_text_selection_suppress(&selected_text);
                             state.clear_and_hide_current_selection_if(&app, &selection_token);
-                            // Do NOT restore_source_app_activation here: default
-                            // result dismiss is Blur; activating the source app
-                            // immediately steals focus and closes the new window.
+                            // Keep focus on the new result window: activating the source
+                            // would immediately dismiss a result configured for blur.
                             RunActionResult::accepted(Some(session_id), Some(request_id))
                         }
                         Err(message) => {

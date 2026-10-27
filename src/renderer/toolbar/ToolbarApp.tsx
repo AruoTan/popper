@@ -293,7 +293,6 @@ export function ToolbarApp(): JSX.Element {
     }
 
     void (async () => {
-      let nativeInputModeActive = false;
       try {
         // React has committed the second-stage DOM before this layout effect.
         // Grow the native WebView first so a slow focusability/style transition
@@ -329,10 +328,8 @@ export function ToolbarApp(): JSX.Element {
         if (activated === false) {
           throw new Error("当前选区已失效，请重新选择文字后重试");
         }
-        nativeInputModeActive = true;
         if (disposed) {
           await window._popper_.setToolbarInputMode?.(false, selectionId);
-          nativeInputModeActive = false;
           return;
         }
         askModeActivatedRef.current = true;

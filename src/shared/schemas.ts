@@ -3,7 +3,6 @@ import { dictionarySnapshotSchema } from './dictionary'
 
 import {
   AI_OUTPUT_LIMIT,
-  AI_TEXT_LIMIT,
   MAX_ACTIONS,
   MAX_ENABLED_ACTIONS,
   MAX_PROVIDERS,

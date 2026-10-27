@@ -68,7 +68,7 @@ Invoke-BuildStage 'Windows Rust tests (all targets)' { pnpm test:rust:windows }
 
 # The frontend stage just built these files from this checkout. Reuse them only in
 # this CI invocation; ordinary local packaging still runs beforeBuildCommand.
-foreach ($page in @('settings', 'toolbar', 'result', 'startup', 'quick-ask')) {
+foreach ($page in @('settings', 'toolbar', 'result', 'startup', 'quick-ask', 'capture')) {
     $html = Join-Path 'dist' "$page/index.html"
     if (-not (Test-Path -LiteralPath $html -PathType Leaf) -or (Get-Item -LiteralPath $html).Length -eq 0) {
         throw "Missing verified frontend output: $html"

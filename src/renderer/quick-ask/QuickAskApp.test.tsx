@@ -18,6 +18,25 @@ beforeEach(() => {
 });
 
 describe('Quick Ask', () => {
+  it('preserves the draft and selected attachments when a new batch exceeds the total size', async () => {
+    render(<QuickAskApp />);
+    const input = screen.getByRole('textbox');
+    const picker = screen.getByLabelText('选择附件');
+    fireEvent.change(input, { target: { value: '保留草稿' } });
+    fireEvent.change(picker, { target: { files: [new File(['context'], 'context.txt')] } });
+    await screen.findByText('context.txt');
+    const read = vi.spyOn(FileReader.prototype, 'readAsDataURL');
+    const file = new File([new Uint8Array(7 * 1024 * 1024)], 'large.bin');
+    fireEvent.change(picker, { target: { files: [file, file, file] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('20 MB');
+    expect(read).not.toHaveBeenCalled();
+    expect(input).toHaveValue('保留草稿');
+    expect(screen.getByText('context.txt')).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('保留草稿', [expect.objectContaining({ name: 'context.txt' })]));
+  });
+
   it('starts with no preview and sends a question without selection', async () => {
     render(<QuickAskApp />);
     expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull();

@@ -2,7 +2,7 @@ import { CircleAlert, FileText, LoaderCircle, Paperclip, SendHorizontal, Setting
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react';
 import { PopperIcon } from '../components/PopperIcon';
 import { getErrorMessage } from '../lib/errors';
-import { ATTACHMENT_ACCEPT, attachmentSize, readAttachment, validateAttachmentList, type SelectedAttachment } from './attachments';
+import { ATTACHMENT_ACCEPT, appendAttachments, attachmentSize, validateAttachmentList, type SelectedAttachment } from './attachments';
 
 export function QuickAskApp(): JSX.Element {
   const input = useRef<HTMLTextAreaElement>(null);
@@ -95,8 +95,7 @@ export function QuickAskApp(): JSX.Element {
     setReading(true);
     setError('');
     try {
-      const next = [...attachments, ...await Promise.all(files.map(readAttachment))];
-      validateAttachmentList(next);
+      const next = await appendAttachments(attachmentsRef.current, files);
       if (mounted.current) setAttachments(next);
     } catch (error: unknown) {
       if (mounted.current) setError(getErrorMessage(error, '无法添加附件'));

@@ -33,7 +33,6 @@ import {
   Languages,
   ListFilter,
   Monitor,
-  MousePointer2,
   Pencil,
   Plus,
   RefreshCw,
@@ -1020,8 +1019,6 @@ export function SettingsApp(): JSX.Element {
   const busy = operation !== null;
   const permission = accessibilityPresentation(accessibility);
   const selectionAvailable = accessibility?.available ?? accessibility?.trusted ?? false;
-  const activeMeta =
-    SETTINGS_SECTIONS.find((section) => section.id === activeSection) ?? SETTINGS_SECTIONS[0]!;
 
   const toggleSelectionDebug = async (enabled: boolean): Promise<void> => {
     const update = window._popper_.setSelectionDetectionDebugEnabled;

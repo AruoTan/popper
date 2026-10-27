@@ -3,7 +3,7 @@ import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PinEditor, type PinEditorHandle } from './PinEditor';
 import { PinToolbar } from './PinToolbar';
-import { pngBytes, renderScene } from './drawing';
+import { renderScene } from './drawing';
 import type { CaptureAnnotation, PinToolbarState } from '../../shared/capture';
 
 vi.mock('./drawing', () => ({ renderScene: vi.fn(), pngBytes: vi.fn(async () => new Uint8Array([1, 2, 3])) }));

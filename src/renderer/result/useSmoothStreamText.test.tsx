@@ -32,6 +32,77 @@ function Harness({
 }
 
 describe('useSmoothStreamText', () => {
+  function BrowserHarness({ target, streaming = true, resetKey = 'request-1' }: {
+    target: string; streaming?: boolean; resetKey?: string
+  }): ReactElement {
+    const displayed = useSmoothStreamText(target, streaming, resetKey)
+    return <div data-testid="out">{displayed}</div>
+  }
+
+  function browserFrames() {
+    let clock = 100, nextId = 0
+    const pending = new Map<number, FrameRequestCallback>()
+    vi.spyOn(performance, 'now').mockImplementation(() => clock)
+    const request = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      pending.set(++nextId, callback)
+      return nextId
+    })
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id) => { pending.delete(id) })
+    const tick = (): void => {
+      const next = pending.entries().next().value
+      if (!next) throw new Error('No pending browser frame')
+      pending.delete(next[0])
+      clock += 16
+      act(() => next[1](clock))
+    }
+    return { pending, request, cancel, tick }
+  }
+
+  it('keeps one default browser pump through progress and unrelated rerenders', () => {
+    const frames = browserFrames()
+    const target = '文'.repeat(80)
+    const view = render(<BrowserHarness target={target} />)
+    expect(frames.pending.size).toBe(1)
+    expect(frames.request).toHaveBeenCalledTimes(1)
+    const initial = screen.getByTestId('out').textContent!
+    view.rerender(<BrowserHarness target={target} />)
+    expect(frames.request).toHaveBeenCalledTimes(1)
+    expect(frames.cancel).not.toHaveBeenCalled()
+
+    frames.tick()
+    expect(screen.getByTestId('out').textContent!.length).toBeGreaterThan(initial.length)
+    expect(frames.request).toHaveBeenCalledTimes(2)
+    expect(frames.cancel).not.toHaveBeenCalled()
+    let ticks = 0
+    while (frames.pending.size && ticks++ < 200) {
+      expect(frames.pending.size).toBe(1)
+      frames.tick()
+    }
+    expect(screen.getByTestId('out')).toHaveTextContent(target)
+    expect(frames.pending.size).toBe(0)
+  })
+
+  it('replaces the default pump on a new request and cancels it on unmount', () => {
+    const frames = browserFrames()
+    const view = render(<BrowserHarness target={'旧'.repeat(80)} />)
+    const oldId = frames.pending.keys().next().value
+    view.rerender(<BrowserHarness target={'新'.repeat(80)} resetKey="request-2" />)
+    expect(frames.pending.has(oldId!)).toBe(false)
+    expect(frames.pending.size).toBe(1)
+    expect(screen.getByTestId('out')).toHaveTextContent('新'.repeat(8))
+    view.unmount()
+    expect(frames.pending.size).toBe(0)
+  })
+
+  it('cancels the default pump and shows full text when streaming ends', () => {
+    const frames = browserFrames()
+    const target = '完成'.repeat(40)
+    const view = render(<BrowserHarness target={target} />)
+    view.rerender(<BrowserHarness target={target} streaming={false} />)
+    expect(frames.pending.size).toBe(0)
+    expect(screen.getByTestId('out')).toHaveTextContent(target)
+  })
+
   it('returns full target immediately when not streaming', () => {
     const requestFrame = vi.fn<SmoothStreamFrameScheduler>()
     const cancelFrame = vi.fn()
