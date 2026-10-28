@@ -2830,13 +2830,62 @@ body {
   }
 }
 
-.capture-setting-controls {
-  display: flex;
-  align-items: center;
+/* ==========================================================================
+   Screen / Capture Section — unified card layout
+   ========================================================================== */
+
+.capture-card .setting-row:first-child {
+  padding-top: 4px;
+}
+
+.capture-card .setting-row:last-child {
+  padding-bottom: 4px;
+}
+
+.capture-row {
   gap: 16px;
 }
 
-.capture-setting-field {
+.capture-row__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.capture-row__label strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.capture-row__hint {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.capture-row__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.capture-row__reset {
+  flex-shrink: 0;
+  min-height: 42px;
+  padding-inline: 10px;
+  font-size: 11px;
+}
+
+.capture-annotation-controls {
+  gap: 16px;
+}
+
+.capture-annotation-field {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -2844,7 +2893,7 @@ body {
   color: var(--text-secondary);
 }
 
-.capture-setting-field input[type="color"] {
+.capture-annotation-field input[type="color"] {
   width: 28px;
   height: 28px;
   padding: 1px;
@@ -2854,7 +2903,7 @@ body {
   cursor: pointer;
 }
 
-.capture-setting-field input[type="number"] {
+.capture-annotation-field input[type="number"] {
   height: 28px;
   padding: 2px 6px;
   border: 1px solid var(--border-strong);
@@ -2862,6 +2911,23 @@ body {
   background: var(--surface-secondary, rgba(255, 255, 255, 0.04));
   color: inherit;
   font-size: 12px;
+}
+
+@media (max-width: 900px) {
+  .capture-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .capture-row__controls {
+    flex-wrap: wrap;
+  }
+
+  .capture-row__controls .shortcut-recorder {
+    flex: 1;
+    width: auto;
+  }
 }
 
 

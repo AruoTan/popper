@@ -2035,92 +2035,87 @@ export function SettingsApp(): JSX.Element {
                 </div>
               ) : (
                 <div className="settings-group" id="capture-title">
-                  <div className="section-heading section-heading--compact">
-                    <div>
-                      <h3 className="settings-subheading">截图与贴图</h3>
-                      <p>捕捉鼠标所在屏幕，支持框选、标注、浮动贴图和图片提问。贴图在退出后释放。</p>
-                    </div>
-                  </div>
-                  {([
-                    ["shortcut", "截图快捷键"],
-                    ["pasteShortcut", "贴图快捷键"],
-                  ] as const).map(([field, label]) => (
-                    <div className="settings-card quick-ask-setting" key={field}>
-                      <div className="quick-ask-setting__label">
-                        <strong>{label}</strong>
-                        <span>修改后点击「保存设置」生效。</span>
+                  <div className="settings-card settings-card--rows capture-card">
+                    {([
+                      ["shortcut", "截图快捷键"],
+                      ["pasteShortcut", "贴图快捷键"],
+                    ] as const).map(([field, label]) => (
+                      <div className="setting-row capture-row" key={field}>
+                        <div className="capture-row__label">
+                          <strong>{label}</strong>
+                        </div>
+                        <div className="capture-row__controls">
+                          <ShortcutRecorder
+                            id={"capture-" + field}
+                            label={label}
+                            value={draft.capture[field]}
+                            disabled={busy}
+                            onChange={(shortcut) =>
+                              changeDraft((current) => ({
+                                ...current,
+                                capture: { ...current.capture, [field]: shortcut },
+                              }))
+                            }
+                          />
+                          <button
+                            className="button button--quiet capture-row__reset"
+                            type="button"
+                            aria-label={"恢复" + label + "默认"}
+                            disabled={busy || draft.capture[field] === DEFAULT_APP_SETTINGS.capture[field]}
+                            onClick={() =>
+                              changeDraft((current) => ({
+                                ...current,
+                                capture: { ...current.capture, [field]: DEFAULT_APP_SETTINGS.capture[field] },
+                              }))
+                            }
+                          >
+                            <RefreshCw size={13} aria-hidden="true" />
+                            恢复默认
+                          </button>
+                        </div>
                       </div>
-                      <div className="quick-ask-setting__controls">
-                        <ShortcutRecorder
-                          id={"capture-" + field}
-                          label={label}
-                          value={draft.capture[field]}
-                          disabled={busy}
-                          onChange={(shortcut) =>
-                            changeDraft((current) => ({
-                              ...current,
-                              capture: { ...current.capture, [field]: shortcut },
-                            }))
-                          }
-                        />
-                        <button
-                          className="button button--quiet quick-ask-setting__reset"
-                          type="button"
-                          aria-label={"恢复" + label + "默认"}
-                          disabled={busy || draft.capture[field] === DEFAULT_APP_SETTINGS.capture[field]}
-                          onClick={() =>
-                            changeDraft((current) => ({
-                              ...current,
-                              capture: { ...current.capture, [field]: DEFAULT_APP_SETTINGS.capture[field] },
-                            }))
-                          }
-                        >
-                          <RefreshCw size={13} aria-hidden="true" />
-                          恢复默认
-                        </button>
+                    ))}
+                    <div className="setting-row capture-row">
+                      <div className="capture-row__label">
+                        <strong>标注工具</strong>
+                        <span className="capture-row__hint">默认颜色和画笔线宽</span>
                       </div>
-                    </div>
-                  ))}
-                  <div className="settings-card quick-ask-setting">
-                    <div className="quick-ask-setting__label">
-                      <strong>标注工具</strong>
-                      <span>新截图使用的默认颜色和画笔线宽。</span>
-                    </div>
-                    <div className="quick-ask-setting__controls capture-setting-controls">
-                      <label className="capture-setting-field">
-                        <span>颜色</span>
-                        <input
-                          type="color"
-                          aria-label="默认标注颜色"
-                          value={draft.capture.color}
-                          disabled={busy}
-                          onChange={(event) =>
-                            changeDraft((current) => ({
-                              ...current,
-                              capture: { ...current.capture, color: event.target.value },
-                            }))
-                          }
-                        />
-                      </label>
-                      <label className="capture-setting-field">
-                        <span>线宽</span>
-                        <input
-                          type="number"
-                          aria-label="默认标注线宽"
-                          min={1}
-                          max={32}
-                          value={draft.capture.lineWidth}
-                          disabled={busy}
-                          style={{ width: 56 }}
-                          onChange={(event) => {
-                            const lineWidth = Math.min(32, Math.max(1, Number(event.target.value) || 1));
-                            changeDraft((current) => ({
-                              ...current,
-                              capture: { ...current.capture, lineWidth },
-                            }));
-                          }}
-                        />
-                      </label>
+                      <div className="capture-row__controls capture-annotation-controls">
+                        <label className="capture-annotation-field">
+                          <span>颜色</span>
+                          <input
+                            type="color"
+                            aria-label="默认标注颜色"
+                            value={draft.capture.color}
+                            disabled={busy}
+                            onChange={(event) =>
+                              changeDraft((current) => ({
+                                ...current,
+                                capture: { ...current.capture, color: event.target.value },
+                              }))
+                            }
+                          />
+                        </label>
+                        <label className="capture-annotation-field">
+                          <span>线宽</span>
+                          <input
+                            type="number"
+                            aria-label="默认标注线宽"
+                            min={1}
+                            max={32}
+                            value={draft.capture.lineWidth}
+                            disabled={busy}
+                            style={{ width: 56 }}
+                            onChange={(event) => {
+                              const lineWidth = Math.min(32, Math.max(1, Number(event.target.value) || 1));
+                              changeDraft((current) => ({
+                                ...current,
+                                capture: { ...current.capture, lineWidth },
+                              }));
+                            }}
+                          />
+                        </label>
+                      </div>
                     </div>
                   </div>
                   {accessibility?.diagnostics?.captureShortcutError && (

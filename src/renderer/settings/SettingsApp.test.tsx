@@ -1474,11 +1474,11 @@ describe("SettingsApp provider deletion", () => {
     expect(await screen.findByRole("combobox", { name: "AI 默认回复语言" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "语言" })).not.toBeInTheDocument();
 
-    // Switch to screen section and verify no redundant "屏幕" heading
+    // Switch to screen section and verify capture controls are shown directly (no redundant heading)
     fireEvent.click(within(nav).getByRole("button", { name: "屏幕" }));
-    expect(await screen.findByRole("heading", { name: "截图与贴图" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "截图快捷键" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "屏幕" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "截图快捷键" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "截图与贴图" })).not.toBeInTheDocument();
     expect(screen.getByText("PrtSc")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "贴图快捷键" })).toBeInTheDocument();
   });
@@ -1490,7 +1490,7 @@ describe("SettingsApp provider deletion", () => {
     render(<SettingsApp />);
 
     await goToSettingsSection("屏幕");
-    expect(await screen.findByRole("heading", { name: "截图与贴图" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "截图快捷键" })).toBeInTheDocument();
 
     // Existing bindings remain available until explicitly reset.
     expect(screen.getByRole("button", { name: "贴图快捷键" })).toHaveTextContent(/Ctrl.*Shift.*P/);
