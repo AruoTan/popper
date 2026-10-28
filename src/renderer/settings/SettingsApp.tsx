@@ -33,6 +33,7 @@ import {
   Languages,
   ListFilter,
   Monitor,
+  Minus,
   Pencil,
   Plus,
   RefreshCw,
@@ -2037,12 +2038,13 @@ export function SettingsApp(): JSX.Element {
                 <div className="settings-group" id="capture-title">
                   <div className="settings-card settings-card--rows capture-card">
                     {([
-                      ["shortcut", "截图快捷键"],
-                      ["pasteShortcut", "贴图快捷键"],
-                    ] as const).map(([field, label]) => (
+                      ["shortcut", "截图快捷键", "框选屏幕区域进行截图或标注"],
+                      ["pasteShortcut", "贴图快捷键", "将剪贴板图像作为悬浮窗贴在屏幕上"],
+                    ] as const).map(([field, label, hint]) => (
                       <div className="setting-row capture-row" key={field}>
                         <div className="capture-row__label">
                           <strong>{label}</strong>
+                          <span className="capture-row__hint">{hint}</span>
                         </div>
                         <div className="capture-row__controls">
                           <ShortcutRecorder
@@ -2078,43 +2080,110 @@ export function SettingsApp(): JSX.Element {
                     <div className="setting-row capture-row">
                       <div className="capture-row__label">
                         <strong>标注工具</strong>
-                        <span className="capture-row__hint">默认颜色和画笔线宽</span>
+                        <span className="capture-row__hint">新截图使用的默认画笔颜色与线条粗细</span>
                       </div>
-                      <div className="capture-row__controls capture-annotation-controls">
-                        <label className="capture-annotation-field">
-                          <span>颜色</span>
-                          <input
-                            type="color"
-                            aria-label="默认标注颜色"
-                            value={draft.capture.color}
-                            disabled={busy}
-                            onChange={(event) =>
-                              changeDraft((current) => ({
-                                ...current,
-                                capture: { ...current.capture, color: event.target.value },
-                              }))
-                            }
-                          />
-                        </label>
-                        <label className="capture-annotation-field">
-                          <span>线宽</span>
-                          <input
-                            type="number"
-                            aria-label="默认标注线宽"
-                            min={1}
-                            max={32}
-                            value={draft.capture.lineWidth}
-                            disabled={busy}
-                            style={{ width: 56 }}
-                            onChange={(event) => {
-                              const lineWidth = Math.min(32, Math.max(1, Number(event.target.value) || 1));
-                              changeDraft((current) => ({
-                                ...current,
-                                capture: { ...current.capture, lineWidth },
-                              }));
-                            }}
-                          />
-                        </label>
+                      <div className="capture-row__controls">
+                        <div className="capture-annotation-group-wrapper">
+                          <div className="capture-annotation-group">
+                            <label className="capture-color-control" title="点击选择默认标注颜色">
+                              <span
+                                className="capture-color-preview"
+                                style={{ backgroundColor: draft.capture.color }}
+                              />
+                              <span className="capture-color-text">
+                                {draft.capture.color.toUpperCase()}
+                              </span>
+                              <input
+                                type="color"
+                                className="capture-color-input-hidden"
+                                aria-label="默认标注颜色"
+                                value={draft.capture.color}
+                                disabled={busy}
+                                onChange={(event) =>
+                                  changeDraft((current) => ({
+                                    ...current,
+                                    capture: { ...current.capture, color: event.target.value },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <div className="capture-linewidth-stepper" title="画笔线条粗细 (1–32 px)">
+                              <button
+                                type="button"
+                                className="capture-stepper-btn"
+                                aria-label="减少线宽"
+                                disabled={busy || draft.capture.lineWidth <= 1}
+                                onClick={() => {
+                                  const lineWidth = Math.max(1, draft.capture.lineWidth - 1);
+                                  changeDraft((current) => ({
+                                    ...current,
+                                    capture: { ...current.capture, lineWidth },
+                                  }));
+                                }}
+                              >
+                                <Minus size={13} aria-hidden="true" />
+                              </button>
+                              <div className="capture-stepper-display">
+                                <input
+                                  type="number"
+                                  className="capture-stepper-input"
+                                  aria-label="默认标注线宽"
+                                  min={1}
+                                  max={32}
+                                  value={draft.capture.lineWidth}
+                                  disabled={busy}
+                                  onChange={(event) => {
+                                    const lineWidth = Math.min(32, Math.max(1, Number(event.target.value) || 1));
+                                    changeDraft((current) => ({
+                                      ...current,
+                                      capture: { ...current.capture, lineWidth },
+                                    }));
+                                  }}
+                                />
+                                <span className="capture-stepper-unit">px</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="capture-stepper-btn"
+                                aria-label="增加线宽"
+                                disabled={busy || draft.capture.lineWidth >= 32}
+                                onClick={() => {
+                                  const lineWidth = Math.min(32, draft.capture.lineWidth + 1);
+                                  changeDraft((current) => ({
+                                    ...current,
+                                    capture: { ...current.capture, lineWidth },
+                                  }));
+                                }}
+                              >
+                                <Plus size={13} aria-hidden="true" />
+                              </button>
+                            </div>
+                          </div>
+                          <span className="capture-annotation-hint">点击色块选色，支持 1–32 px</span>
+                        </div>
+                        <button
+                          className="button button--quiet capture-row__reset"
+                          type="button"
+                          aria-label="恢复标注工具默认"
+                          disabled={
+                            busy ||
+                            (draft.capture.color.toLowerCase() === DEFAULT_APP_SETTINGS.capture.color.toLowerCase() &&
+                              draft.capture.lineWidth === DEFAULT_APP_SETTINGS.capture.lineWidth)
+                          }
+                          onClick={() =>
+                            changeDraft((current) => ({
+                              ...current,
+                              capture: {
+                                ...current.capture,
+                                color: DEFAULT_APP_SETTINGS.capture.color,
+                                lineWidth: DEFAULT_APP_SETTINGS.capture.lineWidth,
+                              },
+                            }))
+                          }
+                        >
+                          <RefreshCw size={13} aria-hidden="true" />
+                          恢复默认
+                        </button>
                       </div>
                     </div>
                   </div>
