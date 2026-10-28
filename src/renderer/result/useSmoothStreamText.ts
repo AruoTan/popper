@@ -14,6 +14,10 @@ export type SmoothStreamFrameCanceller = (handle: number) => void
 
 export type SmoothStreamClock = () => number
 
+const requestBrowserFrame: SmoothStreamFrameScheduler = (callback) => window.requestAnimationFrame(callback)
+const cancelBrowserFrame: SmoothStreamFrameCanceller = (handle) => window.cancelAnimationFrame(handle)
+const browserClock: SmoothStreamClock = () => performance.now()
+
 /**
  * Display-layer adaptive typewriter. `target` stays the full logical stream
  * text from the store; returned string lags slightly so bursts paint smoothly.
@@ -29,9 +33,9 @@ export function useSmoothStreamText(
   streaming: boolean,
   resetKey: string,
   config: SmoothStreamConfig = DEFAULT_SMOOTH_STREAM_CONFIG,
-  requestFrame: SmoothStreamFrameScheduler = (cb) => window.requestAnimationFrame(cb),
-  cancelFrame: SmoothStreamFrameCanceller = (id) => window.cancelAnimationFrame(id),
-  now: SmoothStreamClock = () => performance.now()
+  requestFrame: SmoothStreamFrameScheduler = requestBrowserFrame,
+  cancelFrame: SmoothStreamFrameCanceller = cancelBrowserFrame,
+  now: SmoothStreamClock = browserClock
 ): string {
   const controllerRef = useRef<SmoothStreamController | null>(null)
   if (controllerRef.current === null) {

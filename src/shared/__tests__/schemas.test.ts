@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import {
   AI_OUTPUT_LIMIT,
   DEFAULT_ACTIONS,
-  DEFAULT_ACTION_PROMPTS,
   DEFAULT_APP_SETTINGS,
   DEFAULT_PROVIDER_ID,
   DEFAULT_PUBLIC_SETTINGS,
@@ -58,9 +57,9 @@ describe('settings schemas and defaults', () => {
     expect(publicSettingsSchema.safeParse(DEFAULT_PUBLIC_SETTINGS).success).toBe(true);
   });
 
-  it('provides v17 defaults with only AI actions', () => {
+  it('provides v18 defaults with only AI actions', () => {
     expect(appSettingsSchema.parse(DEFAULT_APP_SETTINGS)).toEqual(DEFAULT_APP_SETTINGS)
-    expect(DEFAULT_APP_SETTINGS.version).toBe(17)
+    expect(DEFAULT_APP_SETTINGS.version).toBe(18)
     expect(DEFAULT_APP_SETTINGS.providers[0]).toMatchObject({
       id: DEFAULT_PROVIDER_ID,
       enabled: true,
@@ -548,3 +547,43 @@ describe('action stream event schemas', () => {
     expect(resultRendererMarkerSchema.safeParse('firstDelta').success).toBe(false)
   })
 })
+
+describe('screen capture settings', () => {
+  it('accepts an unset pin shortcut while requiring a capture shortcut', () => {
+    const settings = structuredClone(DEFAULT_PUBLIC_SETTINGS);
+    expect(settings.capture.pasteShortcut).toBe('');
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    expect(settingsUpdateSchema.parse({ capture: settings.capture }).capture).toEqual(settings.capture);
+    expect(settingsUpdateSchema.safeParse({ capture: { ...settings.capture, pasteShortcut: ' ' } }).success).toBe(false);
+    settings.capture.shortcut = '';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+  });
+  it('rejects shortcuts that collide after modifier reordering', () => {
+    const settings = { ...structuredClone(DEFAULT_PUBLIC_SETTINGS) };
+    settings.capture.pasteShortcut = 'PrintScreen';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+    settings.capture.pasteShortcut = 'Control+Shift+KeyP';
+    settings.capture.shortcut = 'Shift+Control+KeyP';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+    settings.capture.shortcut = 'PrintScreen';
+    settings.quickAskShortcut = settings.capture.shortcut;
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(false);
+  });
+  it('accepts standalone functional keys and standard modifier combinations', () => {
+    const settings = { ...structuredClone(DEFAULT_PUBLIC_SETTINGS) };
+    settings.capture.shortcut = 'PrintScreen';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    settings.capture.shortcut = 'F12';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    settings.capture.shortcut = 'Super+Shift+KeyS';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+    settings.capture.shortcut = 'Control+PrintScreen';
+    expect(publicSettingsSchema.safeParse(settings).success).toBe(true);
+  });
+  it('validates annotation preferences and preserves explicit capture updates', () => {
+    const capture = { ...DEFAULT_PUBLIC_SETTINGS.capture, color: '#12abEF', lineWidth: 32 };
+    expect(settingsUpdateSchema.parse({ capture })).toEqual({ capture });
+    expect(settingsUpdateSchema.safeParse({ capture: { ...capture, lineWidth: 0 } }).success).toBe(false);
+    expect(settingsUpdateSchema.safeParse({ capture: { ...capture, color: '#abcd' } }).success).toBe(false);
+  });
+});

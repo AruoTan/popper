@@ -2473,7 +2473,7 @@ fn classify_result_foreground(
     root_match: bool,
     root_owner_match: bool,
     owner_chain_match: bool,
-    toolbar_match: bool,
+    auxiliary_match: bool,
 ) -> ResultForegroundScope {
     if !foreground_available {
         ResultForegroundScope::Unknown
@@ -2482,12 +2482,17 @@ fn classify_result_foreground(
         || root_match
         || root_owner_match
         || owner_chain_match
-        || toolbar_match
+        || auxiliary_match
     {
         ResultForegroundScope::Internal
     } else {
         ResultForegroundScope::External
     }
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_result_auxiliary_window(label: &str) -> bool {
+    label == TOOLBAR_LABEL || label.starts_with("capture-session-")
 }
 
 #[cfg(target_os = "windows")]
@@ -2524,20 +2529,17 @@ fn result_foreground_scope(app: &AppHandle, window: &WebviewWindow) -> ResultFor
         candidate = owner;
     }
 
-    // The selection toolbar is a separate no-activate top-level webview. On
-    // some WebView2 builds clicking it briefly makes that window foreground;
-    // it is still an internal continuation of a result-window selection and
-    // must not trigger the source result's blur-close before run_action reads
-    // the selection.
-    let toolbar_match = app
-        .get_webview_window(TOOLBAR_LABEL)
-        .and_then(|toolbar| toolbar.hwnd().ok())
-        .is_some_and(|toolbar_hwnd| {
-            foreground == toolbar_hwnd
-                || unsafe { IsChild(toolbar_hwnd, foreground).as_bool() }
-                || unsafe { GetAncestor(foreground, GA_ROOT) } == toolbar_hwnd
-                || unsafe { GetAncestor(foreground, GA_ROOTOWNER) } == toolbar_hwnd
-        });
+    // Toolbar input and screen capture continue the user's current interaction.
+    // Their activation must not dismiss an existing result popover.
+    let auxiliary_match = app.webview_windows().into_iter().any(|(label, auxiliary)| {
+        is_result_auxiliary_window(&label)
+            && auxiliary.hwnd().ok().is_some_and(|hwnd| {
+                foreground == hwnd
+                    || unsafe { IsChild(hwnd, foreground).as_bool() }
+                    || unsafe { GetAncestor(foreground, GA_ROOT) } == hwnd
+                    || unsafe { GetAncestor(foreground, GA_ROOTOWNER) } == hwnd
+            })
+    });
 
     classify_result_foreground(
         true,
@@ -2546,7 +2548,7 @@ fn result_foreground_scope(app: &AppHandle, window: &WebviewWindow) -> ResultFor
         root_match,
         root_owner_match,
         owner_chain_match,
-        toolbar_match,
+        auxiliary_match,
     )
 }
 
@@ -2747,77 +2749,6 @@ fn pointer_leave_should_close(
     timer_is_current && cursor_outside_result && !cursor_inside_toolbar
 }
 
-/// Quietly return key-focus to the selection source after a toolbar action.
-///
-/// Prefer cooperative yield + a soft activate (no `ActivateAllWindows`) so the
-/// host app becomes key without the z-order flash of forcing every window
-/// forward. Falls back to `NSApp.deactivate()` when the bundle id is unknown.
-#[cfg(target_os = "macos")]
-pub fn restore_source_app_activation(app: &AppHandle, bundle_id: &str) -> bool {
-    let bundle_id = bundle_id.trim().to_owned();
-    let app = app.clone();
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-    if app
-        .run_on_main_thread(move || {
-            use objc2::MainThreadMarker;
-            use objc2_app_kit::{
-                NSApplication, NSApplicationActivationOptions, NSRunningApplication,
-            };
-            use objc2_foundation::NSString;
-
-            let Some(mtm) = MainThreadMarker::new() else {
-                let _ = sender.send(false);
-                return;
-            };
-
-            // If Popper became active after the toolbar click, drop activation
-            // first — this restores the previous app without a window parade.
-            let ns_app = NSApplication::sharedApplication(mtm);
-            if ns_app.isActive() {
-                ns_app.deactivate();
-            }
-
-            if bundle_id.is_empty() {
-                let _ = sender.send(true);
-                return;
-            }
-
-            let identifier = NSString::from_str(&bundle_id);
-            // Cooperative hand-off (macOS 14+) — avoids IgnoringOtherApps thrash.
-            ns_app.yieldActivationToApplicationWithBundleIdentifier(&identifier);
-
-            let running =
-                NSRunningApplication::runningApplicationsWithBundleIdentifier(&identifier);
-            // Soft activate: only main/key windows, NOT ActivateAllWindows (that
-            // was the visible "window flash" after copy).
-            let activated = running.firstObject().is_some_and(|target| {
-                target.activateWithOptions(NSApplicationActivationOptions::empty())
-            });
-            let _ = sender.send(activated || true);
-        })
-        .is_err()
-    {
-        return false;
-    }
-    receiver.recv().unwrap_or(false)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn restore_source_app_activation(_app: &AppHandle, _bundle_id: &str) -> bool {
-    false
-}
-
-/// Backward-compatible name used by older call sites / docs.
-#[cfg(target_os = "macos")]
-pub fn activate_application_by_bundle_id(app: &AppHandle, bundle_id: &str) -> bool {
-    restore_source_app_activation(app, bundle_id)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn activate_application_by_bundle_id(app: &AppHandle, bundle_id: &str) -> bool {
-    restore_source_app_activation(app, bundle_id)
-}
-
 #[cfg(target_os = "macos")]
 fn configure_toolbar_native(window: &WebviewWindow) -> tauri::Result<()> {
     use objc2_app_kit::{NSStatusWindowLevel, NSWindow, NSWindowCollectionBehavior};
@@ -2975,6 +2906,34 @@ fn configure_toolbar_native(window: &WebviewWindow) -> tauri::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+fn configure_windows_toolbar_surface(hwnd: windows::Win32::Foundation::HWND) {
+    use std::ffi::c_void;
+    use windows::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMSBT_NONE, DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE,
+        DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+    };
+
+    unsafe fn set_attribute<T: Copy>(
+        hwnd: windows::Win32::Foundation::HWND,
+        attribute: windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE,
+        value: &T,
+    ) {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            attribute,
+            value as *const T as *const c_void,
+            std::mem::size_of::<T>() as u32,
+        );
+    }
+
+    unsafe {
+        set_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_DONOTROUND);
+        set_attribute(hwnd, DWMWA_BORDER_COLOR, &DWMWA_COLOR_NONE);
+        set_attribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &DWMSBT_NONE);
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn configure_toolbar_native_raw(window: &WebviewWindow) -> tauri::Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{
         SetWindowPos, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
@@ -2987,6 +2946,7 @@ fn configure_toolbar_native_raw(window: &WebviewWindow) -> tauri::Result<()> {
         WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0,
         WS_EX_APPWINDOW.0,
     )?;
+    configure_windows_toolbar_surface(hwnd);
     unsafe {
         SetWindowPos(
             hwnd,
@@ -3020,6 +2980,7 @@ fn configure_toolbar_input_native(window: &WebviewWindow, active: bool) -> tauri
             WS_EX_TOOLWINDOW.0,
             WS_EX_APPWINDOW.0 | WS_EX_NOACTIVATE.0,
         )?;
+        configure_windows_toolbar_surface(hwnd);
         unsafe {
             SetWindowPos(
                 hwnd,
@@ -3113,12 +3074,12 @@ fn set_native_alpha_raw(window: &WebviewWindow, alpha: f64) -> tauri::Result<()>
 }
 
 #[cfg(target_os = "macos")]
-fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
+pub(crate) fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
     set_native_alpha_raw(window, opacity.clamp(0.2, 1.0))
 }
 
 #[cfg(target_os = "windows")]
-fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
+pub(crate) fn set_native_opacity(window: &WebviewWindow, opacity: f64) -> tauri::Result<()> {
     run_windows_window_operation(window, move |window| {
         set_native_opacity_raw(window, opacity)
     })
@@ -3236,7 +3197,7 @@ fn apply_result_pinned(window: &WebviewWindow, pinned: bool, _opacity: f64) -> t
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-fn set_native_opacity(_window: &WebviewWindow, _opacity: f64) -> tauri::Result<()> {
+pub(crate) fn set_native_opacity(_window: &WebviewWindow, _opacity: f64) -> tauri::Result<()> {
     Ok(())
 }
 
@@ -3473,6 +3434,10 @@ pub fn show_quick_ask_window(app: &AppHandle) -> tauri::Result<()> {
     .visible(false)
     .focused(false);
     let window = configure_webview_storage(builder)?.build()?;
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = window.hwnd() {
+        configure_windows_toolbar_surface(hwnd);
+    }
     position_quick_ask_window(app, &window, 230.0)?;
     // Its renderer reveals it after installing listeners and committing the input.
     Ok(())
@@ -3823,6 +3788,22 @@ mod tests {
             classify_result_foreground(true, false, false, false, false, false, true),
             ResultForegroundScope::Internal
         );
+    }
+
+    #[test]
+    fn capture_activation_is_an_internal_result_interaction() {
+        assert!(is_result_auxiliary_window("selection-toolbar"));
+        assert!(is_result_auxiliary_window(
+            "capture-session-7c3ff0e5-58e8-4e9a-94f7-c53194436487"
+        ));
+        for label in [
+            "settings",
+            "quick-ask",
+            "capture-pin-image",
+            "capture-notice-status",
+        ] {
+            assert!(!is_result_auxiliary_window(label));
+        }
     }
 
     #[test]

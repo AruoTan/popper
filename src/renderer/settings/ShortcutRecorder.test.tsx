@@ -115,3 +115,23 @@ describe("ShortcutRecorder", () => {
     await waitFor(() => expect(setNative).toHaveBeenLastCalledWith(false));
   });
 });
+
+it('serializes a delayed native recording handoff between shortcut controls', async () => {
+  let resolve!: () => void;
+  setNative.mockImplementationOnce(() => new Promise<void>((done) => { resolve = done; }));
+  render(<>
+    <ShortcutRecorder id="capture" label="截图快捷键" value="PrintScreen" onChange={change} />
+    <ShortcutRecorder id="paste" label="贴图快捷键" value="Control+Shift+KeyP" onChange={change} />
+  </>);
+  const capture = screen.getByRole('button', { name: '截图快捷键' });
+  const paste = screen.getByRole('button', { name: '贴图快捷键' });
+  fireEvent.click(capture);
+  await waitFor(() => expect(setNative).toHaveBeenCalledOnce());
+  fireEvent.pointerDown(paste); fireEvent.click(paste);
+  expect(paste).toHaveAttribute('aria-busy', 'true');
+  expect(setNative).toHaveBeenCalledOnce();
+  await act(async () => resolve());
+  await waitFor(() => expect(paste).toHaveAttribute('aria-pressed', 'true'));
+  expect(capture).toHaveAttribute('aria-pressed', 'false');
+  expect(setNative.mock.calls.map(([enabled]) => enabled)).toEqual([true, false, true]);
+});

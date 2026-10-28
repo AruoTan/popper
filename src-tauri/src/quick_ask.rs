@@ -138,31 +138,91 @@ pub fn message_content(question: &str, attachments: &[Attachment]) -> serde_json
     parts.into()
 }
 
+fn is_valid_key(key: &str) -> bool {
+    matches!(
+        key,
+        "PrintScreen"
+            | "Pause"
+            | "ScrollLock"
+            | "Insert"
+            | "Delete"
+            | "Home"
+            | "End"
+            | "PageUp"
+            | "PageDown"
+            | "ArrowDown"
+            | "ArrowLeft"
+            | "ArrowRight"
+            | "ArrowUp"
+            | "Space"
+            | "Tab"
+            | "Enter"
+            | "Backspace"
+            | "CapsLock"
+            | "NumLock"
+            | "Escape"
+            | "Backquote"
+            | "Backslash"
+            | "BracketLeft"
+            | "BracketRight"
+            | "Comma"
+            | "Equal"
+            | "Minus"
+            | "Period"
+            | "Quote"
+            | "Semicolon"
+            | "Slash"
+            | "Numpad0"
+            | "Numpad1"
+            | "Numpad2"
+            | "Numpad3"
+            | "Numpad4"
+            | "Numpad5"
+            | "Numpad6"
+            | "Numpad7"
+            | "Numpad8"
+            | "Numpad9"
+            | "NumpadAdd"
+            | "NumpadDecimal"
+            | "NumpadDivide"
+            | "NumpadEnter"
+            | "NumpadEqual"
+            | "NumpadMultiply"
+            | "NumpadSubtract"
+    ) || (key.len() == 4 && key.starts_with("Key") && key.as_bytes()[3].is_ascii_uppercase())
+        || (key.len() == 6 && key.starts_with("Digit") && key.as_bytes()[5].is_ascii_digit())
+        || key
+            .strip_prefix('F')
+            .and_then(|value| value.parse::<u8>().ok())
+            .is_some_and(|value| (1..=24).contains(&value))
+}
+
+fn is_standalone_key(key: &str) -> bool {
+    matches!(key, "PrintScreen" | "Pause" | "ScrollLock" | "Insert")
+        || key
+            .strip_prefix('F')
+            .and_then(|value| value.parse::<u8>().ok())
+            .is_some_and(|value| (1..=24).contains(&value))
+}
+
 pub fn valid_shortcut(value: &str) -> bool {
-    if value.len() > 100 {
+    if value.is_empty() || value.len() > 100 {
         return false;
     }
     let mut parts: Vec<_> = value.split('+').collect();
     let Some(key) = parts.pop() else {
         return false;
     };
-    if parts.is_empty() {
+    if !is_valid_key(key) {
         return false;
+    }
+    if parts.is_empty() {
+        return is_standalone_key(key);
     }
     let mut seen = std::collections::HashSet::new();
-    if parts
+    parts
         .iter()
-        .any(|part| !matches!(*part, "Control" | "Shift" | "Alt" | "Super") || !seen.insert(*part))
-    {
-        return false;
-    }
-    key == "Space"
-        || (key.len() == 4 && key.starts_with("Key") && key.as_bytes()[3].is_ascii_uppercase())
-        || (key.len() == 6 && key.starts_with("Digit") && key.as_bytes()[5].is_ascii_digit())
-        || key
-            .strip_prefix('F')
-            .and_then(|value| value.parse::<u8>().ok())
-            .is_some_and(|value| (1..=24).contains(&value))
+        .all(|part| matches!(*part, "Control" | "Shift" | "Alt" | "Super") && seen.insert(*part))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -337,12 +397,13 @@ mod tests {
         assert!(validate_attachments(&[oversized]).is_err());
     }
     #[test]
-    fn shortcuts_require_a_modifier_and_known_key() {
-        for valid in ["Control+Shift+Space", "Super+KeyK", "Alt+F12"] {
+    fn shortcuts_require_a_modifier_or_standalone_key() {
+        for valid in ["PrintScreen", "F12", "Control+Shift+Space", "Super+KeyK", "Alt+F12", "Control+PrintScreen"] {
             assert!(valid_shortcut(valid));
         }
         for invalid in [
             "Space",
+            "KeyA",
             "Control+",
             "Control+Control+Space",
             "Control+F25",

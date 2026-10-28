@@ -3,8 +3,9 @@ name = "popper"
 version = "1.0.0"
 description = "Popper, a lightweight macOS and Windows selection assistant built with Tauri"
 authors = ["Popper contributors"]
+license = "GPL-3.0-only"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 
 [lib]
 name = "popper_lib"
@@ -66,6 +67,8 @@ objc2-foundation = { version = "0.3.2", features = [
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tauri-plugin-single-instance = "2.4.3"
+xcap = "=0.9.8"
+image = { version = "=0.25.10", default-features = false, features = ["png", "bmp"] }
 windows = { version = "0.61.3", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
@@ -86,9 +89,11 @@ windows = { version = "0.61.3", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Controls_Dialogs",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
 [dev-dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["png", "bmp"] }
 tempfile = "3"
 tokio = { version = "1", features = ["io-util", "net", "test-util"] }

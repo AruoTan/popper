@@ -2,13 +2,13 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { StrictMode } from "react";
 
 import {
-  DEFAULT_ACTION_PROMPTS,
-  DEFAULT_PROVIDER_ID,
-  DEFAULT_PUBLIC_SETTINGS,
-  type PublicSettings,
-  type SettingsGuidance,
-  type SettingsUpdate,
-  type WindowPopperApi,
+    DEFAULT_ACTION_PROMPTS,
+    DEFAULT_PROVIDER_ID,
+    DEFAULT_PUBLIC_SETTINGS,
+    type PublicSettings,
+    type SettingsGuidance,
+    type SettingsUpdate,
+    type WindowPopperApi,
 } from "../../shared";
 import { SettingsApp } from "./SettingsApp";
 import { settingsGuidanceInbox } from "./settingsGuidanceInbox";
@@ -32,23 +32,19 @@ function stubScrollIntoView(): ReturnType<typeof vi.fn> {
 
 async function goToSettingsSection(label: string): Promise<void> {
   await screen.findByRole("navigation", { name: "设置分区" });
-  const getActionsButton = () => screen.queryByRole("button", { name: "动作" }) ?? screen.getByRole("button", { name: "划词" });
-  if (label === "动作" || label === "划词") {
-    fireEvent.click(getActionsButton());
-    const tab = screen.queryByRole("tab", { name: /划词动作/ }) ?? screen.queryByRole("tab", { name: /工具栏动作/ });
-    if (tab) fireEvent.click(tab);
+  if (label === "动作") {
+    fireEvent.click(screen.getByRole("button", { name: "动作" }));
+    fireEvent.click(screen.getByRole("tab", { name: /划词动作/ }));
     return;
   }
   if (label === "结果") {
-    fireEvent.click(getActionsButton());
-    const tab = screen.queryByRole("tab", { name: /结果窗口/ });
-    if (tab) fireEvent.click(tab);
+    fireEvent.click(screen.getByRole("button", { name: "动作" }));
+    fireEvent.click(screen.getByRole("tab", { name: /结果窗口/ }));
     return;
   }
   if (label === "过滤") {
-    fireEvent.click(getActionsButton());
-    const tab = screen.queryByRole("tab", { name: /应用过滤/ });
-    if (tab) fireEvent.click(tab);
+    fireEvent.click(screen.getByRole("button", { name: "动作" }));
+    fireEvent.click(screen.getByRole("tab", { name: /应用过滤/ }));
     return;
   }
   fireEvent.click(screen.getByRole("button", { name: label }));
@@ -89,6 +85,27 @@ function installDefaultBridge(overrides: Partial<WindowPopperApi> = {}): void {
 }
 
 describe("SettingsApp provider deletion", () => {
+  it.each(["结果窗口", "应用过滤"])("restores the current %s subtab when reopening settings", async (label) => {
+    const sectionKey = "popper.settings.active-section";
+    const subtabKey = "popper.settings.selection-subtab";
+    const previousSection = sessionStorage.getItem(sectionKey);
+    const previousSubtab = sessionStorage.getItem(subtabKey);
+    try {
+      sessionStorage.setItem(sectionKey, "actions");
+      sessionStorage.setItem(subtabKey, label === "结果窗口" ? "result" : "filter");
+      installDefaultBridge();
+      const view = render(<SettingsApp />);
+      try {
+        expect(await screen.findByRole("tab", { name: new RegExp(label) })).toHaveAttribute("aria-selected", "true");
+      } finally { view.unmount(); }
+    } finally {
+      if (previousSection === null) sessionStorage.removeItem(sectionKey);
+      else sessionStorage.setItem(sectionKey, previousSection);
+      if (previousSubtab === null) sessionStorage.removeItem(subtabKey);
+      else sessionStorage.setItem(subtabKey, previousSubtab);
+    }
+  });
+
   it("places the default model first and saves it independently from action overrides", async () => {
     const settings: PublicSettings = {
       ...DEFAULT_PUBLIC_SETTINGS,
@@ -431,7 +448,7 @@ describe("SettingsApp provider deletion", () => {
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
 
-  it("collapses saved providers when the settings renderer is recreated", async () => {
+  it("reloads saved providers and discards the closed renderer's unsaved draft", async () => {
     const settings: PublicSettings = {
       ...DEFAULT_PUBLIC_SETTINGS,
       providers: [
@@ -447,14 +464,23 @@ describe("SettingsApp provider deletion", () => {
         },
       ],
     };
-    installDefaultBridge({ getSettings: vi.fn(async () => settings) });
+    const getSettings = vi.fn(async () => settings);
+    installDefaultBridge({ getSettings });
     const view = render(<SettingsApp />);
     await openProviderConfigurations();
+    fireEvent.change(screen.getByDisplayValue("https://new.example.com/v1"), {
+      target: { value: "https://unsaved.example.com/v1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加服务商" }));
+    expect(screen.getByDisplayValue("https://unsaved.example.com/v1")).toBeInTheDocument();
     view.unmount();
     render(<SettingsApp />);
     await screen.findByRole("heading", { name: "AI 服务商与模型" });
     expect(screen.getAllByRole("button", { name: /^展开.*配置$/ })).toHaveLength(2);
     expect(screen.queryByRole("button", { name: /^收起.*配置$/ })).not.toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://new.example.com/v1")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("https://unsaved.example.com/v1")).not.toBeInTheDocument();
+    expect(getSettings).toHaveBeenCalledTimes(2);
   });
 
   it("shows AI default reply language under the language section", async () => {
@@ -1397,7 +1423,7 @@ describe("SettingsApp provider deletion", () => {
     const navItems = within(nav)
       .getAllByRole("button")
       .map((btn) => btn.getAttribute("aria-label"));
-    expect(navItems).toEqual(["通用", "动作", "语言"]);
+    expect(navItems).toEqual(["通用", "动作", "屏幕", "语言"]);
     expect(within(nav).queryByRole("button", { name: "结果" })).not.toBeInTheDocument();
     expect(within(nav).queryByRole("button", { name: "过滤" })).not.toBeInTheDocument();
 
@@ -1405,6 +1431,8 @@ describe("SettingsApp provider deletion", () => {
     expect(await screen.findByRole("tablist", { name: "动作配置选项卡" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "动作" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "划词动作" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "屏幕捕捉" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("截图快捷键")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "快捷提问" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "划词提问" })).toBeInTheDocument();
     expect(screen.getByText(/长按右键/)).toBeInTheDocument();
@@ -1445,6 +1473,67 @@ describe("SettingsApp provider deletion", () => {
     fireEvent.click(within(nav).getByRole("button", { name: "语言" }));
     expect(await screen.findByRole("combobox", { name: "AI 默认回复语言" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "语言" })).not.toBeInTheDocument();
+
+    // Switch to screen section and verify capture controls are shown directly (no redundant heading)
+    fireEvent.click(within(nav).getByRole("button", { name: "屏幕" }));
+    expect(await screen.findByRole("button", { name: "截图快捷键" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "屏幕" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "截图与贴图" })).not.toBeInTheDocument();
+    expect(screen.getByText("PrtSc")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "贴图快捷键" })).toBeInTheDocument();
+  });
+
+  it("configures and saves capture screen settings independently under 屏幕 section", async () => {
+    const settings = structuredClone(DEFAULT_PUBLIC_SETTINGS);
+    settings.capture.pasteShortcut = "Control+Shift+KeyP";
+    installDefaultBridge({ getSettings: vi.fn(async () => settings) });
+    render(<SettingsApp />);
+
+    await goToSettingsSection("屏幕");
+    expect(await screen.findByRole("button", { name: "截图快捷键" })).toBeInTheDocument();
+
+    // Existing bindings remain available until explicitly reset.
+    expect(screen.getByRole("button", { name: "贴图快捷键" })).toHaveTextContent(/Ctrl.*Shift.*P/);
+    fireEvent.click(screen.getByRole("button", { name: "恢复贴图快捷键默认" }));
+    expect(screen.getByRole("button", { name: "贴图快捷键" })).toHaveTextContent("未设置");
+
+    // Change color and line width
+    const colorInput = screen.getByLabelText("默认标注颜色");
+    fireEvent.change(colorInput, { target: { value: "#00ff00" } });
+    const lineWidthInput = screen.getByLabelText("默认标注线宽");
+    fireEvent.change(lineWidthInput, { target: { value: "5" } });
+
+    // Save settings
+    fireEvent.click(screen.getByRole("button", { name: "保存设置" }));
+    await waitFor(() =>
+      expect(window._popper_.updateSettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capture: expect.objectContaining({
+            shortcut: "PrintScreen",
+            pasteShortcut: "",
+            color: "#00ff00",
+            lineWidth: 5,
+          }),
+        })
+      )
+    );
+  });
+
+  it("shows platform notice under 屏幕 section when platform is not windows", async () => {
+    installDefaultBridge({
+      getAccessibilityStatus: vi.fn(async () => ({
+        platform: "darwin" as const,
+        trusted: true,
+        canRequest: false,
+        available: true,
+        diagnostics: {},
+      })),
+    });
+    render(<SettingsApp />);
+
+    await goToSettingsSection("屏幕");
+    expect(await screen.findByText("屏幕捕捉目前仅支持 Windows 平台")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "截图与贴图" })).not.toBeInTheDocument();
   });
 });
 

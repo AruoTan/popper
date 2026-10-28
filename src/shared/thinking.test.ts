@@ -4,8 +4,7 @@ import {
   clampThinkingMode,
   effectiveThinkingLevels,
   inferThinkingLevels,
-  modelSupportsThinkingOff,
-  THINKING_LEVELS
+  modelSupportsThinkingOff
 } from './thinking'
 
 describe('inferThinkingLevels', () => {

@@ -26,6 +26,8 @@ describe("Tauri renderer bridge", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     let markActionListenerReady: ((unlisten: () => void) => void) | undefined;
+    let markCaptureListenerReady: ((unlisten: () => void) => void) | undefined;
+    let forwardCaptureAttachment: ((event: { payload: unknown }) => void) | undefined;
     let forwardActionEvent: ((event: { payload: unknown }) => void) | undefined;
     let forwardToolbarPointer: ((event: { payload: unknown }) => void) | undefined;
     let forwardToolbarDismissed: ((event: { payload: unknown }) => void) | undefined;
@@ -46,6 +48,10 @@ describe("Tauri renderer bridge", () => {
           return new Promise<() => void>((resolve) => {
             markActionListenerReady = resolve;
           });
+        }
+        if (eventName === "popper:capture-attachment") {
+          forwardCaptureAttachment = listener;
+          return new Promise<() => void>((resolve) => { markCaptureListenerReady = resolve; });
         }
         if (eventName === "popper:toolbar-pointer") {
           forwardToolbarPointer = listener;
@@ -172,6 +178,21 @@ describe("Tauri renderer bridge", () => {
     });
 
     installTauriBridge();
+
+    const captureListener = vi.fn();
+    const stopCapture = window._popper_.onCaptureAttachment?.(captureListener);
+    const pendingCapture = window._popper_.pendingCaptureAttachment?.();
+    await Promise.resolve();
+    expect(invokeMock).not.toHaveBeenCalledWith("capture_pending_attachment");
+    expect(markCaptureListenerReady).toBeTypeOf("function");
+    markCaptureListenerReady?.(() => undefined);
+    await pendingCapture;
+    expect(invokeMock).toHaveBeenCalledWith("capture_pending_attachment");
+    forwardCaptureAttachment?.({ payload: undefined });
+    expect(captureListener).toHaveBeenCalledOnce();
+    stopCapture?.();
+    forwardCaptureAttachment?.({ payload: undefined });
+    expect(captureListener).toHaveBeenCalledOnce();
     expect("selectionBar" in window).toBe(false);
 
     await expect(window._popper_.getCurrentSelection?.()).resolves.toBeNull();

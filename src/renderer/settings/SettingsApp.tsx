@@ -22,6 +22,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  Crop,
   Eye,
   EyeOff,
   Globe,
@@ -32,7 +33,7 @@ import {
   Languages,
   ListFilter,
   Monitor,
-  MousePointer2,
+  Minus,
   Pencil,
   Plus,
   RefreshCw,
@@ -58,6 +59,7 @@ import appIcon from "../../../assets/popper.png";
 
 import {
   APP_NAME,
+  DEFAULT_APP_SETTINGS,
   DEFAULT_OPENAI_BASE_URL,
   MAX_ENABLED_ACTIONS,
   RESULT_FONT_SIZE_MAX,
@@ -102,7 +104,7 @@ type ModelPickerState = {
   remoteModels: ProviderModel[];
   checkedIds: Set<string>;
 };
-type SettingsSectionId = "general" | "actions" | "language";
+type SettingsSectionId = "general" | "actions" | "screen" | "language";
 type SelectionSubTab = "actions" | "result" | "filter";
 
 const SETTINGS_SECTIONS: ReadonlyArray<{
@@ -127,6 +129,13 @@ const SETTINGS_SECTIONS: ReadonlyArray<{
     caption: "划词动作与快捷提问",
   },
   {
+    id: "screen",
+    label: "屏幕",
+    blurb: "配置屏幕截图、标注工具、浮动贴图与全局快捷键。",
+    icon: Crop,
+    caption: "截图、标注与贴图",
+  },
+  {
     id: "language",
     label: "语言",
     blurb: "设置 AI 默认回复语言，以及翻译的源语言与目标语言。",
@@ -141,9 +150,6 @@ const SETTINGS_SELECTION_SUBTAB_STORAGE_KEY = "popper.settings.selection-subtab"
 function restoredSettingsSection(): SettingsSectionId {
   try {
     const value = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
-    if (value === "selection" || value === "result" || value === "filter" || value === "actions") {
-      return "actions";
-    }
     return SETTINGS_SECTIONS.some((section) => section.id === value)
       ? (value as SettingsSectionId)
       : "general";
@@ -154,11 +160,6 @@ function restoredSettingsSection(): SettingsSectionId {
 
 function restoredSelectionSubTab(): SelectionSubTab {
   try {
-    const prevSection = window.sessionStorage.getItem(SETTINGS_ACTIVE_SECTION_STORAGE_KEY);
-    if (prevSection === "result") return "result";
-    if (prevSection === "filter") return "filter";
-    if (prevSection === "actions" || prevSection === "selection") return "actions";
-
     const value = window.sessionStorage.getItem(SETTINGS_SELECTION_SUBTAB_STORAGE_KEY);
     return value === "actions" || value === "result" || value === "filter" ? value : "actions";
   } catch {
@@ -314,8 +315,8 @@ export function SettingsApp(): JSX.Element {
   }, [dirty]);
 
   useEffect(() => {
-    // The settings WebView stays mounted while hidden. Each explicit open
-    // starts with collapsed providers without discarding unsaved form values.
+    // Bringing an already open panel forward collapses providers while
+    // preserving its current draft. Closing the panel releases this renderer.
     return window._popper_.onSettingsOpened?.(() => setExpandedProviders({}));
   }, []);
 
@@ -363,7 +364,7 @@ export function SettingsApp(): JSX.Element {
     if (focus === "providers") {
       setActiveSection("general");
       targetId = "providers-title";
-    } else if (focus === "actions" || focus === "selection") {
+    } else if (focus === "actions") {
       setActiveSection("actions");
       setSelectionSubTab("actions");
       targetId = "actions-title";
@@ -375,9 +376,12 @@ export function SettingsApp(): JSX.Element {
       setActiveSection("actions");
       setSelectionSubTab("filter");
       targetId = "filter-title";
-    } else if (focus === "quick-ask" || focus === "quickAsk") {
+    } else if (focus === "quick-ask") {
       setActiveSection("actions");
       targetId = "quick-ask-title";
+    } else if (focus === "screen") {
+      setActiveSection("screen");
+      targetId = "capture-title";
     }
     if (targetId) {
       const scrollTargetId = targetId;
@@ -1005,8 +1009,6 @@ export function SettingsApp(): JSX.Element {
   const busy = operation !== null;
   const permission = accessibilityPresentation(accessibility);
   const selectionAvailable = accessibility?.available ?? accessibility?.trusted ?? false;
-  const activeMeta =
-    SETTINGS_SECTIONS.find((section) => section.id === activeSection) ?? SETTINGS_SECTIONS[0]!;
 
   const toggleSelectionDebug = async (enabled: boolean): Promise<void> => {
     const update = window._popper_.setSelectionDetectionDebugEnabled;
@@ -2017,6 +2019,179 @@ export function SettingsApp(): JSX.Element {
                       )}
                     </div>
                   </div>
+                </div>
+              )}
+            </section>
+          )}
+
+          {activeSection === "screen" && (
+            <section
+              className="settings-section settings-section--enter"
+              aria-label="屏幕设置"
+            >
+              {accessibility && accessibility.platform !== "windows" ? (
+                <div className="settings-card empty-card empty-card--guided">
+                  <strong>屏幕捕捉目前仅支持 Windows 平台</strong>
+                  <p>当前系统暂不支持屏幕截图、标注与浮动贴图功能。</p>
+                </div>
+              ) : (
+                <div className="settings-group" id="capture-title">
+                  <div className="settings-card settings-card--rows capture-card">
+                    {([
+                      ["shortcut", "截图快捷键", "框选屏幕区域进行截图或标注"],
+                      ["pasteShortcut", "贴图快捷键", "将剪贴板图像作为悬浮窗贴在屏幕上"],
+                    ] as const).map(([field, label, hint]) => (
+                      <div className="setting-row capture-row" key={field}>
+                        <div className="capture-row__label">
+                          <strong>{label}</strong>
+                          <span className="capture-row__hint">{hint}</span>
+                        </div>
+                        <div className="capture-row__controls">
+                          <ShortcutRecorder
+                            id={"capture-" + field}
+                            label={label}
+                            value={draft.capture[field]}
+                            disabled={busy}
+                            onChange={(shortcut) =>
+                              changeDraft((current) => ({
+                                ...current,
+                                capture: { ...current.capture, [field]: shortcut },
+                              }))
+                            }
+                          />
+                          <button
+                            className="button button--quiet capture-row__reset"
+                            type="button"
+                            aria-label={"恢复" + label + "默认"}
+                            disabled={busy || draft.capture[field] === DEFAULT_APP_SETTINGS.capture[field]}
+                            onClick={() =>
+                              changeDraft((current) => ({
+                                ...current,
+                                capture: { ...current.capture, [field]: DEFAULT_APP_SETTINGS.capture[field] },
+                              }))
+                            }
+                          >
+                            <RefreshCw size={13} aria-hidden="true" />
+                            恢复默认
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <div className="setting-row capture-row">
+                      <div className="capture-row__label">
+                        <strong>标注工具</strong>
+                        <span className="capture-row__hint">新截图使用的默认画笔颜色与线条粗细</span>
+                      </div>
+                      <div className="capture-row__controls">
+                        <div className="capture-annotation-group-wrapper">
+                          <div className="capture-annotation-group">
+                            <label className="capture-color-control" title="点击选择默认标注颜色">
+                              <span
+                                className="capture-color-preview"
+                                style={{ backgroundColor: draft.capture.color }}
+                              />
+                              <span className="capture-color-text">
+                                {draft.capture.color.toUpperCase()}
+                              </span>
+                              <input
+                                type="color"
+                                className="capture-color-input-hidden"
+                                aria-label="默认标注颜色"
+                                value={draft.capture.color}
+                                disabled={busy}
+                                onChange={(event) =>
+                                  changeDraft((current) => ({
+                                    ...current,
+                                    capture: { ...current.capture, color: event.target.value },
+                                  }))
+                                }
+                              />
+                            </label>
+                            <div className="capture-linewidth-stepper" title="画笔线条粗细 (1–32 px)">
+                              <button
+                                type="button"
+                                className="capture-stepper-btn"
+                                aria-label="减少线宽"
+                                disabled={busy || draft.capture.lineWidth <= 1}
+                                onClick={() => {
+                                  const lineWidth = Math.max(1, draft.capture.lineWidth - 1);
+                                  changeDraft((current) => ({
+                                    ...current,
+                                    capture: { ...current.capture, lineWidth },
+                                  }));
+                                }}
+                              >
+                                <Minus size={13} aria-hidden="true" />
+                              </button>
+                              <div className="capture-stepper-display">
+                                <input
+                                  type="number"
+                                  className="capture-stepper-input"
+                                  aria-label="默认标注线宽"
+                                  min={1}
+                                  max={32}
+                                  value={draft.capture.lineWidth}
+                                  disabled={busy}
+                                  onChange={(event) => {
+                                    const lineWidth = Math.min(32, Math.max(1, Number(event.target.value) || 1));
+                                    changeDraft((current) => ({
+                                      ...current,
+                                      capture: { ...current.capture, lineWidth },
+                                    }));
+                                  }}
+                                />
+                                <span className="capture-stepper-unit">px</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="capture-stepper-btn"
+                                aria-label="增加线宽"
+                                disabled={busy || draft.capture.lineWidth >= 32}
+                                onClick={() => {
+                                  const lineWidth = Math.min(32, draft.capture.lineWidth + 1);
+                                  changeDraft((current) => ({
+                                    ...current,
+                                    capture: { ...current.capture, lineWidth },
+                                  }));
+                                }}
+                              >
+                                <Plus size={13} aria-hidden="true" />
+                              </button>
+                            </div>
+                          </div>
+                          <span className="capture-annotation-hint">点击色块选色，支持 1–32 px</span>
+                        </div>
+                        <button
+                          className="button button--quiet capture-row__reset"
+                          type="button"
+                          aria-label="恢复标注工具默认"
+                          disabled={
+                            busy ||
+                            (draft.capture.color.toLowerCase() === DEFAULT_APP_SETTINGS.capture.color.toLowerCase() &&
+                              draft.capture.lineWidth === DEFAULT_APP_SETTINGS.capture.lineWidth)
+                          }
+                          onClick={() =>
+                            changeDraft((current) => ({
+                              ...current,
+                              capture: {
+                                ...current.capture,
+                                color: DEFAULT_APP_SETTINGS.capture.color,
+                                lineWidth: DEFAULT_APP_SETTINGS.capture.lineWidth,
+                              },
+                            }))
+                          }
+                        >
+                          <RefreshCw size={13} aria-hidden="true" />
+                          恢复默认
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  {accessibility?.diagnostics?.captureShortcutError && (
+                    <p className="field-error" role="alert">
+                      {accessibility.diagnostics.captureShortcutError}，请更换组合键并保存。
+                    </p>
+                  )}
                 </div>
               )}
             </section>

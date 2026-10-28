@@ -6,7 +6,9 @@
         "settings",
         "selection-toolbar",
         "quick-ask",
-        "selection-result-*"
+        "selection-result-*",
+        "capture-session-*",
+        "capture-pin-*"
     ],
     "permissions": [
         "core:event:allow-listen",

@@ -10,6 +10,14 @@ After selecting text in another app, you can copy, search, translate, summarize,
 
 Both platforms share the same renderer, settings, actions, model requests, streaming, and data contracts. Only selection capture, clipboard handling, native window attributes, and system integration are platform-specific. Local development, portable source export, and version history are documented in [DEVELOPMENT_HANDBOOK.md](./DEVELOPMENT_HANDBOOK.md) (Chinese).
 
+## Screen capture (Windows)
+
+Press `PrtSc` to capture the display under the pointer, select a region or a detected window/control, annotate it, and copy, save a PNG, pin it, or attach it to Quick Ask. Use the tray menu to pin a clipboard image, restore the last closed image, or toggle all pinned images. The global shortcut for pinning is unset by default and can be configured in Settings; image visibility is controlled through the tray menu. Images are retained only for the current app session; AI requests require explicit submission.
+
+See [Screen capture](./SCREEN_CAPTURE.md) for behavior, implementation boundaries, and desktop acceptance checks.
+
+Choose **Scrolling capture** after selecting a region and scroll manually up or down. Revisit captured areas or extend the image above and below the starting viewport. A live selection border, long-image preview, and brief hints guide capture. The toolbar at the selection’s bottom-right contains only Save, Pin, Ask AI, and Copy. Each action outputs the long image directly without a further editing stage. Outside clicks and Enter do not finish capture; Esc cancels throughout. Uncertain matches preserve the last valid image; unseen content is never fabricated. The scrolling overlay requires Windows 10 version 2004 or later.
+
 ## Screenshots
 
 ### Settings · AI providers and models
@@ -30,7 +38,7 @@ Both platforms share the same renderer, settings, actions, model requests, strea
 - Cherry Studio is primarily Electron-based; Popper uses the lighter Tauri stack to rebuild that workflow as a standalone desktop tool with its own window management, settings storage, model requests, and UI.
 - The macOS selection-capture bridge is adapted from MIT-licensed [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2). The full MIT license is in [LICENSE.selection-hook](./LICENSE.selection-hook).
 
-Popper does not declare its own open-source license. Materials adapted from Cherry Studio remain under upstream AGPL-3.0; selection-hook adaptations remain under MIT. Read the third-party notices before public distribution or derivative work.
+Popper is licensed under the [GNU General Public License v3.0 (GPL-3.0-only)](./LICENSE). Materials adapted from Cherry Studio remain under upstream AGPL-3.0; selection-hook adaptations remain under MIT. Read the third-party notices before public distribution or derivative work.
 
 ## Features
 
@@ -155,7 +163,7 @@ Windows builds target Windows 10/11 x64 with standard-user, current-user NSIS in
 1. Run the NSIS installer; if WebView2 Runtime is missing, the bootstrapper is launched automatically.
 2. Unsigned test builds may trigger Microsoft Defender SmartScreen; after verifying SHA-256 you can choose “More info → Run anyway”.
 3. On first launch the app stays in the notification area and does not open Settings automatically; use the tray menu.
-4. Closing Settings with X hides it to the tray. Full quit is available from the tray menu (“Quit Popper”).
+4. Settings is created on demand and destroyed when closed. Reopening loads saved settings; unsaved changes are discarded. Full quit is available from the tray menu (“Quit Popper”).
 5. Popper does not elevate, so it cannot read selections from admin-elevated apps; normal-privilege apps are fine.
 
 The Windows installer is still an unsigned test build and may trigger SmartScreen. Automated checks do not replace real-world app, privilege, and DPI testing. Not suitable for public distribution before code signing and full compatibility acceptance.
@@ -179,7 +187,7 @@ When distributing source or binaries, retain at least:
 - [LICENSE.selection-hook](./LICENSE.selection-hook)
 - Copyright and license texts required by upstream projects
 
-Popper currently declares no open-source license and has no Apple Developer ID, Windows Authenticode signing, notarization, or auto-update. Before a formal public release, complete full dependency license inventory, security review, signing, notarization, and install acceptance.
+Popper is licensed under GPL-3.0-only and currently has no Apple Developer ID, Windows Authenticode signing, notarization, or auto-update. Before a formal public release, complete full dependency license inventory, security review, signing, notarization, and install acceptance.
 
 ## Friend Links
 

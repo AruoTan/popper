@@ -3,7 +3,6 @@ import { dictionarySnapshotSchema } from './dictionary'
 
 import {
   AI_OUTPUT_LIMIT,
-  AI_TEXT_LIMIT,
   MAX_ACTIONS,
   MAX_ENABLED_ACTIONS,
   MAX_PROVIDERS,
@@ -313,7 +312,25 @@ export const filterSettingsSchema = z
   .strict()
 export type FilterSettings = z.infer<typeof filterSettingsSchema>
 
-const quickAskShortcutSchema = z.string().max(100).regex(/^(?:(?:Control|Alt|Shift|Super)\+)+(?:Space|Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/).refine((value) => { const modifiers = value.split("+").slice(0, -1); return new Set(modifiers).size === modifiers.length; }, "快捷键修饰键不能重复")
+const STANDALONE_SHORTCUT_KEY_PATTERN = '(?:PrintScreen|F(?:[1-9]|1[0-9]|2[0-4])|Pause|ScrollLock|Insert)'
+const ALL_SHORTCUT_KEY_PATTERN = '(?:PrintScreen|Pause|ScrollLock|Insert|Delete|Home|End|PageUp|PageDown|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|Space|Tab|Enter|Backspace|CapsLock|NumLock|Escape|Key[A-Z]|Digit[0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Numpad[0-9]|Numpad(?:Add|Subtract|Multiply|Divide|Decimal|Enter|Equal)|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash)'
+
+const quickAskShortcutSchema = z
+  .string()
+  .max(100)
+  .regex(new RegExp(`^(?:${STANDALONE_SHORTCUT_KEY_PATTERN}|(?:(?:Control|Alt|Shift|Super)\\+)+${ALL_SHORTCUT_KEY_PATTERN})$`))
+  .refine((value) => {
+    const modifiers = value.split('+').slice(0, -1)
+    return new Set(modifiers).size === modifiers.length
+  }, '快捷键修饰键不能重复')
+
+export const captureSettingsSchema = z.object({
+  shortcut: quickAskShortcutSchema,
+  pasteShortcut: z.union([z.literal(''), quickAskShortcutSchema]),
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+  lineWidth: z.number().int().min(1).max(32),
+}).strict()
+export type CaptureSettings = z.infer<typeof captureSettingsSchema>
 
 export const defaultAiModelSchema = z.object({
   providerId: z.string().trim().max(64),
@@ -326,6 +343,7 @@ const commonSettingsShape = {
   trayEnabled: z.boolean(),
   defaultAi: defaultAiModelSchema,
   quickAskShortcut: quickAskShortcutSchema,
+  capture: captureSettingsSchema,
   locale: supportedLocaleSchema,
   translate: translationSettingsSchema,
   result: resultSettingsSchema,
@@ -338,9 +356,17 @@ function validateSettingsReferences(
     providers: Array<{ id: string; models: ProviderModel[] }>
     actions: ActionDefinition[]
     defaultAi?: { providerId: string; modelId: string }
+    quickAskShortcut?: string
+    capture?: CaptureSettings
   },
   context: z.RefinementCtx
 ): void {
+  if (value.capture && value.quickAskShortcut) {
+    const shortcuts = [value.quickAskShortcut, value.capture.shortcut, value.capture.pasteShortcut]
+      .filter(Boolean)
+      .map((shortcut) => shortcut.split('+').sort().join('+'))
+    if (new Set(shortcuts).size !== shortcuts.length) context.addIssue({ code: z.ZodIssueCode.custom, message: '全局快捷键不能重复' })
+  }
   const providers = new Map(value.providers.map((provider) => [provider.id, provider]))
   if (value.defaultAi?.modelId && !providers.get(value.defaultAi.providerId)?.models.some(
     (model) => model.id === value.defaultAi?.modelId
@@ -389,6 +415,7 @@ export const settingsUpdateSchema = z
     trayEnabled: z.boolean().optional(),
     defaultAi: defaultAiModelSchema.optional(),
     quickAskShortcut: quickAskShortcutSchema.optional(),
+    capture: captureSettingsSchema.optional(),
     locale: supportedLocaleSchema.optional(),
     translate: translationSettingsSchema.optional(),
     result: resultSettingsSchema.optional(),

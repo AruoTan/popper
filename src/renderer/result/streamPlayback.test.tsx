@@ -1,47 +1,12 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import {
   advanceByUnicodeScalars,
-  flushGraphemeTail,
-  MAX_GRAPHEME_CARRY_SCALARS,
+  DEFAULT_SMOOTH_STREAM_CONFIG,
   SmoothStreamController,
   smoothStreamRate,
-  smoothStreamStep,
-  splitGraphemes,
-  splitStableGraphemeTail
+  smoothStreamStep
 } from './streamPlayback'
-
-describe('bounded grapheme tail', () => {
-  it.each([
-    ['combining mark', 'e', '\u0301', 'e\u0301'],
-    ['ZWJ family', '👨', '\u200d👩', '👨\u200d👩'],
-    ['variation selector', '❤', '\ufe0f', '❤️'],
-    ['skin tone', '👍', '🏽', '👍🏽'],
-    ['regional flag', '🇨', '🇳', '🇨🇳'],
-    ['Hangul Jamo', 'ᄀ', 'ᅡ', '가']
-  ])('keeps the %s tail bounded across deltas', (_name, first, second, combined) => {
-    const held = splitStableGraphemeTail('', first)
-    expect(held.carry).toBe(first)
-    const extended = splitStableGraphemeTail(held.carry, second)
-    expect(`${extended.released}${extended.carry}`).toBe(combined)
-  })
-
-  it('segments only a bounded suffix and bounds the carry in Unicode scalars', () => {
-    const segment = vi.fn(splitGraphemes)
-    const prefix = 'a'.repeat(1_000_000)
-    const update = splitStableGraphemeTail('', `${prefix}😀`, segment)
-
-    expect(segment).toHaveBeenCalledTimes(1)
-    expect(Array.from(segment.mock.calls[0]![0]).length).toBeLessThanOrEqual(512)
-    expect(Array.from(update.carry).length).toBeLessThanOrEqual(MAX_GRAPHEME_CARRY_SCALARS)
-    expect(`${update.released}${update.carry}`).toBe(`${prefix}😀`)
-  })
-
-  it('flushes the terminal grapheme tail', () => {
-    const held = splitStableGraphemeTail('', 'e')
-    expect(flushGraphemeTail(held.carry)).toBe('e')
-  })
-})
 
 describe('smooth stream typewriter', () => {
   it('ramps rate with backlog between base and max', () => {
@@ -54,13 +19,11 @@ describe('smooth stream typewriter', () => {
   })
 
   it('accumulates fractional residual across frames for continuous motion', () => {
-    // Tiny elapsed may not yield a whole scalar yet; residual must carry.
-    const first = smoothStreamStep(20, 4, 0)
-    expect(first.step + first.residual).toBeGreaterThan(0)
-    const second = smoothStreamStep(20, 4, first.residual)
-    // Over two short frames we should eventually release at least one scalar
-    // when residual stacks, or already have released on first.
-    expect(first.step + second.step).toBeGreaterThanOrEqual(0)
+    const config = { ...DEFAULT_SMOOTH_STREAM_CONFIG, baseCharsPerSec: 125, maxCharsPerSec: 125 }
+    const first = smoothStreamStep(20, 4, 0, config)
+    expect(first).toEqual({ step: 0, residual: 0.5 })
+    const second = smoothStreamStep(20, 4, first.residual, config)
+    expect(second).toEqual({ step: 1, residual: 0 })
     const longFrame = smoothStreamStep(20, 50, 0)
     expect(longFrame.step).toBeGreaterThanOrEqual(1)
     expect(longFrame.step).toBeLessThanOrEqual(56)

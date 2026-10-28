@@ -2,7 +2,7 @@ import { CircleAlert, FileText, LoaderCircle, Paperclip, SendHorizontal, Setting
 import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react';
 import { PopperIcon } from '../components/PopperIcon';
 import { getErrorMessage } from '../lib/errors';
-import { ATTACHMENT_ACCEPT, attachmentSize, readAttachment, validateAttachmentList, type SelectedAttachment } from './attachments';
+import { ATTACHMENT_ACCEPT, appendAttachments, attachmentSize, validateAttachmentList, type SelectedAttachment } from './attachments';
 
 export function QuickAskApp(): JSX.Element {
   const input = useRef<HTMLTextAreaElement>(null);
@@ -17,6 +17,52 @@ export function QuickAskApp(): JSX.Element {
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
   const busy = reading || sending;
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
+  useEffect(() => {
+    let active = true, receiving = false, queued = false;
+    const receive = async (): Promise<void> => {
+      if (!active) return;
+      if (receiving) { queued = true; return; }
+      receiving = true;
+      let id: string | undefined;
+      try {
+        const pending = await window._popper_.pendingCaptureAttachment?.();
+        if (!active || !pending) return;
+        id = pending.id;
+        if (busyRef.current) throw new Error('快捷提问正在处理附件，请稍后重试');
+        const item: SelectedAttachment = { id, size: Math.floor(pending.attachment.data.length * 3 / 4) - (pending.attachment.data.endsWith("==") ? 2 : pending.attachment.data.endsWith("=") ? 1 : 0), payload: pending.attachment };
+        const next = attachmentsRef.current.some((value) => value.id === id) ? attachmentsRef.current : [...attachmentsRef.current, item];
+        validateAttachmentList(next);
+        attachmentsRef.current = next;
+        setAttachments(next);
+        try { await window._popper_.ackCaptureAttachment?.(id); }
+        catch (error) {
+          const remaining = attachmentsRef.current.filter((value) => value.id !== id);
+          attachmentsRef.current = remaining; if (active) setAttachments(remaining);
+          throw error;
+        }
+        if (active) { setError(''); input.current?.focus(); }
+      } catch (error) {
+        if (active) setError(getErrorMessage(error, '无法接收截图'));
+        if (id) await window._popper_.ackCaptureAttachment?.(id, getErrorMessage(error, '无法接收截图')).catch(() => {});
+      } finally {
+        receiving = false;
+        if (queued && active) { queued = false; void receive(); }
+      }
+    };
+    let stop: (() => void) | undefined;
+    void (async () => {
+      const status = await window._popper_.getAccessibilityStatus?.();
+      if (!active || (status && status.platform !== 'windows')) return;
+      stop = window._popper_.onCaptureAttachment?.(() => void receive());
+      await receive();
+    })().catch((error: unknown) => {
+      if (active) setError(getErrorMessage(error, '无法接收截图'));
+    });
+    return () => { active = false; stop?.(); };
+  }, []);
 
   useEffect(() => {
     mounted.current = true;
@@ -49,8 +95,7 @@ export function QuickAskApp(): JSX.Element {
     setReading(true);
     setError('');
     try {
-      const next = [...attachments, ...await Promise.all(files.map(readAttachment))];
-      validateAttachmentList(next);
+      const next = await appendAttachments(attachmentsRef.current, files);
       if (mounted.current) setAttachments(next);
     } catch (error: unknown) {
       if (mounted.current) setError(getErrorMessage(error, '无法添加附件'));

@@ -57,7 +57,6 @@ import { SelectionDetectionDebugPanel } from "./SelectionDetectionDebugPanel";
 import { runDetached } from "../lib/asyncEffects";
 import { getErrorMessage } from "../lib/errors";
 import {
-  flushPendingActionEvents,
   getActionEventSnapshot,
   subscribeToActionEvents,
 } from "./actionEventStore";
@@ -81,9 +80,8 @@ import { useSmoothStreamText } from "./useSmoothStreamText";
 import { useTranslationSuggestions } from "./useTranslationSuggestions";
 import {
   ATTACHMENT_ACCEPT,
+  appendAttachments,
   attachmentSize,
-  readAttachment,
-  validateAttachmentList,
   type SelectedAttachment,
 } from "../quick-ask/attachments";
 
@@ -521,8 +519,7 @@ function ResultSessionApp({
     setReadingAttachments(true);
     setCommandMessage("");
     try {
-      const next = [...followUpAttachments, ...(await Promise.all(files.map(readAttachment)))];
-      validateAttachmentList(next);
+      const next = await appendAttachments(followUpAttachments, files);
       setFollowUpAttachments(next);
     } catch (error: unknown) {
       setCommandMessage(getErrorMessage(error, "无法添加附件"));
@@ -957,7 +954,6 @@ function ResultSessionApp({
           }
         });
         if (isDisposed()) return;
-        flushPendingActionEvents("native-reveal");
         setRevealCommitted(true);
       } catch {
         if (isDisposed()) return;

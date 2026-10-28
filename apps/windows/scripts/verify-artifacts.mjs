@@ -203,6 +203,8 @@ const resources = windowsBundle.resources ?? {};
 for (const [source, destination] of [
   ["../THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"],
   ["../LICENSE.selection-hook", "LICENSE.selection-hook"],
+  ["../LICENSE.capture", "LICENSE.capture"],
+  ["../LICENSE", "LICENSE"],
 ]) {
   if (resources[source] !== destination) {
     errors.push(`Windows bundle 必须包含资源 ${source} -> ${destination}`);

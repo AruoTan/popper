@@ -190,6 +190,7 @@ function parseAccessibility(value: unknown): AccessibilityStatus {
       ? (record.diagnostics as Record<string, unknown>)
       : {};
   const diagnostics = {
+    ...(typeof diagnosticsRecord.captureShortcutError === "string" ? { captureShortcutError: diagnosticsRecord.captureShortcutError } : {}),
     ...(typeof diagnosticsRecord.quickAskShortcutError === "string" ? { quickAskShortcutError: diagnosticsRecord.quickAskShortcutError } : {}),
     ...(typeof diagnosticsRecord.selectionMonitorError === "string"
       ? { selectionMonitorError: diagnosticsRecord.selectionMonitorError }
@@ -231,6 +232,7 @@ export function installTauriBridge(): void {
   }
 
   const quickAskOpened = new EventHub<void>(EVENTS.quickAskOpened, () => undefined);
+  const captureAttachments = new EventHub<void>("popper:capture-attachment", () => undefined);
   const selectionEvents = new EventHub<SelectionPayload>(
     EVENTS.selection,
     (payload) => selectionPayloadSchema.parse(payload),
@@ -405,6 +407,9 @@ export function installTauriBridge(): void {
     async quickAskReady() { await quickAskOpened.ready(); await invoke(TAURI_COMMANDS.quickAskReady); },
     async reportQuickAskSize(height) { await invoke(TAURI_COMMANDS.reportQuickAskSize, { height }); },
     onQuickAskOpened: (listener) => quickAskOpened.subscribe(listener),
+    async pendingCaptureAttachment() { await captureAttachments.ready(); return await invoke("capture_pending_attachment"); },
+    async ackCaptureAttachment(id, error) { await invoke("capture_ack_attachment", { id, error: error ?? null }); },
+    onCaptureAttachment: (listener) => captureAttachments.subscribe(listener),
     async runAction(
       actionId: string,
       cursor?: Point,

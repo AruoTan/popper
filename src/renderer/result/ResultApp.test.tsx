@@ -321,14 +321,13 @@ describe("ResultApp sessionId query", () => {
     return { beginResultReady, closeResult };
   }
 
-  it("shows a fatal error when sessionId is missing and does not begin a legacy session", async () => {
+  it("rejects a missing sessionId without starting or closing a session", async () => {
     const { beginResultReady, closeResult } = await renderWithoutSessionId();
 
     expect(await screen.findByRole("alert")).toHaveTextContent("结果会话无效");
     await waitFor(() => {
       expect(beginResultReady).not.toHaveBeenCalled();
     });
-    expect(closeResult).not.toHaveBeenCalledWith("legacy");
     expect(closeResult).not.toHaveBeenCalled();
   });
 
@@ -337,7 +336,7 @@ describe("ResultApp sessionId query", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("结果会话无效");
     expect(beginResultReady).not.toHaveBeenCalled();
-    expect(closeResult).not.toHaveBeenCalledWith("legacy");
+    expect(closeResult).not.toHaveBeenCalled();
   });
 });
 
@@ -680,9 +679,7 @@ describe("ResultApp window interactions", () => {
     expect(bootstrap.start).toHaveBeenCalledOnce();
   });
 
-  it("publishes native reveal completion and renders snapshot notices independently", async () => {
-    const store = await import("./actionEventStore");
-    const flush = vi.spyOn(store, "flushPendingActionEvents");
+  it("renders snapshot notices after native reveal completes", async () => {
     const notice = resultSnapshot({
       generationNotice: {
         code: "THINKING_CONTROL_FALLBACK",
@@ -692,9 +689,7 @@ describe("ResultApp window interactions", () => {
     const { commitResultReveal } = await renderResult(notice);
 
     await waitFor(() => expect(commitResultReveal).toHaveBeenCalled());
-    await waitFor(() => expect(flush).toHaveBeenCalledWith("native-reveal"));
     expect(screen.getByRole("status")).toHaveTextContent("当前设置暂不支持关闭思考");
-    flush.mockRestore();
   });
 
   it("starts the result session through its bootstrap interface", async () => {
@@ -957,7 +952,7 @@ describe("ResultApp window interactions", () => {
   });
 
   it("keeps translation metadata in the compact header and applies result font size", async () => {
-    const { api, container, continueAction } = await renderResult();
+    const { api, container } = await renderResult();
     await screen.findByRole("combobox", { name: "翻译目标语言" });
     const resultWindow = container.querySelector<HTMLElement>(".result-window")!;
     const footer = container.querySelector<HTMLElement>(".result-footer")!;
@@ -1176,6 +1171,23 @@ describe("ResultApp window interactions", () => {
     expect(screen.queryByRole("region", { name: "追问附件预览" })).toBeNull();
   });
 
+  it("preserves the follow-up draft and attachments when an oversized batch is rejected before reading", async () => {
+    const { continueAction } = await renderResult(askCompletedSession, dshSettings());
+    const input = screen.getByRole("textbox", { name: "继续提问" });
+    const picker = screen.getByLabelText("选择追问附件");
+    fireEvent.change(input, { target: { value: "保留追问" } });
+    fireEvent.change(picker, { target: { files: [new File(["context"], "context.txt")] } });
+    await screen.findByText("context.txt");
+    const read = vi.spyOn(FileReader.prototype, "readAsDataURL");
+    const file = new File([new Uint8Array(7 * 1024 * 1024)], "large.bin");
+    fireEvent.change(picker, { target: { files: [file, file, file] } });
+    await screen.findByText("附件总大小不能超过 20 MB");
+    expect(read).not.toHaveBeenCalled();
+    expect(input).toHaveValue("保留追问");
+    expect(screen.getByText("context.txt")).toBeInTheDocument();
+    expect(continueAction).not.toHaveBeenCalled();
+  });
+
   it("allows removing attachments before sending in DSH mode", async () => {
     await renderResult(askCompletedSession, dshSettings());
     const picker = screen.getByLabelText("选择追问附件");
@@ -1257,7 +1269,7 @@ describe("ResultApp window interactions", () => {
   });
 
   it.each(["失败提问", ""])("restores attachments with question %j if backend rejects or streaming fails in DSH mode", async (question) => {
-    const { continueAction, container } = await renderResult(askCompletedSession, dshSettings());
+    const { continueAction } = await renderResult(askCompletedSession, dshSettings());
     continueAction.mockResolvedValueOnce({ accepted: false, message: "服务商拒绝" });
 
     const input = screen.getByRole("textbox", { name: "继续提问" });

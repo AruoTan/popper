@@ -14,6 +14,14 @@ Popper 是一个轻量的桌面划词助手，面向 **macOS 12+ Apple Silicon�
 
 Windows 支持便携 ZIP 和 Scoop 安装，程序旁分别存放 `config`、`logs` 和 `webview`；Scoop 仅持久化 `config` 和 `logs`，WebView 数据不跨版本保留。安装、升级与配置迁移见 [Windows 便携版说明](./WINDOWS_PORTABLE.md)。
 
+## 屏幕捕捉（Windows）
+
+使用 `PrtSc` 捕捉鼠标所在屏幕，框选或吸附窗口与控件后，可标注、复制、保存 PNG、创建浮动贴图或附加到快捷提问。通过托盘菜单贴出剪贴板图片、恢复最近关闭的贴图或显示／隐藏全部贴图；贴图全局快捷键默认未设置，可在设置中配置，显隐通过托盘菜单控制。贴图只保留在本次运行期间，图片提问需用户确认发送。
+
+操作说明、实现边界及 Windows 桌面验收清单见 [屏幕捕捉](./SCREEN_CAPTURE.md)。
+
+框选后可使用“滚动截图”，手动上下滚动并拼成长图，支持回看已捕捉区域及向两端扩展。选区保留实时边框，旁边显示长图预览及简短提示；进入滚动截图后，选区右下方工具栏仅保留保存、贴图、问 AI 和复制，点击后直接输出长图，不进入后续编辑阶段。点击选区外或按 Enter 不结束采集，Esc 始终取消。后台连续采集画面；匹配失败保留已有内容并提示，不补造未捕捉的内容。滚动覆盖层要求 Windows 10 2004 或更新版本。
+
 ## 界面预览
 
 ### 设置 · AI 服务商与模型
@@ -34,7 +42,7 @@ Windows 支持便携 ZIP 和 Scoop 安装，程序旁分别存放 `config`、`lo
 - Cherry Studio 主体使用 Electron；Popper 主要使用更轻量的 Tauri 框架，把其中启发性的“划词助手”工作流重构为独立桌面工具，并保留自己的窗口管理、设置存储、模型请求与界面实现。
 - macOS 选区捕获桥接层基于 MIT 许可的 [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2) 改造，完整 MIT 许可保存在 [LICENSE.selection-hook](./LICENSE.selection-hook)。
 
-Popper 当前没有声明独立的开源许可证。Cherry Studio 改编材料仍受其上游 AGPL-3.0 条款约束，selection-hook 改编部分仍受 MIT 许可证约束。公开分发或二次开发前，请先阅读第三方许可文件。
+Popper 采用 [GNU General Public License v3.0（GPL-3.0-only）](./LICENSE)。Cherry Studio 改编材料仍受其上游 AGPL-3.0 条款约束，selection-hook 改编部分仍受 MIT 许可证约束。公开分发或二次开发前，请先阅读第三方许可文件。
 
 ## 主要功能
 
@@ -159,7 +167,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 1. 运行生成的 NSIS 安装包；如果系统没有 WebView2 Runtime，安装程序会自动拉起 bootstrapper。
 2. 未签名测试包可能触发 Microsoft Defender SmartScreen，可在确认 SHA-256 后选择“更多信息 → 仍要运行”。
 3. 首次启动后应用会常驻通知区域，不会自动打开设置页；设置窗口由通知区域菜单打开。
-4. 点击设置窗口 X 会隐藏到通知区域。完整退出可使用通知区域菜单的“退出 Popper”。
+4. 设置窗口按需创建，点击 X 后销毁并释放页面资源；重新打开时加载已保存的设置，未保存的修改不会保留。完整退出可使用通知区域菜单的“退出 Popper”。
 5. Popper 不提权，因此无法读取“以管理员身份运行”的高权限应用选区；普通权限应用不受此限制。
 
 当前 Windows 安装包仍是未签名测试版，可能触发 Microsoft Defender SmartScreen；自动化验证不能替代不同应用、权限和 DPI 环境下的实机验收，不适合在完成代码签名和完整兼容性验收前公开分发。
@@ -183,7 +191,7 @@ macOS 使用系统自带的 WKWebView；Windows 使用 Microsoft Edge WebView2 R
 - [LICENSE.selection-hook](./LICENSE.selection-hook)
 - 上游项目许可证要求的版权和许可文本
 
-Popper 当前未声明开源许可证，也没有完成 Apple Developer ID、Windows Authenticode 签名、公证或自动更新。正式公开发布之前，还应完成完整的依赖许可证清单、安全复核、签名、公证和安装验收。
+Popper 采用 GPL-3.0-only 许可证，目前尚未完成 Apple Developer ID、Windows Authenticode 签名、公证或自动更新。正式公开发布之前，还应完成完整的依赖许可证清单、安全复核、签名、公证和安装验收。
 
 ## 友链
 

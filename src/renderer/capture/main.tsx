@@ -1,0 +1,11 @@
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { CaptureApp } from './CaptureApp';
+import { PinApp } from './PinApp';
+import { PinToolbarApp } from './PinToolbarApp';
+import './capture.css';
+const root = document.getElementById('root');
+if (!root) throw new Error('Missing screen capture root');
+const query = new URLSearchParams(window.location.search), mode = query.get('mode');
+document.title = mode === 'pin' ? 'Popper 贴图' : mode === 'pin-toolbar' ? 'Popper 贴图工具条' : mode === 'notice' ? 'Popper 屏幕提示' : 'Popper 屏幕捕捉';
+createRoot(root).render(<StrictMode>{mode === 'pin' ? <PinApp /> : mode === 'pin-toolbar' ? <PinToolbarApp /> : mode === 'notice' ? <div className="capture-notice" role="status">{query.get('message')}</div> : <CaptureApp />}</StrictMode>);

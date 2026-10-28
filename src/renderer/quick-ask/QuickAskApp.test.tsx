@@ -11,12 +11,32 @@ beforeEach(() => {
   close.mockReset().mockResolvedValue(undefined);
   Object.defineProperty(window, '_popper_', { configurable: true, value: {
     submitQuickAsk: submit, closeQuickAsk: close,
+    getAccessibilityStatus: vi.fn().mockResolvedValue({ platform: 'windows' }),
     quickAskReady: vi.fn().mockResolvedValue(undefined),
     onQuickAskOpened: (listener: () => void) => { opened = listener; return () => { opened = undefined; }; },
   } as unknown as WindowPopperApi });
 });
 
 describe('Quick Ask', () => {
+  it('preserves the draft and selected attachments when a new batch exceeds the total size', async () => {
+    render(<QuickAskApp />);
+    const input = screen.getByRole('textbox');
+    const picker = screen.getByLabelText('选择附件');
+    fireEvent.change(input, { target: { value: '保留草稿' } });
+    fireEvent.change(picker, { target: { files: [new File(['context'], 'context.txt')] } });
+    await screen.findByText('context.txt');
+    const read = vi.spyOn(FileReader.prototype, 'readAsDataURL');
+    const file = new File([new Uint8Array(7 * 1024 * 1024)], 'large.bin');
+    fireEvent.change(picker, { target: { files: [file, file, file] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('20 MB');
+    expect(read).not.toHaveBeenCalled();
+    expect(input).toHaveValue('保留草稿');
+    expect(screen.getByText('context.txt')).toBeInTheDocument();
+    expect(submit).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith('保留草稿', [expect.objectContaining({ name: 'context.txt' })]));
+  });
+
   it('starts with no preview and sends a question without selection', async () => {
     render(<QuickAskApp />);
     expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull();
@@ -105,6 +125,7 @@ describe('Quick Ask', () => {
 
   it('preserves draft on reopen and supports Escape, IME and Shift+Enter', async () => {
     render(<QuickAskApp />);
+    await act(async () => {});
     const input = screen.getByRole('textbox');
     fireEvent.change(input, { target: { value: 'draft' } });
     fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
@@ -126,4 +147,68 @@ describe('Quick Ask', () => {
     expect(submit).toHaveBeenCalledOnce();
     await act(async () => resolve({ accepted: true }));
   });
+});
+
+it('receives a captured image once while preserving the existing question draft', async () => {
+  let available: { id: string; attachment: { name: string; mime: string; kind: 'image'; data: string } } | null = null;
+  let receive: (() => void) | undefined;
+  const acknowledge = vi.fn(async () => { available = null; });
+  window._popper_.pendingCaptureAttachment = vi.fn(async () => available);
+  window._popper_.ackCaptureAttachment = acknowledge;
+  window._popper_.onCaptureAttachment = (listener) => { receive = listener; return () => { receive = undefined; }; };
+  render(<QuickAskApp />);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: '保留这段草稿' } });
+  fireEvent.change(screen.getByLabelText('选择附件'), { target: { files: [new File(['draft context'], 'context.txt', { type: 'text/plain' })] } });
+  await screen.findByText('context.txt');
+  available = { id: 'capture-1', attachment: { name: 'Popper-capture.png', mime: 'image/png', kind: 'image' as const, data: 'iVBORw0KGgo=' } };
+  act(() => { receive?.(); receive?.(); });
+  await screen.findByRole('img', { name: 'Popper-capture.png' });
+  expect(acknowledge).toHaveBeenCalledExactlyOnceWith('capture-1');
+  expect(screen.getByRole('textbox')).toHaveValue('保留这段草稿');
+  expect(submit).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '发送问题' }));
+  await waitFor(() => expect(submit).toHaveBeenCalledWith('保留这段草稿', [expect.objectContaining({ name: 'context.txt' }), expect.objectContaining({ name: 'Popper-capture.png' })]));
+});
+
+it('rolls back a captured attachment if its native acknowledgement expires', async () => {
+  window._popper_.pendingCaptureAttachment = vi.fn(async () => ({ id: 'expired', attachment: { name: 'expired.png', mime: 'image/png', kind: 'image' as const, data: 'iVBORw0KGgo=' } }));
+  window._popper_.ackCaptureAttachment = vi.fn().mockRejectedValue(new Error('图片交接已结束'));
+  render(<QuickAskApp />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('图片交接已结束');
+  expect(screen.queryByRole('region', { name: '附件预览' })).toBeNull();
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it('receives a new capture notification that arrives during an empty pending query', async () => {
+  let resolve!: (value: null) => void;
+  let receive: (() => void) | undefined;
+  const pending = { id: 'next-capture', attachment: { name: 'next.png', mime: 'image/png', kind: 'image' as const, data: 'iVBORw0KGgo=' } };
+  window._popper_.pendingCaptureAttachment = vi.fn()
+    .mockImplementationOnce(() => new Promise((done) => { resolve = done; }))
+    .mockResolvedValueOnce(pending)
+    .mockResolvedValue(null);
+  window._popper_.ackCaptureAttachment = vi.fn().mockResolvedValue(undefined);
+  window._popper_.onCaptureAttachment = (listener) => { receive = listener; return () => { receive = undefined; }; };
+  render(<QuickAskApp />);
+  await waitFor(() => expect(resolve).toBeTypeOf('function'));
+  act(() => receive?.());
+  await act(async () => resolve(null));
+  expect(await screen.findByRole('img', { name: 'next.png' })).toBeInTheDocument();
+  expect(window._popper_.ackCaptureAttachment).toHaveBeenCalledExactlyOnceWith('next-capture');
+  expect(submit).not.toHaveBeenCalled();
+});
+
+it('reports capture setup failures instead of silently disabling attachment delivery', async () => {
+  window._popper_.getAccessibilityStatus = vi.fn().mockRejectedValue(new Error('读取屏幕捕捉状态失败'));
+  render(<QuickAskApp />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('读取屏幕捕捉状态失败');
+});
+
+it('keeps screenshot attachment delivery inactive on a platform without screen capture', async () => {
+  window._popper_.getAccessibilityStatus = vi.fn(async () => ({ platform: 'darwin' as const, trusted: true, canRequest: false, available: true, diagnostics: {} }));
+  window._popper_.pendingCaptureAttachment = vi.fn().mockRejectedValue(new Error('unsupported'));
+  render(<QuickAskApp />);
+  await act(async () => {});
+  expect(window._popper_.pendingCaptureAttachment).not.toHaveBeenCalled();
+  expect(screen.queryByRole('alert')).toBeNull();
 });

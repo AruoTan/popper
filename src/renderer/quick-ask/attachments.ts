@@ -1,4 +1,4 @@
-import type { QuickAskAttachment } from '../../shared';
+import { countUnicodeScalars, type QuickAskAttachment } from '../../shared';
 
 export const ATTACHMENT_ACCEPT = "";
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -20,10 +20,14 @@ function readFile(file: File, binary: boolean): Promise<string> {
   });
 }
 
-export async function readAttachment(file: File): Promise<SelectedAttachment> {
+function validateFile(file: File): void {
   if (!file.size) throw new Error(`${file.name} 是空文件`);
   if (file.size > MAX_BYTES) throw new Error(`${file.name} 超过 8 MB`);
   if (file.name.length > 255 || /[\u0000-\u001f\u007f]/.test(file.name)) throw new Error('附件名称无效');
+}
+
+export async function readAttachment(file: File): Promise<SelectedAttachment> {
+  validateFile(file);
   const ext = file.name.split('.').at(-1)?.toLowerCase() ?? '';
   const imageMime = IMAGE_TYPES[ext] ?? (Object.values(IMAGE_TYPES).includes(file.type) ? file.type : undefined);
   const kind = imageMime ? 'image' : TEXT_EXTENSIONS.has(ext) || file.type.startsWith('text/') ? 'text' : 'file';
@@ -32,9 +36,21 @@ export async function readAttachment(file: File): Promise<SelectedAttachment> {
   return { id: crypto.randomUUID(), size: file.size, payload: { name: file.name, mime: imageMime ?? (kind === 'text' ? 'text/plain' : ext === 'pdf' ? 'application/pdf' : file.type || 'application/octet-stream'), kind, data } };
 }
 
-export function validateAttachmentList(attachments: SelectedAttachment[]): void {
-  if (attachments.reduce((size, file) => size + file.size, 0) > MAX_TOTAL_BYTES) throw new Error('附件总大小不能超过 20 MB');
-  if (attachments.reduce((length, file) => length + (file.payload.kind === 'text' ? Array.from(file.payload.data).length : 0), 0) > 60_000) throw new Error('文本附件合计不能超过 60,000 个字符');
+export async function appendAttachments(current: readonly SelectedAttachment[], files: readonly File[]): Promise<SelectedAttachment[]> {
+  for (const file of files) validateFile(file);
+  validateTotalBytes(current.reduce((size, file) => size + file.size, 0) + files.reduce((size, file) => size + file.size, 0));
+  const next = [...current, ...await Promise.all(files.map(readAttachment))];
+  validateAttachmentList(next);
+  return next;
+}
+
+function validateTotalBytes(bytes: number): void {
+  if (bytes > MAX_TOTAL_BYTES) throw new Error('附件总大小不能超过 20 MB');
+}
+
+export function validateAttachmentList(attachments: readonly SelectedAttachment[]): void {
+  validateTotalBytes(attachments.reduce((size, file) => size + file.size, 0));
+  if (attachments.reduce((length, file) => length + (file.payload.kind === 'text' ? countUnicodeScalars(file.payload.data) : 0), 0) > 60_000) throw new Error('文本附件合计不能超过 60,000 个字符');
 }
 
 export function attachmentSize(bytes: number): string {

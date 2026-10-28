@@ -40,7 +40,11 @@ Import-Module (Join-Path $installation 'Common7/Tools/Microsoft.VisualStudio.Dev
 Enter-VsDevShell -VsInstallPath $installation -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
 
 # Prefer the explicitly installed NASM, not a bundled Strawberry Perl copy.
-$env:PATH = (Join-Path $env:ProgramFiles 'NASM') + ';' + $env:PATH
+$nasmDirectory = $env:POPPER_NASM_DIRECTORY
+if ([string]::IsNullOrWhiteSpace($nasmDirectory) -or -not (Test-Path -LiteralPath (Join-Path $nasmDirectory 'nasm.exe') -PathType Leaf)) {
+    throw 'Verified NASM directory is missing; run the native tools setup first.'
+}
+$env:PATH = $nasmDirectory + ';' + $env:PATH
 Get-Command cl.exe, link.exe, rc.exe, cmake.exe, nasm.exe | Select-Object Name, Source
 rustc --version
 if ($LASTEXITCODE -ne 0) { throw 'Rust toolchain unavailable' }
@@ -53,17 +57,18 @@ if ($LASTEXITCODE -ne 0) { throw 'NASM unavailable' }
 # check afterwards. The standalone local verify:windows command stays intact.
 Invoke-BuildStage 'TypeScript checks' { pnpm typecheck }
 Invoke-BuildStage 'Frontend tests' { pnpm test }
-Invoke-BuildStage 'Portable packaging tests' {
+Invoke-BuildStage 'Windows packaging and startup script tests' {
     node --test apps/windows/scripts/prepare-release-assets.test.mjs
     if ($LASTEXITCODE -ne 0) { throw 'Release asset tests failed' }
     & (Join-Path $PSScriptRoot '../../apps/windows/scripts/test-portable.ps1')
+    & (Join-Path $PSScriptRoot 'test-smoke-windows.ps1')
 }
 Invoke-BuildStage 'Frontend production build' { pnpm build:web }
 Invoke-BuildStage 'Windows Rust tests (all targets)' { pnpm test:rust:windows }
 
 # The frontend stage just built these files from this checkout. Reuse them only in
 # this CI invocation; ordinary local packaging still runs beforeBuildCommand.
-foreach ($page in @('settings', 'toolbar', 'result', 'startup', 'quick-ask')) {
+foreach ($page in @('settings', 'toolbar', 'result', 'startup', 'quick-ask', 'capture')) {
     $html = Join-Path 'dist' "$page/index.html"
     if (-not (Test-Path -LiteralPath $html -PathType Leaf) -or (Get-Item -LiteralPath $html).Length -eq 0) {
         throw "Missing verified frontend output: $html"
@@ -76,7 +81,7 @@ Invoke-BuildStage 'Windows installer build' {
 # Preserve the repository's PE/version/SHA-256 verification entry point.
 Invoke-BuildStage 'Windows artifact verification' { pnpm verify:artifacts:windows }
 Invoke-BuildStage 'Windows release startup' {
-    & (Join-Path $PSScriptRoot 'smoke-test-windows.ps1') -Executable 'src-tauri/target/x86_64-pc-windows-msvc/release/popper.exe'
+    & (Join-Path $PSScriptRoot 'smoke-test-windows.ps1') -Executable 'src-tauri/target/x86_64-pc-windows-msvc/release/popper.exe' -StartupTimeoutSeconds 60
 }
 
 Invoke-BuildStage 'Windows portable ZIP' { pnpm package:portable:windows }

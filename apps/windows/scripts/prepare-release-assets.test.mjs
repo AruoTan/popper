@@ -10,6 +10,7 @@ test("Scoop manifest pins the portable version and hash and persists only config
   const manifest = createScoopManifest({ version: "1.2.3", repository: "example/popper", hash: "a".repeat(64) });
   assert.equal(manifest.architecture["64bit"].url, "https://github.com/example/popper/releases/download/v1.2.3/Popper_1.2.3_x64-portable.zip");
   assert.equal(manifest.architecture["64bit"].hash, "a".repeat(64));
+  assert.equal(manifest.license, "GPL-3.0-only");
   assert.deepEqual(manifest.persist, ["config", "logs"]);
   assert.deepEqual(manifest.shortcuts, [["popper.exe", "Popper"]]);
   assert.deepEqual(manifest.bin, [["popper.exe", "popper"]]);

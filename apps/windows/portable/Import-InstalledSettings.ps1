@@ -15,8 +15,8 @@ if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) {
     throw "Installed settings were not found: $settings"
 }
 $settingsObject = Get-Content -LiteralPath $settings -Raw -Encoding utf8 | ConvertFrom-Json
-if ($settingsObject.version -ne 17) {
-    throw 'Only the current settings format (v17) can be imported. No settings were imported.'
+if ($settingsObject.version -ne 18) {
+    throw 'Only settings format v18 can be imported. No settings were imported.'
 }
 $encrypted = Test-Path -LiteralPath (Join-Path $source 'api-keys.enc.json') -PathType Leaf
 $key = Test-Path -LiteralPath (Join-Path $source '.api-keys.key') -PathType Leaf

@@ -26,7 +26,7 @@
             }
         ],
         "security": {
-            "csp": "default-src 'self' customprotocol: asset:; connect-src ipc: http://ipc.localhost; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self' data:; script-src 'self'"
+            "csp": "default-src 'self' customprotocol: asset:; connect-src ipc: http://ipc.localhost; img-src 'self' asset: data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; media-src 'self' data:; script-src 'self'"
         }
     },
     "bundle": {
@@ -40,7 +40,9 @@
         ],
         "resources": {
             "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
-            "../LICENSE.selection-hook": "LICENSE.selection-hook"
+            "../LICENSE.selection-hook": "LICENSE.selection-hook",
+            "../LICENSE.capture": "LICENSE.capture",
+            "../LICENSE": "LICENSE"
         },
         "category": "Productivity",
         "shortDescription": "轻量 macOS 划词助手",

@@ -2,6 +2,7 @@ mod dictionary;
 mod eudic;
 pub mod actions;
 mod clipboard;
+pub mod capture;
 mod quick_ask;
 mod local_secrets;
 #[cfg(any(target_os = "windows", test))]
@@ -85,6 +86,10 @@ pub fn run() {
         // shortcuts do not reach the active input in packaged builds.
         .enable_macos_default_menu(true)
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Err(error) = capture::recover_animation_settings() {
+                startup::stage(&format!("animation recovery pending: {error}"));
+            }
             startup::stage("initializing UI thread");
             #[cfg(target_os = "windows")]
             windows::initialize_windows_ui_thread();
@@ -109,21 +114,12 @@ pub fn run() {
                 .ok_or("无法取得划词事件通道")?;
 
             app.manage(RuntimeState::new(settings, actions, monitor));
-            let handle = app.handle().clone();
-            // Create configured UI only after state exists: its first events
-            // and renderer IPC are allowed to arrive during WebView creation.
-            startup::stage("creating settings window");
-            let settings_window = handle
-                .config()
-                .app
-                .windows
-                .iter()
-                .find(|window| window.label == "settings")
-                .ok_or("缺少设置窗口配置")?;
-            let builder = tauri::WebviewWindowBuilder::from_config(&handle, settings_window)?;
             #[cfg(target_os = "windows")]
-            let builder = app_paths::configure_webview(builder)?;
-            builder.build()?;
+            {
+                startup::stage("initializing screen capture");
+                capture::initialize(app.handle());
+            }
+            let handle = app.handle().clone();
             startup::stage("creating toolbar");
             handle
                 .state::<RuntimeState>()
@@ -134,6 +130,11 @@ pub fn run() {
             runtime::setup_tray(&handle)?;
             startup::stage("initializing quick ask shortcut");
             runtime::setup_quick_ask_shortcut(&handle);
+            #[cfg(target_os = "windows")]
+            {
+                startup::stage("initializing screen capture shortcuts");
+                capture::setup(&handle);
+            }
 
             startup::stage("starting selection listener");
             let state = handle.state::<RuntimeState>();
@@ -171,6 +172,37 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            capture::capture_session,
+            capture::capture_image,
+            capture::capture_show,
+            capture::capture_is_foreground,
+            capture::capture_move_pointer,
+            capture::capture_copy_color,
+            capture::capture_candidates,
+            capture::capture_select,
+            capture::capture_preferences,
+            capture::capture_crop,
+            capture::capture_scroll_begin,
+            capture::capture_scroll_step,
+            capture::capture_scroll_preview,
+            capture::capture_scroll_finish,
+            capture::capture_export,
+            capture::capture_cancel,
+            capture::capture_fail,
+            capture::capture_pin_state,
+            capture::capture_pin_drag,
+            capture::capture_pin_update,
+            capture::capture_pin_close,
+            capture::capture_pin_menu,
+            capture::capture_pin_editor_state,
+            capture::capture_pin_action,
+            capture::capture_pin_output,
+            capture::capture_pin_toolbar_publish,
+            capture::capture_pin_toolbar_state,
+            capture::capture_pin_toolbar_ready,
+            capture::capture_pin_toolbar_action,
+            capture::capture_pending_attachment,
+            capture::capture_ack_attachment,
             runtime::get_settings,
             runtime::update_settings,
             runtime::reset_result_size,
