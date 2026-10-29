@@ -2,16 +2,16 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveVersion } from "../../../scripts/version.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const packageJson = readJson(join(root, "package.json"));
 const tauriConfig = readJson(join(root, "src-tauri", "tauri.conf.json"));
 const windowsConfig = readJson(join(root, "src-tauri", "tauri.windows.conf.json"));
 const cargoToml = readFileSync(join(root, "src-tauri", "Cargo.toml"), "utf8");
-const cargoLock = readFileSync(join(root, "src-tauri", "Cargo.lock"), "utf8");
 
 const effectiveWindowsConfig = mergeConfig(tauriConfig, windowsConfig);
-const expectedVersion = packageJson.version;
+const { version: expectedVersion } = resolveVersion(root);
 const expectedIdentifier = "com.local.popper";
 const expectedTarget = "x86_64-pc-windows-msvc";
 const expectedMachine = 0x8664;
@@ -57,16 +57,6 @@ function cargoPackageField(contents, field) {
   return packageSection.match(new RegExp(`^${field}\\s*=\\s*"([^"]+)"`, "mu"))?.[1];
 }
 
-function popperLockVersion(contents) {
-  const packageBlocks = contents.split(/\n(?=\[\[package\]\])/u);
-  for (const block of packageBlocks) {
-    if (/^name\s*=\s*"popper"$/mu.test(block)) {
-      return block.match(/^version\s*=\s*"([^"]+)"$/mu)?.[1];
-    }
-  }
-  return undefined;
-}
-
 function requireFile(path, label) {
   if (!existsSync(path) || !statSync(path).isFile()) {
     errors.push(`${label} 不存在：${relative(root, path)}`);
@@ -104,22 +94,11 @@ function sameMembers(actual, expected) {
   );
 }
 
-const cargoVersion = cargoPackageField(cargoToml, "version");
-const lockVersion = popperLockVersion(cargoLock);
-if (typeof expectedVersion !== "string" || !/^\d+\.\d+\.\d+$/u.test(expectedVersion)) {
-  errors.push(`package.json 版本不是有效的三段式版本号：${expectedVersion ?? "未找到"}`);
+if (tauriConfig.version !== "../.popper-version.json" || windowsConfig.version !== undefined) {
+  errors.push("Tauri 必须从生成的 Git 标签版本快照读取版本，Windows 不得覆盖版本");
 }
-for (const [label, actual] of [
-  ["package.json", packageJson.version],
-  ["Tauri base config", tauriConfig.version],
-  ["Tauri Windows override", windowsConfig.version],
-  ["Windows 有效 Tauri 配置", effectiveWindowsConfig.version],
-  ["Cargo.toml", cargoVersion],
-  ["Cargo.lock", lockVersion],
-]) {
-  if (actual !== expectedVersion) {
-    errors.push(`${label} 版本必须为 ${expectedVersion}，实际为 ${actual ?? "未找到"}`);
-  }
+if (packageJson.version !== undefined || cargoPackageField(cargoToml, "version") !== undefined) {
+  errors.push("应用版本必须由 Git 标签推导，不得在 package.json 或 Cargo.toml 中保存");
 }
 
 if (effectiveWindowsConfig.identifier !== expectedIdentifier) {

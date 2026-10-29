@@ -1,4 +1,20 @@
 fn main() {
+    // Direct Cargo commands use the same resolver as the Tauri CLI wrapper.
+    println!("cargo:rerun-if-changed=../scripts/version.mjs");
+    let output = std::process::Command::new("node")
+        .args(["../scripts/version.mjs", "--write", "--cargo"])
+        .output()
+        .expect("Node.js is required to derive the application version from Git tags");
+    assert!(
+        output.status.success(),
+        "Version resolution failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    print!(
+        "{}",
+        String::from_utf8(output.stdout).expect("UTF-8 version metadata")
+    );
+
     // Tauri embeds the Windows icon in the executable resource table and a
     // decoded copy in generate_context!. Track the sources themselves: the
     // generated files alone do not invalidate a cached build after icon edits.

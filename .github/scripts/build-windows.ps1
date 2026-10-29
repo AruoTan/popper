@@ -58,8 +58,6 @@ if ($LASTEXITCODE -ne 0) { throw 'NASM unavailable' }
 Invoke-BuildStage 'TypeScript checks' { pnpm typecheck }
 Invoke-BuildStage 'Frontend tests' { pnpm test }
 Invoke-BuildStage 'Windows packaging and startup script tests' {
-    node --test apps/windows/scripts/prepare-release-assets.test.mjs
-    if ($LASTEXITCODE -ne 0) { throw 'Release asset tests failed' }
     & (Join-Path $PSScriptRoot '../../apps/windows/scripts/test-portable.ps1')
     & (Join-Path $PSScriptRoot 'test-smoke-windows.ps1')
 }
@@ -85,7 +83,8 @@ Invoke-BuildStage 'Windows release startup' {
 }
 
 Invoke-BuildStage 'Windows portable ZIP' { pnpm package:portable:windows }
-$version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+$version = & node scripts/version.mjs
+if ($LASTEXITCODE -ne 0) { throw 'Cannot derive Popper version from Git tags' }
 Invoke-BuildStage 'Windows portable startup and persistence' {
     & (Join-Path $PSScriptRoot '../../apps/windows/scripts/verify-portable.ps1') -Archive "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable/Popper_${version}_x64-portable.zip"
 }

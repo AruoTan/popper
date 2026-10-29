@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { resolveVersion } from "../../../scripts/version.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
@@ -77,7 +78,7 @@ export function prepareReleaseAssets({ releaseRoot, version, repository }) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const { version } = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const { version } = resolveVersion(root);
   const target = process.env.CARGO_TARGET_DIR;
   const targetRoot = target ? (isAbsolute(target) ? target : resolve(root, target)) : join(root, "src-tauri/target");
   console.log(prepareReleaseAssets({

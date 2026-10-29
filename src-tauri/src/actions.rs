@@ -755,7 +755,7 @@ impl ActionService {
             .pool_idle_timeout(Duration::from_secs(300))
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)
-            .user_agent(format!("Popper/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("Popper/{}", env!("POPPER_VERSION")))
             .build()
             .map_err(|_| ActionServiceError::Client)?;
         Ok(Self {

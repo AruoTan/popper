@@ -1,25 +1,13 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveVersion, versionFile } from "./version.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const root = resolve(scriptDirectory, "..");
-const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-const args = process.argv.slice(2);
-let version = packageJson.version;
-
-if (args.length > 0) {
-  if (args.length !== 2 || args[0] !== "--version") {
-    throw new Error(
-      "Usage: node scripts/export-dev-source.mjs [--version <source-package-version>]",
-    );
-  }
-  version = args[1];
-}
-
-if (typeof version !== "string" || !/^(?:\d+\.){2,3}\d+$/u.test(version)) {
-  throw new Error(`source package version is invalid: ${String(version)}`);
-}
+if (process.argv.length > 2) throw new Error("Usage: node scripts/export-dev-source.mjs");
+const metadata = resolveVersion(root);
+const { version } = metadata;
 
 const exportRoot = join(root, "portable-dev-sources");
 const bundleName = `Popper-${version}-dev-source`;
@@ -119,6 +107,8 @@ mkdirSync(outputDirectory, { recursive: true });
 for (const entry of includeEntries) {
   copyEntry(entry);
 }
+// Archives have no .git; preserve the resolved tag and source commit for builds.
+writeFileSync(join(outputDirectory, versionFile), `${JSON.stringify(metadata, null, 2)}\n`);
 
 for (const [entry, kind] of [
   ["apps", "directory"],
@@ -128,6 +118,7 @@ for (const [entry, kind] of [
   ["src-tauri", "directory"],
   ["package.json", "file"],
   ["pnpm-lock.yaml", "file"],
+  [versionFile, "file"],
   ["README.md", "file"],
   ["README.en.md", "file"],
 ]) {

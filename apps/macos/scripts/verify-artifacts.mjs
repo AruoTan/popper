@@ -2,12 +2,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveVersion } from "../../../scripts/version.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 const tauriConfig = JSON.parse(readFileSync(join(root, "src-tauri/tauri.conf.json"), "utf8"));
 const productName = tauriConfig.productName ?? packageJson.productName ?? "Popper";
-const expectedVersion = tauriConfig.version ?? packageJson.version;
+const { version: expectedVersion } = resolveVersion(root);
 const expectedIdentifier = tauriConfig.identifier;
 const expectedMinimumVersion = tauriConfig.bundle?.macOS?.minimumSystemVersion ?? "12.0";
 const expectedMenuBarOnly = true;
@@ -32,8 +33,8 @@ if (tauriConfig.app?.security?.devCsp) {
 if (packageJson.productName !== productName) {
   errors.push(`package.json 与 Tauri 产品名不一致：${packageJson.productName} / ${productName}`);
 }
-if (packageJson.version !== expectedVersion) {
-  errors.push(`package.json 与 Tauri 版本不一致：${packageJson.version} / ${expectedVersion}`);
+if (tauriConfig.version !== "../.popper-version.json") {
+  errors.push("Tauri 必须从生成的 Git 标签版本快照读取版本");
 }
 
 function requireFile(path, label) {

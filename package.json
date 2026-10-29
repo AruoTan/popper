@@ -1,7 +1,6 @@
 {
     "name": "popper",
     "productName": "Popper",
-    "version": "1.0.0",
     "private": true,
     "description": "Popper, a lightweight macOS and Windows selection assistant built with Tauri.",
     "type": "module",
@@ -13,12 +12,12 @@
         "pnpm": ">=11.0.0"
     },
     "scripts": {
-        "tauri": "tauri",
-        "dev": "tauri dev --config src-tauri/tauri.dev.conf.json --target aarch64-apple-darwin",
-        "dev:windows": "tauri dev --config src-tauri/tauri.dev.conf.json --target x86_64-pc-windows-msvc",
+        "tauri": "node scripts/tauri.mjs",
+        "dev": "node scripts/tauri.mjs dev --config src-tauri/tauri.dev.conf.json --target aarch64-apple-darwin",
+        "dev:windows": "node scripts/tauri.mjs dev --config src-tauri/tauri.dev.conf.json --target x86_64-pc-windows-msvc",
         "dev:web": "vite",
-        "build": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" tauri build --target aarch64-apple-darwin --bundles app,dmg",
-        "build:windows": "tauri build --target x86_64-pc-windows-msvc --bundles nsis --ci --no-sign",
+        "build": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" node scripts/tauri.mjs build --target aarch64-apple-darwin --bundles app,dmg",
+        "build:windows": "node scripts/tauri.mjs build --target x86_64-pc-windows-msvc --bundles nsis --ci --no-sign",
         "build:web": "vite build",
         "preview": "vite preview --host 127.0.0.1 --port 1420 --strictPort",
         "typecheck": "pnpm typecheck:config && pnpm typecheck:web",
@@ -28,7 +27,7 @@
         "check:rust:windows": "cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets --locked",
         "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin -- --test-threads=1",
         "test:rust:windows": "cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --all-targets --locked -- --test-threads=1",
-        "test": "vitest run",
+        "test": "pnpm test:scripts && vitest run",
         "test:watch": "vitest",
         "verify": "pnpm typecheck && pnpm test && pnpm build:web && pnpm test:rust && pnpm check:rust",
         "verify:windows": "pnpm typecheck && pnpm test && pnpm build:web && pnpm test:rust:windows && pnpm check:rust:windows",
@@ -38,8 +37,10 @@
         "package": "pnpm build && pnpm verify:artifacts",
         "package:windows": "pnpm build:windows && pnpm verify:artifacts:windows",
         "package:portable:windows": "pwsh -NoProfile -File apps/windows/scripts/package-portable.ps1",
-        "package:app": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" tauri build --target aarch64-apple-darwin --bundles app",
-        "package:dmg": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" tauri build --target aarch64-apple-darwin --bundles app,dmg && pnpm verify:artifacts"
+        "package:app": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" node scripts/tauri.mjs build --target aarch64-apple-darwin --bundles app",
+        "package:dmg": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" node scripts/tauri.mjs build --target aarch64-apple-darwin --bundles app,dmg && pnpm verify:artifacts",
+        "version:show": "node scripts/version.mjs",
+        "test:scripts": "node --test scripts/*.test.mjs .github/scripts/*.test.mjs apps/windows/scripts/*.test.mjs"
     },
     "dependencies": {
         "@dnd-kit/core": "6.3.1",

@@ -20,7 +20,7 @@ pub(crate) fn initialize() {
     INITIALIZED.call_once(|| {
         let path = diagnostic_path();
         let _ = LOG_PATH.set(path);
-        stage(&format!("starting Popper {}", env!("CARGO_PKG_VERSION")));
+        stage(&format!("starting Popper {}", env!("POPPER_VERSION")));
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             // Flush the backtrace before a native failure dialog blocks this

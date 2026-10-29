@@ -3,7 +3,8 @@ param([string]$ReleaseDirectory)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
-$version = (Get-Content (Join-Path $projectRoot 'package.json') -Raw | ConvertFrom-Json).version
+$version = & node (Join-Path $projectRoot 'scripts/version.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Cannot derive Popper version from Git tags' }
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid Popper version' }
 if (-not $ReleaseDirectory) {
     $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $projectRoot 'src-tauri/target' }

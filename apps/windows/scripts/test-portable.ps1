@@ -2,7 +2,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ('popper-portable-tests-' + [Guid]::NewGuid().ToString('N'))
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
-$version = (Get-Content (Join-Path $projectRoot 'package.json') -Raw | ConvertFrom-Json).version
+$version = & node (Join-Path $projectRoot 'scripts/version.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Cannot derive Popper version from Git tags' }
 $import = Join-Path $projectRoot 'apps/windows/portable/Import-InstalledSettings.ps1'
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }

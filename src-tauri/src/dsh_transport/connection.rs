@@ -53,7 +53,7 @@ impl DshService {
             .pool_idle_timeout(SOCKET_IDLE)
             .pool_max_idle_per_host(8)
             .tcp_nodelay(true)
-            .user_agent(format!("Popper/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("Popper/{}", env!("POPPER_VERSION")))
             .build()
             .map_err(|_| failure("DSH_NETWORK_ERROR", "无法初始化 DSH 连接"))?;
         Ok(Self::with_client(client))

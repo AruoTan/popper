@@ -6,6 +6,23 @@
 
 两个平台共用同一套 renderer、设置、动作、模型请求和流式输出；差异集中在选区捕获、剪贴板、原生窗口与系统集成。依赖目录 `node_modules`、网页构建目录 `dist` 和 Rust 编译目录 `src-tauri/target` 不应提交或放入源码快照。
 
+### 应用版本
+
+应用版本只从 Git 标签推导，不在源码清单中维护具体版本。标签格式为 `vX.Y.Z`（三段非负整数，无前导零，每段不超过 65535）。普通开发和构建使用当前提交最近可达的版本标签，去掉 `v` 得到应用版本；标签之后的开发提交沿用该版本，生成元数据同时记录实际提交和距离。其他分支上不可达的标签不参与推导。暂不接受带预发布后缀的标签；Release 的 `prerelease` 勾选只改变 GitHub 发布状态。
+
+查看当前版本：
+
+    pnpm version:show
+    node scripts/version.mjs --json
+
+发布前先提交改动，再给该提交创建并推送 `vX.Y.Z` 标签，在 Actions 中选择指向该提交的分支运行 Release 工作流；也可通过 `gh workflow run release-windows.yml --ref vX.Y.Z` 直接选择标签。正式发布要求工作区干净、当前提交恰好有一个版本标签；不会自动创建标签，也不允许把旧标签对应的版本用于发布后续提交。没有版本标签或历史不完整时直接报错；浅克隆执行 `git fetch --unshallow --tags`，完整克隆补标签执行 `git fetch --tags`。
+
+`scripts/version.mjs` 是唯一解析入口。Tauri 开发／打包命令通过 `scripts/tauri.mjs` 在 CLI 读取配置前生成根目录 `.popper-version.json`；直接运行 Cargo 时，`src-tauri/build.rs` 同样调用解析器，向 Rust 注入 `POPPER_VERSION`，并跟踪 Git HEAD、分支和标签变化以使缓存失效。生成文件被 Git 忽略，内容未变时不重写。在仓库中始终重新读取 Git，不使用陈旧快照覆盖标签。
+
+受此版本控制的内容包括 Tauri 运行时／托盘版本、Windows 主程序 PE 版本和 NSIS 安装包、macOS 应用 Info.plist 和 DMG、便携 ZIP、Scoop 清单及下载链接、发布名称与附件校验、启动日志、HTTP／WebSocket 请求的 User-Agent，以及源码导出目录。`package.json` 和 `Cargo.toml` 不保存应用版本；Cargo 将未发布内部 crate 的缺省版本记为 `0.0.0`，锁文件中的这一项只是依赖图标识，不用于产品版本或发布。依赖版本、配置格式、内部通信协议版本不属于应用版本，保持各自管理。
+
+不含 `.git` 的源码导出包携带同一解析器生成的版本快照，保留标签、实际提交及距离，供离线目录构建；不能以此直接执行正式发布。工作区是否为仓库根目录由 Git 的 `rev-parse --show-prefix` 判断，不比较路径字符串，避免 Windows 短名称、大小写及目录联接造成误判。将源码包放进另一个仓库的子目录时，也不会误用外层仓库的标签。GitHub 自动生成的源码压缩包没有此快照，需改用带标签的 Git 克隆或本项目的源码导出包。
+
 ### Windows
 
 环境要求：
@@ -98,6 +115,7 @@
 - 平台代码与资源 `apps/`、`assets/`
 - Rust/Tauri 后端 `src-tauri/`（不含编译产物）
 - 脚本、锁文件、配置、README（中/英）、本开发手册、许可证与第三方说明
+- Git 标签推导的 `.popper-version.json` 构建快照（生成内容，不在仓库中保存具体版本）
 
 不会包含：
 

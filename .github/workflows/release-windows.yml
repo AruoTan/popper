@@ -53,7 +53,7 @@ jobs:
         run: |
           gh api --paginate "repos/$GH_REPO/releases?per_page=100" --jq '.[] | .tag_name' > "$RUNNER_TEMP/release-tags.txt"
           if grep -Fxq -- "$RELEASE_TAG" "$RUNNER_TEMP/release-tags.txt"; then
-            echo "::error::Release $RELEASE_TAG already exists (possibly as a draft). Update the version or manage the existing release."
+            echo "::error::Release $RELEASE_TAG already exists (possibly as a draft). Create a new version tag or manage the existing release."
             exit 1
           fi
 
@@ -129,7 +129,7 @@ jobs:
           EOF
           args=("$RELEASE_TAG" "release-assets/Popper_${RELEASE_VERSION}_x64-setup.exe"
             "release-assets/Popper_${RELEASE_VERSION}_x64-portable.zip" "release-assets/popper.json" "release-assets/SHA256SUMS.txt"
-            --target "$GITHUB_SHA" --title "Popper $RELEASE_TAG" --draft
+            --verify-tag --target "$GITHUB_SHA" --title "Popper $RELEASE_TAG" --draft
             --notes-file release-notes.md --generate-notes)
           if [[ "$PRERELEASE" == true ]]; then
             args+=(--prerelease)

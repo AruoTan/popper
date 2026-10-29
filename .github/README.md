@@ -14,21 +14,22 @@
 ## 手动创建 GitHub Release
 
 1. 将这两个工作流推送到默认分支，然后打开 **Actions → Release Windows installer → Run workflow**。
-2. 选择待发布分支。版本号自动从该次提交的 `package.json` 读取，例如 `0.5.12` 对应标签 `v0.5.12`，无需预先创建标签；发布前自行更新项目各处版本号并提交。
+2. 提交改动后，给目标提交创建并推送 `vX.Y.Z` 标签；在工作流中选择当前仍指向该提交的分支运行，或使用 `gh workflow run release-windows.yml --ref vX.Y.Z` 直接选择标签。版本从标签推导，不再修改 `package.json`、Cargo 或 Tauri 中的版本号。当前提交须恰好有一个版本标签，否则拒绝发布。
 3. `draft` 默认勾选，生成 Release 草稿；取消勾选则在附件上传完成后直接发布。`prerelease` 用于标记预发布版本，默认不勾选。
 4. 工作流复用完整的 Windows 测试、打包和启动检查，将本次运行的安装 `.exe`、便携 `.zip`、`popper.json` 与 `SHA256SUMS.txt` 上传至 Release，并自动生成更新说明。成功后可从运行摘要打开 Release；草稿在仓库 **Releases** 页面检查并发布。
 
 构建阶段只有 `contents: read`，仅 Release 任务使用 `contents: write` 和 GitHub 自动提供的 `GITHUB_TOKEN`，无需额外配置 PAT。仓库或组织策略需要允许该任务写入仓库内容。
 
-版本检查要求 `package.json`、Tauri 基础/Windows 配置、`Cargo.toml` 和 `Cargo.lock` 一致。标签始终对应本次选择的源码提交；已有标签指向其他提交会失败。已有同名 Release（含草稿）不会被覆盖：需要修改现有 Release 时手动处理，发布新版本时更新版本号。上传或发布中途失败可能留下草稿，可在 Releases 页面检查后处理。
+版本检查使用统一的 `scripts/version.mjs`，要求干净工作区和指向当前提交的唯一 `vX.Y.Z` 标签；发布阶段再次核对标签和提交，并通过 `--verify-tag` 禁止自动创建不存在的标签。已有同名 Release（含草稿）不会被覆盖：需要修改现有 Release 时手动处理，发布新版本时在新提交上创建新版本标签。上传或发布中途失败可能留下草稿，可在 Releases 页面检查后处理。标签格式及本地构建规则见[开发手册](../DEVELOPMENT_HANDBOOK.md#应用版本)。
 
 Release 工作流在仓库内串行执行。所有附件由本次运行构建并校验，Release 附件不受 Actions 的 14 天保留期影响。目前包含 Windows x64 安装包及便携版。便携版和 Scoop 使用方式见 [使用说明](../WINDOWS_PORTABLE.md)。
 
 ## 流程与维护
 
 - Node 22.22.0、Rust 1.97.1 MSVC，与开发容器版本保持一致；pnpm 精确版本从 `package.json` 读取。
+- 构建和发布均获取完整 Git 历史及标签，并检出工作流的固定提交。普通构建采用最近可达的 `vX.Y.Z` 标签；Release 必须精确命中标签。生成的 `.popper-version.json` 不提交，安装包、便携包、Scoop、运行时版本和校验脚本均使用该来源。
 - 通过 `pnpm install --frozen-lockfile` 安装依赖，自动发现 runner 的 Visual Studio/Windows SDK；从 NASM 官方下载固定版本 3.02 的 Windows x64 ZIP，校验固定 SHA-256、解压并核对可执行文件版本，不再依赖 Chocolatey 软件源。工具位于 runner 临时目录，通过 `POPPER_NASM_DIRECTORY` 和 `GITHUB_PATH` 传给后续步骤；进入 Visual Studio 开发环境后再次优先使用该目录，避免 Strawberry Perl 同名工具干扰。下载、校验、解压或版本检查失败均立即停止。
-- 依次运行 `pnpm typecheck`、`pnpm test`、`pnpm build:web` 和 `pnpm test:rust:windows`，成功后复用本次生成的前端产物运行 `pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked`，最后运行 `pnpm verify:artifacts:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
+- 依次运行 `pnpm typecheck`、`pnpm test`（包含版本推导、发布校验和 Scoop 脚本测试）、`pnpm build:web` 和 `pnpm test:rust:windows`，成功后复用本次生成的前端产物运行 `pnpm build:windows --config src-tauri/tauri.ci.conf.json '--' --locked`，最后运行 `pnpm verify:artifacts:windows`。沿用已有 PE 架构、版本及 SHA-256 校验，不跳过测试。
 - CI 中的 Rust 全目标测试包含编译、链接和测试执行，因此不再紧接着重复运行同目标的 `cargo check --all-targets`；本地 `pnpm verify:windows` 仍保留原有完整命令。全部前端和 Rust 测试仍执行。
 - 任一步骤失败都会停止；仅成功产物上传。任务最多运行 60 分钟，同一分支的并发构建不会相互中断。
 - Actions 自身使用 Node.js 24 运行时（包括 Rust 缓存）；这与构建项目的 Node 22.22.0 独立。`setup-node` 关闭自动 npm 缓存，pnpm store 由显式缓存步骤管理。
