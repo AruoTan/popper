@@ -11,6 +11,7 @@ https://developer.microsoft.com/microsoft-edge/webview2/
 
 To import installed settings, exit all Popper instances, then run the included
 Import-InstalledSettings.ps1 in PowerShell before the first portable launch.
+Only settings format v18 is accepted; older formats require reconfiguration.
 It copies settings and BOTH local secret files from %APPDATA%/com.local.popper
 without overwriting an existing config directory or changing the source.
 For an already initialized profile, back up and move config first.
@@ -25,3 +26,5 @@ For Scoop, install popper.json from the GitHub Release. Its persist definition
 links config and logs to Scoop's persist/popper/config and persist/popper/logs.
 WebView data stays in the app version directory and is not persisted.
 Ordinary uninstall retains persisted config and logs; a purge uninstall removes them.
+
+User guide: https://github.com/AruoTan/popper/blob/main/USER_GUIDE.md

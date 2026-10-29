@@ -1,281 +1,54 @@
-# Windows App Sources
+# Windows 平台
 
-This directory contains Windows-owned code and assets:
+[开发手册](../../DEVELOPMENT_HANDBOOK.md) · [便携版与 Scoop](../../WINDOWS_PORTABLE.md) · [屏幕捕捉开发](../../SCREEN_CAPTURE.md)
 
-- `src/selection.rs`
-- `renderer/startup/`
-- `icons/`
-- `scripts/verify-artifacts.mjs`
+## 结构
 
-Build entry points remain in shared locations:
-
-- `src-tauri/src/selection.rs` imports `src/selection.rs` from this directory.
-- `src/renderer/startup/index.html` and `src/renderer/startup/main.ts` are thin build shims that load `renderer/startup/`.
-- `src-tauri/tauri.windows.conf.json` references the icon assets in this directory.
-
-Shared toolbar, result window, settings UI, model requests, and most Rust runtime code remain in `src/` and `src-tauri/src/`.
-
-Portable ZIP packaging, Scoop installation and profile migration are documented
-in [Windows portable guide](../../WINDOWS_PORTABLE.md). The shared
-`src-tauri/src/app_paths.rs` selects the Windows data root before startup logging;
-portable logs and selection diagnostics use `logs` beside the executable, and all WebViews use
-`webview` beside the executable. The installed paths documented below apply when neither
-`portable.flag` nor `--data-dir` is supplied.
-
-## Application icons
-
-`icons/icon.ico` supplies both the executable's embedded icon and Tauri's
-default window icon; `icons/32x32.png` supplies the notification-area icon.
-`src-tauri/build.rs` explicitly tracks these files so replacing an icon also
-rebuilds native resources when Cargo artifacts are reused. Installer icons
-alone do not update the executable's embedded icon.
-
-After installing a build with new icons, fully exit Popper from its tray menu
-and launch the installed version again. If an existing pinned taskbar shortcut
-still displays the old icon, unpin it and pin the newly launched app again.
-
-## Optional tray and reopening settings
-
-The sidebar's **启用托盘** switch defaults to on, including for existing settings
-files. Save settings to apply it immediately; the preference persists across
-restarts. When off, startup skips tray creation and saving removes any existing
-tray resource. Closing settings still keeps selection assistance running.
-
-Launching `Popper.exe` again opens, restores, and focuses the running instance's
-settings panel, regardless of the tray preference. An early second launch is
-queued until the primary instance has finished setting up its windows.
-
-Windows acceptance: disable and save, confirm the notification-area icon
-disappears, close settings, and launch the executable again. Confirm settings
-opens with the switch off and only one Popper process owns the selection hooks.
-Restart to check no tray is created; re-enable and save to check it returns.
-Repeat toggling and check a tray menu action fires only once. Also verify a
-minimized settings window is restored by another launch.
-
-## Startup diagnostics
-
-Every normal launch writes initialization stages, its process ID and a `ready`
-marker to `%LOCALAPPDATA%\Popper\startup.log`. Startup errors and Rust panics
-are recorded even when DEV Debug is off. Once the existing log reaches 256 KiB,
-the next entry truncates it. It does not log settings contents,
-API keys, selected text or attachments during normal initialization. A startup
-failure also shows a native error dialog with the diagnostic path.
-
-The settings WebView is created only after runtime initialization, so its first
-events and renderer IPC can safely access managed state. Events arriving before
-runtime initialization are ignored. The optional
-quick-ask shortcut plugin initializes after runtime state is available; a native
-manager or shortcut registration error is shown in settings and does not stop
-selection assistance from starting.
-
-Windows CI launches the actual release executable after packaging and requires
-the same process to remain alive and write `ready` within 20 seconds. Diagnostic
-logs stay local and are not uploaded. This check complements library tests;
-installed-app and desktop behavior still need Windows acceptance.
-
-## Mouse/UIA selection offset detection
-
-Windows records the latest completed left-button gesture without querying UIA
-in the low-level hook. A right-button hold requests capture; the isolated COM
-helper then checks the saved drag endpoints or multi-click anchors against the
-UIA selection. There
-are no background selection probes or additional settings.
-
-The detector uses one TextPattern, `RangeFromPoint`, and `CompareEndpoints`.
-It allows two UIA character units on either side of each mouse insertion point,
-uses text order for forward/reverse selections, and supplements endpoint checks
-with the first/last character rectangles. Geometry is advisory: missing
-rectangles and mouse endpoints in whitespace do not imply an offset.
-
-| Health | Capture policy |
+| 路径 | 职责 |
 | --- | --- |
-| `NORMAL` | Continue the existing native provider order; validate the actual UIA range before returning it. |
-| `OFFSET_DETECTED` | Skip native provider results and use the existing guarded clipboard fallback. |
-| Applicable `SUSPICIOUS` | Use the same guarded clipboard fallback, including one mismatched endpoint, reliable geometry contradictions, multiple ranges, an unstable selection, distinct drag coordinates mapping to the same UIA insertion point for a nonempty selection, or multi-click containment/mapping failures. |
-| Non-applicable `SUSPICIOUS` | Keep the existing provider order; Shift-click, plain clicks and identical physical endpoints labeled as an ordinary drag are not applicable. |
-| `UIA_UNAVAILABLE` | Keep the existing provider order; cancellation/context changes and password controls abort capture. |
+| `src/selection.rs` | Win32 输入、UIA／OLE、辅助进程与受控复制 |
+| `renderer/startup/` | 启动提示，入口由 `src/renderer/startup/` 引用 |
+| `icons/` | 程序、窗口、托盘与安装包图标 |
+| `scripts/` | PE 产物校验、便携打包、发布附件与测试 |
+| `portable/` | 便携说明、标记与配置导入脚本 |
 
-For `EqualPointRanges`, distinguish equal physical mouse coordinates from
-identical UIA point mappings. A real drag with distinct screen endpoints and a
-nonempty selected range (confirmed by a bounded `GetText(1)` probe) is
-applicable `SUSPICIOUS` if `RangeFromPoint` reports
-one insertion position for both ends (observed in Zotero PDF Reader). The initial
-capture gate and candidate revalidation both route it to guarded copying before
-UIA/Legacy/MSAA can return the related selection. Direction, endpoint validity
-and geometry remain unknown, with confidence 0; this does not claim a measured
-offset. Collapsed/caret selections remain `UIA_UNAVAILABLE` with
-`EmptySelection`, and identical physical endpoints of an ordinary drag remain
-non-applicable.
+`src-tauri/src/selection.rs` 引入本目录选区后端。共享运行时和屏幕捕捉保留在 `src-tauri/src/`。数据路径由 `app_paths.rs` 在日志与 WebView 初始化前确定。
 
-Double-click word selection, triple-click paragraph selection and subsequent
-word/paragraph dragging use a separate **click containment** strategy. The same
-stable-selection sampling, 60-second context checks and shared phase budget
-apply. A `MultiClick` with identical physical coordinates is valid: its click
-should lie inside the selected word/paragraph, rather than equal either of the
-selected range's endpoints. Both anchors are checked when the multi-click moves.
+设置窗口按需创建和销毁。托盘可在设置中关闭，再次运行同数据目录的程序仍能打开常驻实例的设置；初始化期间到达的请求排队处理。
 
-Containment uses a cloned selection expanded by up to two character units at
-both ends, including document boundaries; the source range is not modified.
-The selected range's rectangles provide supplementary geometry for each click,
-using the existing pixel tolerance and reliable-character anchor check. Missing
-rectangles or whitespace geometry alone remain advisory. Matching clicks report
-`NORMAL / ClickMatchesSelection`; an outside click reports applicable
-`SUSPICIOUS / ClickOutsideSelection`. Reliable geometry contradictions also
-use guarded copying. Once nonempty selected text is confirmed, failed point
-mapping/comparison reports applicable `SUSPICIOUS / ClickMappingUnavailable`
-and routes to the existing guarded-copy entry. Empty selection or unavailable
-text keeps the existing provider route; cancellation, protection, context
-changes and deadlines retain their existing handling.
+## 选区捕获
 
-The optional internal health field `clickValidation` contains down/up physical
-points, containment, geometry validity, pixel distances and the selected
-rectangles. Drag endpoint fields remain unknown for click validation. The DEV
-panel shows click correspondence and includes the evidence in copied reports;
-renderer selection payloads and settings are unchanged. Candidate UIA ranges
-are revalidated with the same multi-click strategy before returning text.
+低级输入钩子只记录手势，右键长按后由隔离辅助进程读取选区。UIA 健康检查对照拖动端点或多击位置，不修改原应用选区；第三方 COM 阻塞由辅助进程超时隔离。
 
-A saved gesture expires after 60 seconds. New left presses, real selection/edit
-keyboard input, scrolling, unrelated foreground changes, stopping the monitor
-and restarting its hook thread invalidate it. The triggering right press
-preserves it. Captures without a saved mouse gesture (including keyboard
-selections) do not claim mouse endpoint validation.
+| 检测结果 | 路由 |
+| --- | --- |
+| `NORMAL` | 按原生接口顺序捕获，并复核实际选区 |
+| `OFFSET_DETECTED` | 使用受控复制 |
+| 适用的 `SUSPICIOUS` | 使用受控复制，包括可靠的端点冲突或多击不匹配 |
+| 不适用的 `SUSPICIOUS`、`UIA_UNAVAILABLE` | 保持接口顺序；取消、上下文变化和密码控件终止捕获 |
 
-Selection samples are scheduled at 0, 28 and 56 ms and require two consecutive
-matching ranges. Lookup and endpoint detection share a 180 ms phase deadline,
-which also counts against the existing capture deadline. Individual third-party
-COM calls can still block; the existing helper-process timeout remains the hard
-isolation boundary. Detection does not access the clipboard, inject keys, select
-or modify a host range. The existing clipboard snapshot, safety gates, freshness
-checks and restore/recovery transaction are reused unchanged.
+手势在编辑、滚动、无关前台变化或超时后失效。拖动以文本顺序与边界容差校验，多击以包含关系校验；缺少矩形或落在空白不单独判为偏移。`NORMAL` 表示可用信号一致，不能证明应用提供的 UIA 映射与视觉完全一致。
 
-Hook, event worker and COM helper threads establish Per-Monitor V2 DPI awareness.
-Hook points, physical cursor positions, UIA hit-testing and rectangle distances
-stay in physical virtual-desktop pixels, including negative monitor coordinates.
-The health result's `confidence` means evidence completeness (0.7 for usable
-endpoint comparisons, plus 0.15 per usable geometry check), not an accuracy
-probability. It does not control routing.
+受控复制先完整备份剪贴板，重试期间继续校验前台与输入状态；没有有效备份就不注入复制。恢复检查剪贴板序列，不能覆盖用户新内容。坐标全程使用物理虚拟桌面像素，支持混合 DPI 与负坐标。
 
-### Diagnostics
+## 诊断
 
-Set `POPPER_SELECTION_TRACE=1` before starting Popper, or create the existing
-`%LOCALAPPDATA%\Popper\selection-trace.enabled` marker. The existing
-`selection-diagnostic.log` then includes detector status/reason, applicability,
-mouse endpoints, provider identity, direction, stability, endpoint validity,
-character rectangles/distances and the chosen capture method. Ordinary trace
-output does not contain selected text, nearby text, window titles or AutomationId.
+安装版日志在 `%LOCALAPPDATA%\Popper`；便携版或 `--data-dir` 模式在数据根目录的 `logs/`。
 
-**Runtime DEV Debug:** use the **DEV Debug** switch at the bottom left of
-Windows settings. It takes effect immediately for the running app, including
-already-warmed helpers. It is never saved in settings and always starts **off**
-on a new app launch. Enabling it records input history and text-debug reports
-for subsequent captures. Disabling it stops diagnostics, clears in-memory
-reports/input history and hides existing panels; it does not delete logs already
-written to disk. Old in-flight reports are discarded even if debug is re-enabled.
-The former `POPPER_SELECTION_DETECTION_DEBUG` environment override is no longer
-used. Ordinary trace can still be enabled independently of DEV Debug.
+| 入口 | 用途 |
+| --- | --- |
+| `startup.log` | 启动阶段、PID、错误与 `ready` 标记；常规启动不记录选区内容 |
+| 启动前设置 `POPPER_SELECTION_TRACE=1`，或在日志目录创建 `selection-trace.enabled` | 输出选区路由与检测状态到 `selection-diagnostic.log` |
+| 设置中的 DEV Debug | 临时启用输入历史与文本诊断，不保存设置，重启后关闭 |
 
-While enabled, result windows with a diagnostic report include a collapsed
-**DEV · 选区偏移诊断** panel.
-Expand it and click **复制诊断报告** after reproducing the incorrect selection.
-The report is scoped to that result's original selection timestamp (not the
-latest global capture); only its own result window can request it. The parent
-keeps at most 16 reports and the latest 48 input events. Helper steps are capped
-at 192 (first 128 and last 64) and include relative elapsed times; truncated
-reports are marked.
+DEV Debug 开启后，结果窗口可展开“DEV · 选区偏移诊断”并复制当前选区报告；失败或取消的捕获查看日志。关闭开关会清理内存报告并隐藏面板，但不删除已写日志。
 
-Reports include the saved left gesture and tracker invalidations, DPI readiness,
-hit-test/provider lookup, ancestor prefilter outcomes, failed-call HRESULTs,
-endpoint comparisons (order only), requested/actual character movement,
-rectangles, stability, and initial **and** revalidated health. They distinguish
-entering the guarded-copy route from successfully returning clipboard text.
-Existing clipboard protection, injection and restoration are unchanged.
+普通 trace 不含选中文本、邻近文本、窗口标题和 AutomationId。DEV Debug 报告包含有界文本片段，分享前检查内容。报告用于定位手势、provider、端点、复制注入与恢复阶段，不能将健康状态当作视觉正确性的证明。
 
-Before guarded Ctrl+C, the helper retries transient clipboard backup failures
-at most three times, with 12 ms between attempts and a 240 ms backup-stage
-budget inside the existing capture timeout. Each attempt revalidates source
-foreground, cancellation and active user shortcuts. Snapshots release the
-clipboard lock before waiting. Unsupported/oversized backups remain terminal;
-no synthetic copy is injected unless a valid backup is available.
+`scripts/capture-toolbar.ps1` 用于工具栏焦点诊断：启动前设置 `POPPER_TOOLBAR_DIAGNOSTICS=1` 并将标准错误重定向到日志，通过 `-LogPath` 指定日志、`-OutputDirectory` 指定已创建的输出目录。脚本等待焦点日志后记录可见窗口和屏幕图片，输出放在项目 `.diagnostics/` 中。
 
-`[selection-clipboard-snapshot]` trace lines and the
-`clipboard.snapshot-failed` DEV report steps include the attempt number,
-failure stage, clipboard format ID, native error, expected/current sequence
-and remaining backup budget. They do not include clipboard contents.
-`clipboard-snapshot-failed` is the final abort marker; an earlier detailed
-failure can recover on a later attempt. For desktop acceptance, test guarded
-copy in Zotero after copying text, an image and files in another app; verify
-the original clipboard can still be pasted afterward. Also test while another
-process briefly holds the clipboard open, then while it holds it beyond the
-budget. The first case should recover if the lock is released in time; the
-second must stop without injecting copy. Type or switch apps during a retry
-to confirm cancellation, and inspect the log when no toolbar opens.
+## 桌面验收
 
-The same report is written to
-`%LOCALAPPDATA%\Popper\selection-diagnostic.log`. Empty, failed or cancelled
-captures can be diagnosed there even when no result window opens. Selected and
-nearby text, window title and AutomationId are bounded to 512 Unicode scalars;
-nearby probes request at most 64 UTF-16 units. JSON escapes line breaks. Selected
-text is present only in reports collected while DEV Debug is enabled.
+在记事本、浏览器、文档与 PDF 阅读器中验证正反拖选、多行、双击词、三击段落、键盘选区和边界空白；覆盖 100%、125%、150%、200% 及混合 DPI 副屏。返回文本必须与实际选区一致。
 
-For the reported PDF failure: drag over the word, hold the right button, then
-copy the report before making another selection. Compare the visually selected
-word with `selectionText`, `initialHealth`, `health`, `provider`, and
-`fallbackAttempted`. Check `inputEvents` for missing/invalidated drag context,
-`uia.find-text-pattern.stopped` for exhausted lookup budget, and
-`uia.CompareEndpoints` / `uia.GetBoundingRectangles` for a provider whose point
-mapping agrees with its incorrect selection. A report is diagnostic evidence;
-`NORMAL` still does not prove visual correctness.
-
-To verify the switch: start Popper and confirm DEV Debug is off with no panel
-or new text-debug records. Enable it without saving settings, reproduce a
-selection and copy its report. Disable it with a result window still open and
-confirm its panel disappears; make another selection and verify no new debug
-report is recorded. Reopen settings in the same app run to confirm the current
-switch state, then restart Popper to confirm it is off again. Detector health
-checks and guarded-copy routing continue to operate with DEV Debug off.
-
-The internal helper protocol is version 3 and carries mouse context and
-`SelectionHealthResult`. Renderer selection events and persisted settings are
-unchanged.
-
-### Verification
-
-For multi-click acceptance, double-click a word and triple-click a paragraph,
-then hold the right button. Verify `ClickMatchesSelection` for correct UIA
-mappings. Reproduce the Zotero PDF offset: a click that maps to unrelated text
-should show `ClickOutsideSelection`, `fallbackAttempted: true`, and actual
-`copyInjected` when the guarded shortcut is sent. Also cover word/paragraph
-dragging in both directions, document edges, empty selections, missing
-rectangles, cancelled input and mixed DPI. Preserve the pre-capture clipboard
-contents to verify restoration after a successful copy fallback.
-
-
-The detector and tracker are independent of Windows and expose a fakeable UIA
-adapter. Their tests run in the regular Rust suite on Windows/macOS and cover
-forward/backward offsets, inclusive tolerance, document boundaries, text-order
-direction, geometry gaps, multiple/unstable selections, cancellation and context
-invalidation. Windows tests also verify helper request/result serialization and
-input-state integration. `pnpm verify:windows` remains the complete Windows
-verification entry point.
-
-On a Windows desktop, test Notepad, Chrome/Edge, Firefox, Zotero's main UI, Note
-Editor and PDF Reader, and VS Code at 100%, 125%, 150% and 200% scaling, plus
-mixed-DPI/negative-coordinate monitors. For each application:
-
-1. Drag-select a known phrase, then hold right-button for 250 ms. Confirm the
-   returned text matches the visual selection and normal drags avoid copying.
-2. Repeat in reverse and across three lines, including RTL text where available.
-3. End near a character boundary or outside text; confirm tolerance/missing
-   geometry do not produce a false offset.
-4. Try double/triple-click, Shift-click and keyboard selection; confirm ordinary
-   capture still works without strict drag endpoint classification.
-5. Change the selection, scroll, switch windows or wait over 60 seconds before
-   triggering; confirm stale endpoints are not reused.
-6. Reproduce the Zotero PDF offset with trace enabled. A reliable mismatch must
-   select clipboard routing even if Legacy UIA/MSAA report the same wrong text.
-   Check the original clipboard is restored and user input cancels capture.
-
-`RangeFromPoint` and rectangle mapping are still supplied by the application.
-If these mappings and `GetSelection` share the same defect, the detector may miss
-it. `NORMAL` is evidence of consistency with the available signals, not proof of
-visual correctness. Real Zotero regression testing remains necessary.
+分别预先复制文本、图片和文件，触发受控复制后检查原内容恢复。覆盖短时与持续剪贴板占用、捕获中输入或切换应用、过期手势及辅助进程卡死。验证关闭托盘、再次运行、设置销毁和重开；截图验收另见[专项清单](../../SCREEN_CAPTURE.md#桌面验收)。

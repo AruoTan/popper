@@ -1,105 +1,68 @@
 # Windows 便携版与 Scoop
 
-Windows Release 同时提供安装包、`Popper_<version>_x64-portable.zip`、Scoop 清单 `popper.json` 和 `SHA256SUMS.txt`。这些附件由现有手动 Release Action 从同一提交生成。
+[使用指南](./USER_GUIDE.md) · [开发手册](./DEVELOPMENT_HANDBOOK.md)
 
-## 使用便携版
+## 便携版
 
-将整个 ZIP 解压到可写目录，双击 `popper.exe`。程序旁的 `portable.flag` 启用便携模式，首次启动创建：
+从 [Releases](https://github.com/AruoTan/popper/releases) 下载 `Popper_<version>_x64-portable.zip`，完整解压到可写目录并运行 `popper.exe`。保留同目录的 `portable.flag`，并先安装 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。
 
-```text
-Popper/
-├─ popper.exe
-├─ portable.flag
-├─ Import-InstalledSettings.ps1
-├─ config/
-│  ├─ settings.json
-│  ├─ api-keys.enc.json
-│  └─ .api-keys.key
-├─ logs/
-└─ webview/
-```
+| 路径 | 内容 |
+| --- | --- |
+| `config/settings.json` | 当前版本 18 的设置 |
+| `config/api-keys.enc.json`、`config/.api-keys.key` | 加密凭据与本地解密文件 |
+| `logs/` | 启动和诊断日志 |
+| `webview/` | 当前程序版本的 WebView 数据 |
 
-设置、服务商密钥、欧路授权、启动日志、划词诊断和所有窗口的 WebView 数据分别使用上述目录。便携模式不自动导入安装版配置。目录不可写会显示错误并停止启动。
+首次启动自动创建目录，不自动导入安装版配置。升级前退出 Popper，将新版解压到新目录，把旧版 `config` 和 `logs` 移到新版旁；`webview` 由新版重新生成。仅支持当前配置格式，旧配置需备份后重新设置。
 
-需要系统已安装 [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)。ZIP 不包含 Runtime；系统运行库、Windows 自身的临时文件和系统诊断不属于 Popper 的配置目录。
+## Scoop
 
-手动升级时先退出 Popper，将新版解压到新目录，然后把旧版的 `config` 和 `logs` 移到新版程序旁；`webview` 可由新版重新生成。发布 ZIP 只包含程序、便携标记、许可与说明文件，不包含用户数据。
-
-## Scoop 安装与升级
-
-首次发布带有 `popper.json` 的正式 Release 后执行：
+安装：
 
 ```powershell
 scoop install https://github.com/AruoTan/popper/releases/latest/download/popper.json
 ```
 
-之后更新：
+退出 Popper 后更新：
 
 ```powershell
-# 先从托盘退出 Popper；禁用托盘时可在任务管理器结束 Popper。
 scoop update
 scoop update popper
 ```
 
-清单使用 `persist: ["config", "logs"]`，Scoop 创建两个目录联接：
+Scoop 将 `config` 和 `logs` 联接到 `persist/popper/`，`webview` 留在各版本程序目录，不跨版本复用。普通卸载保留持久化数据，`scoop uninstall -p popper` 同时删除数据。升级与卸载检查要求 Popper 已退出。
 
-```text
-<Scoop>/apps/popper/current/config → <Scoop>/persist/popper/config
-<Scoop>/apps/popper/current/logs   → <Scoop>/persist/popper/logs
-```
+最新正式版清单 URL 跟随正式发布。安装特定版本或预发布版时使用对应 Release 的 `popper.json` URL，此固定地址不会自动切换到其他版本。
 
-程序从自己的目录分别访问 `config`、`logs` 和 `webview`。`webview` 位于当前程序版本目录，不纳入持久化，升级时重新生成。无需设置环境变量，也不假定 Scoop 安装在用户主目录。开始菜单快捷方式和 `popper` 命令均由 Scoop 创建。升级、卸载前的清单检查要求 Popper 已退出。
+## 导入安装版配置
 
-通过 `releases/latest/download/popper.json` 安装时，Scoop 更新读取同一清单 URL，跟随最新正式版。预发布版可从对应 Release 的 `popper.json` 附件 URL 安装；固定版本 URL 会继续跟踪该固定清单，需显式切换 URL 才能跟随其他版本。草稿附件须先发布才能公开安装。
-
-普通 `scoop uninstall popper` 保留持久化数据；`scoop uninstall -p popper` 同时清除它。清单也可放入自己的 bucket，内含版本检测和基于 `SHA256SUMS.txt` 的自动更新规则。项目目前通过 Release 附件提供清单，无需维护额外的 bucket 仓库。
-
-## 从安装版迁移
-
-先退出所有 Popper 实例，在便携版首次启动前运行 ZIP 中的导入脚本：
+导入仅支持版本 18。先退出全部 Popper 实例，再在便携目录执行：
 
 ```powershell
 & .\Import-InstalledSettings.ps1
 ```
 
-Scoop 安装后可运行：
+脚本从 `%APPDATA%\com.local.popper` 复制设置与密钥，不修改源文件，不覆盖已存在的目标 `config`。已运行过便携版时，先备份并移走目标 `config`。密钥文件与 `.api-keys.key` 必须一起保留。
+
+Scoop 用户执行：
 
 ```powershell
 $popperDirectory = scoop prefix popper
 & (Join-Path $popperDirectory 'Import-InstalledSettings.ps1')
 ```
 
-脚本从 `%APPDATA%\com.local.popper` 复制 `settings.json` 及本地密钥文件，完整复制后才发布程序旁的 `config`，不修改源配置。服务商密钥和欧路授权使用原有加密格式，无需重新填写。目标 `config` 已存在时拒绝覆盖；如已启动过便携版，先退出并备份、移走该目录再导入。备份 `config` 时应妥善保管其中的 `.api-keys.key`，它用于解密密钥文件。
-
-也可以指定源目录和目标数据根目录：
+指定源配置目录与目标数据根目录：
 
 ```powershell
 & .\Import-InstalledSettings.ps1 -SourceDirectory 'D:\Old Popper Config' -DataDirectory 'D:\Popper Data'
 ```
 
-配置读取使用当前 v18 格式，支持 v17→v18 的定向升级；其他历史格式、旧产品名目录和旧 `data` 布局不自动转换。安装版与便携版之间可使用上述脚本复制 v17 或 v18 配置和密钥，v17 在首次运行时升级。
-
-## 自定义目录与运行模式
+## 自定义数据目录
 
 ```powershell
 .\popper.exe --data-dir 'D:\Popper Data'
 ```
 
-`--data-dir` 接受绝对路径，优先于便携标记；支持 `--data-dir=<绝对路径>`。指定的是数据根目录，程序在其下使用 `config`、`logs` 和 `webview`。划词辅助进程继承同一目录。
+参数必须是绝对路径，优先于 `portable.flag`，其下使用 `config`、`logs` 和 `webview`。安装版与便携版共用单实例机制；切换模式或数据目录前先退出原实例。同目录再次启动打开设置，不同目录再次启动会提示退出。
 
-没有参数和便携标记时，安装版沿用 Tauri 的原配置目录及 `%LOCALAPPDATA%\Popper` 日志目录，macOS 路径不变。Windows 安装版与便携版共用单实例机制；同一数据目录的再次启动打开设置，不同数据目录的启动会提示先退出原实例，防止误用另一个配置。切换运行模式或数据目录前，应先退出正在运行的实例。
-
-## 开发与验证
-
-```powershell
-pnpm build:windows
-pnpm verify:artifacts:windows
-pnpm package:portable:windows
-node apps/windows/scripts/prepare-release-assets.mjs
-```
-
-便携 ZIP 位于 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/portable`，完整发布附件位于相邻的 `distribution`。设置 `CARGO_TARGET_DIR` 时，本地便携打包与发布附件生成脚本使用该目录。`GITHUB_REPOSITORY` 可指定生成清单的目标仓库，默认 `AruoTan/popper`。
-
-CI 运行路径、迁移、密钥迁移、ZIP 白名单及校验值测试，并从含空格和中文的临时目录实际启动 ZIP 程序，通过目录联接模拟 Scoop 切换两个版本目录，确认配置和日志保留、WebView 使用各自程序版本目录且不共享缓存，且未写入安装版启动日志。
-
-参考：[Scoop 持久化数据](https://github.com/ScoopInstaller/Scoop/wiki/Persistent-data)、[Scoop 清单](https://github.com/ScoopInstaller/Scoop/wiki/App-Manifests)。
+未指定参数且没有便携标记时，安装版配置在 `%APPDATA%\com.local.popper`，日志在 `%LOCALAPPDATA%\Popper`。

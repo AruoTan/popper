@@ -1,4 +1,3 @@
-import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
@@ -12,13 +11,6 @@ export default defineConfig({
       'src/renderer/**/*.test.{ts,tsx}',
       'apps/windows/renderer/**/*.test.{ts,tsx}',
       'src/shared/**/*.test.{ts,tsx}'
-    ],
-    exclude: []
-  },
-  resolve: {
-    alias: {
-      '@shared': fileURLToPath(new URL('./src/shared', import.meta.url)),
-      '@renderer': fileURLToPath(new URL('./src/renderer', import.meta.url))
-    }
+    ]
   }
 })

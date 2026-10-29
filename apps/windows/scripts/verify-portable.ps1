@@ -23,12 +23,12 @@ try {
             $null = New-Item -ItemType Junction -Path (Join-Path $directory $name) -Target (Join-Path $persist $name)
         }
     }
-    & (Join-Path $projectRoot '.github/scripts/smoke-test-windows.ps1') -Executable (Join-Path $first 'popper.exe') -Portable -StartupTimeoutSeconds 60
+    & (Join-Path $projectRoot '.github/scripts/smoke-test-windows.ps1') -Executable (Join-Path $first 'popper.exe') -Portable
     $settings = Join-Path $persist 'config/settings.json'
     $settingsHash = (Get-FileHash -LiteralPath $settings).Hash
     [System.IO.File]::WriteAllText((Join-Path $persist 'logs/upgrade-check.txt'), 'keep across versions')
     [System.IO.File]::WriteAllText((Join-Path $first 'webview/old-cache.txt'), 'do not persist')
-    & (Join-Path $projectRoot '.github/scripts/smoke-test-windows.ps1') -Executable (Join-Path $second 'popper.exe') -Portable -StartupTimeoutSeconds 60
+    & (Join-Path $projectRoot '.github/scripts/smoke-test-windows.ps1') -Executable (Join-Path $second 'popper.exe') -Portable
     if ((Get-FileHash -LiteralPath $settings).Hash -ne $settingsHash -or
         [System.IO.File]::ReadAllText((Join-Path $persist 'logs/upgrade-check.txt')) -ne 'keep across versions') {
         throw 'Portable profile was changed or lost when switching Scoop version directories'

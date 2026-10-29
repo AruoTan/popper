@@ -16,7 +16,7 @@ const outputDirectory = join(exportRoot, bundleName);
 const includeEntries = [
   ".devcontainer",
   ".github",
-  ".env.example",
+  ".gitattributes",
   ".gitignore",
   "LICENSE",
   "LICENSE.selection-hook",
@@ -24,6 +24,9 @@ const includeEntries = [
   "SCREEN_CAPTURE.md",
   "README.md",
   "README.en.md",
+  "USER_GUIDE.md",
+  "WINDOWS_PORTABLE.md",
+  "DSH_CONNECTION.md",
   "THIRD_PARTY_NOTICES.md",
   "DEVELOPMENT_HANDBOOK.md",
   "apps",
@@ -48,7 +51,8 @@ function normalize(path) {
 
 function shouldCopy(sourcePath) {
   const relativePath = normalize(relative(root, sourcePath));
-  if (!relativePath || relativePath === "") return true;
+  if (!relativePath) return true;
+  if (relativePath === "src-tauri/gen") return false;
 
   const name = basename(sourcePath);
   if (
@@ -111,6 +115,7 @@ for (const entry of includeEntries) {
 writeFileSync(join(outputDirectory, versionFile), `${JSON.stringify(metadata, null, 2)}\n`);
 
 for (const [entry, kind] of [
+  [".gitattributes", "file"],
   ["apps", "directory"],
   ["assets", "directory"],
   ["DEVELOPMENT_HANDBOOK.md", "file"],
@@ -121,6 +126,10 @@ for (const [entry, kind] of [
   [versionFile, "file"],
   ["README.md", "file"],
   ["README.en.md", "file"],
+  ["USER_GUIDE.md", "file"],
+  ["WINDOWS_PORTABLE.md", "file"],
+  ["DSH_CONNECTION.md", "file"],
+  ["SCREEN_CAPTURE.md", "file"],
 ]) {
   requireExportedPath(entry, kind);
 }
@@ -132,6 +141,7 @@ for (const excluded of [
   "portable-dev-sources",
   "release",
   "src-tauri/target",
+  "src-tauri/gen",
 ]) {
   if (existsSync(join(outputDirectory, excluded))) {
     throw new Error(`Export validation failed: excluded path copied into bundle: ${excluded}`);

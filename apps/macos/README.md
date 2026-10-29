@@ -1,17 +1,11 @@
-# macOS App Sources
+# macOS 平台
 
-This directory contains macOS-owned code and assets:
+[开发手册](../../DEVELOPMENT_HANDBOOK.md) · [使用指南](../../USER_GUIDE.md#安装与升级)
 
-- `native/selection_bridge.h`
-- `native/selection_bridge.mm`
-- `icons/icon.icns`
-- `icons/tray-template.png`
-- `scripts/verify-artifacts.mjs`
+| 路径 | 职责 |
+| --- | --- |
+| `native/selection_bridge.h`、`native/selection_bridge.mm` | Accessibility／AppKit 选区桥接 |
+| `icons/icon.icns`、`icons/tray-template.png` | 应用与菜单栏图标 |
+| `scripts/verify-artifacts.mjs` | App／DMG 架构、版本、资源与路径检查 |
 
-Build entry points remain in shared locations:
-
-- `src-tauri/build.rs` compiles the native bridge from this directory.
-- `src-tauri/tauri.conf.json` references the macOS icon here.
-- `src-tauri/src/runtime.rs` loads the tray template from this directory.
-
-Cross-platform renderer, settings, action logic, model requests, and shared Rust runtime stay in `src/` and `src-tauri/src/`.
+`src-tauri/build.rs` 编译原生桥接，Tauri 配置引用应用图标，运行时加载菜单栏模板图标。开发目标为 `aarch64-apple-darwin`，需要辅助功能权限；不包含屏幕捕捉入口。验证与打包命令统一见开发手册。

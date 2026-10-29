@@ -38,7 +38,6 @@
         "package:windows": "pnpm build:windows && pnpm verify:artifacts:windows",
         "package:portable:windows": "pwsh -NoProfile -File apps/windows/scripts/package-portable.ps1",
         "package:app": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" node scripts/tauri.mjs build --target aarch64-apple-darwin --bundles app",
-        "package:dmg": "RUSTFLAGS=\"--remap-path-prefix=$HOME=/workspace\" node scripts/tauri.mjs build --target aarch64-apple-darwin --bundles app,dmg && pnpm verify:artifacts",
         "version:show": "node scripts/version.mjs",
         "test:scripts": "node --test scripts/*.test.mjs .github/scripts/*.test.mjs apps/windows/scripts/*.test.mjs"
     },

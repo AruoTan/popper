@@ -1,194 +1,57 @@
 # Popper
 
-Windows portable ZIPs store `config`, `logs` and `webview` beside the executable. Scoop persists only `config` and `logs` under `persist/popper`; WebView data is recreated for each version. See the [Windows portable guide](./WINDOWS_PORTABLE.md) for installation, upgrades and importing an installed profile.
-
 **English** | [中文](./README.md)
 
-Popper is a lightweight desktop selection assistant for **macOS 12+ Apple Silicon (M-series)** and **Windows 10/11 x64**, built with Tauri 2, Rust, React, and TypeScript.
+Popper is a desktop text selection and AI assistant for translation, dictionary lookup, summaries, explanations, rewriting, and follow-up questions. On Windows, it also provides screen capture, annotations, manual scrolling screenshots, and floating images.
 
-After selecting text in another app, you can copy, search, translate, summarize, explain, polish, Ask AI, or run custom AI actions. On macOS it lives in the menu bar and stays out of the Dock by default. On Windows it runs in the background from the notification area after a brief “Popper is running” toast; open Settings from the tray menu. Popper does not store selection history. Selected text is sent to your configured model only when you explicitly run an AI action.
-
-Both platforms share the same renderer, settings, actions, model requests, streaming, and data contracts. Only selection capture, clipboard handling, native window attributes, and system integration are platform-specific. Local development, portable source export, and version history are documented in [DEVELOPMENT_HANDBOOK.md](./DEVELOPMENT_HANDBOOK.md) (Chinese).
-
-## Screen capture (Windows)
-
-Press `PrtSc` to capture the display under the pointer, select a region or a detected window/control, annotate it, and copy, save a PNG, pin it, or attach it to Quick Ask. Use the tray menu to pin a clipboard image, restore the last closed image, or toggle all pinned images. The global shortcut for pinning is unset by default and can be configured in Settings; image visibility is controlled through the tray menu. Images are retained only for the current app session; AI requests require explicit submission.
-
-See [Screen capture](./SCREEN_CAPTURE.md) for behavior, implementation boundaries, and desktop acceptance checks.
-
-Choose **Scrolling capture** after selecting a region and scroll manually up or down. Revisit captured areas or extend the image above and below the starting viewport. A live selection border, long-image preview, and brief hints guide capture. The toolbar at the selection’s bottom-right contains only Save, Pin, Ask AI, and Copy. Each action outputs the long image directly without a further editing stage. Outside clicks and Enter do not finish capture; Esc cancels throughout. Uncertain matches preserve the last valid image; unseen content is never fabricated. The scrolling overlay requires Windows 10 version 2004 or later.
-
-## Screenshots
-
-### Settings · AI providers and models
-
-<img src="./assets/screenshots/settings-ai-providers.png" alt="Settings - AI providers and models" width="520" />
-
-### Settings · Toolbar actions
-
-<img src="./assets/screenshots/settings-toolbar-actions.png" alt="Settings - Toolbar actions" width="520" />
-
-### Result window
-
-<img src="./assets/screenshots/result.png" alt="Result window" width="480" />
-
-## Design inspiration and third-party sources
-
-- Product direction and some interaction patterns are inspired by the “selection assistant” workflow in [CherryHQ/cherry-studio](https://github.com/CherryHQ/cherry-studio), including the selection toolbar, result window, pin, dismiss-on-blur, re-select, and model switching.
-- Cherry Studio is primarily Electron-based; Popper uses the lighter Tauri stack to rebuild that workflow as a standalone desktop tool with its own window management, settings storage, model requests, and UI.
-- The macOS selection-capture bridge is adapted from MIT-licensed [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2). The full MIT license is in [LICENSE.selection-hook](./LICENSE.selection-hook).
-
-Popper is licensed under the [GNU General Public License v3.0 (GPL-3.0-only)](./LICENSE). Materials adapted from Cherry Studio remain under upstream AGPL-3.0; selection-hook adaptations remain under MIT. Read the third-party notices before public distribution or derivative work.
+[Download](https://github.com/AruoTan/popper/releases/latest) · [User guide](./USER_GUIDE.md) · [Development handbook](./DEVELOPMENT_HANDBOOK.md)
 
 ## Features
 
-Core selection-assistant workflow:
+- **Selection actions**: select text and hold the right mouse button to run AI actions, search, or copy. Customize actions, prompts, and models.
+- **Quick Ask**: open a standalone composer with a shortcut, attach images, documents, or text, and continue the conversation in a result window.
+- **Translation and dictionary**: multilingual translation, English dictionary lookup, pronunciation, and saving words to Eudic.
+- **Screen capture**: window and control snapping, region capture, six annotation tools, manual vertical scrolling capture, color picking, and floating images.
+- **Model providers**: connect multiple OpenAI-compatible services or DSH Docker, stream text and reasoning, and switch models.
 
-- Selection toolbar: copy, search, translate, summarize, explain, polish, Ask AI, and custom actions.
-- Actions can be enabled/disabled, renamed, reordered, and re-iconed; the toolbar shows icons and labels. Search can use Google / Bing / Baidu; URLs, domains, and IPs open directly when possible.
-- Multiple OpenAI-compatible or DSH Docker providers and models; providers can be enabled or disabled; each action can bind its own model and prompt; fetch models, multi-select merge, and reorder are supported. See the [DSH connection guide (Chinese)](./DSH_CONNECTION.md).
-- Streaming results with Markdown / tables / math; drag, resize, pin, and several dismiss modes; text in the result body can be selected again for a new toolbar.
+## Installation
 
-Enhancements beyond a basic selection assistant:
+| Platform | Requirements | Packages |
+| --- | --- | --- |
+| Windows | Windows 10/11 x64; scrolling capture requires Windows 10 2004+ | Installer, portable ZIP, Scoop |
+| macOS | macOS 12+, Apple Silicon | DMG; screen capture is unavailable |
 
-- **Follow-up in results:** Translate / explain / summarize / polish result windows support multi-turn questions at the bottom (not only Ask AI).
-- **Header model switch & regenerate:** Switch models by provider group and regenerate in the same window; translation targets include CN/EN/JA/KO/RU/DE/FR.
-- **Multilingual translation:** Auto-detect source language; default other languages → Chinese, Chinese → English; primary/backup language pairs are configurable.
-- **Ask AI sessions:** Open a result window with selection as context; you can wait before the first model call, then chat multi-turn in that window only.
-- **Thinking & streaming:** Streaming thinking / reasoning display; thinking levels inferred from model names (including “off”); low-latency streaming.
-- **Provider enable/disable:** Disabled providers are hidden from action binding and result model lists (already-bound actions still run).
-- **Lightweight & private:** Standalone Tauri tool; API keys encrypted locally; no selection history; content is sent for user-triggered dictionary, AI and vocabulary-book operations.
+Download a package from [Releases](https://github.com/AruoTan/popper/releases). The Windows installer installs WebView2 when needed; portable and Scoop installations require it to be installed separately. On macOS, drag Popper into Applications and grant Accessibility permission on first launch.
 
-## Youdao dictionary and Eudic vocabulary books
+Install with Scoop:
 
-- Built-in Translate looks up 1–5 English words using Youdao suggestions and definitions by default. It works without an AI model or a Youdao API key. Disable it in language/translation settings to keep AI-only translation.
-- Surrounding quotes, whitespace and trailing punctuation are normalized; internal apostrophes and hyphens are supported. Longer text, other languages and custom actions keep their AI behavior. Short sentences may also match dictionary entries.
-- The result shows available phonetics, definitions, word forms and up to three bilingual examples. Use the bottom input for both lookups and questions: eligible English text goes to Youdao; other input goes directly to AI with the dictionary reference and conversation context. Suggestions appear at the end of the card after a 250 ms pause; Enter or a candidate click submits. Pronunciation buttons sit beside the AI and vocabulary actions and play only on click.
-- Missing definitions fall back to configured AI translation. Network errors offer retry and manual AI translation. Follow-up questions can use the dictionary entry as reference while keeping the card visible.
-- Save the complete [Eudic OpenAPI authorization](https://my.eudic.net/OpenAPI/Authorization) in language/translation settings. Click Add to Eudic, select a book and confirm each addition. Phrases are saved whole; duplicate entries are deduplicated by Eudic.
-- Youdao uses the community-documented HTTPS `suggest` and `jsonapi` endpoints, with a 10-second total request timeout. These are separate from the commercial cloud API and may change.
-- Lookups and suggestions send the current query to Youdao. Confirming an addition sends only the current entry and destination book to Eudic, without the original selection or examples. Authorization is encrypted locally and excluded from public settings and logs. No lookup history is persisted.
+```powershell
+scoop install https://github.com/AruoTan/popper/releases/latest/download/popper.json
+```
 
-## Tech stack
+Current packages are unsigned; macOS packages are also unnotarized. See the [user guide](./USER_GUIDE.md#安装与升级) for installation and upgrades and the [portable guide](./WINDOWS_PORTABLE.md) for Windows data management.
 
-| Layer               | Technology                                                   | Role                                                                                                   |
-| ------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| Desktop framework   | Tauri 2                                                      | App lifecycle, menu bar / tray, WebView windows, IPC, permissions, packaging                           |
-| Native backend      | Rust 2021                                                    | Selection control, window placement, settings, encryption, clipboard, streaming model requests         |
-| macOS bridge        | Objective-C++, Accessibility API, Core Graphics, AppKit      | Global selection, clipboard-compat capture, window level                                               |
-| Windows backend     | Rust, UI Automation, Win32, OLE, low-level input hooks       | Isolated capture, clipboard restore, hook recovery, non-activating windows, mixed DPI, single instance |
-| Frontend            | React 19, TypeScript 5.9                                     | Settings, toolbar, result window                                                                       |
-| Build               | Vite 7, pnpm 11, Cargo                                       | Web build, lockfiles, Rust compile                                                                     |
-| Validation          | Zod, Serde, serde_json                                       | Cross-boundary schemas and runtime checks                                                              |
-| UI                  | Lucide React, dnd kit                                        | Action icons, custom icons, drag reorder                                                               |
-| Markdown            | react-markdown, remark-gfm, remark-math, rehype-katex, KaTeX | Safe Markdown, tables, lists, math                                                                     |
-| Network & streaming | reqwest, Tokio, futures-util                                 | OpenAI-compatible HTTP, SSE, cancel, stream buffering                                                  |
-| Local security      | ring, base64, atomic file writes                             | AES-256-GCM API key storage                                                                            |
-| Concurrency         | parking_lot, tokio-util, UUID                                | Window state, request sessions, cancellation                                                           |
-| Testing             | Vitest, Testing Library, jsdom, Rust tests                   | Frontend and backend logic tests                                                                       |
-| Release             | Tauri CLI, DMG, NSIS                                         | macOS arm64 app and Windows x64 installer                                                              |
+## Getting started
 
-macOS uses system WKWebView; Windows uses Microsoft Edge WebView2 Runtime. Current macOS DMG and Windows NSIS builds are unsigned test artifacts.
+1. Open settings from the tray or menu bar. Add a provider under General, fetch and save its models, then select the default model under Actions.
+2. Select text in another application, hold the right mouse button for 250 ms, and choose an action.
+3. Press `Ctrl+Shift+Space` for Quick Ask. On Windows, press `PrtSc` for screen capture.
 
-## Major open-source dependencies
+API keys are encrypted locally. Popper does not save selection history. Dictionary queries, AI requests, and vocabulary saves send content to the corresponding service when triggered. See [privacy and data](./USER_GUIDE.md#隐私与数据) for details.
 
-Projects that directly shape Popper features. Exact versions come from [pnpm-lock.yaml](./pnpm-lock.yaml) and [src-tauri/Cargo.lock](./src-tauri/Cargo.lock). Attribution details are in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+## Documentation
 
-| Project                                                                                                                           | Role                                                   | License           |
-| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ----------------- |
-| [Cherry Studio](https://github.com/CherryHQ/cherry-studio)                                                                        | Interaction reference; some default AI prompts adapted | AGPL-3.0          |
-| [selection-hook 2.0.2](https://github.com/0xfullex/selection-hook/tree/v2.0.2)                                                    | Upstream base for the macOS selection bridge           | MIT               |
-| [Tauri](https://github.com/tauri-apps/tauri)                                                                                      | Cross-platform desktop framework, windows, packaging   | Apache-2.0 OR MIT |
-| [React](https://github.com/facebook/react)                                                                                        | UI                                                     | MIT               |
-| [dnd kit](https://github.com/clauderic/dnd-kit)                                                                                   | Settings action drag reorder                           | MIT               |
-| [Lucide](https://github.com/lucide-icons/lucide)                                                                                  | Toolbar and settings icons                             | ISC               |
-| [react-markdown](https://github.com/remarkjs/react-markdown)                                                                      | Safe Markdown rendering                                | MIT               |
-| [remark-gfm](https://github.com/remarkjs/remark-gfm)                                                                              | GFM tables, task lists, etc.                           | MIT               |
-| [remark-math](https://github.com/remarkjs/remark-math)                                                                            | Math syntax in Markdown                                | MIT               |
-| [rehype-katex](https://github.com/remarkjs/remark-math/tree/main/packages/rehype-katex) / [KaTeX](https://github.com/KaTeX/KaTeX) | Math rendering                                         | MIT               |
-| [Zod](https://github.com/colinhacks/zod)                                                                                          | Frontend validation                                    | MIT               |
-| [reqwest](https://github.com/seanmonstar/reqwest)                                                                                 | OpenAI-compatible HTTP and SSE                         | MIT OR Apache-2.0 |
-| [Tokio](https://github.com/tokio-rs/tokio)                                                                                        | Rust async runtime                                     | MIT               |
-| [Serde](https://github.com/serde-rs/serde)                                                                                        | Rust (de)serialization                                 | MIT OR Apache-2.0 |
-| [ring](https://github.com/briansmith/ring)                                                                                        | Key derivation and AES-256-GCM                         | ISC, MIT, OpenSSL |
-| [objc2](https://github.com/madsmtm/objc2)                                                                                         | Rust ↔ macOS AppKit/Foundation                         | MIT               |
-| [macos-accessibility-client](https://codeberg.org/fresskoma/macos-accessibility-client)                                           | macOS accessibility permission checks                  | Apache-2.0        |
-| [windows-rs](https://github.com/microsoft/windows-rs)                                                                             | Windows UIA, window, input, clipboard, OLE             | MIT OR Apache-2.0 |
-| [Vite](https://github.com/vitejs/vite) / [Vitest](https://github.com/vitest-dev/vitest)                                           | Frontend build and tests                               | MIT               |
-| [TypeScript](https://github.com/microsoft/TypeScript)                                                                             | Type system and compiler                               | Apache-2.0        |
+The following guides are maintained in Chinese.
 
-These projects also pull transitive dependencies. Before a formal public release, generate a full inventory from both lockfiles and review licenses and copyright notices.
+| Document | Contents |
+| --- | --- |
+| [User guide](./USER_GUIDE.md) | Installation, providers, selection actions, attachments, capture, and floating images |
+| [Windows portable and Scoop](./WINDOWS_PORTABLE.md) | Data directories, importing settings, upgrades, and uninstalling |
+| [DSH Docker](./DSH_CONNECTION.md) | Gateway setup, sessions, and connection troubleshooting |
+| [Development handbook](./DEVELOPMENT_HANDBOOK.md) | Setup, architecture, checks, versioning, and source exports |
+| [Screen capture development](./SCREEN_CAPTURE.md) | Sessions, platform boundaries, resource management, and acceptance checks |
+| [Windows builds and releases](./.github/BUILD_AND_RELEASE.md) | Actions builds, release drafts, and artifact verification |
 
-## Architecture and data flow
+## License
 
-1. Platform selection backends listen for global mouse, keyboard, and scroll events; macOS uses Accessibility/Event Tap, Windows uses UI Automation/low-level input hooks. Windows assigns a token per Hook instance and only installs a new instance when the previous one exits abnormally or is confirmed replaced—no periodic blind reinstall.
-2. On Windows, UIA/OLE capture that may block on third-party providers runs in a separate helper process started from the same executable; timeouts, crashes, or protocol errors isolate and rebuild the helper without saturating the main capture thread.
-3. When standard APIs cannot read allowed custom-drawn apps, the backend briefly uses copy; original clipboard content is restored only if it was not modified again.
-4. The Rust runtime validates the selection and positions the toolbar.
-5. Translate routes eligible text to Youdao or AI; both share result sessions. Other actions retain their existing behavior.
-6. reqwest receives OpenAI-compatible Chat Completions SSE; after the first token, each content delta is forwarded immediately to the result window (no extra TTFB batching).
-7. The result window shows stream deltas synchronously, then switches to safe Markdown and KaTeX when complete.
-8. Settings and provider metadata live in local JSON; API keys are encrypted on disk. Normal settings payloads only expose `keyConfigured`. The settings window can reveal or edit plaintext via settings-only IPC when the user clicks show; toolbar and result windows cannot read keys.
-
-Main directories:
-
-- `apps`: platform entrypoints (“shared core + thin platform layer”); see [apps/README.md](./apps/README.md).
-- `apps/macos`: macOS selection bridge, icons, artifact verification.
-- `apps/windows`: Windows selection, startup toast renderer, icons, artifact verification.
-- `src-tauri/src`: lifecycle, windows, tray, permissions, settings, local encryption, selection, model requests.
-- `src/shared`: data contracts, defaults, actions, prompts, URL/IP detection.
-- `src/renderer/toolbar`: selection toolbar.
-- `src/renderer/result`: AI result window, streaming, Markdown.
-- `src/renderer/settings`: providers, models, actions, window behavior.
-- `src/renderer/startup`: Windows startup toast build entry shim; implementation lives under `apps/windows/renderer/startup`.
-- `assets` and `src-tauri/icons`: shared assets and remaining generic/mobile icons.
-
-## Privacy and security
-
-- User-triggered lookups send queries to Youdao; AI translation and follow-ups send content to the configured model. Missing entries automatically try AI. Eudic writes happen only after confirmation. No chat or selection history is persisted.
-- AI text defaults to a 20,000 character limit with an explicit error—no silent truncation.
-- Normal settings (`get_settings` / `PublicSettings`) include only `keyConfigured`, not plaintext API keys; on-disk settings JSON also stores no plaintext keys.
-- The settings window can load a saved API key via settings-only IPC (`get_provider_api_key`) when the user **clicks show**; toolbar and result windows cannot call that command.
-- API keys are AES-256-GCM encrypted locally; macOS Keychain and Windows Credential Manager are not used.
-- Webviews use Tauri’s isolation model, a strict CSP, and minimal capabilities.
-- Markdown does not enable raw HTML; scripts, event handlers, dangerous protocols, and remote images are not executed.
-- External links allow HTTP and HTTPS only; logs must not record API keys or selected text.
-- OpenAI-compatible base URLs may be HTTP or HTTPS. HTTP sends keys and content in the clear—use only on localhost or trusted LAN; prefer HTTPS elsewhere.
-- Base URLs need a version prefix such as `https://api.openai.com/v1`, without `/chat/completions`. Connection tests hit `{baseUrl}/models`; actions hit `{baseUrl}/chat/completions`.
-
-## Install - Windows
-
-Windows builds target Windows 10/11 x64 with standard-user, current-user NSIS install (no admin required).
-
-1. Run the NSIS installer; if WebView2 Runtime is missing, the bootstrapper is launched automatically.
-2. Unsigned test builds may trigger Microsoft Defender SmartScreen; after verifying SHA-256 you can choose “More info → Run anyway”.
-3. On first launch the app stays in the notification area and does not open Settings automatically; use the tray menu.
-4. Settings is created on demand and destroyed when closed. Reopening loads saved settings; unsaved changes are discarded. Full quit is available from the tray menu (“Quit Popper”).
-5. Popper does not elevate, so it cannot read selections from admin-elevated apps; normal-privilege apps are fine.
-
-The Windows installer is still an unsigned test build and may trigger SmartScreen. Automated checks do not replace real-world app, privilege, and DPI testing. Not suitable for public distribution before code signing and full compatibility acceptance.
-
-## Install - macOS
-
-Only Apple Silicon builds are published; they do not run on Intel Macs.
-
-1. Open the DMG and drag Popper to Applications.
-2. Fully quit any running older Popper from the menu bar before installing a new version; the new build is a menu-bar tool and does not appear in the Dock by default.
-3. If Gatekeeper blocks first launch, right-click Popper in Finder and choose Open, or allow it under System Settings → Privacy & Security.
-4. Enable Popper under System Settings → Privacy & Security → Accessibility, then restart the app.
-
-The macOS DMG is still unsigned and not notarized; it is not suitable for direct public distribution. Formal release needs Apple Developer ID signing and notarization.
-
-## Third-party licenses and release checklist
-
-When distributing source or binaries, retain at least:
-
-- [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
-- [LICENSE.selection-hook](./LICENSE.selection-hook)
-- Copyright and license texts required by upstream projects
-
-Popper is licensed under GPL-3.0-only and currently has no Apple Developer ID, Windows Authenticode signing, notarization, or auto-update. Before a formal public release, complete full dependency license inventory, security review, signing, notarization, and install acceptance.
-
-## Friend Links
-
-- [LINUX DO](https://linux.do) - 学AI，上L站！
+Popper uses [GPL-3.0-only](./LICENSE). Third-party attribution and licenses are provided in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md), [LICENSE.selection-hook](./LICENSE.selection-hook), and [LICENSE.capture](./LICENSE.capture).

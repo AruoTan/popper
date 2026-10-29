@@ -46,7 +46,6 @@ Popper also uses independently developed software, including:
 - ring — ISC, MIT, and OpenSSL licenses — <https://github.com/briansmith/ring>
 - base64 — MIT OR Apache-2.0 — <https://github.com/marshallpierce/rust-base64>
 - objc2 — MIT — <https://github.com/madsmtm/objc2>
-- macos-accessibility-client — Apache-2.0 — <https://codeberg.org/fresskoma/macos-accessibility-client>
 - windows-rs — MIT OR Apache-2.0 — <https://github.com/microsoft/windows-rs>
 - tauri-plugin-global-shortcut — Apache-2.0 OR MIT — <https://github.com/tauri-apps/plugins-workspace>
 - tauri-plugin-single-instance — Apache-2.0 OR MIT — <https://github.com/tauri-apps/plugins-workspace>

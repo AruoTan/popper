@@ -79,7 +79,7 @@ Invoke-BuildStage 'Windows installer build' {
 # Preserve the repository's PE/version/SHA-256 verification entry point.
 Invoke-BuildStage 'Windows artifact verification' { pnpm verify:artifacts:windows }
 Invoke-BuildStage 'Windows release startup' {
-    & (Join-Path $PSScriptRoot 'smoke-test-windows.ps1') -Executable 'src-tauri/target/x86_64-pc-windows-msvc/release/popper.exe' -StartupTimeoutSeconds 60
+    & (Join-Path $PSScriptRoot 'smoke-test-windows.ps1') -Executable 'src-tauri/target/x86_64-pc-windows-msvc/release/popper.exe'
 }
 
 Invoke-BuildStage 'Windows portable ZIP' { pnpm package:portable:windows }

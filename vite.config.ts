@@ -18,13 +18,6 @@ export default defineConfig({
       ignored: ['**/src-tauri/**']
     }
   },
-  envPrefix: ['VITE_', 'TAURI_'],
-  resolve: {
-    alias: {
-      '@shared': fromRoot('src/shared'),
-      '@renderer': fromRoot('src/renderer')
-    }
-  },
   build: {
     outDir: fromRoot('dist'),
     emptyOutDir: true,
