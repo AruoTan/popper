@@ -1,6 +1,6 @@
 # 开发容器
 
-[开发手册](../DEVELOPMENT_HANDBOOK.md) · [Windows 构建与发布](../.github/BUILD_AND_RELEASE.md)
+[开发手册](../docs/development.md) · [Windows 构建与发布](../docs/build-and-release.md)
 
 ## 启动
 

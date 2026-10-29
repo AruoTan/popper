@@ -180,9 +180,9 @@ for (const requiredArgument of [
 
 const resources = windowsBundle.resources ?? {};
 for (const [source, destination] of [
-  ["../THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"],
-  ["../LICENSE.selection-hook", "LICENSE.selection-hook"],
-  ["../LICENSE.capture", "LICENSE.capture"],
+  ["../licenses/THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md"],
+  ["../licenses/LICENSE.selection-hook", "LICENSE.selection-hook"],
+  ["../licenses/LICENSE.capture", "LICENSE.capture"],
   ["../LICENSE", "LICENSE"],
 ]) {
   if (resources[source] !== destination) {

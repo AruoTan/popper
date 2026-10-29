@@ -25,8 +25,9 @@ try {
     # Only explicitly listed distribution files are packaged. Never include
     # release directory contents, smoke-test data, DLL build tools or secrets.
     Copy-Item -LiteralPath $executable -Destination (Join-Path $staging 'popper.exe')
-    foreach ($name in @('THIRD_PARTY_NOTICES.md', 'LICENSE.selection-hook', 'LICENSE.capture', 'LICENSE')) {
-        Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination (Join-Path $staging $name)
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $staging 'LICENSE')
+    foreach ($name in @('THIRD_PARTY_NOTICES.md', 'LICENSE.selection-hook', 'LICENSE.capture')) {
+        Copy-Item -LiteralPath (Join-Path $projectRoot "licenses/$name") -Destination (Join-Path $staging $name)
     }
     foreach ($name in @('README.txt', 'Import-InstalledSettings.ps1')) {
         Copy-Item -LiteralPath (Join-Path $projectRoot "apps/windows/portable/$name") -Destination (Join-Path $staging $name)

@@ -4,7 +4,7 @@
 
 Popper 是桌面划词与 AI 助手，支持翻译、查词、总结、解释、润色和多轮提问。Windows 版还提供截图、标注、手动滚动截图和浮动贴图。
 
-[下载安装](https://github.com/AruoTan/popper/releases/latest) · [使用指南](./USER_GUIDE.md) · [开发手册](./DEVELOPMENT_HANDBOOK.md)
+[下载安装](https://github.com/AruoTan/popper/releases/latest) · [使用指南](./docs/user-guide.md) · [开发手册](./docs/development.md)
 
 ## 功能
 
@@ -29,7 +29,7 @@ Scoop 安装：
 scoop install https://github.com/AruoTan/popper/releases/latest/download/popper.json
 ```
 
-当前产物未签名；macOS 产物未公证。安装与升级步骤见[使用指南](./USER_GUIDE.md#安装与升级)，便携版数据管理见 [Windows 便携版与 Scoop](./WINDOWS_PORTABLE.md)。
+当前产物未签名；macOS 产物未公证。安装与升级步骤见[使用指南](./docs/user-guide.md#安装与升级)，便携版数据管理见 [Windows 便携版与 Scoop](./docs/windows-portable.md)。
 
 ## 开始使用
 
@@ -37,19 +37,19 @@ scoop install https://github.com/AruoTan/popper/releases/latest/download/popper.
 2. 在任意应用选中文字，长按右键 250 毫秒，点击所需动作。
 3. 按 `Ctrl+Shift+Space` 打开快捷提问；Windows 按 `PrtSc` 开始截图。
 
-API Key 在本地加密保存。Popper 不保存划词历史；查词、AI 请求和收藏按用户操作向相应服务发送内容。数据范围见[隐私与数据](./USER_GUIDE.md#隐私与数据)。
+API Key 在本地加密保存。Popper 不保存划词历史；查词、AI 请求和收藏按用户操作向相应服务发送内容。数据范围见[隐私与数据](./docs/user-guide.md#隐私与数据)。
 
 ## 文档
 
 | 文档 | 内容 |
 | --- | --- |
-| [使用指南](./USER_GUIDE.md) | 安装、模型配置、划词、附件、截图与贴图 |
-| [Windows 便携版与 Scoop](./WINDOWS_PORTABLE.md) | 数据目录、导入、升级与卸载 |
-| [DSH Docker 接入](./DSH_CONNECTION.md) | 网关配置、会话与连接排查 |
-| [开发手册](./DEVELOPMENT_HANDBOOK.md) | 环境、架构、验证、版本与源码导出 |
-| [屏幕捕捉开发](./SCREEN_CAPTURE.md) | 会话、平台边界、资源管理与验收 |
-| [Windows 构建与发布](./.github/BUILD_AND_RELEASE.md) | Actions 构建、发布草稿与产物检查 |
+| [使用指南](./docs/user-guide.md) | 安装、模型配置、划词、附件、截图与贴图 |
+| [Windows 便携版与 Scoop](./docs/windows-portable.md) | 数据目录、导入、升级与卸载 |
+| [DSH Docker 接入](./docs/dsh-connection.md) | 网关配置、会话与连接排查 |
+| [开发手册](./docs/development.md) | 环境、架构、验证、版本与源码导出 |
+| [屏幕捕捉开发](./docs/screen-capture.md) | 会话、平台边界、资源管理与验收 |
+| [Windows 构建与发布](./docs/build-and-release.md) | Actions 构建、发布草稿与产物检查 |
 
 ## 许可证
 
-Popper 使用 [GPL-3.0-only](./LICENSE)。第三方归属与许可见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)、[LICENSE.selection-hook](./LICENSE.selection-hook) 和 [LICENSE.capture](./LICENSE.capture)。
+Popper 使用 [GPL-3.0-only](./LICENSE)。第三方归属与许可见 [THIRD_PARTY_NOTICES.md](./licenses/THIRD_PARTY_NOTICES.md)、[LICENSE.selection-hook](./licenses/LICENSE.selection-hook) 和 [LICENSE.capture](./licenses/LICENSE.capture)。

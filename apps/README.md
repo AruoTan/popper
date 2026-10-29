@@ -1,6 +1,6 @@
 # 平台代码
 
-[开发手册](../DEVELOPMENT_HANDBOOK.md#代码结构)
+[开发手册](../docs/development.md#代码结构)
 
 Popper 共用 Rust／Tauri 后端与 React 界面。`apps/` 保存平台专属源码、资源和产物脚本。
 

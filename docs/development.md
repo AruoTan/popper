@@ -1,6 +1,6 @@
 # Popper 开发手册
 
-[项目首页](./README.md) · [使用指南](./USER_GUIDE.md) · [Windows 构建与发布](./.github/BUILD_AND_RELEASE.md)
+[项目首页](../README.md) · [使用指南](./user-guide.md) · [Windows 构建与发布](./build-and-release.md)
 
 ## 环境
 
@@ -34,7 +34,7 @@ rustup target add aarch64-apple-darwin
 pnpm dev
 ```
 
-开发应用从托盘或菜单栏打开设置。纯前端预览使用 `pnpm dev:web`，入口为 `http://localhost:1420/settings/index.html`；浏览器不提供 Tauri IPC，不能验证系统操作。容器配置见[开发容器](./.devcontainer/README.md)。
+开发应用从托盘或菜单栏打开设置。纯前端预览使用 `pnpm dev:web`，入口为 `http://localhost:1420/settings/index.html`；浏览器不提供 Tauri IPC，不能验证系统操作。容器配置见[开发容器](../.devcontainer/README.md)。
 
 ## 代码结构
 
@@ -51,6 +51,8 @@ pnpm dev
 | `apps/windows/` | Windows 划词后端、启动提示、图标、便携打包与产物校验 |
 | `apps/macos/` | 原生选区桥接、图标与产物校验 |
 | `scripts/` | 版本推导、Tauri 启动与源码导出 |
+| `docs/` | 使用、开发与构建发布文档 |
+| `licenses/` | 第三方声明与许可证原文 |
 | `.github/` | Windows 验证、构建与发布工作流 |
 
 全局选区事件经过平台捕获与 Rust 校验后显示工具栏。用户执行动作时，后端建立结果会话，将词典结果或模型流定向发送给对应窗口。共享数据结构位于 `src/shared/schemas.ts` 和 `src-tauri/src/models.rs`，IPC 变更需要同步两端的类型、校验与调用窗口权限。
@@ -69,7 +71,7 @@ pnpm dev
 
 设置仅支持当前版本 18，拒绝旧版本、缺失字段和未知字段，不覆盖无效配置或密钥。普通设置事务在写锁内规范化、校验并比较，相同值跳过写盘；服务商删除与密钥清理保留完整事务。
 
-API Key 与欧路授权使用本地 AES-256-GCM 加密。公共设置只暴露密钥是否已配置，明文读取只允许设置窗口。日志不记录密钥；DEV Debug 的文本诊断另见 [Windows 平台说明](./apps/windows/README.md#诊断)。
+API Key 与欧路授权使用本地 AES-256-GCM 加密。公共设置只暴露密钥是否已配置，明文读取只允许设置窗口。日志不记录密钥；DEV Debug 的文本诊断另见 [Windows 平台说明](../apps/windows/README.md#诊断)。
 
 ### 附件与内容
 
@@ -77,7 +79,7 @@ API Key 与欧路授权使用本地 AES-256-GCM 加密。公共设置只暴露�
 
 Markdown 不启用原始 HTML，禁用远程图片和危险链接协议。网络请求与外链按各自边界校验；窗口命令同时核验调用者和所属会话。
 
-Windows 划词通过辅助进程隔离可能阻塞的 UIA／OLE 调用，受控复制仅在完整备份后执行，并在剪贴板未被用户修改时恢复。屏幕捕捉的坐标、识别与输出约束见 [SCREEN_CAPTURE.md](./SCREEN_CAPTURE.md)。
+Windows 划词通过辅助进程隔离可能阻塞的 UIA／OLE 调用，受控复制仅在完整备份后执行，并在剪贴板未被用户修改时恢复。屏幕捕捉的坐标、识别与输出约束见 [屏幕捕捉开发](./screen-capture.md)。
 
 ## 验证
 
@@ -89,14 +91,14 @@ pnpm test
 pnpm build:web
 ```
 
-`tsconfig.json` 统一编译检查规则，`tsconfig.node.json` 和 `tsconfig.web.json` 分别指定环境与文件范围。`pnpm typecheck` 检查前端与构建配置，包括未使用变量和参数。`pnpm test` 先运行 Node 脚本测试，再运行 Vitest。修改功能时更新行为测试，删除功能时同步清理专用测试、监听和调用路径。
+`tsconfig.json` 统一编译检查规则，`tsconfig.node.json` 和 `tsconfig.web.json` 分别指定环境与文件范围。增量检查缓存写入 `node_modules/.cache/typescript/`。`pnpm typecheck` 检查前端与构建配置，包括未使用变量和参数。`pnpm test` 先运行 Node 脚本测试，再运行 Vitest。修改功能时更新行为测试，删除功能时同步清理专用测试、监听和调用路径。
 
 | 平台 | 完整验证 | 原生测试 | 原生编译检查 |
 | --- | --- | --- | --- |
 | Windows | `pnpm verify:windows` | `pnpm test:rust:windows` | `pnpm check:rust:windows` |
 | macOS | `pnpm verify` | `pnpm test:rust` | `pnpm check:rust` |
 
-原生检查需对应平台工具链。Windows CI 执行 Rust 全目标测试后直接打包，不再重复同目标编译检查。桌面验收需要覆盖划词、剪贴板恢复、快捷提问、窗口焦点、多 DPI 与多屏；截图专项清单见 [SCREEN_CAPTURE.md](./SCREEN_CAPTURE.md#桌面验收)。不能将浏览器测试或跨平台类型检查记录为桌面验收通过。
+原生检查需对应平台工具链。Windows CI 执行 Rust 全目标测试后直接打包，不再重复同目标编译检查。桌面验收需要覆盖划词、剪贴板恢复、快捷提问、窗口焦点、多 DPI 与多屏；截图专项清单见 [屏幕捕捉开发](./screen-capture.md#桌面验收)。不能将浏览器测试或跨平台类型检查记录为桌面验收通过。
 
 ## 构建
 
@@ -128,7 +130,7 @@ Tauri 命令通过 `scripts/tauri.mjs` 生成 `.popper-version.json`；直接运
 
 `package.json` 和 `Cargo.toml` 不保存产品版本。Cargo 锁文件中的内部 crate 缺省版本 `0.0.0` 仅标识依赖图。依赖版本、配置版本与内部协议版本分别管理。
 
-正式发布要求干净工作区，当前提交恰好有一个有效版本标签。浅克隆执行 `git fetch --unshallow --tags`，完整克隆缺少标签时执行 `git fetch --tags`。发布命令与工作流见 [Windows 构建与发布](./.github/BUILD_AND_RELEASE.md#发布)。
+正式发布要求干净工作区，当前提交恰好有一个有效版本标签。浅克隆执行 `git fetch --unshallow --tags`，完整克隆缺少标签时执行 `git fetch --tags`。发布命令与工作流见 [Windows 构建与发布](./build-and-release.md#发布)。
 
 ## 源码导出
 
@@ -142,10 +144,10 @@ pnpm export:dev-source
 
 ## 文档维护
 
-README 负责项目介绍与导航，[使用指南](./USER_GUIDE.md) 负责操作，[本手册](./DEVELOPMENT_HANDBOOK.md) 负责开发约束与流程，专题文档只保留各自细节。更新行为时同步文档与导出清单；历史变更查 Git 提交和 [Releases](https://github.com/AruoTan/popper/releases)。
+README 负责项目介绍与导航，[使用指南](./user-guide.md) 负责操作，[本手册](./development.md) 负责开发约束与流程，专题文档只保留各自细节。更新行为时同步文档与导出清单；历史变更查 Git 提交和 [Releases](https://github.com/AruoTan/popper/releases)。
 
 根目录 `.gitattributes` 统一容器与 CI 文件的 LF 换行。临时诊断输出写入被忽略的 `.diagnostics/`，可复用工具放在平台脚本目录。图标保留 Windows／macOS 构建资源及 `src-tauri/icons/icon.png`。
 
 权限配置维护在 `src-tauri/capabilities/`；`src-tauri/gen/` 由 Tauri 原生构建生成，不提交、不导出。全新工作区的本地权限 schema 在首次原生构建后可用。
 
-新增源码与文档只描述 Popper 自身功能，不纳入外部参考材料；文件名和文本检查在项目外执行。分发时保留 `LICENSE`、`THIRD_PARTY_NOTICES.md`、`LICENSE.selection-hook` 和 `LICENSE.capture`，依赖归属以锁文件和第三方声明为准。
+新增源码与文档只描述 Popper 自身功能，不纳入外部参考材料；文件名和文本检查在项目外执行。主许可证保留在根目录 `LICENSE`，第三方声明与许可保存在 `licenses/`；打包时将其映射到分发目录，保留原文件名。依赖归属以锁文件和第三方声明为准。

@@ -1,6 +1,6 @@
 # Windows 便携版与 Scoop
 
-[使用指南](./USER_GUIDE.md) · [开发手册](./DEVELOPMENT_HANDBOOK.md)
+[使用指南](./user-guide.md) · [开发手册](./development.md)
 
 ## 便携版
 

@@ -1,6 +1,6 @@
 # Windows 构建与发布
 
-[开发手册](../DEVELOPMENT_HANDBOOK.md) · [便携版与 Scoop](../WINDOWS_PORTABLE.md)
+[开发手册](./development.md) · [便携版与 Scoop](./windows-portable.md)
 
 ## 构建
 
@@ -22,7 +22,7 @@ gh workflow run release-windows.yml --ref vX.Y.Z -f draft=true -f prerelease=fal
 
 默认创建草稿，检查附件与说明后在 Releases 页面发布。`draft=false` 在附件上传完成后直接发布；`prerelease=true` 只设置 GitHub 预发布状态，不改变标签格式。已有同名 Release，包括草稿，均拒绝覆盖。
 
-发布要求工作区干净、当前提交恰好有一个版本标签。准备和发布阶段均核对标签与固定源码提交，附件使用本次构建结果并重新校验 SHA-256；`--verify-tag` 阻止自动创建标签。版本规则见[应用版本](../DEVELOPMENT_HANDBOOK.md#应用版本)。
+发布要求工作区干净、当前提交恰好有一个版本标签。准备和发布阶段均核对标签与固定源码提交，附件使用本次构建结果并重新校验 SHA-256；`--verify-tag` 阻止自动创建标签。版本规则见[应用版本](./development.md#应用版本)。
 
 ## 验证链
 

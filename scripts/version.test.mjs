@@ -171,7 +171,7 @@ test("Windows artifact checks and Scoop packaging follow the tag and reject stal
     "scripts/version.mjs", "package.json", "src-tauri/Cargo.toml",
     "src-tauri/tauri.conf.json", "src-tauri/tauri.windows.conf.json",
     "apps/windows/scripts/verify-artifacts.mjs", "apps/windows/scripts/prepare-release-assets.mjs",
-    "THIRD_PARTY_NOTICES.md", "LICENSE.selection-hook", "LICENSE.capture", "LICENSE",
+    "licenses/THIRD_PARTY_NOTICES.md", "licenses/LICENSE.selection-hook", "licenses/LICENSE.capture", "LICENSE",
   ]) {
     mkdirSync(join(root, path, ".."), { recursive: true });
     cpSync(join(projectRoot, path), join(root, path));

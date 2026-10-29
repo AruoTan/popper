@@ -27,4 +27,4 @@ links config and logs to Scoop's persist/popper/config and persist/popper/logs.
 WebView data stays in the app version directory and is not persisted.
 Ordinary uninstall retains persisted config and logs; a purge uninstall removes them.
 
-User guide: https://github.com/AruoTan/popper/blob/main/USER_GUIDE.md
+User guide: https://github.com/AruoTan/popper/blob/main/docs/user-guide.md

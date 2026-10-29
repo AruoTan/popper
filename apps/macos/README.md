@@ -1,6 +1,6 @@
 # macOS 平台
 
-[开发手册](../../DEVELOPMENT_HANDBOOK.md) · [使用指南](../../USER_GUIDE.md#安装与升级)
+[开发手册](../../docs/development.md) · [使用指南](../../docs/user-guide.md#安装与升级)
 
 | 路径 | 职责 |
 | --- | --- |

@@ -4,7 +4,7 @@
 
 Popper is a desktop text selection and AI assistant for translation, dictionary lookup, summaries, explanations, rewriting, and follow-up questions. On Windows, it also provides screen capture, annotations, manual scrolling screenshots, and floating images.
 
-[Download](https://github.com/AruoTan/popper/releases/latest) · [User guide](./USER_GUIDE.md) · [Development handbook](./DEVELOPMENT_HANDBOOK.md)
+[Download](https://github.com/AruoTan/popper/releases/latest) · [User guide](./docs/user-guide.md) · [Development handbook](./docs/development.md)
 
 ## Features
 
@@ -29,7 +29,7 @@ Install with Scoop:
 scoop install https://github.com/AruoTan/popper/releases/latest/download/popper.json
 ```
 
-Current packages are unsigned; macOS packages are also unnotarized. See the [user guide](./USER_GUIDE.md#安装与升级) for installation and upgrades and the [portable guide](./WINDOWS_PORTABLE.md) for Windows data management.
+Current packages are unsigned; macOS packages are also unnotarized. See the [user guide](./docs/user-guide.md#安装与升级) for installation and upgrades and the [portable guide](./docs/windows-portable.md) for Windows data management.
 
 ## Getting started
 
@@ -37,7 +37,7 @@ Current packages are unsigned; macOS packages are also unnotarized. See the [use
 2. Select text in another application, hold the right mouse button for 250 ms, and choose an action.
 3. Press `Ctrl+Shift+Space` for Quick Ask. On Windows, press `PrtSc` for screen capture.
 
-API keys are encrypted locally. Popper does not save selection history. Dictionary queries, AI requests, and vocabulary saves send content to the corresponding service when triggered. See [privacy and data](./USER_GUIDE.md#隐私与数据) for details.
+API keys are encrypted locally. Popper does not save selection history. Dictionary queries, AI requests, and vocabulary saves send content to the corresponding service when triggered. See [privacy and data](./docs/user-guide.md#隐私与数据) for details.
 
 ## Documentation
 
@@ -45,13 +45,13 @@ The following guides are maintained in Chinese.
 
 | Document | Contents |
 | --- | --- |
-| [User guide](./USER_GUIDE.md) | Installation, providers, selection actions, attachments, capture, and floating images |
-| [Windows portable and Scoop](./WINDOWS_PORTABLE.md) | Data directories, importing settings, upgrades, and uninstalling |
-| [DSH Docker](./DSH_CONNECTION.md) | Gateway setup, sessions, and connection troubleshooting |
-| [Development handbook](./DEVELOPMENT_HANDBOOK.md) | Setup, architecture, checks, versioning, and source exports |
-| [Screen capture development](./SCREEN_CAPTURE.md) | Sessions, platform boundaries, resource management, and acceptance checks |
-| [Windows builds and releases](./.github/BUILD_AND_RELEASE.md) | Actions builds, release drafts, and artifact verification |
+| [User guide](./docs/user-guide.md) | Installation, providers, selection actions, attachments, capture, and floating images |
+| [Windows portable and Scoop](./docs/windows-portable.md) | Data directories, importing settings, upgrades, and uninstalling |
+| [DSH Docker](./docs/dsh-connection.md) | Gateway setup, sessions, and connection troubleshooting |
+| [Development handbook](./docs/development.md) | Setup, architecture, checks, versioning, and source exports |
+| [Screen capture development](./docs/screen-capture.md) | Sessions, platform boundaries, resource management, and acceptance checks |
+| [Windows builds and releases](./docs/build-and-release.md) | Actions builds, release drafts, and artifact verification |
 
 ## License
 
-Popper uses [GPL-3.0-only](./LICENSE). Third-party attribution and licenses are provided in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md), [LICENSE.selection-hook](./LICENSE.selection-hook), and [LICENSE.capture](./LICENSE.capture).
+Popper uses [GPL-3.0-only](./LICENSE). Third-party attribution and licenses are provided in [THIRD_PARTY_NOTICES.md](./licenses/THIRD_PARTY_NOTICES.md), [LICENSE.selection-hook](./licenses/LICENSE.selection-hook), and [LICENSE.capture](./licenses/LICENSE.capture).

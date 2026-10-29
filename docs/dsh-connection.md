@@ -1,6 +1,6 @@
 # DSH Docker 接入
 
-[使用指南](./USER_GUIDE.md#配置模型与动作) · [开发手册](./DEVELOPMENT_HANDBOOK.md)
+[使用指南](./user-guide.md#配置模型与动作) · [开发手册](./development.md)
 
 ## 配置
 
