@@ -233,70 +233,10 @@ pub fn prepare_scroll_frame(app: &AppHandle, window: &tauri::WebviewWindow) -> R
         presentation::mark_fullscreen(hwnd, false)
     })?
 }
-pub fn scroll_surface(
-    window: &tauri::WebviewWindow,
-    screen: CaptureRect,
-    layout: Option<&super::ScrollLayout>,
-) -> Result<(), String> {
-    use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, HRGN, RGN_DIFF, RGN_OR,
-    };
-    struct Region(HRGN);
-    impl Drop for Region {
-        fn drop(&mut self) {
-            unsafe {
-                let _ = DeleteObject(HGDIOBJ(self.0 .0));
-            }
-        }
-    }
-    fn region(rect: CaptureRect) -> Result<Region, String> {
-        let handle = unsafe {
-            CreateRectRgn(
-                rect.x,
-                rect.y,
-                rect.x + rect.width as i32,
-                rect.y + rect.height as i32,
-            )
-        };
-        if handle.0.is_null() {
-            Err("无法创建滚动选区边界".into())
-        } else {
-            Ok(Region(handle))
-        }
-    }
-    let hwnd = window.hwnd().map_err(|e| e.to_string())?;
-    frame::remove_capture_frame(hwnd)?;
-    let Some(layout) = layout else {
-        return if unsafe { SetWindowRgn(hwnd, None, true) } == 0 {
-            Err("无法恢复截图编辑窗口".into())
-        } else {
-            Ok(())
-        };
-    };
-    let outer = region(CaptureRect {
-        x: 0,
-        y: 0,
-        width: screen.width,
-        height: screen.height,
-    })?;
-    let hole = region(layout.selection)?;
-    let panel = region(layout.panel)?;
-    let toolbar = region(layout.toolbar)?;
-    // The native hole forwards input to the real page, including drag and wheel input.
-    // Keep the preview interactive even when a full-screen selection leaves no free margin.
-    unsafe {
-        if CombineRgn(Some(outer.0), Some(outer.0), Some(hole.0), RGN_DIFF).0 == 0
-            || CombineRgn(Some(outer.0), Some(outer.0), Some(panel.0), RGN_OR).0 == 0
-            || CombineRgn(Some(outer.0), Some(outer.0), Some(toolbar.0), RGN_OR).0 == 0
-            || SetWindowRgn(hwnd, Some(outer.0), true) == 0
-        {
-            return Err("无法启用滚动选区，请重新截图".into());
-        }
-    }
-    // Successful SetWindowRgn transfers this handle to the operating system.
-    std::mem::forget(outer);
-    Ok(())
-}
+#[path = "platform/surface.rs"]
+mod surface;
+pub use surface::{record_surface, scroll_surface};
+
 pub fn focus(window: &tauri::WebviewWindow) -> Result<(), String> {
     window.set_focus().map_err(|e| e.to_string())?;
     // Activating the frame alone does not direct keyboard input to WebView2.

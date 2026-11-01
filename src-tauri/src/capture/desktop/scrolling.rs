@@ -41,7 +41,13 @@ pub(super) fn register_escape(
                 let app = app.clone();
                 let id = cancel_id.clone();
                 tauri::async_runtime::spawn_blocking(move || {
-                    let _ = super::cancel_id(&app, &id);
+                    let recording = manager(&app).session.lock().as_ref().is_some_and(|session| session.meta.id == id && session.recording.is_some());
+                    if recording {
+                        use tauri::Manager;
+                        if let Some(window) = app.get_webview_window(&format!("{}{id}", super::CAPTURE_PREFIX)) { let _ = super::record_stop(&app, &window); }
+                    } else {
+                        let _ = super::cancel_id(&app, &id);
+                    }
                 });
             }
         })

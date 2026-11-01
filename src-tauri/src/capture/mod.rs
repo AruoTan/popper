@@ -232,6 +232,10 @@ pub fn capture_record_status(
     desktop_call!(desktop::record_status(&app, &window))
 }
 #[tauri::command]
+pub async fn capture_record_pause(app: AppHandle, window: WebviewWindow, paused: bool) -> Result<RecordingProgress, String> {
+    desktop_call!(tauri::async_runtime::spawn_blocking(move || desktop::record_pause(&app, &window, paused)).await.map_err(|e| e.to_string())?)
+}
+#[tauri::command]
 pub async fn capture_record_stop(
     app: AppHandle,
     window: WebviewWindow,

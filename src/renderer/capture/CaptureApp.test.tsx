@@ -334,7 +334,8 @@ describe('scroll capture integration', () => {
       if (command === 'capture_image' || command === 'capture_crop') return new ArrayBuffer(0);
       if (command === 'capture_scroll_begin') return scrolling;
       if (command === 'capture_record_begin') return scrolling.layout;
-      if (command === 'capture_record_status') return { elapsedMs: 2000, stopped: false, error: null };
+      if (command === 'capture_record_status') return { elapsedMs: 2000, paused: false, stopped: false, error: null };
+      if (command === 'capture_record_stop') return { elapsedMs: 2000, paused: false, stopped: true, error: null };
       if (command === 'capture_scroll_step') return progress;
       if (command === 'capture_scroll_preview') {
         const metadata = new TextEncoder().encode(JSON.stringify(progress));
@@ -510,7 +511,9 @@ describe('scroll capture integration', () => {
     await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
     expect(calls('capture_cancel')).toBe(0);
     fireEvent.keyDown(window, { key: 'Escape' });
-    expect(calls('capture_cancel')).toBe(1);
+    await waitFor(() => expect(view.getByLabelText('保存 MP4')).toBeEnabled());
+    expect(calls('capture_cancel')).toBe(0);
+    expect(calls('capture_record_stop')).toBe(1);
     view.unmount();
   });
   it('restores screenshot controls after recording setup fails', async () => {

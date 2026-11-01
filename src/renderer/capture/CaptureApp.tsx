@@ -291,7 +291,7 @@ export function CaptureApp(): JSX.Element {
         return;
       }
       if (event.key !== 'Shift') shiftColorToggle.current = false;
-      if (event.key === 'Escape') { event.preventDefault(); cancel(); return; }
+      if (event.key === 'Escape') { if (!recordingLayout) { event.preventDefault(); cancel(); } return; }
       if (liveRef.current) return;
       if (busyRef.current) return;
       if (event.target instanceof Element && event.target.closest('input, textarea')) return;

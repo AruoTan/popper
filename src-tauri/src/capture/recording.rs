@@ -15,12 +15,21 @@ use windows::{
     },
 };
 
-const FPS: u32 = 15;
+#[path = "recording/timeline.rs"]
+mod timeline;
+use timeline::Timeline;
+
+const FPS: u32 = 30;
 const FRAME: Duration = Duration::from_nanos(1_000_000_000 / FPS as u64);
+
+enum Command {
+    Pause(bool, mpsc::SyncSender<Result<RecordingProgress, String>>),
+    Stop,
+}
 
 pub struct Recording {
     directory: PathBuf,
-    stop: mpsc::Sender<()>,
+    stop: mpsc::Sender<Command>,
     worker: Option<JoinHandle<Result<(), String>>>,
     result: Option<Result<(), String>>,
     progress: Arc<Mutex<RecordingProgress>>,
@@ -54,36 +63,68 @@ impl Recording {
                             Encoder::new(&path, rect.width, rect.height).map_err(|e| {
                                 format!("无法创建 MP4 编码器，请确认系统已安装媒体功能：{e}")
                             })?;
-                        let start = Instant::now();
+                        let mut clock = Timeline::new(Instant::now());
                         let mut timestamp = 0;
                         let mut image = platform::capture_region(screen, rect)?;
                         // Retain one frame so its duration follows real elapsed time under load.
                         let capture = loop {
-                            let stopping = receiver.recv_timeout(FRAME.saturating_sub(
-                                start.elapsed() - Duration::from_nanos(timestamp as u64 * 100),
-                            ));
-                            let next_time = (start.elapsed().as_nanos() / 100)
-                                .max(timestamp as u128 + 1)
-                                as i64;
-                            if let Err(e) = encoder.write(&image, timestamp, next_time - timestamp)
-                            {
-                                break Err(format!("无法写入录屏：{e}"));
+                            let command = if clock.paused() {
+                                receiver
+                                    .recv()
+                                    .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
+                            } else {
+                                let elapsed = clock.elapsed(Instant::now());
+                                receiver.recv_timeout(FRAME.saturating_sub(
+                                    elapsed.saturating_sub(Duration::from_nanos(
+                                        timestamp as u64 * 100,
+                                    )),
+                                ))
+                            };
+                            let now = Instant::now();
+                            let elapsed = clock.elapsed(now);
+                            let next_time = elapsed.as_nanos() / 100;
+                            if !clock.paused() && next_time > timestamp as u128 {
+                                if let Err(e) =
+                                    encoder.write(&image, timestamp, next_time as i64 - timestamp)
+                                {
+                                    break Err(format!("无法写入录屏：{e}"));
+                                }
+                                timestamp = next_time as i64;
                             }
                             if let Some(ready) = ready.take() {
                                 let _ = ready.send(Ok(()));
                             }
-                            progress.lock().elapsed_ms = start.elapsed().as_millis() as u64;
-                            if !matches!(stopping, Err(mpsc::RecvTimeoutError::Timeout)) {
-                                break Ok(());
+                            progress.lock().elapsed_ms = elapsed.as_millis() as u64;
+                            let reply = match command {
+                                Ok(Command::Stop) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    break Ok(())
+                                }
+                                Ok(Command::Pause(paused, reply)) => {
+                                    clock.set_paused(paused, now);
+                                    progress.lock().paused = paused;
+                                    Some(reply)
+                                }
+                                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                            };
+                            if !clock.paused() {
+                                let next = if platform::same_screen(screen, scale) {
+                                    platform::capture_region(screen, rect)
+                                } else {
+                                    Err("显示器布局已变化，录制已停止".into())
+                                };
+                                match next {
+                                    Ok(next) => image = next,
+                                    Err(error) => {
+                                        if let Some(reply) = reply {
+                                            let _ = reply.send(Err(error.clone()));
+                                        }
+                                        break Err(error);
+                                    }
+                                }
                             }
-                            if !platform::same_screen(screen, scale) {
-                                break Err("显示器布局已变化，录制已停止".into());
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Ok(progress.lock().clone()));
                             }
-                            match platform::capture_region(screen, rect) {
-                                Ok(next) => image = next,
-                                Err(e) => break Err(e),
-                            }
-                            timestamp = next_time;
                         };
                         // Finalize even after capture failure, preserving the frames already encoded.
                         unsafe { encoder.writer.Finalize() }
@@ -97,6 +138,7 @@ impl Recording {
                     })();
                     let mut status = progress.lock();
                     status.stopped = true;
+                    status.paused = false;
                     if let Err(error) = &result {
                         status.error = Some(error.clone());
                     }
@@ -119,8 +161,20 @@ impl Recording {
     pub fn progress(&self) -> RecordingProgress {
         self.progress.lock().clone()
     }
+    pub fn pause(&self, paused: bool) -> Result<RecordingProgress, String> {
+        if self.progress.lock().stopped {
+            return Err("录制已经停止".into());
+        }
+        let (reply, result) = mpsc::sync_channel(1);
+        self.stop
+            .send(Command::Pause(paused, reply))
+            .map_err(|_| "录制已经停止".to_owned())?;
+        result
+            .recv_timeout(Duration::from_secs(3))
+            .map_err(|_| "切换录屏暂停状态超时，请停止并保存".to_owned())?
+    }
     pub fn stop(&mut self) -> Result<(), String> {
-        let _ = self.stop.send(());
+        let _ = self.stop.send(Command::Stop);
         if let Some(worker) = self.worker.take() {
             self.result = Some(
                 worker
@@ -167,13 +221,25 @@ struct Encoder {
 }
 impl Encoder {
     fn new(path: &Path, width: u32, height: u32) -> windows::core::Result<Self> {
+        Self::create(path, width, height, true)
+            .or_else(|_| Self::create(path, width, height, false))
+    }
+    fn create(path: &Path, width: u32, height: u32, hardware: bool) -> windows::core::Result<Self> {
         use std::os::windows::ffi::OsStrExt;
         // H.264 needs even dimensions; pad the right/bottom edge without sampling outside the selection.
         let width = (width + 1) & !1;
         let height = (height + 1) & !1;
         let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
         unsafe {
-            let writer = MFCreateSinkWriterFromURL(PCWSTR(path.as_ptr()), None, None)?;
+            let mut attributes = None;
+            MFCreateAttributes(&mut attributes, 2)?;
+            let attributes = attributes.unwrap();
+            attributes.SetUINT32(
+                &MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS,
+                u32::from(hardware),
+            )?;
+            attributes.SetUINT32(&MF_SINK_WRITER_DISABLE_THROTTLING, 1)?;
+            let writer = MFCreateSinkWriterFromURL(PCWSTR(path.as_ptr()), None, &attributes)?;
             let output = media_type(&MFVideoFormat_H264, width, height)?;
             output.SetUINT32(
                 &MF_MT_AVG_BITRATE,
@@ -234,10 +300,20 @@ fn media_type(format: &GUID, width: u32, height: u32) -> windows::core::Result<I
     }
 }
 fn bgra_bottom_up(image: &image::RgbaImage, width: u32, height: u32, bytes: &mut [u8]) {
-    bytes.fill(0);
-    for (x, y, pixel) in image.enumerate_pixels() {
-        let offset = (((height - 1 - y) * width + x) * 4) as usize;
-        bytes[offset..offset + 4].copy_from_slice(&[pixel[2], pixel[1], pixel[0], 255]);
+    let source_stride = image.width() as usize * 4;
+    let stride = width as usize * 4;
+    bytes[..(height - image.height()) as usize * stride].fill(0);
+    for (source, destination) in image
+        .as_raw()
+        .chunks_exact(source_stride)
+        .zip(bytes.chunks_exact_mut(stride).rev())
+    {
+        destination[..source_stride].copy_from_slice(source);
+        destination[source_stride..].fill(0);
+        for pixel in destination[..source_stride].chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+            pixel[3] = 255;
+        }
     }
 }
 #[cfg(test)]
@@ -250,14 +326,22 @@ mod tests {
         let _runtime = MediaRuntime::start().unwrap();
         let encoder = Encoder::new(&path, 63, 63).unwrap();
         let frame = image::RgbaImage::from_pixel(63, 63, image::Rgba([255, 0, 0, 255]));
-        encoder.write(&frame, 0, 666_667).unwrap();
-        encoder.write(&frame, 666_667, 666_667).unwrap();
+        let duration = 10_000_000 / i64::from(FPS);
+        encoder.write(&frame, 0, duration).unwrap();
+        encoder.write(&frame, duration, duration).unwrap();
         unsafe { encoder.writer.Finalize() }.unwrap();
         drop(encoder);
         let bytes = std::fs::read(path).unwrap();
         assert_eq!(&bytes[4..8], b"ftyp");
         assert!(bytes.windows(4).any(|box_type| box_type == b"moov"));
         assert!(bytes.windows(4).any(|box_type| box_type == b"mdat"));
+    }
+    #[test]
+    fn padded_bottom_row_is_black_and_captured_pixels_are_opaque() {
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([20, 40, 60, 1]));
+        let mut bytes = vec![9; 16];
+        bgra_bottom_up(&image, 2, 2, &mut bytes);
+        assert_eq!(bytes, [0, 0, 0, 0, 0, 0, 0, 0, 60, 40, 20, 255, 0, 0, 0, 0]);
     }
     #[test]
     fn rgb_is_bottom_up_bgra_and_odd_edges_are_padded() {

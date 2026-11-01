@@ -7,7 +7,7 @@ import { RegionRecording } from './RegionRecording';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 const layout = { selection: { x: 50, y: 80, width: 800, height: 600 }, toolbar: { x: 50, y: 700, width: 300, height: 48 } };
 const screen = { x: -1920, y: 0, width: 1920, height: 1080 };
-const stopped = { elapsedMs: 65000, stopped: true, error: null };
+const stopped = { elapsedMs: 65000, paused: false, stopped: true, error: null };
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(invoke).mockImplementation(async (command) => {
@@ -44,7 +44,7 @@ describe('region recording controls', () => {
     expect(view.getByLabelText('保存 MP4')).toBeDisabled();
     fireEvent.click(view.getByLabelText('保存 MP4'));
     expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'capture_record_save')).toHaveLength(1);
-    fireEvent.click(view.getByLabelText('取消录屏'));
+    fireEvent.click(view.getByLabelText('丢弃录制'));
     expect(cancel).toHaveBeenCalledOnce();
     view.unmount();
     await act(async () => complete(false));
@@ -74,7 +74,7 @@ describe('region recording controls', () => {
     await act(async () => complete(stopped));
     expect(invoke).not.toHaveBeenCalledWith('capture_record_save');
   });
-  it.each(['button', 'Escape'])('does not save after cancellation by %s while stopping', async (method) => {
+  it('does not save after discarding while stopping', async () => {
     let complete!: (value: typeof stopped) => void;
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_record_status') return { ...stopped, stopped: false };
@@ -83,8 +83,7 @@ describe('region recording controls', () => {
     const cancel = vi.fn();
     const view = render(<RegionRecording layout={layout} screen={screen} onCancel={cancel} />);
     fireEvent.click(view.getByLabelText('停止并保存'));
-    if (method === 'button') fireEvent.click(view.getByLabelText('取消录屏'));
-    else fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.click(view.getByLabelText('丢弃录制'));
     await act(async () => complete(stopped));
     expect(cancel).toHaveBeenCalledOnce();
     expect(invoke).not.toHaveBeenCalledWith('capture_record_save');
@@ -100,6 +99,68 @@ describe('region recording controls', () => {
     await act(async () => resolveOld({ ...stopped, stopped: false }));
     expect(view.getByRole('timer')).toHaveTextContent('00:02');
     expect(view.getByLabelText('保存 MP4')).toBeEnabled();
+    view.unmount();
+  });
+
+  it('pauses and resumes using the native state without restarting the recording', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => command === 'capture_record_pause'
+      ? { ...stopped, stopped: false, paused: (args[0] as { paused: boolean }).paused }
+      : implementation(command, ...args));
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={vi.fn()} />);
+    fireEvent.click(view.getByLabelText('暂停录制'));
+    await waitFor(() => expect(view.getByLabelText('继续录制')).toBeEnabled());
+    expect(view.getByRole('status')).toHaveTextContent('已暂停');
+    expect(invoke).toHaveBeenCalledWith('capture_record_pause', { paused: true });
+    fireEvent.click(view.getByLabelText('继续录制'));
+    await waitFor(() => expect(view.getByLabelText('暂停录制')).toBeEnabled());
+    expect(invoke).toHaveBeenCalledWith('capture_record_pause', { paused: false });
+    expect(invoke).not.toHaveBeenCalledWith('capture_record_stop');
+    view.unmount();
+  });
+  it('stops with Escape and retains the video without opening a save dialog', async () => {
+    const cancel = vi.fn();
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={cancel} />);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    fireEvent.keyDown(window, { key: 'Escape', repeat: true });
+    await waitFor(() => expect(view.getByLabelText('保存 MP4')).toBeEnabled());
+    expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'capture_record_stop')).toHaveLength(1);
+    expect(invoke).not.toHaveBeenCalledWith('capture_record_save');
+    expect(cancel).not.toHaveBeenCalled();
+    view.unmount();
+  });
+  it('ignores a stale status result after pausing', async () => {
+    let resolveStatus!: (value: typeof stopped) => void;
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_record_status') return new Promise((done) => { resolveStatus = done; });
+      if (command === 'capture_record_pause') return { ...stopped, stopped: false, paused: true };
+    });
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={vi.fn()} />);
+    fireEvent.click(view.getByLabelText('暂停录制'));
+    await waitFor(() => expect(view.getByLabelText('继续录制')).toBeEnabled());
+    await act(async () => resolveStatus({ ...stopped, stopped: false }));
+    expect(view.getByRole('status')).toHaveTextContent('已暂停');
+    view.unmount();
+  });
+  it('leaves pause controls available after a failed pause request', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_record_pause') throw new Error('pause failed');
+      return implementation(command, ...args);
+    });
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={vi.fn()} />);
+    fireEvent.click(view.getByLabelText('暂停录制'));
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('pause failed'));
+    expect(view.getByLabelText('暂停录制')).toBeEnabled();
+    expect(view.getByLabelText('停止并保存')).toBeEnabled();
+    view.unmount();
+  });
+  it('recovers polling after a temporary status failure', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('status unavailable')).mockResolvedValue({ ...stopped, stopped: false });
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={vi.fn()} />);
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('status unavailable'));
+    await waitFor(() => expect(view.queryByRole('alert')).toBeNull());
+    expect(view.getByRole('timer')).toHaveTextContent('01:05');
     view.unmount();
   });
 

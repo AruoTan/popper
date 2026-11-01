@@ -189,6 +189,7 @@ pub fn run() {
             capture::capture_record_begin,
             capture::capture_record_status,
             capture::capture_record_stop,
+            capture::capture_record_pause,
             capture::capture_record_save,
             capture::capture_export,
             capture::capture_cancel,

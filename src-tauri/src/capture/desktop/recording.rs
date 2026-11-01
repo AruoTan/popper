@@ -31,15 +31,19 @@ pub fn record_begin(
     let escape = register_escape(app, window, id)?;
     let mut layout =
         crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
-    // Recording needs no thumbnail; reserve only the toolbar and its error message.
-    layout.panel = CaptureRect {
-        height: (layout.toolbar.height * 3).min(screen.height - layout.toolbar.y as u32),
-        ..layout.toolbar
-    };
+    layout.toolbar.width = ((400.0 * scale).round() as u32).min(
+        screen
+            .width
+            .saturating_sub((24.0 * scale).ceil() as u32)
+            .max(1),
+    );
+    layout.toolbar.x = (rect.x + rect.width as i32 - layout.toolbar.width as i32)
+        .clamp(0, screen.width.saturating_sub(layout.toolbar.width) as i32);
+    layout.panel = layout.toolbar;
     let setup = (|| {
         platform::prepare_scroll_frame(app, window)?;
         platform::exclude_from_capture(window, true)?;
-        platform::scroll_surface(window, screen, Some(&layout))?;
+        platform::record_surface(window, screen, &layout, scale)?;
         platform::restore_foreground(foreground);
         platform::flush();
         let animations = {
@@ -77,6 +81,21 @@ pub fn record_status(app: &AppHandle, window: &WebviewWindow) -> Result<Recordin
     let mut slot = state.session.lock();
     let session = ensure_session(&mut slot, session_id(window)?)?;
     Ok(session.recording.as_ref().ok_or("录屏尚未开始")?.progress())
+}
+pub fn record_pause(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    paused: bool,
+) -> Result<RecordingProgress, String> {
+    let state = manager(app);
+    let _operation = state.operation.lock();
+    let mut slot = state.session.lock();
+    let session = ensure_session(&mut slot, session_id(window)?)?;
+    session
+        .recording
+        .as_ref()
+        .ok_or("录屏尚未开始")?
+        .pause(paused)
 }
 pub fn record_stop(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingProgress, String> {
     let state = manager(app);
