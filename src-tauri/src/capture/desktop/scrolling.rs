@@ -23,6 +23,32 @@ impl Drop for ScrollEscape {
     }
 }
 
+pub(super) fn register_escape(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    id: &str,
+) -> Result<ScrollEscape, String> {
+    let control = window.hwnd().map_err(|e| e.to_string())?.0 as usize;
+    if app.global_shortcut().is_registered("Escape") {
+        return Err("屏幕捕捉取消按键已被占用，暂时无法开始".into());
+    }
+    let cancel_id = id.to_owned();
+    app.global_shortcut()
+        .on_shortcut("Escape", move |app, _, event| {
+            if event.state() == ShortcutState::Pressed {
+                // Close an owned modal dialog so cancellation can acquire the output lock.
+                platform::dismiss_owned_dialog(control);
+                let app = app.clone();
+                let id = cancel_id.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ = super::cancel_id(&app, &id);
+                });
+            }
+        })
+        .map_err(|e| format!("无法注册屏幕捕捉取消按键：{e}"))?;
+    Ok(ScrollEscape { app: app.clone() })
+}
+
 fn restore_editor(app: &AppHandle, window: &WebviewWindow, screen: CaptureRect) -> Result<(), String> {
     platform::scroll_surface(window, screen, None)?;
     let _ = platform::exclude_from_capture(window, false);
@@ -42,7 +68,7 @@ pub fn scroll_begin(
     let (screen, scale, target) = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, id)?;
-        if session.scroll.is_some() {
+        if session.scroll.is_some() || session.recording.is_some() {
             return Err("滚动截图已经开始".into());
         }
         if session.scroll_completed {
@@ -66,24 +92,7 @@ pub fn scroll_begin(
             .ok_or("选区中没有可滚动的应用窗口")?;
         (screen, session.meta.scale, target)
     };
-    if app.global_shortcut().is_registered("Escape") {
-        return Err("滚动截图取消按键已被占用，暂时无法开始".into());
-    }
-    let cancel_id = id.to_owned();
-    app.global_shortcut()
-        .on_shortcut("Escape", move |app, _, event| {
-            if event.state() == ShortcutState::Pressed {
-                // Close an owned modal dialog so cancellation can acquire the output lock.
-                platform::dismiss_owned_dialog(control);
-                let app = app.clone();
-                let id = cancel_id.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _ = super::cancel_id(&app, &id);
-                });
-            }
-        })
-        .map_err(|e| format!("无法注册滚动截图取消按键：{e}"))?;
-    let escape = ScrollEscape { app: app.clone() };
+    let escape = register_escape(app, window, id)?;
     let layout = crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
     let setup = (|| {
         // Keep the frozen surface visible until the renderer receives the final layout.

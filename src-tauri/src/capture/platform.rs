@@ -557,12 +557,25 @@ pub fn same_screen(expected: CaptureRect, scale: f64) -> bool {
     })
 }
 pub fn save_dialog(app: &AppHandle, owner: usize) -> Result<Option<std::path::PathBuf>, String> {
+    save_dialog_for(app, owner, false)
+}
+pub fn save_video_dialog(
+    app: &AppHandle,
+    owner: usize,
+) -> Result<Option<std::path::PathBuf>, String> {
+    save_dialog_for(app, owner, true)
+}
+fn save_dialog_for(
+    app: &AppHandle,
+    owner: usize,
+    video: bool,
+) -> Result<Option<std::path::PathBuf>, String> {
     let (started, ready) = mpsc::sync_channel(0);
     let (reply, result) = mpsc::sync_channel(1);
     app.run_on_main_thread(move || {
         // A timed-out caller drops the receiver, preventing a late modal from opening.
         if started.send(()).is_ok() {
-            let _ = reply.send(native_save_dialog(owner));
+            let _ = reply.send(native_save_dialog(owner, video));
         }
     })
     .map_err(|e| e.to_string())?;
@@ -572,12 +585,26 @@ pub fn save_dialog(app: &AppHandle, owner: usize) -> Result<Option<std::path::Pa
     // Choosing a path is a user interaction, not a three-second window operation.
     result.recv().map_err(|_| "保存对话框已结束".to_owned())?
 }
-fn native_save_dialog(owner: usize) -> Result<Option<std::path::PathBuf>, String> {
+fn native_save_dialog(owner: usize, video: bool) -> Result<Option<std::path::PathBuf>, String> {
     let mut filename = [0u16; 32768];
-    let initial: Vec<u16> = "Popper-capture.png".encode_utf16().collect();
+    let initial: Vec<u16> = (if video {
+        "Popper-recording.mp4"
+    } else {
+        "Popper-capture.png"
+    })
+    .encode_utf16()
+    .collect();
     filename[..initial.len()].copy_from_slice(&initial);
-    let filter: Vec<u16> = "PNG 图片 (*.png)\0*.png\0\0".encode_utf16().collect();
-    let extension: Vec<u16> = "png\0".encode_utf16().collect();
+    let filter: Vec<u16> = (if video {
+        "MP4 视频 (*.mp4)\0*.mp4\0\0"
+    } else {
+        "PNG 图片 (*.png)\0*.png\0\0"
+    })
+    .encode_utf16()
+    .collect();
+    let extension: Vec<u16> = (if video { "mp4\0" } else { "png\0" })
+        .encode_utf16()
+        .collect();
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: HWND(owner as *mut _),

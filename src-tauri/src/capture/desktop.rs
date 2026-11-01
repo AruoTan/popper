@@ -1,4 +1,5 @@
 mod pinned;
+mod recording;
 mod scrolling;
 mod shortcuts;
 mod toolbar;
@@ -7,6 +8,7 @@ pub use pinned::{
     paste, pin_action, pin_editor_state, pin_close, pin_drag, pin_menu, pin_output, pin_state,
     pin_update, toggle_pins,
 };
+pub use recording::{record_begin, record_save, record_status, record_stop};
 pub use scrolling::{scroll_begin, scroll_finish, scroll_preview, scroll_step};
 pub use shortcuts::ShortcutChange;
 pub use toolbar::{toolbar_action, toolbar_publish, toolbar_ready, toolbar_state};
@@ -38,7 +40,7 @@ const CAPTURE_PREFIX: &str = "capture-session-";
 const PIN_PREFIX: &str = "capture-pin-";
 struct Session {
     meta: CaptureSession,
-    animations: super::animations::AnimationPause,
+    animations: Option<super::animations::AnimationPause>,
     presented: bool,
     image: Option<Arc<RgbaImage>>,
     png: Option<Arc<Vec<u8>>>,
@@ -49,6 +51,7 @@ struct Session {
     image_origin: CapturePoint,
     scroll: Option<scrolling::ScrollSession>,
     scroll_completed: bool,
+    recording: Option<super::recording::Recording>,
     scroll_escape: Option<scrolling::ScrollEscape>,
     hidden_until: std::time::Instant,
     pin_annotations: Vec<super::CaptureAnnotation>,
@@ -220,7 +223,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
                 (
                     s.meta.id.clone(),
                     s.presented,
-                    s.scroll.is_some() || s.scroll_completed,
+                    s.scroll.is_some() || s.scroll_completed || s.recording.is_some(),
                 )
             });
         if let Some((id, presented, scrolling)) = active {
@@ -338,7 +341,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
     }
     *slot = Some(Session {
         meta,
-        animations,
+        animations: Some(animations),
         presented: false,
         image: Some(Arc::new(image)),
         png: Some(png),
@@ -349,6 +352,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         image_origin: CapturePoint { x: 0, y: 0 },
         scroll: None,
         scroll_completed: false,
+        recording: None,
         scroll_escape: None,
         hidden_until: std::time::Instant::now() + Duration::from_secs(10),
         pin_annotations: Vec::new(),
@@ -429,16 +433,17 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
 fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
     let state = manager(app);
     let previous = state.session.lock().take();
-    let Some(previous) = previous else {
+    let Some(mut previous) = previous else {
         state.active.store(false, Ordering::Release);
         app.state::<RuntimeState>()
             .set_screen_capture_active(app, false);
         return Ok(());
     };
     state.generation.fetch_add(1, Ordering::AcqRel);
+    drop(previous.recording.take());
     let id = previous.meta.id;
     let foreground = previous.foreground;
-    let mut animations = previous.animations;
+    let animations = previous.animations;
     let (reply, completed) = mpsc::sync_channel(1);
     let handle = app.clone();
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -463,7 +468,7 @@ fn finish(app: &AppHandle, restore_focus: bool) -> Result<(), String> {
             .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
             .map_err(|_| "截图窗口清理超时".to_owned())?
     });
-    let restored = animations.restore();
+    let restored = animations.map_or(Ok(()), |mut pause| pause.restore());
     state.active.store(false, Ordering::Release);
     app.state::<RuntimeState>()
         .set_screen_capture_active(app, false);
@@ -546,8 +551,8 @@ pub fn copy_color(
     let value = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, session_id(window)?)?;
-        if session.scroll.is_some() || session.scroll_completed {
-            return Err("滚动截图不支持取色".into());
+        if session.scroll.is_some() || session.scroll_completed || session.recording.is_some() {
+            return Err("滚动截图或录屏期间不支持取色".into());
         }
         let image = session.image.as_ref().ok_or("屏幕图像不可用")?;
         super::color::sample(image, point, format)?
@@ -581,8 +586,8 @@ pub fn show(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
                 let state = manager(&app);
                 let mut slot = state.session.lock();
                 let session = ensure_session(&mut slot, session_id(&window)?)?;
-                if session.scroll.is_some() || session.scroll_completed {
-                    return Err("滚动截图仅支持直接输出".into());
+                if session.scroll.is_some() || session.scroll_completed || session.recording.is_some() {
+                    return Err("实时捕捉期间无法返回截图编辑".into());
                 }
                 // Revalidate on every UI turn, including after a pending
                 // foreground transfer. Cancellation makes the next attempt fail.
@@ -630,8 +635,8 @@ pub fn select(
     let state = manager(app);
     let mut slot = state.session.lock();
     let session = ensure_session(&mut slot, id)?;
-    if session.scroll.is_some() {
-        return Err("请先完成滚动截图".into());
+    if session.scroll.is_some() || session.recording.is_some() {
+        return Err("请先完成滚动截图或录屏".into());
     }
     let image = session.image.as_ref().ok_or("屏幕图像不可用")?;
     if !rect.valid_within(image.width(), image.height()) {
@@ -769,8 +774,8 @@ pub fn export(
     let (rect, screen, scale, origin) = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, id)?;
-        if session.scroll.is_some() {
-            return Err("请先完成滚动截图".into());
+        if session.scroll.is_some() || session.recording.is_some() {
+            return Err("请先完成滚动截图或录屏".into());
         }
         if session.version != version {
             return Err("选区已经变化，请重新输出".into());

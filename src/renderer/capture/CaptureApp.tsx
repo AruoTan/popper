@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, Copy, Download, MessageSquare, Pin, Redo2, Undo2, X, Trash2 } from 'lucide-react';
-import type { CaptureAnnotation, CaptureCandidate, CaptureColorFormat, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession } from '../../shared/capture';
+import { Check, Copy, Download, MessageSquare, Pin, Redo2, Undo2, X, Trash2, Video } from 'lucide-react';
+import type { CaptureAnnotation, CaptureCandidate, CaptureColorFormat, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession, RecordingSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 import { annotationBounds, clamp, commit, constrainPoint, constrainedEnd, contains, emptyHistory, HANDLES, handlePoint, hitAnnotation, keyRect, moveRect, rectangle, redo, resizeHandle, resizeRect, undo, type Handle } from './geometry';
 import { decodePng, pngBytes, renderScene, translateAnnotations } from './drawing';
 import { createCaptureHover } from './hover';
 import { createCaptureNavigation } from './navigation';
 import { ScrollCapture } from './ScrollCapture';
+import { RegionRecording } from './RegionRecording';
 import { ANNOTATION_TOOLS } from './annotationTools';
 import { ScrollCaptureIcon } from './ScrollCaptureIcon';
 import { Magnifier } from './Magnifier';
@@ -25,12 +26,13 @@ export function CaptureApp(): JSX.Element {
   const [textEdit, setTextEdit] = useState<TextEdit | null>(null), [color, setColor] = useState('#ff4545'), [lineWidth, setLineWidth] = useState(3);
   const [error, setError] = useState(''), [busy, setBusy] = useState(false), [viewport, setViewport] = useState({ width: window.innerWidth, height: window.innerHeight });
   const [scrollProgress, setScrollProgress] = useState<ScrollCaptureSession | null>(null);
+  const [recordingLayout, setRecordingLayout] = useState<RecordingSession | null>(null);
   const [gestureMode, setGestureMode] = useState<Gesture['mode'] | null>(null);
   const [colorFormat, setColorFormat] = useState<CaptureColorFormat>('hex');
   const help = useRef<HTMLDListElement>(null), [helpHidden, setHelpHidden] = useState(false);
   const shiftColorToggle = useRef(false);
-  const scrolling = scrollProgress !== null;
-  const scrollingRef = useRef(false), scrollVersion = useRef<number | null>(null);
+  const live = scrollProgress !== null || recordingLayout !== null;
+  const liveRef = useRef(false), scrollVersion = useRef<number | null>(null);
   const keyboard = useRef<(event: KeyboardEvent) => void>(() => {});
   const canvas = useRef<HTMLCanvasElement>(null), root = useRef<HTMLElement>(null), gesture = useRef<Gesture | null>(null), busyRef = useRef(false), version = useRef(0), generation = useRef(0);
   const hover = useRef<ReturnType<typeof createCaptureHover> | null>(null), mounted = useRef(true), selectedRef = useRef(selection);
@@ -47,7 +49,7 @@ export function CaptureApp(): JSX.Element {
   const displayed = selection ?? candidate?.rect ?? null;
   const selectedItem = history.present.find((item) => item.id === selectedId);
   const displayedItems = history.present.filter((item) => item.id !== textEdit?.id && item.id !== (gesture.current?.mode === 'object' ? draft?.id : undefined));
-  const magnifierActive = !!image && !!session && !textEdit && !busy && !scrolling && (!selection || gestureMode === 'new' || gestureMode === 'resize');
+  const magnifierActive = !!image && !!session && !textEdit && !busy && !live && (!selection || gestureMode === 'new' || gestureMode === 'resize');
 
   useLayoutEffect(() => {
     const rect = help.current?.getBoundingClientRect();
@@ -92,7 +94,7 @@ export function CaptureApp(): JSX.Element {
     const blur = (): void => {
       shiftColorToggle.current = false;
       clearBlur();
-      if (!ready || busyRef.current || scrollingRef.current || !alive || cancelling.current) return;
+      if (!ready || busyRef.current || liveRef.current || !alive || cancelling.current) return;
       const revision = focusGeneration.current;
       // WebView focus transfers can emit blur while the capture frame stays foreground.
       blurTimer = setTimeout(() => {
@@ -107,7 +109,7 @@ export function CaptureApp(): JSX.Element {
     return () => { alive = false; mounted.current = false; clearBlur(); window.removeEventListener('resize', resize); window.removeEventListener('blur', blur); window.removeEventListener('keydown', keyEvent, true); window.removeEventListener('keyup', keyEvent, true); window.removeEventListener('focus', focus); generation.current++; lifecycle.current++; };
   }, []);
   useEffect(() => {
-    if (!session || scrolling) return;
+    if (!session || live) return;
     const navigator = createCaptureNavigation(); navigation.current = navigator;
     const controller = createCaptureHover({
       targets: session.targets ?? [],
@@ -121,12 +123,12 @@ export function CaptureApp(): JSX.Element {
     hover.current = controller;
     if (session.pointer) controller.update(session.pointer);
     return () => { controller.destroy(); if (hover.current === controller) hover.current = null; if (navigation.current === navigator) navigation.current = null; };
-  }, [session, scrolling]);
+  }, [session, live]);
   useEffect(() => {
-    if (!canvas.current || !image || scrolling) return;
+    if (!canvas.current || !image || live) return;
     try { renderScene(canvas.current, image, bounds.width, bounds.height, draft ? [...displayedItems, draft] : displayedItems); }
     catch (e) { setError(getErrorMessage(e, '无法绘制标注')); }
-  }, [image, history, draft, textEdit, bounds.width, bounds.height, scrolling]);
+  }, [image, history, draft, textEdit, bounds.width, bounds.height, live]);
 
   useEffect(() => {
     if (!session || busy) return;
@@ -142,7 +144,7 @@ export function CaptureApp(): JSX.Element {
     setHistory(commit(history, next)); setSelectedId(textEdit.id); setTextEdit(null);
   };
   const output = async (destination: CaptureOutput): Promise<void> => {
-    if (busyRef.current || scrollingRef.current || !selection || !image || textEdit) return;
+    if (busyRef.current || liveRef.current || !selection || !image || textEdit) return;
     focusGeneration.current++;
     busyRef.current = true; setBusy(true); setError(''); setGesture(null); setDraft(null);
     const started = lifecycle.current;
@@ -168,22 +170,27 @@ export function CaptureApp(): JSX.Element {
       if (!finished && current()) { busyRef.current = false; setBusy(false); root.current?.focus(); }
     } catch (e) { if (current()) { setError(getErrorMessage(e, '无法输出截图')); busyRef.current = false; setBusy(false); root.current?.focus(); } }
   };
-  const beginScroll = async (): Promise<void> => {
-    if (!selection || busyRef.current || scrollingRef.current || history.present.length) return;
+  const beginLive = async (kind: 'scroll' | 'record'): Promise<void> => {
+    if (!selection || busyRef.current || liveRef.current || history.present.length) return;
     focusGeneration.current++; generation.current++;
-    scrollingRef.current = true; busyRef.current = true; setBusy(true); setError('');
+    liveRef.current = true; busyRef.current = true; setBusy(true); setError('');
     setGesture(null); setDraft(null); setSelectedId(null); setTool('select');
     const started = lifecycle.current;
     try {
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
-      const progress = await invoke<ScrollCaptureSession>('capture_scroll_begin', { rect: selection, version: ++version.current });
+      const args = { rect: selection, version: ++version.current };
+      const progress = kind === 'scroll'
+        ? await invoke<ScrollCaptureSession>('capture_scroll_begin', args)
+        : await invoke<RecordingSession>('capture_record_begin', args);
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
-      setScrollProgress(progress); busyRef.current = false; setBusy(false);
+      if (kind === 'scroll') setScrollProgress(progress as ScrollCaptureSession);
+      else setRecordingLayout(progress as RecordingSession);
+      busyRef.current = false; setBusy(false);
     } catch (e) {
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
-      scrollingRef.current = false; busyRef.current = false; setBusy(false);
-      setError(getErrorMessage(e, '无法开始滚动截图')); root.current?.focus();
+      liveRef.current = false; busyRef.current = false; setBusy(false);
+      setError(getErrorMessage(e, kind === 'scroll' ? '无法开始滚动截图' : '无法开始区域录屏')); root.current?.focus();
     }
   };
   const finishScroll = async (destination: CaptureOutput): Promise<boolean> => {
@@ -285,7 +292,7 @@ export function CaptureApp(): JSX.Element {
       }
       if (event.key !== 'Shift') shiftColorToggle.current = false;
       if (event.key === 'Escape') { event.preventDefault(); cancel(); return; }
-      if (scrollingRef.current) return;
+      if (liveRef.current) return;
       if (busyRef.current) return;
       if (event.target instanceof Element && event.target.closest('input, textarea')) return;
       if (event.key === 'Shift' && magnifierActive && !event.ctrlKey && !event.altKey && !event.metaKey) {
@@ -339,6 +346,7 @@ export function CaptureApp(): JSX.Element {
     : handle ? `${handle}-resize`
     : !contains(selection, point) ? 'default' : tool === 'select' ? 'move' : tool === 'text' ? 'text' : 'crosshair';
   const sceneStyle = (rect: CaptureRect): React.CSSProperties => ({ left: rect.x * sx, top: rect.y * sy, width: rect.width * sx, height: rect.height * sy });
+  if (recordingLayout && session) return <main className="capture-scroll-surface"><RegionRecording layout={recordingLayout} screen={session.screen} onCancel={cancel} /></main>;
   if (scrollProgress && session) return <main className="capture-scroll-surface"><ScrollCapture initial={scrollProgress} screen={session.screen} onAction={finishScroll} onCancel={cancel} error={error} /></main>;
   return <main className="capture-overlay" style={{ cursor }} ref={root} tabIndex={-1} onPointerDown={start} onPointerMove={move} onPointerUp={end}
     onPointerCancel={() => { setGesture(null); setDraft(null); }}
@@ -350,7 +358,7 @@ export function CaptureApp(): JSX.Element {
       void output('clipboard');
     }}
     onWheel={(event) => {
-      if (busyRef.current || scrollingRef.current || textEdit || event.deltaY === 0 || (event.target as HTMLElement).closest('[data-capture-ui]')) return;
+      if (busyRef.current || liveRef.current || textEdit || event.deltaY === 0 || (event.target as HTMLElement).closest('[data-capture-ui]')) return;
       shiftColorToggle.current = false;
       if (!selection) {
         if (gesture.current) return;
@@ -390,7 +398,8 @@ export function CaptureApp(): JSX.Element {
       <button title="重做 Ctrl+Y" aria-label="重做" disabled={busy || !history.future.length} onClick={() => { setHistory(redo(history)); setSelectedId(null); }}><Redo2 size={16} /></button>
       {selectedId && <button title="删除标注" aria-label="删除标注" disabled={busy} onClick={() => { setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }}><Trash2 size={16} /></button>}
       <span className="capture-divider" />
-      <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginScroll()}><ScrollCaptureIcon /></button>
+      <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginLive('scroll')}><ScrollCaptureIcon /></button>
+      <button title={history.present.length ? '已有标注，无法开始区域录屏' : '区域录屏（无音频）'} aria-label="区域录屏" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 32} onClick={() => void beginLive('record')}><Video size={16} /></button>
       <button title="保存 Ctrl+S" aria-label="保存 PNG" disabled={busy} onClick={() => void output('file')}><Download size={16} /></button>
       <button title="贴到屏幕 Ctrl+T" aria-label="创建贴图" disabled={busy} onClick={() => void output('pin')}><Pin size={16} /></button>
       <button title="问 AI" aria-label="问 AI" disabled={busy} onClick={() => void output('ask')}><MessageSquare size={16} /></button>

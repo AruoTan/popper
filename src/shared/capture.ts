@@ -70,3 +70,6 @@ export type PinToolbarAction =
   | { action: 'width'; width: number }
   | { action: 'undo' | 'redo' | 'delete' | 'copy' | 'save' | 'hide' }
   | { action: 'close'; destroy: boolean };
+
+export interface RecordingSession { selection: CaptureRect; toolbar: CaptureRect }
+export interface RecordingProgress { elapsedMs: number; stopped: boolean; error: string | null }

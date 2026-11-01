@@ -333,6 +333,8 @@ describe('scroll capture integration', () => {
       if (command === 'capture_session') return { ...meta, pointer: { x: 100, y: 100 }, targets: [{ rect, label: 'page', controls: [] }] };
       if (command === 'capture_image' || command === 'capture_crop') return new ArrayBuffer(0);
       if (command === 'capture_scroll_begin') return scrolling;
+      if (command === 'capture_record_begin') return scrolling.layout;
+      if (command === 'capture_record_status') return { elapsedMs: 2000, stopped: false, error: null };
       if (command === 'capture_scroll_step') return progress;
       if (command === 'capture_scroll_preview') {
         const metadata = new TextEncoder().encode(JSON.stringify(progress));
@@ -498,6 +500,46 @@ describe('scroll capture integration', () => {
     await waitFor(() => expect(view.getByLabelText('复制截图')).toBeEnabled()); fireEvent.click(view.getByLabelText('复制截图'));
     await waitFor(() => expect(calls('capture_export')).toBe(1)); expect(calls('capture_scroll_finish')).toBe(1); expect(calls('capture_show')).toBe(1); view.unmount();
   });
+  it('opens region recording as a second stage and keeps it alive on blur', async () => {
+    const view = await selected();
+    fireEvent.click(view.getByLabelText('区域录屏'));
+    await waitFor(() => expect(view.getByRole('toolbar', { name: '区域录屏操作' })).toBeInTheDocument());
+    expect(invoke).toHaveBeenCalledWith('capture_record_begin', { rect, version: 1 });
+    expect(view.queryByLabelText('截图工具栏')).toBeNull();
+    fireEvent.blur(window);
+    await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
+    expect(calls('capture_cancel')).toBe(0);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(calls('capture_cancel')).toBe(1);
+    view.unmount();
+  });
+  it('restores screenshot controls after recording setup fails', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_record_begin') throw new Error('encoder unavailable');
+      return implementation(command, ...args);
+    });
+    const view = await selected();
+    fireEvent.click(view.getByLabelText('区域录屏'));
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('encoder unavailable'));
+    expect(view.getByLabelText('区域录屏')).toBeEnabled();
+    expect(view.getByLabelText('保存 PNG')).toBeEnabled();
+    view.unmount();
+  });
+  it('discards late recording setup after cancellation', async () => {
+    let resolve!: (value: unknown) => void;
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation((command, ...args) => command === 'capture_record_begin' ? new Promise((done) => { resolve = done; }) : implementation(command, ...args));
+    const view = await selected();
+    fireEvent.click(view.getByLabelText('区域录屏'));
+    await waitFor(() => expect(resolve).toBeTypeOf('function'));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await act(async () => { resolve(scrolling.layout); });
+    expect(calls('capture_cancel')).toBe(1);
+    expect(calls('capture_record_status')).toBe(0);
+    view.unmount();
+  });
+
 });
 describe('capture initialization cleanup', () => {
   it('restores the desktop through the backend when image initialization fails', async () => {
@@ -1023,4 +1065,5 @@ describe('capture keyboard lifecycle', () => {
     expect(view.queryByLabelText('保存 PNG')).toBeNull();
     view.unmount();
   });
+
 });

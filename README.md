@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | **中文**
 
-Popper 是桌面划词与 AI 助手，支持翻译、查词、总结、解释、润色和多轮提问。Windows 版还提供截图、标注、手动滚动截图和浮动贴图。
+Popper 是桌面划词与 AI 助手，支持翻译、查词、总结、解释、润色和多轮提问。Windows 版还提供截图、标注、手动滚动截图、区域录屏和浮动贴图。
 
 [下载安装](https://github.com/AruoTan/popper/releases/latest) · [使用指南](./docs/user-guide.md) · [开发手册](./docs/development.md)
 
@@ -11,14 +11,14 @@ Popper 是桌面划词与 AI 助手，支持翻译、查词、总结、解释、
 - **划词操作**：选中文字后长按右键，调用 AI 动作、搜索或复制；支持自定义动作、提示词和模型。
 - **快捷提问**：通过快捷键打开独立输入框，附加图片、文档或文本，在结果窗口继续对话。
 - **翻译与查词**：多语言翻译、英文词典、发音和欧路生词本收藏。
-- **屏幕捕捉**：窗口与控件吸附、区域截图、六种标注、手动上下滚动拼接、取色和浮动贴图。
+- **屏幕捕捉**：窗口与控件吸附、区域截图、六种标注、手动上下滚动拼接、区域录屏、取色和浮动贴图。
 - **模型接入**：支持多个 OpenAI 兼容服务和 DSH Docker，流式显示正文与推理，支持切换模型。
 
 ## 安装
 
 | 平台 | 系统要求 | 安装方式 |
 | --- | --- | --- |
-| Windows | Windows 10/11 x64；滚动截图需要 Windows 10 2004+ | 安装包、便携 ZIP、Scoop |
+| Windows | Windows 10/11 x64；滚动截图与区域录屏需要 Windows 10 2004+ | 安装包、便携 ZIP、Scoop |
 | macOS | macOS 12+，Apple Silicon | DMG；不含屏幕捕捉功能 |
 
 从 [Releases](https://github.com/AruoTan/popper/releases) 下载对应产物。Windows 安装包按需安装 WebView2；便携版和 Scoop 需系统已有 WebView2。macOS 将应用拖入“应用程序”，首次运行授予辅助功能权限。

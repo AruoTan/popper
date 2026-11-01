@@ -2,7 +2,7 @@
 
 **English** | [中文](./README.md)
 
-Popper is a desktop text selection and AI assistant for translation, dictionary lookup, summaries, explanations, rewriting, and follow-up questions. On Windows, it also provides screen capture, annotations, manual scrolling screenshots, and floating images.
+Popper is a desktop text selection and AI assistant for translation, dictionary lookup, summaries, explanations, rewriting, and follow-up questions. On Windows, it also provides screen capture, annotations, manual scrolling screenshots, region recording, and floating images.
 
 [Download](https://github.com/AruoTan/popper/releases/latest) · [User guide](./docs/user-guide.md) · [Development handbook](./docs/development.md)
 
@@ -11,14 +11,14 @@ Popper is a desktop text selection and AI assistant for translation, dictionary 
 - **Selection actions**: select text and hold the right mouse button to run AI actions, search, or copy. Customize actions, prompts, and models.
 - **Quick Ask**: open a standalone composer with a shortcut, attach images, documents, or text, and continue the conversation in a result window.
 - **Translation and dictionary**: multilingual translation, English dictionary lookup, pronunciation, and saving words to Eudic.
-- **Screen capture**: window and control snapping, region capture, six annotation tools, manual vertical scrolling capture, color picking, and floating images.
+- **Screen capture**: window and control snapping, region capture, six annotation tools, manual vertical scrolling capture, region recording, color picking, and floating images.
 - **Model providers**: connect multiple OpenAI-compatible services or DSH Docker, stream text and reasoning, and switch models.
 
 ## Installation
 
 | Platform | Requirements | Packages |
 | --- | --- | --- |
-| Windows | Windows 10/11 x64; scrolling capture requires Windows 10 2004+ | Installer, portable ZIP, Scoop |
+| Windows | Windows 10/11 x64; scrolling capture and recording require Windows 10 2004+ | Installer, portable ZIP, Scoop |
 | macOS | macOS 12+, Apple Silicon | DMG; screen capture is unavailable |
 
 Download a package from [Releases](https://github.com/AruoTan/popper/releases). The Windows installer installs WebView2 when needed; portable and Scoop installations require it to be installed separately. On macOS, drag Popper into Applications and grant Accessibility permission on first launch.

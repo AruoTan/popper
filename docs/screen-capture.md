@@ -2,7 +2,7 @@
 
 [使用指南](./user-guide.md#屏幕捕捉) · [开发手册](./development.md)
 
-Windows 10/11 x64 使用 xcap 0.9.8 捕捉屏幕，Rust 管理图像与生命周期，React／Canvas 管理交互和标注。滚动覆盖层需要 Windows 10 2004+；macOS 不显示截图入口。
+Windows 10/11 x64 使用 xcap 0.9.8 捕捉屏幕，Rust 管理图像与生命周期，React／Canvas 管理交互和标注。滚动与录屏覆盖层需要 Windows 10 2004+；macOS 不显示截图入口。
 
 ## 模块
 
@@ -13,13 +13,14 @@ Windows 10/11 x64 使用 xcap 0.9.8 捕捉屏幕，Rust 管理图像与生命周
 | `animations.rs`、`animations/recovery.rs` | 临时系统动画设置与异常恢复 |
 | `recognition.rs`、`recognition/`、`accessibility.rs` | 识别汇合、辅助进程、UIA 缓存和 MSAA 点命中 |
 | `scroll.rs`、`scroll/` | 文档坐标、图像行、配准、采样、预览与布局 |
-| `desktop/scrolling.rs` | 滚动覆盖层、取消入口和长图输出 |
+| `desktop/scrolling.rs` | 滚动覆盖层、共享取消入口和长图输出 |
+| `recording.rs`、`desktop/recording.rs` | Media Foundation 编码、录屏会话、停止与 MP4 保存 |
 | `pins.rs`、`pins/`、`desktop/pinned.rs` | 贴图数据、窗口、菜单与恢复项 |
 | `desktop/toolbar.rs` | 贴图工具条窗口与定向动作 |
 | `desktop/shortcuts.rs` | 全局快捷键注册、冲突检查与回滚 |
 | `bitmap.rs`、`clipboard.rs` | 位图校验、PNG／DIBV5／DIB 与剪贴板 |
 
-界面在 `src/renderer/capture/`，共享类型在 `src/shared/capture.ts`。`CaptureApp.tsx` 负责普通截图，`ScrollCapture.tsx` 负责滚动入口与输出，`PinEditor.tsx` 持有贴图编辑状态，`PinToolbarApp.tsx` 显示独立工具条。预览与导出复用 `drawing.ts`、`geometry.ts` 和 `annotationTools.ts`。
+界面在 `src/renderer/capture/`，共享类型在 `src/shared/capture.ts`。`CaptureApp.tsx` 负责普通截图，`ScrollCapture.tsx` 负责滚动入口与输出，`RegionRecording.tsx` 负责录屏控制和保存重试，`PinEditor.tsx` 持有贴图编辑状态，`PinToolbarApp.tsx` 显示独立工具条。预览与导出复用 `drawing.ts`、`geometry.ts` 和 `annotationTools.ts`。
 
 ## 会话
 
@@ -29,6 +30,7 @@ Windows 10/11 x64 使用 xcap 0.9.8 捕捉屏幕，Rust 管理图像与生命周
 | 悬停／框选 | 即时命中缓存，异步细化候选，单击接受或拖动框选 |
 | 调整／标注 | 修改裁剪边界和对象；输出或取消 |
 | 滚动 | 对未标注选区连续采样；停止后直接输出，不进入编辑阶段 |
+| 录屏 | 未标注选区录制无音频 MP4；停止后保存，失败保留停止的视频 |
 | 输出 | 成功结束；失败或保存取消保留内容供重试 |
 | 取消 | 丢弃迟到结果，清理窗口、进程与图像，恢复监听和动画 |
 
@@ -74,6 +76,14 @@ Windows 10/11 x64 使用 xcap 0.9.8 捕捉屏幕，Rust 管理图像与生命周
 
 滚动会话临时注册 Esc，注册失败不启动。输出先处理剩余采样并停止，四个按钮直接输出；保存取消或失败后保留停止的长图，不重新采样或合成。停止、取消与退出回收线程、队列、临时按键和预览。
 
+## 区域录屏
+
+复用滚动覆盖层的窗口区域、捕捉排除和临时 Esc；初始化失败恢复截图编辑。选区至少 32 × 32 物理像素，不接受过期版本或并行滚动／录屏。进入录制时恢复截图阶段暂停的系统动画。录屏期间不因用户切换前台应用而退出。
+
+专属线程初始化 COM 和 Media Foundation，将 xcap 的 RGBA 帧转换为底部向上的 RGB32，编码为 H.264 MP4，目标 15 fps。宽高向偶数补齐，补边不读取选区外像素。保留一帧以按真实采样时间写入时长，编码跟不上时降低实际帧率。实现参考 [Microsoft Sink Writer 文档](https://learn.microsoft.com/en-us/windows/win32/medfound/tutorial--using-the-sink-writer-to-encode-video)。
+
+视频流式写入系统临时目录中的独立 UUID 子目录，不把整段录像放入内存。停止等待编码结束并完成 MP4；后续保存取消或失败可以重试，使用目标目录临时文件和原子替换保护已有文件。取消、保存成功与正常退出停止线程并清理本会话目录，崩溃残留不支持恢复。无音频、暂停或编辑功能。
+
 ## 贴图
 
 最近关闭项只持有原图、边界、缩放、透明度、标注及编辑历史，不保留窗口或解码对象。关闭先交接并校验编辑状态，再异步销毁图片和所属工具条；恢复使用新标识，失败保留恢复项。明确销毁、恢复项替换及退出释放数据。
@@ -94,10 +104,11 @@ Windows 10/11 x64 使用 xcap 0.9.8 捕捉屏幕，Rust 管理图像与生命周
 | 编辑 | 反向框选、边框调整、取色、中文文字、全部标注、撤销重做、选区变化与马赛克一致性 |
 | 输出 | 剪贴板占用、透明通道、保存取消、失败重试、已有草稿和附件、超限与交接失败 |
 | 滚动 | 上下往返、快速滚动、PDF 页缝、重复内容、固定页眉，失配恢复与到限输出 |
+| 录屏 | MP4 播放、色彩与方向、奇数宽高、混合 DPI、计时、输入穿透、覆盖层排除、保存取消／失败重试、编码器不可用与磁盘满 |
 | 滚动窗口 | 无闪屏、无标题栏、输入穿透、预览避让与动画、最后一帧纳入输出、取消与迟到解码 |
 | 贴图 | 原位创建、顶部越界拖动、缩放锚点、透明度、外部工具条、显隐、关闭恢复与 WebView 释放 |
 | 动画恢复 | 开启／关闭／混合原值，正常结束、异常终止、重登录、恢复失败和并发截图 |
 | 清理 | 热拔插、缩放变化、锁屏／休眠、退出；连续 100 次截图和关闭恢复后资源不持续增长 |
 | 回归 | 截图期间不误触划词，结束后恢复；macOS 原有构建、划词与快捷提问正常 |
 
-不包含录屏、横向滚动、独立 OCR、跨屏选区或重启恢复。源码导出须包含本文与 `licenses/LICENSE.capture`，改动和导出检查遵守项目纯净要求。
+不包含音频录制、横向滚动、独立 OCR、跨屏选区或重启恢复。源码导出须包含本文与 `licenses/LICENSE.capture`，改动和导出检查遵守项目纯净要求。

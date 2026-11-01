@@ -37,6 +37,8 @@ mod hit_test;
 mod pins;
 #[cfg(any(target_os = "windows", test))]
 mod scroll;
+#[cfg(target_os = "windows")]
+mod recording;
 mod types;
 pub use types::*;
 
@@ -203,6 +205,47 @@ pub async fn capture_scroll_finish(
 ) -> Result<CaptureDocument, String> {
     desktop_call!(
         tauri::async_runtime::spawn_blocking(move || desktop::scroll_finish(&app, &window))
+            .await
+            .map_err(|e| e.to_string())?
+    )
+}
+#[tauri::command]
+pub async fn capture_record_begin(
+    app: AppHandle,
+    window: WebviewWindow,
+    rect: CaptureRect,
+    version: u64,
+) -> Result<ScrollLayout, String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::record_begin(
+            &app, &window, rect, version
+        ))
+        .await
+        .map_err(|e| e.to_string())?
+    )
+}
+#[tauri::command]
+pub fn capture_record_status(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<RecordingProgress, String> {
+    desktop_call!(desktop::record_status(&app, &window))
+}
+#[tauri::command]
+pub async fn capture_record_stop(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<RecordingProgress, String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::record_stop(&app, &window))
+            .await
+            .map_err(|e| e.to_string())?
+    )
+}
+#[tauri::command]
+pub async fn capture_record_save(app: AppHandle, window: WebviewWindow) -> Result<bool, String> {
+    desktop_call!(
+        tauri::async_runtime::spawn_blocking(move || desktop::record_save(&app, &window))
             .await
             .map_err(|e| e.to_string())?
     )

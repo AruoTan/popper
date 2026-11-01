@@ -514,3 +514,11 @@ mod tests {
         assert!(!screen.contains(0, 0));
     }
 }
+
+#[derive(Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingProgress {
+    pub elapsed_ms: u64,
+    pub stopped: bool,
+    pub error: Option<String>,
+}

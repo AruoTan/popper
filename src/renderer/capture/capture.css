@@ -67,3 +67,7 @@ button:focus-visible { outline: 2px solid #7fa9ff; outline-offset: 1px; }
 
 .capture-pin-tools-surface { width: 100%; padding: 6px; min-height: 49px; }
 .capture-pin-tools-error { padding: 6px; margin-top: 4px; border-radius: 4px; background: #7f2833; color: white; font-size: 12px; overflow-wrap: anywhere; }
+.capture-record-border { outline-color: #ef5350; }
+.capture-record-toolbar { flex-wrap: nowrap; gap: 8px; font-size: 12px; }
+.capture-record-time { color: #c62828; font-variant-numeric: tabular-nums; }
+.capture-record-error { position: absolute; top: 100%; left: 0; right: 0; padding: 8px; color: #fff; background: #742732f5; overflow-wrap: anywhere; }
