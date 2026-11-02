@@ -44,7 +44,7 @@ pub fn record_begin(
             ensure_session(&mut slot, id)?.animations = Some(pause);
             restored?;
         }
-        Recording::start(screen, scale, rect)
+        Recording::prepare(screen, scale, rect)
     })();
     let recording = match setup {
         Ok(recording) => recording,
@@ -121,6 +121,14 @@ pub fn record_ready(app: &AppHandle, window: &WebviewWindow) -> Result<(), Strin
     result
 }
 
+pub fn record_start(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingProgress, String> {
+    let state = manager(app);
+    let _operation = state.operation.lock();
+    let mut slot = state.session.lock();
+    let session = ensure_session(&mut slot, session_id(window)?)?;
+    session.recording.as_mut().ok_or("录屏尚未准备")?.start()
+}
+
 pub fn record_status(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingProgress, String> {
     let state = manager(app);
     let mut slot = state.session.lock();
@@ -148,6 +156,9 @@ pub fn record_stop(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingP
     let mut slot = state.session.lock();
     let session = ensure_session(&mut slot, session_id(window)?)?;
     let recording = session.recording.as_mut().ok_or("录屏尚未开始")?;
+    if !recording.progress().started {
+        return Err("请先开始录制".into());
+    }
     recording.stop()?;
     Ok(recording.progress())
 }
@@ -158,6 +169,9 @@ pub fn record_save(app: &AppHandle, window: &WebviewWindow) -> Result<bool, Stri
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, session_id(window)?)?;
         let recording = session.recording.as_mut().ok_or("录屏尚未开始")?;
+        if !recording.progress().started {
+            return Err("请先开始录制".into());
+        }
         recording.stop()?;
         recording.path()
     };

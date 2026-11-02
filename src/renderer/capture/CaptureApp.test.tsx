@@ -329,13 +329,15 @@ describe('scroll capture integration', () => {
     vi.stubGlobal('PointerEvent', MouseEvent);
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     vi.mocked(decodePng).mockResolvedValue(new Image());
+    let recordingStarted = false;
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === 'capture_session') return { ...meta, pointer: { x: 100, y: 100 }, targets: [{ rect, label: 'page', controls: [] }] };
       if (command === 'capture_image' || command === 'capture_crop') return new ArrayBuffer(0);
       if (command === 'capture_scroll_begin') return scrolling;
       if (command === 'capture_record_begin') return scrolling.layout;
-      if (command === 'capture_record_status') return { elapsedMs: 2000, paused: false, stopped: false, error: null };
-      if (command === 'capture_record_stop') return { elapsedMs: 2000, paused: false, stopped: true, error: null };
+      if (command === 'capture_record_start') { recordingStarted = true; return { started: true, elapsedMs: 0, paused: false, stopped: false, error: null }; }
+      if (command === 'capture_record_status') return { started: recordingStarted, elapsedMs: recordingStarted ? 2000 : 0, paused: false, stopped: false, error: null };
+      if (command === 'capture_record_stop') return { started: true, elapsedMs: 2000, paused: false, stopped: true, error: null };
       if (command === 'capture_scroll_step') return progress;
       if (command === 'capture_scroll_preview') {
         const metadata = new TextEncoder().encode(JSON.stringify(progress));
@@ -507,6 +509,10 @@ describe('scroll capture integration', () => {
     await waitFor(() => expect(view.getByRole('toolbar', { name: '区域录屏操作' })).toBeInTheDocument());
     expect(invoke).toHaveBeenCalledWith('capture_record_begin', { rect, version: 1 });
     expect(view.queryByLabelText('截图工具栏')).toBeNull();
+    expect(view.getByLabelText('开始录制')).toBeEnabled();
+    expect(calls('capture_record_start')).toBe(0);
+    fireEvent.click(view.getByLabelText('开始录制'));
+    await waitFor(() => expect(view.getByLabelText('暂停录制')).toBeEnabled());
     fireEvent.blur(window);
     await act(async () => { await new Promise((done) => setTimeout(done, 150)); });
     expect(calls('capture_cancel')).toBe(0);

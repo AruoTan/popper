@@ -518,6 +518,7 @@ mod tests {
 #[derive(Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingProgress {
+    pub started: bool,
     pub paused: bool,
     pub elapsed_ms: u64,
     pub stopped: bool,

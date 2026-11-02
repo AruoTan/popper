@@ -29,29 +29,43 @@ enum Command {
 
 pub struct Recording {
     directory: PathBuf,
-    stop: mpsc::Sender<Command>,
+    screen: CaptureRect,
+    scale: f64,
+    rect: CaptureRect,
+    stop: Option<mpsc::Sender<Command>>,
     worker: Option<JoinHandle<Result<(), String>>>,
     result: Option<Result<(), String>>,
     progress: Arc<Mutex<RecordingProgress>>,
 }
 impl Recording {
-    pub fn start(screen: CaptureRect, scale: f64, rect: CaptureRect) -> Result<Self, String> {
+    pub fn prepare(screen: CaptureRect, scale: f64, rect: CaptureRect) -> Result<Self, String> {
         let directory =
             std::env::temp_dir().join(format!("popper-recording-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&directory).map_err(|e| format!("无法创建录屏临时目录：{e}"))?;
-        let (stop, receiver) = mpsc::channel();
-        let (ready, started) = mpsc::sync_channel(1);
-        let progress = Arc::new(Mutex::new(RecordingProgress::default()));
-        let mut recording = Self {
+        Ok(Self {
             directory,
-            stop,
+            screen,
+            scale,
+            rect,
+            stop: None,
             worker: None,
             result: None,
-            progress,
-        };
-        let path = recording.path();
-        let progress = recording.progress.clone();
-        recording.worker = Some(
+            progress: Arc::new(Mutex::new(RecordingProgress::default())),
+        })
+    }
+
+    pub fn start(&mut self) -> Result<RecordingProgress, String> {
+        let status = self.progress();
+        if status.started {
+            return Ok(status);
+        }
+        let (stop, receiver) = mpsc::channel();
+        let (ready, started) = mpsc::sync_channel(1);
+        self.stop = Some(stop);
+        let path = self.path();
+        let progress = self.progress.clone();
+        let (screen, scale, rect) = (self.screen, self.scale, self.rect);
+        self.worker = Some(
             thread::Builder::new()
                 .name("region-recording".into())
                 .spawn(move || {
@@ -92,6 +106,7 @@ impl Recording {
                                 timestamp = next_time as i64;
                             }
                             if let Some(ready) = ready.take() {
+                                progress.lock().started = true;
                                 let _ = ready.send(Ok(()));
                             }
                             progress.lock().elapsed_ms = elapsed.as_millis() as u64;
@@ -149,10 +164,19 @@ impl Recording {
                 })
                 .map_err(|e| e.to_string())?,
         );
-        started
+        let result = started
             .recv_timeout(Duration::from_secs(10))
-            .map_err(|_| "录屏启动超时".to_owned())??;
-        Ok(recording)
+            .map_err(|_| "录屏启动超时".to_owned())
+            .and_then(|result| result);
+        if let Err(error) = result {
+            let _ = self.stop();
+            self.result = None;
+            self.stop = None;
+            *self.progress.lock() = RecordingProgress::default();
+            let _ = std::fs::remove_file(self.path());
+            return Err(error);
+        }
+        Ok(self.progress())
     }
 
     pub fn path(&self) -> PathBuf {
@@ -162,11 +186,14 @@ impl Recording {
         self.progress.lock().clone()
     }
     pub fn pause(&self, paused: bool) -> Result<RecordingProgress, String> {
-        if self.progress.lock().stopped {
-            return Err("录制已经停止".into());
+        let status = self.progress();
+        if !status.started || status.stopped {
+            return Err("录制尚未开始或已经停止".into());
         }
         let (reply, result) = mpsc::sync_channel(1);
         self.stop
+            .as_ref()
+            .ok_or("录制尚未开始")?
             .send(Command::Pause(paused, reply))
             .map_err(|_| "录制已经停止".to_owned())?;
         result
@@ -174,7 +201,9 @@ impl Recording {
             .map_err(|_| "切换录屏暂停状态超时，请停止并保存".to_owned())?
     }
     pub fn stop(&mut self) -> Result<(), String> {
-        let _ = self.stop.send(Command::Stop);
+        if let Some(stop) = &self.stop {
+            let _ = stop.send(Command::Stop);
+        }
         if let Some(worker) = self.worker.take() {
             self.result = Some(
                 worker
@@ -319,6 +348,25 @@ fn bgra_bottom_up(image: &image::RgbaImage, width: u32, height: u32, bytes: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preparing_does_not_start_a_worker_or_create_a_video() {
+        let screen = CaptureRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let recording = Recording::prepare(screen, 1.0, screen).unwrap();
+        let directory = recording.directory.clone();
+        assert!(recording.worker.is_none());
+        assert!(recording.stop.is_none());
+        assert!(!recording.path().exists());
+        assert!(!recording.progress().started);
+        assert_eq!(recording.progress().elapsed_ms, 0);
+        assert!(recording.pause(true).is_err());
+        drop(recording);
+        assert!(!directory.exists());
+    }
     #[test]
     fn writes_a_finalized_mp4_with_the_system_encoder() {
         let directory = tempfile::tempdir().unwrap();
