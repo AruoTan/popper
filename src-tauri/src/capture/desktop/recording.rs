@@ -13,7 +13,7 @@ pub fn record_begin(
     let state = manager(app);
     let _operation = state.operation.lock();
     let id = session_id(window)?;
-    let (screen, scale, foreground) = {
+    let (screen, scale) = {
         let mut slot = state.session.lock();
         let session = ensure_session(&mut slot, id)?;
         if session.scroll.is_some() || session.scroll_completed || session.recording.is_some() {
@@ -26,25 +26,12 @@ pub fn record_begin(
         {
             return Err("请选择至少 32 × 32 像素的有效录屏区域".into());
         }
-        (session.meta.screen, session.meta.scale, session.foreground)
+        (session.meta.screen, session.meta.scale)
     };
     let escape = register_escape(app, window, id)?;
-    let mut layout =
-        crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
-    layout.toolbar.width = ((400.0 * scale).round() as u32).min(
-        screen
-            .width
-            .saturating_sub((24.0 * scale).ceil() as u32)
-            .max(1),
-    );
-    layout.toolbar.x = (rect.x + rect.width as i32 - layout.toolbar.width as i32)
-        .clamp(0, screen.width.saturating_sub(layout.toolbar.width) as i32);
-    layout.panel = layout.toolbar;
+    let layout = recording_layout(screen, scale, rect);
     let setup = (|| {
-        platform::prepare_scroll_frame(app, window)?;
         platform::exclude_from_capture(window, true)?;
-        platform::record_surface(window, screen, &layout, scale)?;
-        platform::restore_foreground(foreground);
         platform::flush();
         let animations = {
             let mut slot = state.session.lock();
@@ -76,6 +63,64 @@ pub fn record_begin(
     session.scroll_escape = Some(escape);
     Ok(layout)
 }
+fn recording_layout(screen: CaptureRect, scale: f64, rect: CaptureRect) -> ScrollLayout {
+    let mut layout =
+        crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
+    layout.toolbar.width = ((400.0 * scale).round() as u32).min(
+        screen
+            .width
+            .saturating_sub((24.0 * scale).ceil() as u32)
+            .max(1),
+    );
+    layout.toolbar.x = (rect.x + rect.width as i32 - layout.toolbar.width as i32)
+        .clamp(0, screen.width.saturating_sub(layout.toolbar.width) as i32);
+    layout.panel = layout.toolbar;
+    layout
+}
+
+pub fn record_ready(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    let state = manager(app);
+    let _operation = state.operation.lock();
+    let id = session_id(window)?;
+    let (screen, scale, rect, foreground) = {
+        let mut slot = state.session.lock();
+        let session = ensure_session(&mut slot, id)?;
+        session.recording.as_ref().ok_or("录屏尚未开始")?;
+        (
+            session.meta.screen,
+            session.meta.scale,
+            session.selection.ok_or("录屏选区不可用")?,
+            session.foreground,
+        )
+    };
+    let result = (|| {
+        // The renderer has painted the recording controls before this changes the native clip.
+        platform::prepare_scroll_frame(app, window)?;
+        platform::record_surface(
+            window,
+            screen,
+            &recording_layout(screen, scale, rect),
+            scale,
+        )?;
+        platform::restore_foreground(foreground);
+        platform::flush();
+        Ok(())
+    })();
+    if result.is_err() {
+        let (recording, escape) = {
+            let mut slot = state.session.lock();
+            let session = ensure_session(&mut slot, id)?;
+            (session.recording.take(), session.scroll_escape.take())
+        };
+        drop(recording);
+        drop(escape);
+        let _ = platform::scroll_surface(window, screen, None);
+        let _ = platform::exclude_from_capture(window, false);
+        let _ = super::show(app, window);
+    }
+    result
+}
+
 pub fn record_status(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingProgress, String> {
     let state = manager(app);
     let mut slot = state.session.lock();

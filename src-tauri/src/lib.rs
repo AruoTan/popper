@@ -187,6 +187,7 @@ pub fn run() {
             capture::capture_scroll_preview,
             capture::capture_scroll_finish,
             capture::capture_record_begin,
+            capture::capture_record_ready,
             capture::capture_record_status,
             capture::capture_record_stop,
             capture::capture_record_pause,

@@ -516,6 +516,51 @@ describe('scroll capture integration', () => {
     expect(calls('capture_record_stop')).toBe(1);
     view.unmount();
   });
+  it('paints the replacement toolbar before handing off the native recording surface', async () => {
+    const view = await selected();
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { frames.push(callback); return frames.length; }));
+    fireEvent.click(view.getByLabelText('区域录屏'));
+    expect(view.getByLabelText('截图工具栏')).toBeInTheDocument();
+    expect(calls('capture_record_begin')).toBe(0);
+    await act(async () => { frames.shift()!(0); });
+    expect(calls('capture_record_begin')).toBe(1);
+    expect(view.queryByLabelText('截图工具栏')).toBeNull();
+    expect(view.getByLabelText('区域录屏操作')).toBeInTheDocument();
+    expect(calls('capture_record_ready')).toBe(0);
+    await act(async () => { frames.shift()!(16); });
+    expect(calls('capture_record_ready')).toBe(0);
+    await act(async () => { frames.shift()!(32); });
+    expect(calls('capture_record_ready')).toBe(1);
+    expect(calls('capture_scroll_begin')).toBe(0);
+    view.unmount();
+  });
+  it('restores screenshot controls when native recording presentation fails', async () => {
+    const implementation = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, ...args) => {
+      if (command === 'capture_record_ready') throw new Error('recording surface unavailable');
+      return implementation(command, ...args);
+    });
+    const view = await selected();
+    fireEvent.click(view.getByLabelText('区域录屏'));
+    await waitFor(() => expect(view.getByRole('alert')).toHaveTextContent('recording surface unavailable'));
+    expect(view.queryByLabelText('区域录屏操作')).toBeNull();
+    expect(view.getByLabelText('区域录屏')).toBeEnabled();
+    expect(view.getByLabelText('保存 PNG')).toBeEnabled();
+    view.unmount();
+  });
+  it('does not present a recording discarded between committing and painting its controls', async () => {
+    const view = await selected();
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => { frames.push(callback); return frames.length; }));
+    fireEvent.click(view.getByLabelText('区域录屏'));
+    await act(async () => { frames.shift()!(0); });
+    fireEvent.click(view.getByLabelText('丢弃录制'));
+    await act(async () => { frames.shift()!(16); frames.shift()!(32); });
+    expect(calls('capture_cancel')).toBe(1);
+    expect(calls('capture_record_ready')).toBe(0);
+    view.unmount();
+  });
   it('restores screenshot controls after recording setup fails', async () => {
     const implementation = vi.mocked(invoke).getMockImplementation()!;
     vi.mocked(invoke).mockImplementation(async (command, ...args) => {

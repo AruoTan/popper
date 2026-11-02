@@ -8,7 +8,7 @@ pub use pinned::{
     paste, pin_action, pin_editor_state, pin_close, pin_drag, pin_menu, pin_output, pin_state,
     pin_update, toggle_pins,
 };
-pub use recording::{record_begin, record_pause, record_save, record_status, record_stop};
+pub use recording::{record_begin, record_pause, record_ready, record_save, record_status, record_stop};
 pub use scrolling::{scroll_begin, scroll_finish, scroll_preview, scroll_step};
 pub use shortcuts::ShortcutChange;
 pub use toolbar::{toolbar_action, toolbar_publish, toolbar_ready, toolbar_state};

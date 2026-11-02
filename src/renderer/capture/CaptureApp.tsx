@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type JSX, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { flushSync } from 'react-dom';
 import { Check, Copy, Download, MessageSquare, Pin, Redo2, Undo2, X, Trash2, Video } from 'lucide-react';
 import type { CaptureAnnotation, CaptureCandidate, CaptureColorFormat, CaptureDocument, CaptureHitTest, CaptureOutput, CapturePoint, CaptureRect, CaptureSession, CaptureTool, ScrollCaptureSession, RecordingSession } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
@@ -185,10 +186,18 @@ export function CaptureApp(): JSX.Element {
         : await invoke<RecordingSession>('capture_record_begin', args);
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
       if (kind === 'scroll') setScrollProgress(progress as ScrollCaptureSession);
-      else setRecordingLayout(progress as RecordingSession);
+      else {
+        flushSync(() => setRecordingLayout(progress as RecordingSession));
+        // Allow the committed controls to paint before the native window is clipped around them.
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
+        await invoke('capture_record_ready');
+        if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
+      }
       busyRef.current = false; setBusy(false);
     } catch (e) {
       if (!mounted.current || cancelling.current || started !== lifecycle.current) return;
+      if (kind === 'record') setRecordingLayout(null);
       liveRef.current = false; busyRef.current = false; setBusy(false);
       setError(getErrorMessage(e, kind === 'scroll' ? '无法开始滚动截图' : '无法开始区域录屏')); root.current?.focus();
     }
