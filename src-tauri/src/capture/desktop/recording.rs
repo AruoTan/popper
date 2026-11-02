@@ -1,6 +1,8 @@
 //! Recording shares the scrolling capture cutout and cancellation lifetime.
 use super::{ensure_session, manager, platform, scrolling::register_escape, session_id};
-use crate::capture::{recording::Recording, CaptureRect, RecordingProgress, ScrollLayout};
+use crate::capture::{
+    recording::Recording, CaptureRect, RecordingOptions, RecordingProgress, ScrollLayout,
+};
 use tauri::{AppHandle, WebviewWindow};
 use uuid::Uuid;
 
@@ -66,7 +68,7 @@ pub fn record_begin(
 fn recording_layout(screen: CaptureRect, scale: f64, rect: CaptureRect) -> ScrollLayout {
     let mut layout =
         crate::capture::scroll::layout::layout(screen.width, screen.height, scale, rect);
-    layout.toolbar.width = ((400.0 * scale).round() as u32).min(
+    layout.toolbar.width = ((480.0 * scale).round() as u32).min(
         screen
             .width
             .saturating_sub((24.0 * scale).ceil() as u32)
@@ -121,12 +123,20 @@ pub fn record_ready(app: &AppHandle, window: &WebviewWindow) -> Result<(), Strin
     result
 }
 
-pub fn record_start(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingProgress, String> {
+pub fn record_start(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    options: RecordingOptions,
+) -> Result<RecordingProgress, String> {
     let state = manager(app);
     let _operation = state.operation.lock();
     let mut slot = state.session.lock();
     let session = ensure_session(&mut slot, session_id(window)?)?;
-    session.recording.as_mut().ok_or("录屏尚未准备")?.start()
+    session
+        .recording
+        .as_mut()
+        .ok_or("录屏尚未准备")?
+        .start(options)
 }
 
 pub fn record_status(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingProgress, String> {

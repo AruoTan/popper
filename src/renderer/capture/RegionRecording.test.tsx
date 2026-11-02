@@ -187,7 +187,7 @@ describe('region recording controls', () => {
     expect(view.getByRole('timer')).toHaveTextContent('00:00');
     expect(view.getByRole('status')).toHaveTextContent('准备就绪');
     expect(view.getByLabelText('停止并保存')).toBeDisabled();
-    expect(invoke).not.toHaveBeenCalledWith('capture_record_start');
+    expect(invoke).not.toHaveBeenCalledWith('capture_record_start', expect.anything());
     expect(invoke).not.toHaveBeenCalledWith('capture_record_pause', expect.anything());
     fireEvent.click(button);
     await waitFor(() => expect(view.getByLabelText('暂停录制')).toBeEnabled());
@@ -218,6 +218,8 @@ describe('region recording controls', () => {
     expect(vi.mocked(invoke).mock.calls.filter(([name]) => name === 'capture_record_start')).toHaveLength(1);
     await act(async () => reject(new Error('encoder unavailable')));
     expect(view.getByRole('alert')).toHaveTextContent('encoder unavailable');
+    expect(view.getByLabelText('录音开关')).toBeEnabled();
+    expect(view.getByLabelText('鼠标开关')).toBeEnabled();
     expect(view.getByLabelText('开始录制')).toBeEnabled();
     expect(view.getByLabelText('停止并保存')).toBeDisabled();
     vi.mocked(invoke).mockResolvedValue({ ...stopped, stopped: false });
@@ -231,9 +233,40 @@ describe('region recording controls', () => {
     const view = render(<RegionRecording layout={layout} screen={screen} onCancel={cancel} />);
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(cancel).toHaveBeenCalledOnce();
-    expect(invoke).not.toHaveBeenCalledWith('capture_record_start');
+    expect(invoke).not.toHaveBeenCalledWith('capture_record_start', expect.anything());
     expect(invoke).not.toHaveBeenCalledWith('capture_record_stop');
     expect(invoke).not.toHaveBeenCalledWith('capture_record_save');
+    view.unmount();
+  });
+
+  it.each([[false, false], [true, false], [false, true], [true, true]])('starts with audio=%s and cursor=%s and locks both switches', async (audio, cursor) => {
+    vi.mocked(invoke).mockImplementation(async (command) => command === 'capture_record_start'
+      ? { ...stopped, stopped: false }
+      : { ...stopped, started: false, stopped: false, elapsedMs: 0 });
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={vi.fn()} />);
+    expect(view.getByLabelText('录音开关')).toHaveAttribute('aria-pressed', 'false');
+    expect(view.getByLabelText('鼠标开关')).toHaveAttribute('aria-pressed', 'false');
+    if (audio) fireEvent.click(view.getByLabelText('录音开关'));
+    if (cursor) fireEvent.click(view.getByLabelText('鼠标开关'));
+    expect(view.getByLabelText('录音开关')).toHaveAttribute('aria-pressed', String(audio));
+    expect(view.getByLabelText('鼠标开关')).toHaveAttribute('aria-pressed', String(cursor));
+    fireEvent.click(view.getByLabelText('开始录制'));
+    expect(invoke).toHaveBeenCalledWith('capture_record_start', { options: { audio, cursor } });
+    await waitFor(() => expect(view.getByLabelText('暂停录制')).toBeEnabled());
+    expect(view.getByLabelText('录音开关')).toBeDisabled();
+    expect(view.getByLabelText('鼠标开关')).toBeDisabled();
+    view.unmount();
+  });
+  it('can switch both options back off before starting', async () => {
+    vi.mocked(invoke).mockResolvedValue({ ...stopped, started: false, stopped: false, elapsedMs: 0 });
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={vi.fn()} />);
+    for (const label of ['录音开关', '鼠标开关']) {
+      fireEvent.click(view.getByLabelText(label));
+      fireEvent.click(view.getByLabelText(label));
+      expect(view.getByLabelText(label)).toHaveAttribute('aria-pressed', 'false');
+    }
+    fireEvent.click(view.getByLabelText('开始录制'));
+    expect(invoke).toHaveBeenCalledWith('capture_record_start', { options: { audio: false, cursor: false } });
     view.unmount();
   });
 

@@ -1,5 +1,5 @@
 //! Disk-backed MP4 recording; all Media Foundation objects stay on the worker thread.
-use super::{platform, CaptureRect, RecordingProgress};
+use super::{platform, CaptureRect, RecordingOptions, RecordingProgress};
 use parking_lot::Mutex;
 use std::{
     path::{Path, PathBuf},
@@ -18,6 +18,10 @@ use windows::{
 #[path = "recording/timeline.rs"]
 mod timeline;
 use timeline::Timeline;
+#[path = "recording/audio.rs"]
+mod audio;
+#[path = "recording/cursor.rs"]
+mod cursor;
 
 const FPS: u32 = 30;
 const FRAME: Duration = Duration::from_nanos(1_000_000_000 / FPS as u64);
@@ -54,7 +58,7 @@ impl Recording {
         })
     }
 
-    pub fn start(&mut self) -> Result<RecordingProgress, String> {
+    pub fn start(&mut self, options: RecordingOptions) -> Result<RecordingProgress, String> {
         let status = self.progress();
         if status.started {
             return Ok(status);
@@ -73,13 +77,21 @@ impl Recording {
                     let result: Result<(), String> = (|| {
                         let _runtime =
                             MediaRuntime::start().map_err(|e| format!("无法启动视频编码：{e}"))?;
-                        let encoder =
-                            Encoder::new(&path, rect.width, rect.height).map_err(|e| {
-                                format!("无法创建 MP4 编码器，请确认系统已安装媒体功能：{e}")
-                            })?;
+                        let encoder = Encoder::new(&path, rect.width, rect.height, options.audio)
+                            .map_err(|e| {
+                            format!("无法创建 MP4 编码器，请确认系统已安装媒体功能：{e}")
+                        })?;
+                        let mut audio = if options.audio {
+                            Some(audio::Audio::open()?)
+                        } else {
+                            None
+                        };
                         let mut clock = Timeline::new(Instant::now());
+                        if let Some(audio) = &mut audio {
+                            audio.set_paused(false, Duration::ZERO)?;
+                        }
                         let mut timestamp = 0;
-                        let mut image = platform::capture_region(screen, rect)?;
+                        let mut image = capture_frame(screen, rect, options.cursor)?;
                         // Retain one frame so its duration follows real elapsed time under load.
                         let capture = loop {
                             let command = if clock.paused() {
@@ -97,6 +109,16 @@ impl Recording {
                             let now = Instant::now();
                             let elapsed = clock.elapsed(now);
                             let next_time = elapsed.as_nanos() / 100;
+                            if !clock.paused() {
+                                if let Some(audio) = &mut audio {
+                                    let result = audio
+                                        .collect(elapsed, false)
+                                        .and_then(|chunk| encoder.write_audio(&chunk));
+                                    if let Err(error) = result {
+                                        break Err(error);
+                                    }
+                                }
+                            }
                             if !clock.paused() && next_time > timestamp as u128 {
                                 if let Err(e) =
                                     encoder.write(&image, timestamp, next_time as i64 - timestamp)
@@ -115,6 +137,15 @@ impl Recording {
                                     break Ok(())
                                 }
                                 Ok(Command::Pause(paused, reply)) => {
+                                    if let Some(audio) = &mut audio {
+                                        if let Err(error) = audio
+                                            .set_paused(paused, elapsed)
+                                            .and_then(|chunk| encoder.write_audio(&chunk))
+                                        {
+                                            let _ = reply.send(Err(error.clone()));
+                                            break Err(error);
+                                        }
+                                    }
                                     clock.set_paused(paused, now);
                                     progress.lock().paused = paused;
                                     Some(reply)
@@ -123,7 +154,7 @@ impl Recording {
                             };
                             if !clock.paused() {
                                 let next = if platform::same_screen(screen, scale) {
-                                    platform::capture_region(screen, rect)
+                                    capture_frame(screen, rect, options.cursor)
                                 } else {
                                     Err("显示器布局已变化，录制已停止".into())
                                 };
@@ -141,6 +172,15 @@ impl Recording {
                                 let _ = reply.send(Ok(progress.lock().clone()));
                             }
                         };
+                        let capture = if let Some(audio) = &mut audio {
+                            let final_audio = audio
+                                .finish(Duration::from_nanos(timestamp as u64 * 100))
+                                .and_then(|chunk| encoder.write_audio(&chunk));
+                            capture.and(final_audio)
+                        } else {
+                            capture
+                        };
+                        drop(audio);
                         // Finalize even after capture failure, preserving the frames already encoded.
                         unsafe { encoder.writer.Finalize() }
                             .map_err(|e| format!("无法完成 MP4 文件：{e}"))?;
@@ -221,6 +261,18 @@ impl Drop for Recording {
     }
 }
 
+fn capture_frame(
+    screen: CaptureRect,
+    rect: CaptureRect,
+    include_cursor: bool,
+) -> Result<image::RgbaImage, String> {
+    let mut image = platform::capture_region(screen, rect)?;
+    if include_cursor {
+        cursor::draw(&mut image, screen, rect)?;
+    }
+    Ok(image)
+}
+
 struct MediaRuntime;
 impl MediaRuntime {
     fn start() -> windows::core::Result<Self> {
@@ -245,15 +297,22 @@ impl Drop for MediaRuntime {
 struct Encoder {
     writer: IMFSinkWriter,
     stream: u32,
+    audio_stream: Option<u32>,
     width: u32,
     height: u32,
 }
 impl Encoder {
-    fn new(path: &Path, width: u32, height: u32) -> windows::core::Result<Self> {
-        Self::create(path, width, height, true)
-            .or_else(|_| Self::create(path, width, height, false))
+    fn new(path: &Path, width: u32, height: u32, audio: bool) -> windows::core::Result<Self> {
+        Self::create(path, width, height, true, audio)
+            .or_else(|_| Self::create(path, width, height, false, audio))
     }
-    fn create(path: &Path, width: u32, height: u32, hardware: bool) -> windows::core::Result<Self> {
+    fn create(
+        path: &Path,
+        width: u32,
+        height: u32,
+        hardware: bool,
+        audio: bool,
+    ) -> windows::core::Result<Self> {
         use std::os::windows::ffi::OsStrExt;
         // H.264 needs even dimensions; pad the right/bottom edge without sampling outside the selection.
         let width = (width + 1) & !1;
@@ -277,10 +336,26 @@ impl Encoder {
             let stream = writer.AddStream(&output)?;
             let input = media_type(&MFVideoFormat_RGB32, width, height)?;
             writer.SetInputMediaType(stream, &input, None)?;
+            let audio_stream = if audio {
+                let output = audio_type(&MFAudioFormat_AAC)?;
+                output.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 16_000)?;
+                output.SetUINT32(&MF_MT_AAC_PAYLOAD_TYPE, 0)?;
+                output.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+                let stream = writer.AddStream(&output)?;
+                let input = audio_type(&MFAudioFormat_PCM)?;
+                input.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+                input.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, 4)?;
+                input.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 192_000)?;
+                writer.SetInputMediaType(stream, &input, None)?;
+                Some(stream)
+            } else {
+                None
+            };
             writer.BeginWriting()?;
             Ok(Self {
                 writer,
                 stream,
+                audio_stream,
                 width,
                 height,
             })
@@ -305,12 +380,53 @@ impl Encoder {
             );
             buffer.Unlock()?;
             buffer.SetCurrentLength(length)?;
+            self.write_buffer(&buffer, self.stream, time, duration)
+        }
+    }
+    fn write_buffer(
+        &self,
+        buffer: &IMFMediaBuffer,
+        stream: u32,
+        time: i64,
+        duration: i64,
+    ) -> windows::core::Result<()> {
+        unsafe {
             let sample = MFCreateSample()?;
-            sample.AddBuffer(&buffer)?;
+            sample.AddBuffer(buffer)?;
             sample.SetSampleTime(time)?;
             sample.SetSampleDuration(duration)?;
-            self.writer.WriteSample(self.stream, &sample)
+            self.writer.WriteSample(stream, &sample)
         }
+    }
+    fn write_audio(&self, chunk: &audio::Chunk) -> Result<(), String> {
+        if chunk.bytes.is_empty() {
+            return Ok(());
+        }
+        let stream = self.audio_stream.ok_or("视频未配置音轨")?;
+        let result = (|| -> windows::core::Result<()> {
+            unsafe {
+                let buffer = MFCreateMemoryBuffer(chunk.bytes.len() as u32)?;
+                let mut data = std::ptr::null_mut();
+                buffer.Lock(&mut data, None, None)?;
+                std::ptr::copy_nonoverlapping(chunk.bytes.as_ptr(), data, chunk.bytes.len());
+                buffer.Unlock()?;
+                buffer.SetCurrentLength(chunk.bytes.len() as u32)?;
+                let start = (chunk.start * 10_000_000 / 48_000) as i64;
+                let end = (chunk.end * 10_000_000 / 48_000) as i64;
+                self.write_buffer(&buffer, stream, start, end - start)
+            }
+        })();
+        result.map_err(|e| format!("无法写入音频：{e}"))
+    }
+}
+fn audio_type(format: &GUID) -> windows::core::Result<IMFMediaType> {
+    unsafe {
+        let media = MFCreateMediaType()?;
+        media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
+        media.SetGUID(&MF_MT_SUBTYPE, format)?;
+        media.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, 2)?;
+        media.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, 48_000)?;
+        Ok(media)
     }
 }
 fn media_type(format: &GUID, width: u32, height: u32) -> windows::core::Result<IMFMediaType> {
@@ -372,7 +488,8 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("test.mp4");
         let _runtime = MediaRuntime::start().unwrap();
-        let encoder = Encoder::new(&path, 63, 63).unwrap();
+        let encoder = Encoder::new(&path, 63, 63, false).unwrap();
+        assert!(encoder.audio_stream.is_none());
         let frame = image::RgbaImage::from_pixel(63, 63, image::Rgba([255, 0, 0, 255]));
         let duration = 10_000_000 / i64::from(FPS);
         encoder.write(&frame, 0, duration).unwrap();
@@ -383,6 +500,34 @@ mod tests {
         assert_eq!(&bytes[4..8], b"ftyp");
         assert!(bytes.windows(4).any(|box_type| box_type == b"moov"));
         assert!(bytes.windows(4).any(|box_type| box_type == b"mdat"));
+    }
+    #[test]
+    fn writes_an_aac_audio_track_alongside_video() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audio.mp4");
+        let _runtime = MediaRuntime::start().unwrap();
+        let encoder = Encoder::new(&path, 64, 64, true).unwrap();
+        assert!(encoder.audio_stream.is_some());
+        let frame = image::RgbaImage::from_pixel(64, 64, image::Rgba([20, 40, 60, 255]));
+        for index in 0..3_u64 {
+            let start = index * 1600;
+            let end = start + 1600;
+            let time = (start * 10_000_000 / 48_000) as i64;
+            let duration = (end * 10_000_000 / 48_000) as i64 - time;
+            encoder.write(&frame, time, duration).unwrap();
+            encoder
+                .write_audio(&audio::Chunk {
+                    bytes: vec![0; 1600 * 4],
+                    start,
+                    end,
+                })
+                .unwrap();
+        }
+        unsafe { encoder.writer.Finalize() }.unwrap();
+        drop(encoder);
+        let bytes = std::fs::read(path).unwrap();
+        assert!(bytes.windows(4).any(|value| value == b"soun"));
+        assert!(bytes.windows(4).any(|value| value == b"mp4a"));
     }
     #[test]
     fn padded_bottom_row_is_black_and_captured_pixels_are_opaque() {

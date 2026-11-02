@@ -233,9 +233,9 @@ pub async fn capture_record_ready(app: AppHandle, window: WebviewWindow) -> Resu
     )
 }
 #[tauri::command]
-pub async fn capture_record_start(app: AppHandle, window: WebviewWindow) -> Result<RecordingProgress, String> {
+pub async fn capture_record_start(app: AppHandle, window: WebviewWindow, options: RecordingOptions) -> Result<RecordingProgress, String> {
     desktop_call!(
-        tauri::async_runtime::spawn_blocking(move || desktop::record_start(&app, &window))
+        tauri::async_runtime::spawn_blocking(move || desktop::record_start(&app, &window, options))
             .await
             .map_err(|e| e.to_string())?
     )

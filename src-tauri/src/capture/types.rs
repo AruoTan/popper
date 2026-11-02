@@ -524,3 +524,10 @@ pub struct RecordingProgress {
     pub stopped: bool,
     pub error: Option<String>,
 }
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RecordingOptions {
+    pub audio: bool,
+    pub cursor: bool,
+}

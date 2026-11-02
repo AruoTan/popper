@@ -408,7 +408,7 @@ export function CaptureApp(): JSX.Element {
       {selectedId && <button title="删除标注" aria-label="删除标注" disabled={busy} onClick={() => { setHistory(commit(history, history.present.filter((item) => item.id !== selectedId))); setSelectedId(null); }}><Trash2 size={16} /></button>}
       <span className="capture-divider" />
       <button title={history.present.length ? '已有标注，无法开始滚动截图' : '滚动截图'} aria-label="滚动截图" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 96} onClick={() => void beginLive('scroll')}><ScrollCaptureIcon /></button>
-      <button title={history.present.length ? '已有标注，无法开始区域录屏' : '区域录屏（无音频）'} aria-label="区域录屏" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 32} onClick={() => void beginLive('record')}><Video size={16} /></button>
+      <button title={history.present.length ? '已有标注，无法开始区域录屏' : '区域录屏'} aria-label="区域录屏" disabled={busy || history.present.length > 0 || selection.width < 32 || selection.height < 32} onClick={() => void beginLive('record')}><Video size={16} /></button>
       <button title="保存 Ctrl+S" aria-label="保存 PNG" disabled={busy} onClick={() => void output('file')}><Download size={16} /></button>
       <button title="贴到屏幕 Ctrl+T" aria-label="创建贴图" disabled={busy} onClick={() => void output('pin')}><Pin size={16} /></button>
       <button title="问 AI" aria-label="问 AI" disabled={busy} onClick={() => void output('ask')}><MessageSquare size={16} /></button>

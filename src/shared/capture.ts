@@ -73,3 +73,5 @@ export type PinToolbarAction =
 
 export interface RecordingSession { selection: CaptureRect; toolbar: CaptureRect }
 export interface RecordingProgress { started: boolean; paused: boolean; elapsedMs: number; stopped: boolean; error: string | null }
+
+export interface RecordingOptions { audio: boolean; cursor: boolean }

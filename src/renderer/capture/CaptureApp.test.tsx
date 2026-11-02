@@ -505,6 +505,7 @@ describe('scroll capture integration', () => {
   });
   it('opens region recording as a second stage and keeps it alive on blur', async () => {
     const view = await selected();
+    expect(view.getByLabelText('区域录屏')).toHaveAttribute('title', '区域录屏');
     fireEvent.click(view.getByLabelText('区域录屏'));
     await waitFor(() => expect(view.getByRole('toolbar', { name: '区域录屏操作' })).toBeInTheDocument());
     expect(invoke).toHaveBeenCalledWith('capture_record_begin', { rect, version: 1 });

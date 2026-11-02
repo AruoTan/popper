@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type JSX } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Download, Pause, Play, Square, X } from 'lucide-react';
-import type { CaptureRect, RecordingProgress, RecordingSession } from '../../shared/capture';
+import { Download, Pause, Play, Square, X, Mic, MicOff, MousePointer2 } from 'lucide-react';
+import type { CaptureRect, RecordingProgress, RecordingSession, RecordingOptions } from '../../shared/capture';
 import { getErrorMessage } from '../lib/errors';
 
 type Operation = 'start' | 'pause' | 'stop' | 'save';
@@ -11,6 +11,7 @@ export function RegionRecording({ layout, screen, onCancel }: {
   onCancel: () => void;
 }): JSX.Element {
   const [progress, setProgress] = useState<RecordingProgress>({ elapsedMs: 0, started: false, paused: false, stopped: false, error: null });
+  const [options, setOptions] = useState<RecordingOptions>({ audio: false, cursor: false });
   const [busy, setBusy] = useState<Operation | null>(null), [error, setError] = useState(''), [statusError, setStatusError] = useState('');
   const operation = useRef<Operation | null>(null), generation = useRef(0);
   const mounted = useRef(true), cancelled = useRef(false), stopRef = useRef<() => void>(() => {});
@@ -44,7 +45,7 @@ export function RegionRecording({ layout, screen, onCancel }: {
     const current = (): boolean => mounted.current && !cancelled.current;
     try {
       if (action === 'start') {
-        const next = await invoke<RecordingProgress>('capture_record_start');
+        const next = await invoke<RecordingProgress>('capture_record_start', { options });
         if (current()) setProgress(next);
       } else if (action === 'pause') {
         const next = await invoke<RecordingProgress>('capture_record_pause', { paused: !progress.paused });
@@ -74,7 +75,9 @@ export function RegionRecording({ layout, screen, onCancel }: {
     <div className="capture-toolbar-surface capture-toolbar capture-record-toolbar" role="toolbar" aria-label="区域录屏操作" data-capture-ui style={position(layout.toolbar)}>
       <span className="capture-record-indicator" data-paused={!progress.started || progress.paused || progress.stopped} aria-hidden="true" />
       <span className="capture-record-time" role="timer" aria-label="录制时长">{Math.floor(seconds / 60).toString().padStart(2, '0')}:{(seconds % 60).toString().padStart(2, '0')}</span>
-      <span className="capture-record-status" role={message ? 'alert' : 'status'} title={message || (progress.started ? '无音频 · Esc 停止并保留录制' : '无音频 · 点击开始录制 · Esc 退出')}>{message || status}</span>
+      <span className="capture-record-status" role={message ? 'alert' : 'status'} title={message || (progress.started ? 'Esc 停止并保留录制' : '点击开始录制 · Esc 退出')}>{message || status}</span>
+      <button aria-label="录音开关" aria-pressed={options.audio} title={`${options.audio ? '录音已开启：系统声音和麦克风' : '录音已关闭'} · 开始前设置`} disabled={busy !== null || progress.started} onClick={() => setOptions({ ...options, audio: !options.audio })}>{options.audio ? <Mic size={16} /> : <MicOff size={16} />}</button>
+      <button aria-label="鼠标开关" aria-pressed={options.cursor} title={`${options.cursor ? '录制鼠标已开启' : '录制鼠标已关闭'} · 开始前设置`} disabled={busy !== null || progress.started} onClick={() => setOptions({ ...options, cursor: !options.cursor })}><MousePointer2 size={16} /></button>
       {!progress.stopped && <button aria-label={controlLabel} title={controlLabel} disabled={busy !== null} onClick={() => void run(progress.started ? 'pause' : 'start')}>{!progress.started || progress.paused ? <Play size={16} /> : <Pause size={16} />}{!progress.started ? '开始' : progress.paused ? '继续' : '暂停'}</button>}
       <button aria-label={progress.stopped ? '保存 MP4' : '停止并保存'} title={!progress.started ? '开始录制后可完成并保存' : progress.stopped ? '保存 MP4' : '停止并保存 · Esc 仅停止'} disabled={busy !== null || !progress.started} onClick={() => void run('save')}>{progress.stopped ? <Download size={16} /> : <Square size={16} />}{progress.stopped ? '保存' : '完成'}</button>
       <button aria-label="丢弃录制" title={progress.started ? '丢弃本次录制' : '退出录屏准备'} onClick={cancel}><X size={16} /></button>
