@@ -1,9 +1,10 @@
 //! Recording shares the scrolling capture cutout and cancellation lifetime.
 use super::{ensure_session, manager, platform, scrolling::register_escape, session_id};
 use crate::capture::{
-    recording::Recording, CaptureRect, RecordingOptions, RecordingProgress, ScrollLayout,
+    recording::Recording, CaptureRect, RecordingOptions, RecordingProgress, RecordingSurface,
+    ScrollLayout,
 };
-use tauri::{AppHandle, WebviewWindow};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
 use uuid::Uuid;
 
 pub fn record_begin(
@@ -143,7 +144,9 @@ pub fn record_status(app: &AppHandle, window: &WebviewWindow) -> Result<Recordin
     let state = manager(app);
     let mut slot = state.session.lock();
     let session = ensure_session(&mut slot, session_id(window)?)?;
-    Ok(session.recording.as_ref().ok_or("录屏尚未开始")?.progress())
+    let mut progress = session.recording.as_ref().ok_or("录屏尚未开始")?.progress();
+    progress.surface = session.recording_surface.clone();
+    Ok(progress)
 }
 pub fn record_pause(
     app: &AppHandle,
@@ -170,7 +173,9 @@ pub fn record_stop(app: &AppHandle, window: &WebviewWindow) -> Result<RecordingP
         return Err("请先开始录制".into());
     }
     recording.stop()?;
-    Ok(recording.progress())
+    let mut progress = recording.progress();
+    progress.surface = session.recording_surface.clone();
+    Ok(progress)
 }
 pub fn record_save(app: &AppHandle, window: &WebviewWindow) -> Result<bool, String> {
     let state = manager(app);
@@ -211,4 +216,88 @@ pub fn record_save(app: &AppHandle, window: &WebviewWindow) -> Result<bool, Stri
     }
     super::finish(app, true)?;
     Ok(true)
+}
+
+pub(super) fn interrupt(app: &AppHandle, id: &str, message: &str) -> Result<(), String> {
+    let state = manager(app);
+    let _operation = state.operation.lock();
+    let retained = {
+        let mut slot = state.session.lock();
+        let session = ensure_session(&mut slot, id)?;
+        if let Some(recording) = session
+            .recording
+            .as_mut()
+            .filter(|recording| recording.progress().started)
+        {
+            recording.interrupt(message);
+            true
+        } else {
+            false
+        }
+    };
+    if !retained {
+        return super::finish(app, true);
+    }
+    let window = app
+        .get_webview_window(&format!("{}{id}", super::CAPTURE_PREFIX))
+        .ok_or("录屏窗口不可用，视频仍已保留")?;
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+        .ok_or("暂无可用显示器，视频仍已保留")?;
+    let screen = CaptureRect {
+        x: monitor.position().x,
+        y: monitor.position().y,
+        width: monitor.size().width,
+        height: monitor.size().height,
+    };
+    let scale = monitor.scale_factor();
+    let layout = recovery_layout(screen, scale);
+    platform::prepare_scroll_frame(app, &window)?;
+    window
+        .set_position(PhysicalPosition::new(screen.x, screen.y))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_size(PhysicalSize::new(screen.width, screen.height))
+        .map_err(|e| e.to_string())?;
+    platform::record_surface(&window, screen, &layout, scale)?;
+    {
+        let mut slot = state.session.lock();
+        let session = ensure_session(&mut slot, id)?;
+        session.meta.screen = screen;
+        session.meta.scale = scale;
+        session.recording_surface = Some(RecordingSurface { screen, layout });
+    }
+    window.show().map_err(|e| e.to_string())
+}
+
+fn recovery_layout(screen: CaptureRect, scale: f64) -> ScrollLayout {
+    let mut layout = recording_layout(screen, scale, CaptureRect::default());
+    layout.toolbar.x = (screen.width.saturating_sub(layout.toolbar.width) / 2) as i32;
+    layout.toolbar.y = ((12.0 * scale).round() as u32)
+        .min(screen.height.saturating_sub(layout.toolbar.height)) as i32;
+    layout.panel = layout.toolbar;
+    layout
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recovery_controls_fit_a_remaining_display_without_the_old_selection() {
+        for (width, height, scale) in [(1920, 1080, 1.0), (800, 600, 2.0), (1080, 1920, 1.5)] {
+            let screen = CaptureRect {
+                x: -1920,
+                y: -100,
+                width,
+                height,
+            };
+            let layout = recovery_layout(screen, scale);
+            assert!(layout.toolbar.valid_within(width, height));
+            assert_eq!(layout.selection, CaptureRect::default());
+            assert_eq!(layout.toolbar, layout.panel);
+        }
+    }
 }

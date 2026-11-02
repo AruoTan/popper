@@ -240,6 +240,16 @@ impl Recording {
             .recv_timeout(Duration::from_secs(3))
             .map_err(|_| "切换录屏暂停状态超时，请停止并保存".to_owned())?
     }
+    pub fn interrupt(&mut self, message: &str) {
+        let _ = self.stop();
+        let mut progress = self.progress.lock();
+        progress.stopped = true;
+        progress.paused = false;
+        if progress.error.is_none() {
+            progress.error = Some(message.to_owned());
+        }
+    }
+
     pub fn stop(&mut self) -> Result<(), String> {
         if let Some(stop) = &self.stop {
             let _ = stop.send(Command::Stop);
@@ -483,6 +493,31 @@ mod tests {
         drop(recording);
         assert!(!directory.exists());
     }
+    #[test]
+    fn interruption_retains_the_video_until_explicit_session_cleanup() {
+        let screen = CaptureRect {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+        };
+        let mut recording = Recording::prepare(screen, 1.0, screen).unwrap();
+        std::fs::write(recording.path(), b"retained recording").unwrap();
+        recording.progress.lock().started = true;
+        recording.interrupt("Display disconnected");
+        let path = recording.path();
+        assert_eq!(std::fs::read(&path).unwrap(), b"retained recording");
+        assert!(recording.progress().stopped);
+        assert_eq!(
+            recording.progress().error.as_deref(),
+            Some("Display disconnected")
+        );
+        recording.stop().unwrap();
+        assert!(path.exists());
+        drop(recording);
+        assert!(!path.exists());
+    }
+
     #[test]
     fn writes_a_finalized_mp4_with_the_system_encoder() {
         let directory = tempfile::tempdir().unwrap();

@@ -22,15 +22,14 @@ export function RegionRecording({ layout, screen, onCancel }: {
     const poll = async (): Promise<void> => {
       if (!alive || cancelled.current) return;
       const revision = generation.current;
-      let stopped = false;
       try {
         const next = await invoke<RecordingProgress>('capture_record_status');
         if (!alive || cancelled.current) return;
-        if (!operation.current && revision === generation.current) { setProgress(next); setStatusError(''); stopped = next.stopped; }
+        if (!operation.current && revision === generation.current) { setProgress(next); setStatusError(''); }
       } catch (e) {
         if (alive && !cancelled.current && !operation.current && revision === generation.current) setStatusError(getErrorMessage(e, '无法获取录屏状态，请停止并保存'));
       }
-      if (alive && !cancelled.current && !stopped) timer = setTimeout(() => void poll(), 250);
+      if (alive && !cancelled.current) timer = setTimeout(() => void poll(), 250);
     };
     const keyDown = (event: KeyboardEvent): void => {
       if (event.key === 'Escape' && !event.repeat) { event.preventDefault(); stopRef.current(); }
@@ -64,15 +63,16 @@ export function RegionRecording({ layout, screen, onCancel }: {
     if (current()) { operation.current = null; setBusy(null); }
   };
   stopRef.current = (): void => { if (!progress.started) cancel(); else if (!progress.stopped) void run('stop'); };
-  const position = (rect: CaptureRect): CSSProperties => ({ left: `${rect.x / screen.width * 100}%`, top: `${rect.y / screen.height * 100}%`, width: `${rect.width / screen.width * 100}%`, height: `${rect.height / screen.height * 100}%` });
+  const surface = progress.surface ?? { layout, screen };
+  const position = (rect: CaptureRect): CSSProperties => ({ left: `${rect.x / surface.screen.width * 100}%`, top: `${rect.y / surface.screen.height * 100}%`, width: `${rect.width / surface.screen.width * 100}%`, height: `${rect.height / surface.screen.height * 100}%` });
   const seconds = Math.floor(progress.elapsedMs / 1000);
   const message = error || progress.error || statusError;
   const controlLabel = !progress.started ? '开始录制' : progress.paused ? '继续录制' : '暂停录制';
   const status = busy === 'stop' || (busy === 'save' && !progress.stopped) ? '正在停止…'
     : busy === 'start' ? '正在开始…' : busy === 'save' ? '正在保存…' : !progress.started ? '准备就绪' : progress.stopped ? '已停止，可保存' : progress.paused ? '已暂停' : '录制中';
   return <section className="capture-record-overlay" aria-label="区域录屏控制" aria-busy={busy !== null}>
-    <div className="capture-scroll-border capture-record-border" data-paused={!progress.started || progress.paused || progress.stopped} style={position(layout.selection)} />
-    <div className="capture-toolbar-surface capture-toolbar capture-record-toolbar" role="toolbar" aria-label="区域录屏操作" data-capture-ui style={position(layout.toolbar)}>
+    {surface.layout.selection.width > 0 && surface.layout.selection.height > 0 && <div className="capture-scroll-border capture-record-border" data-paused={!progress.started || progress.paused || progress.stopped} style={position(surface.layout.selection)} />}
+    <div className="capture-toolbar-surface capture-toolbar capture-record-toolbar" role="toolbar" aria-label="区域录屏操作" data-capture-ui style={position(surface.layout.toolbar)}>
       <span className="capture-record-indicator" data-paused={!progress.started || progress.paused || progress.stopped} aria-hidden="true" />
       <span className="capture-record-time" role="timer" aria-label="录制时长">{Math.floor(seconds / 60).toString().padStart(2, '0')}:{(seconds % 60).toString().padStart(2, '0')}</span>
       <span className="capture-record-status" role={message ? 'alert' : 'status'} title={message || (progress.started ? 'Esc 停止并保留录制' : '点击开始录制 · Esc 退出')}>{message || status}</span>

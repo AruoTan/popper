@@ -523,6 +523,15 @@ pub struct RecordingProgress {
     pub elapsed_ms: u64,
     pub stopped: bool,
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surface: Option<RecordingSurface>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSurface {
+    pub screen: CaptureRect,
+    pub layout: ScrollLayout,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]

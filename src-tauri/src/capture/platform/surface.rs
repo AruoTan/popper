@@ -155,6 +155,33 @@ mod tests {
         assert!(unsafe { PtInRegion(scrolling.0, 50, 50) }.as_bool());
     }
     #[test]
+    fn recovered_recording_exposes_only_its_save_controls() {
+        let screen = CaptureRect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        };
+        let toolbar = CaptureRect {
+            x: 160,
+            y: 12,
+            width: 480,
+            height: 48,
+        };
+        let layout = ScrollLayout {
+            selection: CaptureRect::default(),
+            panel: toolbar,
+            toolbar,
+        };
+        let region = surface_region(screen, &layout, Some(2)).unwrap();
+        unsafe {
+            assert!(PtInRegion(region.0, 400, 30).as_bool());
+            assert!(!PtInRegion(region.0, 400, 300).as_bool());
+            assert!(!PtInRegion(region.0, 0, 0).as_bool());
+        }
+    }
+
+    #[test]
     fn full_screen_recording_keeps_a_visible_inner_border() {
         let screen = CaptureRect {
             x: 0,

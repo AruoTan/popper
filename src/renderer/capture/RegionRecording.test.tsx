@@ -63,6 +63,39 @@ describe('region recording controls', () => {
     expect(view.getByLabelText('保存 MP4')).toBeEnabled();
     view.unmount();
   });
+  it('keeps saving available on a remaining display after recording is interrupted', async () => {
+    const surface = { screen: { x: 0, y: 0, width: 800, height: 600 }, layout: {
+      selection: { x: 0, y: 0, width: 0, height: 0 }, toolbar: { x: 160, y: 12, width: 480, height: 48 },
+    } };
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === 'capture_record_status' || command === 'capture_record_stop') return { ...stopped, error: '显示器布局已变化，录制已停止，请保存', surface };
+      if (command === 'capture_record_save') return false;
+    });
+    const cancel = vi.fn();
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={cancel} />);
+    await waitFor(() => expect(view.getByLabelText('保存 MP4')).toBeEnabled());
+    expect(view.getByRole('toolbar')).toHaveStyle({ left: '20%', width: '60%', top: '2%' });
+    expect(view.container.querySelector('.capture-record-border')).toBeNull();
+    fireEvent.click(view.getByLabelText('保存 MP4'));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('capture_record_save'));
+    expect(cancel).not.toHaveBeenCalled();
+    expect(view.getByLabelText('保存 MP4')).toBeEnabled();
+    view.unmount();
+  });
+
+  it('receives recovery placement even when the video stopped before the display check', async () => {
+    let polls = 0;
+    const surface = { screen: { x: 0, y: 0, width: 800, height: 600 }, layout: {
+      selection: { x: 0, y: 0, width: 0, height: 0 }, toolbar: { x: 160, y: 12, width: 480, height: 48 },
+    } };
+    vi.mocked(invoke).mockImplementation(async () => ++polls === 1 ? stopped : { ...stopped, surface });
+    const view = render(<RegionRecording layout={layout} screen={screen} onCancel={vi.fn()} />);
+    await waitFor(() => expect(view.getByLabelText('保存 MP4')).toBeEnabled());
+    await waitFor(() => expect(view.getByRole('toolbar')).toHaveStyle({ left: '20%', width: '60%' }));
+    expect(polls).toBeGreaterThan(1);
+    view.unmount();
+  });
+
   it('does not open a save dialog after unmount while stopping', async () => {
     let complete!: (value: typeof stopped) => void;
     vi.mocked(invoke).mockImplementation(async (command) => {

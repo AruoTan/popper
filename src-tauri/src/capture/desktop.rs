@@ -52,6 +52,7 @@ struct Session {
     scroll: Option<scrolling::ScrollSession>,
     scroll_completed: bool,
     recording: Option<super::recording::Recording>,
+    recording_surface: Option<super::RecordingSurface>,
     scroll_escape: Option<scrolling::ScrollEscape>,
     hidden_until: std::time::Instant,
     pin_annotations: Vec<super::CaptureAnnotation>,
@@ -353,6 +354,7 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
         scroll: None,
         scroll_completed: false,
         recording: None,
+        recording_surface: None,
         scroll_escape: None,
         hidden_until: std::time::Instant::now() + Duration::from_secs(10),
         pin_annotations: Vec::new(),
@@ -407,8 +409,18 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
                 .lock()
                 .as_ref()
                 .filter(|s| s.meta.id == id)
-                .map(|s| (s.hidden_until, s.presented));
-            let Some((hidden_until, presented)) = pending else {
+                .map(|s| {
+                    (
+                        s.hidden_until,
+                        s.presented,
+                        s.meta.screen,
+                        s.meta.scale,
+                        s.recording
+                            .as_ref()
+                            .is_some_and(|recording| recording.progress().stopped),
+                    )
+                });
+            let Some((hidden_until, presented, screen, scale, recording_stopped)) = pending else {
                 break;
             };
             let ready = handle
@@ -416,15 +428,20 @@ fn start_inner(app: &AppHandle) -> Result<(), String> {
                 .is_some_and(|window| window.is_visible().unwrap_or(false));
             let geometry_ok = platform::same_screen(screen, scale);
             if !geometry_ok
-                || (presented && platform::foreground() == 0)
+                || (presented && !recording_stopped && platform::foreground() == 0)
                 || (!ready && std::time::Instant::now() >= hidden_until)
             {
                 let app = handle.clone();
                 let id = id.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    let _ = cancel_id(&app, &id);
-                });
-                break;
+                let reason = if geometry_ok {
+                    "录制已中断，视频已保留，请保存"
+                } else {
+                    "显示器布局已变化，录制已停止，请保存"
+                };
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    recording::interrupt(&app, &id, reason)
+                })
+                .await;
             }
         }
     });

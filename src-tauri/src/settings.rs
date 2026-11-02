@@ -189,53 +189,6 @@ impl SettingsRepository {
         self.get_public_settings()
     }
 
-    /// Replaces all non-secret settings with a renderer-provided public copy.
-    /// `keyConfigured` values are intentionally ignored.
-    pub fn replace_public(&self, public: PublicSettings) -> Result<PublicSettings, SettingsError> {
-        self.transact_with_provider_cleanup(|settings| {
-            let fixed_ask = settings
-                .actions
-                .iter()
-                .find(|action| action.kind == ActionKind::Ask)
-                .cloned();
-            let mut actions = public.actions;
-            actions.retain(|action| action.kind != ActionKind::Ask);
-            let providers = public
-                .providers
-                .into_iter()
-                .map(|provider| ProviderConfig {
-                    id: provider.id,
-                    name: provider.name,
-                    kind: provider.kind,
-                    dsh_workspace: provider.dsh_workspace,
-                    enabled: provider.enabled,
-                    base_url: provider.base_url,
-                    models: provider.models,
-                })
-                .collect::<Vec<_>>();
-            let mut fixed_ask = fixed_ask;
-            reconcile_fixed_ask_route(&mut fixed_ask);
-            if let Some(fixed_ask) = fixed_ask {
-                actions.push(fixed_ask);
-            }
-            *settings = AppSettings {
-                version: SETTINGS_VERSION,
-                tray_enabled: public.tray_enabled,
-                quick_ask_shortcut: public.quick_ask_shortcut,
-                capture: public.capture,
-                default_ai: public.default_ai,
-                locale: public.locale,
-                translate: public.translate,
-                result: public.result,
-                filter: public.filter,
-                providers,
-                actions,
-            };
-            Ok(())
-        })?;
-        self.get_public_settings()
-    }
-
     pub fn create_provider(
         &self,
         input: CreateProviderInput,
@@ -918,9 +871,15 @@ mod tests {
         drop(repository);
         let reopened = SettingsRepository::with_secret_store(&path, secrets).unwrap();
         assert!(!reopened.get_settings().tray_enabled);
-        let mut public = reopened.get_public_settings().unwrap();
-        public.tray_enabled = true;
-        assert!(reopened.replace_public(public).unwrap().tray_enabled);
+        assert!(
+            reopened
+                .update(SettingsUpdate {
+                    tray_enabled: Some(true),
+                    ..Default::default()
+                })
+                .unwrap()
+                .tray_enabled
+        );
     }
 
     #[test]

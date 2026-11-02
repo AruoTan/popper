@@ -16,7 +16,9 @@ pub struct Attachment {
     pub data: String,
 }
 
-pub fn validate_attachments(attachments: &[Attachment]) -> Result<(), String> {
+pub fn validate_attachments<'a>(
+    attachments: impl IntoIterator<Item = &'a Attachment>,
+) -> Result<(), String> {
     let mut total = 0usize;
     let mut text_chars = 0usize;
     for attachment in attachments {
@@ -54,13 +56,13 @@ pub fn validate_attachments(attachments: &[Attachment]) -> Result<(), String> {
                     ("file", mime) => {
                         mime.len() <= 128
                             && mime.split_once('/').is_some_and(|(kind, subtype)| {
-                                !kind.is_empty()
-                                    && !subtype.is_empty()
-                                    && mime.bytes().all(|byte| {
-                                        byte.is_ascii_alphanumeric()
-                                            || b"/!#                    _ => false,^_.+-"
-                                                .contains(&byte)
-                                    })
+                                [kind, subtype].iter().all(|part| {
+                                    !part.is_empty()
+                                        && part.bytes().all(|byte| {
+                                            byte.is_ascii_alphanumeric()
+                                                || b"!#$%&'*+-.^_`|~".contains(&byte)
+                                        })
+                                })
                             })
                     }
                     _ => false,
@@ -367,6 +369,35 @@ mod tests {
             data: STANDARD.encode(b"%PDF-1.7"),
         };
         assert!(validate_openai_attachments(&[pdf]).is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_file_media_types() {
+        let mut file = Attachment {
+            name: "data.bin".into(),
+            kind: "file".into(),
+            mime: String::new(),
+            data: STANDARD.encode(b"data"),
+        };
+        for mime in [
+            "application/has space=>",
+            "application/a/b",
+            "/binary",
+            "application/",
+            "application/binary;param=x",
+            "application/binary\r\nheader: value",
+        ] {
+            file.mime = mime.into();
+            assert!(validate_attachments([&file]).is_err(), "{mime}");
+        }
+        for mime in [
+            "application/octet-stream",
+            "application/vnd.example+zip",
+            "application/x-custom_token",
+        ] {
+            file.mime = mime.into();
+            assert!(validate_attachments([&file]).is_ok(), "{mime}");
+        }
     }
 
     #[test]

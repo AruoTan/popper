@@ -1,2 +1,6 @@
 allowBuilds:
   esbuild: true
+
+# Keep the Markdown math integrations on the patched renderer too.
+overrides:
+  katex: 0.18.2

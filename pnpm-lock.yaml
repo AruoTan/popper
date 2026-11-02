@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  katex: 0.18.2
+
 importers:
 
   .:
@@ -21,8 +24,8 @@ importers:
         specifier: 2.11.1
         version: 2.11.1
       katex:
-        specifier: ^0.16.47
-        version: 0.16.47
+        specifier: 0.18.2
+        version: 0.18.2
       lucide-react:
         specifier: 0.468.0
         version: 0.468.0(react@19.2.0)
@@ -45,8 +48,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       zod:
-        specifier: 4.1.12
-        version: 4.1.12
+        specifier: 4.6.6
+        version: 4.6.6
     devDependencies:
       '@tauri-apps/cli':
         specifier: 2.11.4
@@ -1035,8 +1038,8 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
-  katex@0.16.47:
-    resolution: {integrity: sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg==}
+  katex@0.18.2:
+    resolution: {integrity: sha512-3snve4y0SXTMequLim1FMiPvLGElySam0blN5xQZBqEY3lOJz1TnuaaiugnBZBqHzlSAGmFTYL7MCQkORuLKCA==}
     hasBin: true
 
   longest-streak@3.1.0:
@@ -1570,8 +1573,8 @@ packages:
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
-  zod@4.1.12:
-    resolution: {integrity: sha512-JInaHOamG8pt5+Ey8kGmdcAcg3OL9reK8ltczgHTAwNhMys/6ThXHityHxVV2p3fkw/c+MAvBHFVYHFZDmjMCQ==}
+  zod@4.6.6:
+    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -2449,7 +2452,7 @@ snapshots:
 
   json5@2.2.3: {}
 
-  katex@0.16.47:
+  katex@0.18.2:
     dependencies:
       commander: 8.3.0
 
@@ -2721,7 +2724,7 @@ snapshots:
     dependencies:
       '@types/katex': 0.16.8
       devlop: 1.1.0
-      katex: 0.16.47
+      katex: 0.18.2
       micromark-factory-space: 2.0.1
       micromark-util-character: 2.1.1
       micromark-util-symbol: 2.0.1
@@ -2931,7 +2934,7 @@ snapshots:
       '@types/katex': 0.16.8
       hast-util-from-html-isomorphic: 2.0.0
       hast-util-to-text: 4.0.2
-      katex: 0.16.47
+      katex: 0.18.2
       unist-util-visit-parents: 6.0.2
       vfile: 6.0.3
 
@@ -3234,6 +3237,6 @@ snapshots:
 
   yallist@3.1.1: {}
 
-  zod@4.1.12: {}
+  zod@4.6.6: {}
 
   zwitch@2.0.4: {}

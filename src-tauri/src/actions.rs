@@ -17,7 +17,7 @@ pub use dictionary_session::TranslationSubmission;
 use session::{
     CancelTransition, DeltaTransition, EmitOutcome, FlusherLease, InitialReservationInput,
     RequestTicket, Reservation, SessionError, SessionFailure, SessionTable, TerminalKind,
-    TerminalTransition, TimerDirective, TransitionResult,
+    TerminalTransition, TransitionResult,
 };
 
 use crate::{
@@ -521,18 +521,16 @@ impl ActionServiceState {
         &mut self,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> Result<DeltaTransition, SessionError> {
-        self.sessions.accept_delta(ticket, delta, now)
+        self.sessions.accept_delta(ticket, delta)
     }
 
     fn submit_thinking_delta(
         &mut self,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> Result<DeltaTransition, SessionError> {
-        self.sessions.accept_thinking_delta(ticket, delta, now)
+        self.sessions.accept_thinking_delta(ticket, delta)
     }
 
     fn reserve_retry(
@@ -583,7 +581,7 @@ impl ActionServiceState {
         request_id: String,
         question: String,
         action_started: tokio::time::Instant,
-    ) -> Result<ActionReservation, SessionError> {
+    ) -> Result<ActionReservation, ActionServiceError> {
         self.reserve_continue_with_attachments(
             session_id,
             request_id,
@@ -600,7 +598,7 @@ impl ActionServiceState {
         question: String,
         attachments: Vec<crate::quick_ask::Attachment>,
         action_started: tokio::time::Instant,
-    ) -> Result<ActionReservation, SessionError> {
+    ) -> Result<ActionReservation, ActionServiceError> {
         let (request, route, committed_messages, ask_system, recover_translation) = {
             let snapshot = self
                 .sessions
@@ -615,6 +613,14 @@ impl ActionServiceState {
                             || (snapshot.action_id == "translate" && matches!(snapshot.status, ActionSnapshotStatus::Error | ActionSnapshotStatus::Cancelled)))
                 })
                 .ok_or(SessionError::Ended)?;
+            crate::quick_ask::validate_attachments(
+                context
+                    .committed_messages
+                    .iter()
+                    .flat_map(|message| &message.attachments)
+                    .chain(&attachments),
+            )
+            .map_err(ActionServiceError::Validation)?;
             (
                 context.frozen_request.clone(),
                 context.route.clone(),
@@ -988,14 +994,7 @@ impl ActionService {
         session_id: &str,
     ) -> Result<bool, ActionServiceError> {
         let transition = self.inner.state.lock().sessions.cancel(session_id)?;
-        let CancelTransition {
-            cancellation,
-            timer,
-        } = transition;
-        debug_assert!(matches!(
-            timer,
-            TimerDirective::None | TimerDirective::Cancel
-        ));
+        let CancelTransition { cancellation } = transition;
         self.start_flusher_if_needed(app, session_id);
         if let Some(cancellation) = cancellation {
             cancellation.cancel();
@@ -1460,7 +1459,6 @@ impl ActionService {
                     return self.classify_transport_failure(prepared, first_failure);
                 }
                 if !self.ticket_is_current(&prepared.ticket) {
-                    self.cleanup_stale_attempt(prepared);
                     return Ok(RequestOutcome::Stale);
                 }
                 if self.ticket_is_cancelled(prepared) {
@@ -1478,7 +1476,6 @@ impl ActionService {
                     "服务商不支持当前的“关闭思考”控制，本次已按服务商默认设置继续生成。",
                 );
                 if !matches!(notice, Ok(TransitionResult::Applied)) {
-                    self.cleanup_stale_attempt(prepared);
                     return Ok(RequestOutcome::Stale);
                 }
                 let fallback = build_fallback_body(&base);
@@ -1503,7 +1500,6 @@ impl ActionService {
         failure: TransportFailure,
     ) -> Result<RequestOutcome, RuntimeFailure> {
         if failure.code == "STALE_TICKET" || !self.ticket_is_current(&prepared.ticket) {
-            self.cleanup_stale_attempt(prepared);
             return Ok(RequestOutcome::Stale);
         }
         if failure.code == "CANCELLED" && self.ticket_is_cancelled(prepared) {
@@ -1557,8 +1553,6 @@ impl ActionService {
     fn ticket_is_cancelled(&self, prepared: &PreparedRequest) -> bool {
         prepared.cancellation.is_cancelled()
     }
-
-    fn cleanup_stale_attempt(&self, _prepared: &PreparedRequest) {}
 
     async fn perform_attempt<R: Runtime>(
         &self,
@@ -1620,20 +1614,13 @@ impl ActionService {
                             .trace
                             .lock()
                             .mark(TransportMarker::FirstContent, now);
-                        let control = self.submit_delta_control(app, &prepared.ticket, delta, now);
+                        let control = self.submit_delta_control(app, &prepared.ticket, delta);
                         if matches!(control, ControlFlow::Continue(())) {
                             prepared.trace.lock().mark_emit_or_queue(now);
                         }
                         control
                     },
-                    |thinking| {
-                        self.submit_thinking_control(
-                            app,
-                            &prepared.ticket,
-                            thinking,
-                            tokio::time::Instant::now(),
-                        )
-                    },
+                    |thinking| self.submit_thinking_control(app, &prepared.ticket, thinking),
                     |message| {
                         let _ =
                             self.submit_notice(app, &prepared.ticket, "DSH_INTERACTION", &message);
@@ -1694,16 +1681,13 @@ impl ActionService {
                 config,
                 |delta| {
                     let now = tokio::time::Instant::now();
-                    let control = self.submit_delta_control(app, &ticket, delta, now);
+                    let control = self.submit_delta_control(app, &ticket, delta);
                     if matches!(control, ControlFlow::Continue(())) {
                         delta_trace.lock().mark_emit_or_queue(now);
                     }
                     control
                 },
-                |thinking| {
-                    let now = tokio::time::Instant::now();
-                    self.submit_thinking_control(app, &ticket, thinking, now)
-                },
+                |thinking| self.submit_thinking_control(app, &ticket, thinking),
                 |marker, at| marker_trace.lock().mark(marker, at),
             )
             .await
@@ -1716,7 +1700,7 @@ impl ActionService {
                 config,
                 |delta| {
                     let now = tokio::time::Instant::now();
-                    let control = self.submit_delta_control(app, &ticket, delta, now);
+                    let control = self.submit_delta_control(app, &ticket, delta);
                     if matches!(control, ControlFlow::Continue(())) {
                         delta_trace.lock().mark_emit_or_queue(now);
                     }
@@ -1724,7 +1708,7 @@ impl ActionService {
                 },
                 |thinking| {
                     let now = tokio::time::Instant::now();
-                    let control = self.submit_thinking_control(app, &ticket, thinking, now);
+                    let control = self.submit_thinking_control(app, &ticket, thinking);
                     if matches!(control, ControlFlow::Continue(())) {
                         delta_trace.lock().mark_emit_or_queue(now);
                     }
@@ -1791,9 +1775,8 @@ impl ActionService {
         app: &AppHandle<R>,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> ControlFlow<()> {
-        if self.submit_delta(app, ticket, delta, now) {
+        if self.submit_delta(app, ticket, delta) {
             ControlFlow::Continue(())
         } else {
             ControlFlow::Break(())
@@ -1805,9 +1788,8 @@ impl ActionService {
         app: &AppHandle<R>,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> ControlFlow<()> {
-        if self.submit_thinking_delta(app, ticket, delta, now) {
+        if self.submit_thinking_delta(app, ticket, delta) {
             ControlFlow::Continue(())
         } else {
             ControlFlow::Break(())
@@ -1819,9 +1801,8 @@ impl ActionService {
         app: &AppHandle<R>,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> bool {
-        let transition = self.inner.state.lock().submit_delta(ticket, delta, now);
+        let transition = self.inner.state.lock().submit_delta(ticket, delta);
         match transition {
             Ok(DeltaTransition::Emitted { .. }) => {
                 self.start_flusher_if_needed(app, &ticket.session_id);
@@ -1837,13 +1818,8 @@ impl ActionService {
         app: &AppHandle<R>,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> bool {
-        let transition = self
-            .inner
-            .state
-            .lock()
-            .submit_thinking_delta(ticket, delta, now);
+        let transition = self.inner.state.lock().submit_thinking_delta(ticket, delta);
         match transition {
             Ok(DeltaTransition::Emitted { .. }) => {
                 self.start_flusher_if_needed(app, &ticket.session_id);
@@ -2122,7 +2098,7 @@ fn resolve_request_config(
             request,
             route,
             last_messages,
-            committed_messages: _,
+            committed_messages,
             options,
         } => {
             validate_conversation_messages(last_messages)?;
@@ -2137,7 +2113,8 @@ fn resolve_request_config(
                 .unwrap_or(route.provider.id.as_str());
             let model_id = options.model_id.as_deref().unwrap_or(route.model.as_str());
             let route = resolve_route(settings, action, provider_id, model_id)?;
-            let messages = if action.kind == ActionKind::Ask {
+            let replay = action.kind != ActionKind::Translate || options.target_language.is_none();
+            let messages = if replay {
                 last_messages.clone()
             } else {
                 let prompt = build_prompt(
@@ -2156,7 +2133,11 @@ fn resolve_request_config(
                 frozen_request: request,
                 route,
                 last_messages: messages,
-                committed_messages: Vec::new(),
+                committed_messages: if replay {
+                    committed_messages.clone()
+                } else {
+                    Vec::new()
+                },
             }
         }
         FrozenPreparationSeed::Continue {
@@ -2392,6 +2373,10 @@ fn validate_conversation_messages(messages: &[ChatMessage]) -> Result<(), Action
             "对话上下文格式无效或轮次过多".to_owned(),
         ));
     }
+    crate::quick_ask::validate_attachments(
+        messages.iter().flat_map(|message| &message.attachments),
+    )
+    .map_err(ActionServiceError::Validation)?;
     let total_chars = messages.iter().fold(0usize, |total, message| {
         total
             .saturating_add(message.content.chars().count())
@@ -3115,7 +3100,7 @@ mod tests {
                 .state
                 .lock()
                 .sessions
-                .accept_delta(ticket, delta.to_owned(), tokio::time::Instant::now())
+                .accept_delta(ticket, delta.to_owned())
                 .unwrap();
         }
 
@@ -3124,11 +3109,12 @@ mod tests {
             ticket: &RequestTicket,
             delta: &str,
         ) -> ControlFlow<()> {
-            match self.inner.state.lock().submit_delta(
-                ticket,
-                delta.to_owned(),
-                tokio::time::Instant::now(),
-            ) {
+            match self
+                .inner
+                .state
+                .lock()
+                .submit_delta(ticket, delta.to_owned())
+            {
                 Ok(DeltaTransition::Ignored | DeltaTransition::Emitted { .. }) => {
                     ControlFlow::Continue(())
                 }
@@ -3640,6 +3626,144 @@ mod tests {
     }
 
     #[test]
+    fn retries_and_model_changes_replay_the_latest_follow_up() {
+        let mut settings =
+            configured_settings("provider-fixture", "model-fixture", ThinkingMode::Off);
+        settings.default_ai = crate::models::DefaultAiModel {
+            provider_id: "provider-fixture".into(),
+            model_id: "model-fixture".into(),
+        };
+        for action_id in ["translate", "explain", "summary", "ask-ai"] {
+            let request = configured_request(action_id, "Original selection");
+            let mut ticket = request_ticket("retry-follow-up");
+            ticket.action_id = action_id.into();
+            let route = fixture_route("model-fixture");
+            let history = vec![ChatMessage::assistant("Previous answer".into())];
+            let messages = build_follow_up_messages(
+                &history,
+                "Explain the second point",
+                &[crate::quick_ask::Attachment {
+                    name: "context.txt".into(),
+                    mime: "text/plain".into(),
+                    kind: "text".into(),
+                    data: "Extra context".into(),
+                }],
+            )
+            .unwrap();
+            for options in [
+                RetryPreparationOptions::default(),
+                RetryPreparationOptions {
+                    provider_id: Some("provider-fixture".into()),
+                    model_id: Some("model-fixture".into()),
+                    ..Default::default()
+                },
+            ] {
+                let seed = FrozenPreparationSeed::Retry {
+                    request: FrozenActionRequest::from(&request),
+                    route: route.clone(),
+                    last_messages: messages.clone(),
+                    committed_messages: history.clone(),
+                    options,
+                };
+                let data = resolve_request_config(&seed, &settings, &ticket)
+                    .unwrap()
+                    .session_data;
+                assert_eq!(data.last_messages, messages, "{action_id}");
+                assert_eq!(data.committed_messages, history, "{action_id}");
+            }
+        }
+        let request = configured_request("translate", "Original selection");
+        let seed = FrozenPreparationSeed::Retry {
+            request: FrozenActionRequest::from(&request),
+            route: fixture_route("model-fixture"),
+            last_messages: vec![ChatMessage::user("Follow-up".into())],
+            committed_messages: vec![],
+            options: RetryPreparationOptions {
+                target_language: Some(TranslationLanguage::EnUs),
+                ..Default::default()
+            },
+        };
+        let data = resolve_request_config(&seed, &settings, &request_ticket("language-change"))
+            .unwrap()
+            .session_data;
+        assert!(data
+            .last_messages
+            .last()
+            .unwrap()
+            .content
+            .contains("Original selection"));
+        assert!(!data
+            .last_messages
+            .iter()
+            .any(|message| message.content == "Follow-up"));
+    }
+
+    #[test]
+    fn binary_attachment_history_is_bounded_before_a_turn_is_committed() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let attachment = crate::quick_ask::Attachment {
+            name: "document.pdf".into(),
+            mime: "application/pdf".into(),
+            kind: "file".into(),
+            data: STANDARD.encode([b"%PDF-".as_slice(), &vec![0; 8 * 1024 * 1024 - 5]].concat()),
+        };
+        let mut history = vec![ChatMessage::system("Assistant".into())];
+        for _ in 0..2 {
+            history = build_ask_continue_messages(
+                "Assistant",
+                &history,
+                "Read this",
+                std::slice::from_ref(&attachment),
+            )
+            .unwrap();
+            history.push(ChatMessage::assistant("Answer".into()));
+        }
+        assert!(validate_conversation_messages(&history).is_ok());
+        assert!(build_ask_continue_messages(
+            "Assistant",
+            &history,
+            "Read this",
+            std::slice::from_ref(&attachment)
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("20 MB"));
+        assert_eq!(history.len(), 5);
+
+        let service = completed_test_service("attachment-budget", "Answer");
+        let snapshot = service.snapshot_for_test("attachment-budget");
+        let mut state = service.inner.state.lock();
+        state
+            .contexts
+            .get_mut("attachment-budget")
+            .unwrap()
+            .committed_messages = history.clone();
+        let error = state
+            .reserve_continue_with_attachments(
+                "attachment-budget",
+                "oversized-turn".into(),
+                "Read this".into(),
+                vec![attachment],
+                tokio::time::Instant::now(),
+            )
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("20 MB"));
+        assert_eq!(
+            state
+                .sessions
+                .authoritative_snapshot("attachment-budget")
+                .unwrap(),
+            &snapshot
+        );
+        assert_eq!(
+            state.contexts["attachment-budget"].committed_messages,
+            history
+        );
+        assert!(!state.sessions.is_busy("attachment-budget"));
+    }
+
+    #[test]
     fn attachment_only_turns_work_in_all_chat_contexts_without_allowing_empty_messages() {
         let attachments = vec![crate::quick_ask::Attachment {
             name: "note.txt".into(),
@@ -4122,7 +4246,7 @@ mod tests {
     }
 
     #[test]
-    fn model_override_rebuilds_the_original_action_for_the_selected_provider() {
+    fn model_override_replays_the_latest_request_for_the_selected_provider() {
         let directory = tempfile::tempdir().unwrap();
         let repository =
             Arc::new(SettingsRepository::new(directory.path().join("settings.json")).unwrap());
@@ -4176,7 +4300,7 @@ mod tests {
             seed: FrozenPreparationSeed::Retry {
                 request: FrozenActionRequest::from(&request),
                 route: fixture_route("fixture-model"),
-                last_messages: vec![ChatMessage::user("old".to_owned())],
+                last_messages: vec![ChatMessage::user("Explain the previous answer".to_owned())],
                 committed_messages: Vec::new(),
                 options: RetryPreparationOptions {
                     target_language: None,
@@ -4203,11 +4327,13 @@ mod tests {
         );
         assert_eq!(prepared.session_data.route.model, "model-two");
         assert_eq!(prepared.api_key, "local-test-key");
-        assert!(prepared.session_data.last_messages[1]
-            .content
-            .contains("这是测试。"));
-        assert!(prepared.session_data.last_messages[1]
-            .content
-            .contains("English"));
+        assert_eq!(
+            prepared.session_data.last_messages,
+            vec![ChatMessage::user("Explain the previous answer".into())]
+        );
+        assert_eq!(
+            prepared.session_data.frozen_request.source_text,
+            "这是测试。"
+        );
     }
 }

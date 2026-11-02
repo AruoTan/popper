@@ -14,10 +14,12 @@ use crate::models::{
 // Content deltas are emitted immediately (no coalesce window / byte batching)
 // so translate/explain/summary TTFB and tail fluency stay as low-latency as possible.
 const MAX_PENDING_EVENTS: usize = 256;
+const MAX_CLOSED_SESSIONS: usize = 256;
 
 pub(super) struct SessionTable {
     entries: HashMap<String, SessionEntry>,
     last_session_generation: SessionGeneration,
+    closed_sessions: VecDeque<String>,
 }
 
 pub(super) enum SessionEntry {
@@ -34,7 +36,6 @@ pub(super) struct SessionState {
     pub session_generation: SessionGeneration,
     pub last_request_generation: RequestGeneration,
     pub request_slot: RequestSlot,
-    pub request_stream: Option<RequestStreamState>,
     pub window_label: String,
     pub snapshot: ActionSnapshot,
     pub next_sequence: EventSequence,
@@ -69,33 +70,11 @@ struct InFlightEmit {
     delivery_epoch: DeliveryEpoch,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct RequestStreamState {
-    first_content_sent: bool,
-    pending: String,
-    pending_scalar_count: u64,
-    last_emit_at: Option<tokio::time::Instant>,
-    deadline: Option<tokio::time::Instant>,
-    deadline_generation: DeadlineGeneration,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct DeadlineGeneration(u64);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TimerDirective {
-    None,
-    Cancel,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum DeltaTransition {
     Ignored,
     Stale,
-    Emitted {
-        event: ActionStreamEvent,
-        timer: TimerDirective,
-    },
+    Emitted { event: ActionStreamEvent },
 }
 
 pub(super) enum RequestSlot {
@@ -169,7 +148,6 @@ pub(super) enum TransitionResult {
 #[derive(Debug)]
 pub(super) struct CancelTransition {
     pub cancellation: Option<CancellationToken>,
-    pub timer: TimerDirective,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +155,6 @@ pub(super) struct CancelTransition {
 pub(super) struct NoticeTransition {
     pub result: TransitionResult,
     pub events: Vec<ActionStreamEvent>,
-    pub timer: TimerDirective,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +171,6 @@ pub(super) enum TerminalKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TerminalTransition {
     pub result: TransitionResult,
-    pub timer: TimerDirective,
 }
 
 #[derive(Debug)]
@@ -244,6 +220,7 @@ impl Default for SessionTable {
         Self {
             entries: HashMap::new(),
             last_session_generation: SessionGeneration(0),
+            closed_sessions: VecDeque::new(),
         }
     }
 }
@@ -324,7 +301,6 @@ impl SessionTable {
                 kind: ReservationKind::Initial,
                 cancellation: cancellation.clone(),
             },
-            request_stream: None,
             window_label: input.window_label,
             snapshot,
             next_sequence: EventSequence::FIRST,
@@ -399,7 +375,6 @@ impl SessionTable {
             session_generation,
             last_request_generation: request_generation,
             request_slot: RequestSlot::Vacant,
-            request_stream: None,
             window_label: input.window_label,
             snapshot: ActionSnapshot {
                 session_id: ticket.session_id.clone(),
@@ -500,7 +475,6 @@ impl SessionTable {
         };
         let cancellation = CancellationToken::new();
         state.last_request_generation = request_generation;
-        state.request_stream = None;
         state.request_slot = RequestSlot::Preparing {
             ticket: ticket.clone(),
             kind,
@@ -555,7 +529,6 @@ impl SessionTable {
             ticket: ticket.clone(),
             cancellation,
         };
-        state.request_stream = Some(RequestStreamState::default());
         TransitionResult::Applied
     }
 
@@ -592,7 +565,6 @@ impl SessionTable {
             PendingLimitPlan::None
         };
         state.request_slot = RequestSlot::Vacant;
-        state.request_stream = None;
 
         if let Some(sequence) = error_sequence {
             enqueue_payload_at(
@@ -614,7 +586,6 @@ impl SessionTable {
         &mut self,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> Result<DeltaTransition, SessionError> {
         if delta.is_empty() {
             return Ok(DeltaTransition::Ignored);
@@ -628,41 +599,22 @@ impl SessionTable {
         ) {
             return Ok(DeltaTransition::Stale);
         }
-        if state.request_stream.is_none() {
-            return Ok(DeltaTransition::Stale);
-        }
-
-        // Always emit content deltas immediately (first token and tail).
-        // If an older code path left pending text, prepend it so nothing is lost.
-        let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
+        let sequence = preflight_event_sequence(state.next_sequence)?;
         let pending_limit = preflight_pending_limit(state, 1, sequence)?;
-        let stream = state
-            .request_stream
-            .as_mut()
-            .expect("matching Running request must own a stream");
-        stream.first_content_sent = true;
-        stream.last_emit_at = Some(now);
-        let mut full = take_pending(stream);
-        full.push_str(&delta);
         let event = enqueue_payload_at(
             state,
             ticket,
             sequence,
-            ActionStreamPayload::Delta { delta: full },
+            ActionStreamPayload::Delta { delta },
         );
         apply_pending_limit_plan(state, pending_limit);
-        Ok(DeltaTransition::Emitted {
-            event,
-            timer: TimerDirective::None,
-        })
+        Ok(DeltaTransition::Emitted { event })
     }
 
-    /// Emit reasoning/CoT text immediately (same delivery path as answer deltas).
     pub(super) fn accept_thinking_delta(
         &mut self,
         ticket: &RequestTicket,
         delta: String,
-        now: tokio::time::Instant,
     ) -> Result<DeltaTransition, SessionError> {
         if delta.is_empty() {
             return Ok(DeltaTransition::Ignored);
@@ -676,17 +628,8 @@ impl SessionTable {
         ) {
             return Ok(DeltaTransition::Stale);
         }
-        if state.request_stream.is_none() {
-            return Ok(DeltaTransition::Stale);
-        }
-
-        let (sequence, _) = preflight_event_sequences(state.next_sequence, 1)?;
+        let sequence = preflight_event_sequence(state.next_sequence)?;
         let pending_limit = preflight_pending_limit(state, 1, sequence)?;
-        let stream = state
-            .request_stream
-            .as_mut()
-            .expect("matching Running request must own a stream");
-        stream.last_emit_at = Some(now);
         let event = enqueue_payload_at(
             state,
             ticket,
@@ -694,13 +637,9 @@ impl SessionTable {
             ActionStreamPayload::ThinkingDelta { delta },
         );
         apply_pending_limit_plan(state, pending_limit);
-        Ok(DeltaTransition::Emitted {
-            event,
-            timer: TimerDirective::None,
-        })
+        Ok(DeltaTransition::Emitted { event })
     }
 
-    #[allow(dead_code)]
     pub(super) fn enqueue_notice(
         &mut self,
         ticket: &RequestTicket,
@@ -713,42 +652,24 @@ impl SessionTable {
         if !matches!(
             &state.request_slot,
             RequestSlot::Running { ticket: active, .. } if active == ticket
-        ) || state.request_stream.is_none()
-        {
+        ) {
             return Ok(rejected_notice_transition());
         }
-        let has_pending = state
-            .request_stream
-            .as_ref()
-            .is_some_and(|stream| !stream.pending.is_empty());
-        let needed = if has_pending { 2 } else { 1 };
-        let (first, second) = preflight_event_sequences(state.next_sequence, needed)?;
-        let final_sequence = second.unwrap_or(first);
-        let pending_limit = preflight_pending_limit(state, needed, final_sequence)?;
-
-        let mut events = Vec::with_capacity(needed);
-        if has_pending {
-            events.push(enqueue_pending_delta_at(state, ticket, first));
-        }
-        let notice_sequence = final_sequence;
-        events.push(enqueue_payload_at(
+        let sequence = preflight_event_sequence(state.next_sequence)?;
+        let pending_limit = preflight_pending_limit(state, 1, sequence)?;
+        let event = enqueue_payload_at(
             state,
             ticket,
-            notice_sequence,
+            sequence,
             ActionStreamPayload::Notice {
                 code: code.to_owned(),
                 message: message.to_owned(),
             },
-        ));
+        );
         apply_pending_limit_plan(state, pending_limit);
         Ok(NoticeTransition {
             result: TransitionResult::Applied,
-            events,
-            timer: if has_pending {
-                TimerDirective::Cancel
-            } else {
-                TimerDirective::None
-            },
+            events: vec![event],
         })
     }
 
@@ -763,25 +684,16 @@ impl SessionTable {
         if !matches!(
             &state.request_slot,
             RequestSlot::Running { ticket: active, .. } if active == ticket
-        ) || state.request_stream.is_none()
-        {
+        ) {
             return Ok(rejected_terminal_transition());
         }
-        let has_pending = state
-            .request_stream
-            .as_ref()
-            .is_some_and(|stream| !stream.pending.is_empty());
-        let needed = if has_pending { 2 } else { 1 };
-        let sequences = preflight_event_sequences(state.next_sequence, needed)?;
-        let final_sequence = sequences.1.unwrap_or(sequences.0);
-        let pending_limit = preflight_pending_limit(state, needed, final_sequence)?;
-
-        enqueue_terminal_with_sequences(state, ticket, terminal, sequences, has_pending);
+        let sequence = preflight_event_sequence(state.next_sequence)?;
+        let pending_limit = preflight_pending_limit(state, 1, sequence)?;
+        enqueue_terminal(state, ticket, terminal, sequence);
         apply_pending_limit_plan(state, pending_limit);
         state.request_slot = RequestSlot::Vacant;
         Ok(TerminalTransition {
             result: TransitionResult::Applied,
-            timer: TimerDirective::Cancel,
         })
     }
 
@@ -791,81 +703,19 @@ impl SessionTable {
             Some(SessionEntry::Closed(_)) => return Err(SessionError::Ended),
             None => return Err(SessionError::NotFound),
         };
-        enum CancelKind {
-            PreserveReplacement,
-            CommitPreparing(RequestTicket),
-            CommitRunning {
-                ticket: RequestTicket,
-                has_pending: bool,
-            },
-        }
-        let cancel_kind = match &state.request_slot {
+        let ticket = match &state.request_slot {
             RequestSlot::Vacant => return Err(SessionError::Ineligible),
-            RequestSlot::Preparing { ticket, kind, .. } if *kind == ReservationKind::Initial => {
-                CancelKind::CommitPreparing(ticket.clone())
+            RequestSlot::Preparing { kind, .. } if *kind != ReservationKind::Initial => None,
+            RequestSlot::Preparing { ticket, .. } | RequestSlot::Running { ticket, .. } => {
+                Some(ticket.clone())
             }
-            RequestSlot::Preparing { .. } => CancelKind::PreserveReplacement,
-            RequestSlot::Running { ticket, .. } => CancelKind::CommitRunning {
-                ticket: ticket.clone(),
-                has_pending: state
-                    .request_stream
-                    .as_ref()
-                    .is_some_and(|stream| !stream.pending.is_empty()),
-            },
         };
-        let sequences = match &cancel_kind {
-            CancelKind::PreserveReplacement => None,
-            CancelKind::CommitPreparing(_) => {
-                Some(preflight_event_sequences(state.next_sequence, 1)?)
-            }
-            CancelKind::CommitRunning { has_pending, .. } => Some(preflight_event_sequences(
-                state.next_sequence,
-                if *has_pending { 2 } else { 1 },
-            )?),
-        };
-        let pending_limit = match sequences {
-            Some((first, second)) => {
-                let needed = usize::from(second.is_some()) + 1;
-                preflight_pending_limit(state, needed, second.unwrap_or(first))?
-            }
-            None => PendingLimitPlan::None,
-        };
-
-        let timer = match (&cancel_kind, sequences) {
-            (CancelKind::PreserveReplacement, None) => {
-                state.request_stream = None;
-                TimerDirective::None
-            }
-            (CancelKind::CommitPreparing(ticket), Some(sequences)) => {
-                enqueue_terminal_with_sequences(
-                    state,
-                    ticket,
-                    TerminalKind::Cancelled,
-                    sequences,
-                    false,
-                );
-                apply_pending_limit_plan(state, pending_limit);
-                TimerDirective::None
-            }
-            (
-                CancelKind::CommitRunning {
-                    ticket,
-                    has_pending,
-                },
-                Some(sequences),
-            ) => {
-                enqueue_terminal_with_sequences(
-                    state,
-                    ticket,
-                    TerminalKind::Cancelled,
-                    sequences,
-                    *has_pending,
-                );
-                apply_pending_limit_plan(state, pending_limit);
-                TimerDirective::Cancel
-            }
-            _ => unreachable!("cancel sequence reservation must match its request kind"),
-        };
+        if let Some(ticket) = ticket {
+            let sequence = preflight_event_sequence(state.next_sequence)?;
+            let pending_limit = preflight_pending_limit(state, 1, sequence)?;
+            enqueue_terminal(state, &ticket, TerminalKind::Cancelled, sequence);
+            apply_pending_limit_plan(state, pending_limit);
+        }
         let cancellation = match std::mem::replace(&mut state.request_slot, RequestSlot::Vacant) {
             RequestSlot::Preparing { cancellation, .. }
             | RequestSlot::Running { cancellation, .. } => cancellation,
@@ -873,7 +723,6 @@ impl SessionTable {
         };
         Ok(CancelTransition {
             cancellation: Some(cancellation),
-            timer,
         })
     }
 
@@ -1088,6 +937,13 @@ impl SessionTable {
             RequestSlot::Preparing { cancellation, .. }
             | RequestSlot::Running { cancellation, .. } => Some(cancellation),
         };
+        // Recent IDs reject duplicate opens; generations reject stale work after eviction.
+        self.closed_sessions.push_back(session_id.to_owned());
+        if self.closed_sessions.len() > MAX_CLOSED_SESSIONS {
+            if let Some(expired) = self.closed_sessions.pop_front() {
+                self.entries.remove(&expired);
+            }
+        }
         CloseTransition { cancellation }
     }
 }
@@ -1210,20 +1066,8 @@ fn rejected_ack_transition() -> AckTransition {
     }
 }
 
-fn preflight_event_sequences(
-    current: EventSequence,
-    needed: usize,
-) -> Result<(EventSequence, Option<EventSequence>), SessionError> {
-    debug_assert!((1..=2).contains(&needed));
-    let first = current
-        .checked_next()
-        .ok_or(SessionError::CounterExhausted)?;
-    let second = if needed == 2 {
-        Some(first.checked_next().ok_or(SessionError::CounterExhausted)?)
-    } else {
-        None
-    };
-    Ok((first, second))
+fn preflight_event_sequence(current: EventSequence) -> Result<EventSequence, SessionError> {
+    current.checked_next().ok_or(SessionError::CounterExhausted)
 }
 
 fn enqueue_payload_at(
@@ -1339,46 +1183,12 @@ fn apply_event_to_snapshot(snapshot: &mut ActionSnapshot, event: &ActionStreamEv
     }
 }
 
-fn take_pending(stream: &mut RequestStreamState) -> String {
-    stream.pending_scalar_count = 0;
-    stream.deadline = None;
-    std::mem::take(&mut stream.pending)
-}
-
-fn enqueue_pending_delta_at(
-    state: &mut SessionState,
-    ticket: &RequestTicket,
-    sequence: EventSequence,
-) -> ActionStreamEvent {
-    let delta = take_pending(
-        state
-            .request_stream
-            .as_mut()
-            .expect("matching Running request must own a stream"),
-    );
-    debug_assert!(!delta.is_empty());
-    enqueue_payload_at(
-        state,
-        ticket,
-        sequence,
-        ActionStreamPayload::Delta { delta },
-    )
-}
-
-fn enqueue_terminal_with_sequences(
+fn enqueue_terminal(
     state: &mut SessionState,
     ticket: &RequestTicket,
     terminal: TerminalKind,
-    sequences: (EventSequence, Option<EventSequence>),
-    has_pending: bool,
+    sequence: EventSequence,
 ) {
-    let (first, second) = sequences;
-    if has_pending {
-        enqueue_pending_delta_at(state, ticket, first);
-    } else if let Some(stream) = state.request_stream.as_mut() {
-        stream.deadline = None;
-    }
-    let terminal_sequence = second.unwrap_or(first);
     let payload = match terminal {
         TerminalKind::Completed => ActionStreamPayload::Completed {
             last_content_sequence: state.snapshot.last_content_sequence,
@@ -1395,8 +1205,7 @@ fn enqueue_terminal_with_sequences(
             retryable,
         },
     };
-    enqueue_payload_at(state, ticket, terminal_sequence, payload);
-    state.request_stream = None;
+    enqueue_payload_at(state, ticket, sequence, payload);
 }
 
 #[allow(dead_code)]
@@ -1404,14 +1213,12 @@ fn rejected_notice_transition() -> NoticeTransition {
     NoticeTransition {
         result: TransitionResult::Rejected,
         events: Vec::new(),
-        timer: TimerDirective::None,
     }
 }
 
 fn rejected_terminal_transition() -> TerminalTransition {
     TerminalTransition {
         result: TransitionResult::Rejected,
-        timer: TimerDirective::None,
     }
 }
 
@@ -1453,10 +1260,7 @@ fn stream_event(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::{Arc, Barrier, Mutex},
-        time::Duration,
-    };
+    use std::sync::{Arc, Barrier, Mutex};
 
     use super::*;
     use crate::models::{
@@ -1489,7 +1293,6 @@ mod tests {
             panic!("fixture session must be open");
         };
         state.request_slot = RequestSlot::Vacant;
-        state.request_stream = None;
         state.snapshot.status = status;
         state.snapshot.content = content.to_owned();
         state.snapshot.content_scalar_count = content.chars().count() as u64;
@@ -1576,13 +1379,6 @@ mod tests {
         DeliveryEpoch,
     }
 
-    #[derive(Debug, Clone, Copy)]
-    enum TwoEventOverflowOperation {
-        Notice,
-        Terminal,
-        Cancel,
-    }
-
     fn set_ready_counter_to_max(
         table: &mut SessionTable,
         session_id: &str,
@@ -1625,18 +1421,6 @@ mod tests {
                 },
             );
         }
-    }
-
-    fn install_pending_delta(table: &mut SessionTable, session_id: &str, delta: &str) {
-        let stream = open_state_mut(table, session_id)
-            .request_stream
-            .as_mut()
-            .expect("running fixture must have request stream");
-        stream.first_content_sent = true;
-        stream.pending = delta.to_owned();
-        stream.pending_scalar_count = delta.chars().count() as u64;
-        stream.deadline = Some(tokio::time::Instant::now() + Duration::from_secs(1));
-        stream.deadline_generation = DeadlineGeneration(1);
     }
 
     impl SessionTable {
@@ -1690,7 +1474,6 @@ mod tests {
         session_generation: SessionGeneration,
         last_request_generation: RequestGeneration,
         request_slot: ComparableRequestSlot,
-        request_stream: Option<RequestStreamState>,
         window_label: String,
         snapshot: ActionSnapshot,
         next_sequence: EventSequence,
@@ -1731,7 +1514,6 @@ mod tests {
             session_generation: state.session_generation,
             last_request_generation: state.last_request_generation,
             request_slot,
-            request_stream: state.request_stream.clone(),
             window_label: state.window_label.clone(),
             snapshot: state.snapshot.clone(),
             next_sequence: state.next_sequence,
@@ -1759,7 +1541,6 @@ mod tests {
             after.last_request_generation,
             before.last_request_generation
         );
-        assert_eq!(after.request_stream, before.request_stream);
         assert_eq!(after.window_label, before.window_label);
         assert_eq!(after.snapshot, before.snapshot);
         assert_eq!(after.next_sequence, before.next_sequence);
@@ -1845,18 +1626,6 @@ mod tests {
         open_state_mut(table, session_id).next_sequence = sequence;
     }
 
-    fn set_deadline_generation(
-        table: &mut SessionTable,
-        session_id: &str,
-        generation: DeadlineGeneration,
-    ) {
-        open_state_mut(table, session_id)
-            .request_stream
-            .as_mut()
-            .expect("running fixture must have request stream")
-            .deadline_generation = generation;
-    }
-
     #[test]
     fn begin_ready_never_creates_and_only_latest_handshake_can_ack() {
         let mut table = SessionTable::default();
@@ -1866,9 +1635,7 @@ mod tests {
         );
         assert!(table.entries.get("missing").is_none());
         let (mut table, ticket) = running_table("s");
-        table
-            .accept_delta(&ticket, "A".into(), tokio::time::Instant::now())
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         let first = table.begin_ready("s", "result/s").unwrap();
         let second = table.begin_ready("s", "result/s").unwrap();
         assert!(second.ack.handshake_generation > first.ack.handshake_generation);
@@ -1884,19 +1651,11 @@ mod tests {
     #[test]
     fn events_after_snapshot_watermark_wait_until_ack() {
         let (mut table, ticket) = running_table("s");
-        table
-            .accept_delta(&ticket, "A".into(), tokio::time::Instant::now())
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         let ready = table.begin_ready("s", "result/s").unwrap();
         assert_eq!(ready.snapshot.content, "A");
         let watermark = ready.snapshot.last_sequence;
-        table
-            .accept_delta(
-                &ticket,
-                "B".into(),
-                tokio::time::Instant::now() + Duration::from_millis(9),
-            )
-            .unwrap();
+        table.accept_delta(&ticket, "B".into()).unwrap();
         assert!(table.acquire_flusher("s").is_none());
         assert!(open_state(&table, "s")
             .pending_events
@@ -1912,20 +1671,12 @@ mod tests {
         let (mut table, ticket) = running_table("s");
         let first = table.begin_ready("s", "result/s").unwrap();
         assert_eq!(table.ack_ready(first.ack).result, TransitionResult::Applied);
-        table
-            .accept_delta(&ticket, "A".into(), tokio::time::Instant::now())
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         let lease = table.acquire_flusher("s").expect("one owner");
         assert!(table.acquire_flusher("s").is_none());
         let in_flight = table.next_emit(&lease).unwrap();
         let second = table.begin_ready("s", "result/s").unwrap();
-        table
-            .accept_delta(
-                &ticket,
-                "B".into(),
-                tokio::time::Instant::now() + Duration::from_millis(9),
-            )
-            .unwrap();
+        table.accept_delta(&ticket, "B".into()).unwrap();
         assert_eq!(
             table.ack_ready(second.ack).result,
             TransitionResult::Applied
@@ -1939,11 +1690,8 @@ mod tests {
     #[test]
     fn begin_between_emits_drops_absorbed_unsent_front_and_owner_stops_cleanly() {
         let (mut table, ticket) = running_ready_table("s");
-        let started_at = tokio::time::Instant::now();
-        table.accept_delta(&ticket, "A".into(), started_at).unwrap();
-        table
-            .accept_delta(&ticket, "B".into(), started_at + Duration::from_millis(9))
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
+        table.accept_delta(&ticket, "B".into()).unwrap();
         let lease = table.acquire_flusher("s").unwrap();
         let first = table.next_emit(&lease).unwrap();
         table.finish_emit(&lease, &first, EmitOutcome::Sent);
@@ -1958,9 +1706,7 @@ mod tests {
     #[test]
     fn emit_failure_keeps_front_event_and_requires_new_ready() {
         let (mut table, ticket) = running_ready_table("s");
-        table
-            .accept_delta(&ticket, "A".into(), tokio::time::Instant::now())
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         let lease = table.acquire_flusher("s").unwrap();
         let event = table.next_emit(&lease).unwrap();
         let transition = table.finish_emit(&lease, &event, EmitOutcome::Failed);
@@ -1976,21 +1722,13 @@ mod tests {
     #[test]
     fn released_lease_cannot_operate_reacquired_owner_in_same_epoch() {
         let (mut table, ticket) = running_ready_table("s");
-        table
-            .accept_delta(&ticket, "A".into(), tokio::time::Instant::now())
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         let old_lease = table.acquire_flusher("s").unwrap();
         let first = table.next_emit(&old_lease).unwrap();
         table.finish_emit(&old_lease, &first, EmitOutcome::Sent);
         assert!(!open_state(&table, "s").flusher_running);
 
-        table
-            .accept_delta(
-                &ticket,
-                "B".into(),
-                tokio::time::Instant::now() + Duration::from_millis(9),
-            )
-            .unwrap();
+        table.accept_delta(&ticket, "B".into()).unwrap();
         let new_lease = table.acquire_flusher("s").unwrap();
         assert!(table.next_emit(&old_lease).is_none());
         assert!(table.next_emit(&new_lease).is_some());
@@ -1999,11 +1737,8 @@ mod tests {
     #[test]
     fn stale_or_out_of_order_finish_never_removes_the_current_front() {
         let (mut table, ticket) = running_ready_table("s");
-        let started_at = tokio::time::Instant::now();
-        table.accept_delta(&ticket, "A".into(), started_at).unwrap();
-        table
-            .accept_delta(&ticket, "B".into(), started_at + Duration::from_millis(9))
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
+        table.accept_delta(&ticket, "B".into()).unwrap();
         let lease = table.acquire_flusher("s").unwrap();
         let first = table.next_emit(&lease).unwrap();
         let mut wrong_event = first.event.clone();
@@ -2049,9 +1784,7 @@ mod tests {
     #[test]
     fn absorbed_old_epoch_failure_does_not_revoke_new_ready() {
         let (mut table, ticket) = running_ready_table("s");
-        table
-            .accept_delta(&ticket, "A".into(), tokio::time::Instant::now())
-            .unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         let lease = table.acquire_flusher("s").unwrap();
         let event = table.next_emit(&lease).unwrap();
         let ready = table.begin_ready("s", "result/s").unwrap();
@@ -2103,20 +1836,12 @@ mod tests {
     fn production_delta_enqueue_enforces_pending_limit() {
         let (mut table, ticket) = running_ready_table("s");
         pause_flusher(&mut table, "s");
-        let started_at = tokio::time::Instant::now();
         let mut expected = String::new();
         let mut last_domain_sequence = EventSequence::NONE;
         for index in 0..257 {
             let delta = index.to_string();
             expected.push_str(&delta);
-            last_domain_sequence = match table
-                .accept_delta(
-                    &ticket,
-                    delta,
-                    started_at + Duration::from_millis(index * 9),
-                )
-                .unwrap()
-            {
+            last_domain_sequence = match table.accept_delta(&ticket, delta).unwrap() {
                 DeltaTransition::Emitted { event, .. } => event.sequence,
                 other => panic!("spaced production delta must emit, got {other:?}"),
             };
@@ -2144,28 +1869,28 @@ mod tests {
     }
 
     #[test]
-    fn production_two_event_batches_preflight_and_resync_at_255_pending() {
+    fn notice_terminal_and_cancel_resync_after_an_immediate_tail() {
         for operation in [
-            TwoEventOverflowOperation::Notice,
-            TwoEventOverflowOperation::Terminal,
-            TwoEventOverflowOperation::Cancel,
+            CounterOperation::Notice,
+            CounterOperation::Terminal,
+            CounterOperation::Cancel,
         ] {
             let session_id = format!("two-event-{operation:?}");
             let (mut table, ticket) = running_ready_table(&session_id);
             pause_flusher(&mut table, &session_id);
             fill_queue_to_limit_for_test(&mut table, &ticket, MAX_PENDING_EVENTS - 1);
-            install_pending_delta(&mut table, &session_id, "tail");
+            table.accept_delta(&ticket, "tail".into()).unwrap();
 
             match operation {
-                TwoEventOverflowOperation::Notice => {
+                CounterOperation::Notice => {
                     table.enqueue_notice(&ticket, "N", "notice").unwrap();
                 }
-                TwoEventOverflowOperation::Terminal => {
+                CounterOperation::Terminal => {
                     table
                         .commit_terminal(&ticket, TerminalKind::Completed)
                         .unwrap();
                 }
-                TwoEventOverflowOperation::Cancel => {
+                CounterOperation::Cancel => {
                     table.cancel(&session_id).unwrap();
                 }
             }
@@ -2192,7 +1917,7 @@ mod tests {
         );
         let before = comparable_open_state(&table, "overflow-production-max");
         assert_eq!(
-            table.accept_delta(&ticket, "last".into(), tokio::time::Instant::now()),
+            table.accept_delta(&ticket, "last".into()),
             Err(SessionError::CounterExhausted)
         );
         assert_open_state_exact(&table, "overflow-production-max", &before);
@@ -2226,21 +1951,16 @@ mod tests {
     #[test]
     fn accept_delta_emits_every_content_chunk_immediately_after_first() {
         let (mut table, ticket) = running_table("s");
-        let t0 = tokio::time::Instant::now();
-        match table.accept_delta(&ticket, "首".into(), t0).unwrap() {
+        match table.accept_delta(&ticket, "首".into()).unwrap() {
             DeltaTransition::Emitted { .. } => {}
             other => panic!("first must emit, got {other:?}"),
         }
-        match table
-            .accept_delta(&ticket, "字".into(), t0 + Duration::from_millis(1))
-            .unwrap()
-        {
-            DeltaTransition::Emitted { event, timer } => {
+        match table.accept_delta(&ticket, "字".into()).unwrap() {
+            DeltaTransition::Emitted { event } => {
                 assert!(matches!(
                     event.payload,
                     ActionStreamPayload::Delta { ref delta } if delta == "字"
                 ));
-                assert_eq!(timer, TimerDirective::None);
             }
             other => panic!("second must emit immediately, got {other:?}"),
         }
@@ -2249,42 +1969,26 @@ mod tests {
     #[test]
     fn first_content_and_tail_are_both_immediate() {
         let (mut table, ticket) = running_table("s");
-        let t0 = tokio::time::Instant::now();
         assert_eq!(
-            table.accept_delta(&ticket, "".into(), t0).unwrap(),
+            table.accept_delta(&ticket, "".into()).unwrap(),
             DeltaTransition::Ignored
         );
-        let first = match table.accept_delta(&ticket, "首".into(), t0).unwrap() {
-            DeltaTransition::Emitted {
-                event,
-                timer: TimerDirective::None,
-            } => event,
+        let first = match table.accept_delta(&ticket, "首".into()).unwrap() {
+            DeltaTransition::Emitted { event } => event,
             other => panic!("expected immediate first Delta, got {other:?}"),
         };
         assert!(matches!(&first.payload,
             ActionStreamPayload::Delta { delta } if delta == "首"));
         assert_eq!(first.sequence, EventSequence(2));
-        let second = match table
-            .accept_delta(&ticket, "a".into(), t0 + Duration::from_millis(1))
-            .unwrap()
-        {
-            DeltaTransition::Emitted {
-                event,
-                timer: TimerDirective::None,
-            } => event,
+        let second = match table.accept_delta(&ticket, "a".into()).unwrap() {
+            DeltaTransition::Emitted { event } => event,
             other => panic!("expected immediate tail Delta, got {other:?}"),
         };
         assert!(matches!(&second.payload,
             ActionStreamPayload::Delta { delta } if delta == "a"));
         let large = "x".repeat(4096);
-        let event = match table
-            .accept_delta(&ticket, large.clone(), t0 + Duration::from_millis(2))
-            .unwrap()
-        {
-            DeltaTransition::Emitted {
-                event,
-                timer: TimerDirective::None,
-            } => event,
+        let event = match table.accept_delta(&ticket, large.clone()).unwrap() {
+            DeltaTransition::Emitted { event } => event,
             other => panic!("expected immediate large Delta, got {other:?}"),
         };
         assert!(matches!(&event.payload,
@@ -2297,14 +2001,12 @@ mod tests {
         const FRAGMENT_COUNT: usize = 200;
 
         let (mut table, ticket) = running_table("dense");
-        let now = tokio::time::Instant::now();
         let mut accept_emissions = 0;
 
         for _ in 0..FRAGMENT_COUNT {
-            match table.accept_delta(&ticket, "x".to_owned(), now).unwrap() {
-                DeltaTransition::Emitted { event, timer } => {
+            match table.accept_delta(&ticket, "x".to_owned()).unwrap() {
+                DeltaTransition::Emitted { event } => {
                     assert_eq!(event.sequence, EventSequence(accept_emissions as u64 + 2));
-                    assert_eq!(timer, TimerDirective::None);
                     accept_emissions += 1;
                 }
                 other => panic!("dense non-empty matching delta must emit, got {other:?}"),
@@ -2375,9 +2077,7 @@ mod tests {
     #[test]
     fn sequence_is_session_local_and_monotonic_across_requests() {
         let (mut table, first) = running_table("s");
-        table
-            .accept_delta(&first, "one".into(), tokio::time::Instant::now())
-            .unwrap();
+        table.accept_delta(&first, "one".into()).unwrap();
         assert_eq!(
             table
                 .commit_terminal(&first, TerminalKind::Completed)
@@ -2396,52 +2096,49 @@ mod tests {
     }
 
     #[test]
-    fn matching_prepare_success_installs_a_fresh_request_stream() {
+    fn preparation_and_retry_only_accept_the_current_running_ticket() {
         let mut table = SessionTable::default();
         let initial = table.reserve_initial(initial_input("s")).unwrap();
-        assert_eq!(open_state(&table, "s").request_stream, None);
+        assert_eq!(
+            table.accept_delta(&initial.ticket, "early".into()).unwrap(),
+            DeltaTransition::Stale
+        );
         assert_eq!(
             table.commit_prepare_success(&initial.ticket),
             TransitionResult::Applied
         );
-        assert_eq!(
-            open_state(&table, "s").request_stream,
-            Some(RequestStreamState::default())
-        );
-        open_state_mut(&mut table, "s")
-            .request_stream
-            .as_mut()
-            .unwrap()
-            .first_content_sent = true;
+        table.accept_delta(&initial.ticket, "old".into()).unwrap();
         table
             .commit_terminal(&initial.ticket, TerminalKind::Completed)
             .unwrap();
-        assert_eq!(open_state(&table, "s").request_stream, None);
-        let retry = table.reserve_retry("s", "retry".to_owned()).unwrap();
-        assert_eq!(open_state(&table, "s").request_stream, None);
+        let retry = table.reserve_retry("s", "retry".into()).unwrap();
+        assert_eq!(
+            table.accept_delta(&initial.ticket, "late".into()).unwrap(),
+            DeltaTransition::Stale
+        );
         assert_eq!(
             table.commit_prepare_success(&retry.ticket),
             TransitionResult::Applied
         );
+        assert!(open_state(&table, "s").snapshot.content.is_empty());
         assert_eq!(
-            open_state(&table, "s").request_stream,
-            Some(RequestStreamState::default())
+            table.accept_delta(&initial.ticket, "late".into()).unwrap(),
+            DeltaTransition::Stale
         );
+        assert!(matches!(
+            table.accept_delta(&retry.ticket, "new".into()).unwrap(),
+            DeltaTransition::Emitted { .. }
+        ));
+        assert_eq!(open_state(&table, "s").snapshot.content, "new");
     }
 
     #[test]
     fn terminal_after_immediate_deltas_completes_with_full_content() {
         let (mut table, ticket) = running_table("s");
-        let now = tokio::time::Instant::now();
-        table.accept_delta(&ticket, "A".into(), now).unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         assert!(matches!(
-            table
-                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-                .unwrap(),
-            DeltaTransition::Emitted {
-                timer: TimerDirective::None,
-                ..
-            }
+            table.accept_delta(&ticket, "B".into()).unwrap(),
+            DeltaTransition::Emitted { .. }
         ));
         assert_eq!(
             table
@@ -2486,9 +2183,7 @@ mod tests {
             TransitionResult::Rejected,
         );
         assert_eq!(
-            table
-                .accept_delta(&ticket, "late".into(), tokio::time::Instant::now())
-                .unwrap(),
+            table.accept_delta(&ticket, "late".into()).unwrap(),
             DeltaTransition::Stale
         );
         assert_eq!(
@@ -2579,25 +2274,20 @@ mod tests {
                 .map(|n| n.message.as_str()),
             Some("DSH 正在调用 read_image")
         );
-        let now = tokio::time::Instant::now();
-        table.accept_delta(&ticket, "正式回复".into(), now).unwrap();
+        table.accept_delta(&ticket, "正式回复".into()).unwrap();
         assert!(open_state(&table, "s").snapshot.generation_notice.is_none());
     }
 
     #[test]
     fn notice_after_emitted_deltas_does_not_flush_content() {
         let (mut table, ticket) = running_table("s");
-        let now = tokio::time::Instant::now();
-        table.accept_delta(&ticket, "A".into(), now).unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         assert!(matches!(
-            table
-                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-                .unwrap(),
+            table.accept_delta(&ticket, "B".into()).unwrap(),
             DeltaTransition::Emitted { .. }
         ));
         let transition = table.enqueue_notice(&ticket, "N", "notice").unwrap();
         assert_eq!(transition.result, TransitionResult::Applied);
-        assert_eq!(transition.timer, TimerDirective::None);
         assert_eq!(transition.events.len(), 1);
         assert!(matches!(&transition.events[0].payload,
             ActionStreamPayload::Notice { code, message }
@@ -2607,12 +2297,9 @@ mod tests {
     #[test]
     fn cancel_running_after_emitted_deltas_returns_unsignalled_token() {
         let (mut table, ticket) = running_table("s");
-        let now = tokio::time::Instant::now();
-        table.accept_delta(&ticket, "A".into(), now).unwrap();
+        table.accept_delta(&ticket, "A".into()).unwrap();
         assert!(matches!(
-            table
-                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-                .unwrap(),
+            table.accept_delta(&ticket, "B".into()).unwrap(),
             DeltaTransition::Emitted { .. }
         ));
         let active_token = match &open_state(&table, "s").request_slot {
@@ -2620,8 +2307,6 @@ mod tests {
             _ => panic!("fixture must be Running"),
         };
         let transition = table.cancel("s").unwrap();
-        // Running cancel always cancels any stream timer (even when no pending).
-        assert_eq!(transition.timer, TimerDirective::Cancel);
         let events = &open_state(&table, "s").pending_events;
         assert!(matches!(
             &events[events.len() - 1].payload,
@@ -2644,15 +2329,12 @@ mod tests {
     }
 
     #[test]
-    fn cancel_replacement_preparing_preserves_old_snapshot_and_has_no_stream() {
+    fn cancel_replacement_preparing_preserves_old_snapshot() {
         let mut table = completed_table("s", "old answer");
         let before = open_state(&table, "s").snapshot.clone();
         let retry = table.reserve_retry("s", "retry".to_owned()).unwrap();
-        assert_eq!(open_state(&table, "s").request_stream, None);
         let transition = table.cancel("s").unwrap();
-        assert_eq!(transition.timer, TimerDirective::None);
         assert_eq!(open_state(&table, "s").snapshot, before);
-        assert_eq!(open_state(&table, "s").request_stream, None);
         assert_eq!(
             table.commit_prepare_success(&retry.ticket),
             TransitionResult::Rejected
@@ -2662,31 +2344,14 @@ mod tests {
 
     #[test]
     fn task3_counter_exhaustion_is_failure_atomic() {
-        let now = tokio::time::Instant::now();
-
         let (mut accept, ticket) = running_table("accept-max");
         set_sequence_watermark(&mut accept, "accept-max", EventSequence(MAX_WIRE_COUNTER));
         let before = comparable_open_state(&accept, "accept-max");
         assert_eq!(
-            accept.accept_delta(&ticket, "A".into(), now),
+            accept.accept_delta(&ticket, "A".into()),
             Err(SessionError::CounterExhausted)
         );
         assert_open_state_exact(&accept, "accept-max", &before);
-
-        // accept_delta no longer advances deadline_generation; second delta emits.
-        let (mut deadline, ticket) = running_table("deadline-max");
-        deadline.accept_delta(&ticket, "A".into(), now).unwrap();
-        set_deadline_generation(
-            &mut deadline,
-            "deadline-max",
-            DeadlineGeneration(MAX_WIRE_COUNTER),
-        );
-        assert!(matches!(
-            deadline
-                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-                .unwrap(),
-            DeltaTransition::Emitted { .. }
-        ));
 
         for operation in [
             CounterOperation::Terminal,
@@ -2695,10 +2360,8 @@ mod tests {
         ] {
             let session_id = format!("two-sequences-{operation:?}");
             let (mut table, ticket) = running_table(&session_id);
-            table.accept_delta(&ticket, "A".into(), now).unwrap();
-            table
-                .accept_delta(&ticket, "B".into(), now + Duration::from_millis(1))
-                .unwrap();
+            table.accept_delta(&ticket, "A".into()).unwrap();
+            table.accept_delta(&ticket, "B".into()).unwrap();
             set_sequence_watermark(&mut table, &session_id, EventSequence(MAX_WIRE_COUNTER));
             let before = comparable_open_state(&table, &session_id);
             let error = match operation {
@@ -2747,7 +2410,7 @@ mod tests {
     }
 
     #[test]
-    fn initial_reservation_is_atomic_and_session_id_is_never_reused() {
+    fn initial_reservation_is_atomic_and_recent_closed_ids_cannot_reopen() {
         let mut table = SessionTable::default();
         let reservation = table.reserve_initial(initial_input("session-a")).unwrap();
 
@@ -3280,10 +2943,65 @@ mod tests {
     }
 
     #[test]
+    fn closed_session_retention_is_bounded_and_stale_work_cannot_reopen_it() {
+        let (mut table, old) = running_table("old");
+        let ready = table.begin_ready("old", "result/old").unwrap();
+        table.ack_ready(ready.ack.clone());
+        table.accept_delta(&old, "before close".into()).unwrap();
+        let flusher = table.acquire_flusher("old").unwrap();
+        let emit = table.next_emit(&flusher).unwrap();
+        table.close("old");
+        let live = table.reserve_initial(initial_input("live")).unwrap();
+        for index in 0..MAX_CLOSED_SESSIONS * 4 {
+            let id = format!("closed-{index}");
+            table.reserve_initial(initial_input(&id)).unwrap();
+            table.close(&id);
+            table.close(&id);
+        }
+        assert_eq!(table.closed_sessions.len(), MAX_CLOSED_SESSIONS);
+        assert_eq!(table.entries.len(), MAX_CLOSED_SESSIONS + 1);
+        assert!(table.authoritative_snapshot("live").is_some());
+        let replacement = table.reserve_initial(initial_input("old")).unwrap();
+        assert!(replacement.ticket.session_generation > old.session_generation);
+        let before = comparable_open_state(&table, "old");
+        assert_eq!(
+            table.commit_prepare_success(&old),
+            TransitionResult::Rejected
+        );
+        assert_eq!(
+            table.accept_delta(&old, "late".into()).unwrap(),
+            DeltaTransition::Stale
+        );
+        assert_eq!(
+            table
+                .commit_terminal(&old, TerminalKind::Completed)
+                .unwrap()
+                .result,
+            TransitionResult::Rejected
+        );
+        assert_eq!(
+            table.ack_ready(ready.ack).result,
+            TransitionResult::Rejected
+        );
+        assert!(table.next_emit(&flusher).is_none());
+        table.finish_emit(&flusher, &emit, EmitOutcome::Sent);
+        assert_open_state_exact(&table, "old", &before);
+        assert_eq!(
+            table.commit_prepare_success(&replacement.ticket),
+            TransitionResult::Applied
+        );
+        assert_eq!(
+            table.commit_prepare_success(&live.ticket),
+            TransitionResult::Applied
+        );
+    }
+
+    #[test]
     fn generation_exhaustion_returns_error_without_wrapping_or_partial_mutation() {
         let mut session_exhausted = SessionTable {
             entries: Default::default(),
             last_session_generation: SessionGeneration(MAX_WIRE_COUNTER),
+            closed_sessions: VecDeque::new(),
         };
         assert_eq!(
             session_exhausted

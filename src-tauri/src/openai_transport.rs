@@ -295,7 +295,7 @@ where
             let termination = decoder
                 .finish()
                 .map_err(|error| protocol_failure(error, content_seen))?;
-            if content.is_empty() {
+            if content.trim().is_empty() {
                 return Err(empty_response_failure(content_seen));
             }
             return Ok(TransportSuccess {
@@ -328,6 +328,9 @@ where
                     .map_err(|error| protocol_failure(error, content_seen))?;
                 let Some(event) = event else {
                     if done_seen {
+                        if content.trim().is_empty() {
+                            return Err(empty_response_failure(content_seen));
+                        }
                         return Ok(TransportSuccess {
                             content,
                             transport: ResponseTransport::Sse,
@@ -384,6 +387,7 @@ where
                             }
                             idle_deadline = Some(marked_at + config.stream_idle);
                         }
+                        validate_finish_reason(data.finish_reason.as_deref(), content_seen)?;
                     }
                 }
 
@@ -461,7 +465,11 @@ where
     if scalar_count > config.output_scalars {
         return Err(output_limit_failure(false));
     }
-    if content.is_empty() {
+    let finish_reason = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(Value::as_str);
+    if content.trim().is_empty() {
+        validate_finish_reason(finish_reason, false)?;
         return Err(empty_response_failure(false));
     }
     if cancellation.is_cancelled() {
@@ -471,6 +479,7 @@ where
         return Err(stale_ticket_failure(true));
     }
     on_marker(TransportMarker::FirstContent, Instant::now());
+    validate_finish_reason(finish_reason, true)?;
     Ok(TransportSuccess {
         content,
         transport: ResponseTransport::Json,
@@ -644,6 +653,23 @@ fn stale_ticket_failure(content_seen: bool) -> TransportFailure {
     )
 }
 
+fn validate_finish_reason(
+    reason: Option<&str>,
+    content_seen: bool,
+) -> Result<(), TransportFailure> {
+    let (code, message, retryable) = match reason {
+        Some("length") => ("OUTPUT_TRUNCATED", "回答达到模型长度上限，内容不完整", true),
+        Some("content_filter") => ("CONTENT_FILTERED", "回答被服务商过滤，内容不完整", false),
+        Some("tool_calls" | "function_call") => (
+            "UNSUPPORTED_TOOL_CALL",
+            "模型请求了当前接入不支持的工具调用",
+            false,
+        ),
+        _ => return Ok(()),
+    };
+    Err(failure(code, message, retryable, content_seen))
+}
+
 fn empty_response_failure(content_seen: bool) -> TransportFailure {
     failure(
         "EMPTY_RESPONSE",
@@ -795,6 +821,85 @@ mod tests {
         .unwrap();
         assert_eq!(success.content, "first");
         assert_eq!(success.termination, ResponseTermination::Done);
+    }
+
+    #[tokio::test]
+    async fn transport_rejects_empty_done_including_reasoning_only_answers() {
+        for wire in [
+            "data: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"   \"}}]}\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Thinking\"}}]}\n\ndata: [DONE]\n\n",
+        ] {
+            let error = consume_sse_chunks(
+                futures_util::stream::iter(vec![Ok(Bytes::copy_from_slice(wire.as_bytes()))]),
+                &CancellationToken::new(), &GenerationBudget::new(Instant::now(), Duration::from_secs(10)),
+                Instant::now(), TransportConfig::test(), |_| ControlFlow::Continue(()), |_| ControlFlow::Continue(()), |_, _| {},
+            ).await.unwrap_err();
+            assert_eq!(error.code, "EMPTY_RESPONSE");
+        }
+    }
+
+    #[tokio::test]
+    async fn incomplete_finish_reasons_preserve_partial_text_in_sse_and_json() {
+        for (reason, code) in [
+            ("length", "OUTPUT_TRUNCATED"),
+            ("content_filter", "CONTENT_FILTERED"),
+            ("tool_calls", "UNSUPPORTED_TOOL_CALL"),
+        ] {
+            let wire = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"Partial answer\"}},\"finish_reason\":\"{reason}\"}}]}}\n\ndata: [DONE]\n\n");
+            let mut delivered = String::new();
+            let error = consume_sse_chunks(
+                futures_util::stream::iter(vec![Ok(Bytes::from(wire))]),
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(10)),
+                Instant::now(),
+                TransportConfig::test(),
+                |delta| {
+                    delivered.push_str(&delta);
+                    ControlFlow::Continue(())
+                },
+                |_| ControlFlow::Continue(()),
+                |_, _| {},
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, code);
+            assert!(error.content_seen);
+            assert_eq!(delivered, "Partial answer");
+            let value = serde_json::json!({"choices":[{"message":{"content":"Partial answer"}, "finish_reason":reason}]});
+            delivered.clear();
+            let error = consume_json_chunks(
+                futures_util::stream::iter(vec![Ok(Bytes::from(value.to_string()))]),
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(10)),
+                Instant::now(),
+                TransportConfig::test(),
+                |delta| {
+                    delivered.push_str(&delta);
+                    ControlFlow::Continue(())
+                },
+                |_, _| {},
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, code);
+            assert!(error.content_seen);
+            assert_eq!(delivered, "Partial answer");
+            let value = serde_json::json!({"choices":[{"message":{"content":null}, "finish_reason":reason}]});
+            let error = consume_json_chunks(
+                futures_util::stream::iter(vec![Ok(Bytes::from(value.to_string()))]),
+                &CancellationToken::new(),
+                &GenerationBudget::new(Instant::now(), Duration::from_secs(10)),
+                Instant::now(),
+                TransportConfig::test(),
+                |_| ControlFlow::Continue(()),
+                |_, _| {},
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, code);
+            assert!(!error.content_seen);
+        }
     }
 
     #[tokio::test]
